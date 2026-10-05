@@ -16,6 +16,9 @@ pub enum Icon {
     Forward,
     Down,
     Close,
+    Minimize,
+    Maximize,
+    Restore,
     More,
     Sidebar,
     Pen,
@@ -55,6 +58,12 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> Vec<(f32, f32)> {
 pub fn icon(kind: Icon, color: u32) -> impl IntoElement {
     use Icon::*;
     let paths: Vec<Vec<(f32, f32)>> = match kind {
+        Minimize => vec![vec![(5., 16.), (19., 16.)]],
+        Maximize => vec![rect(5., 5., 14., 14.)],
+        Restore => vec![
+            rect(5., 8., 11., 11.),
+            vec![(8., 8.), (8., 5.), (19., 5.), (19., 16.), (16., 16.)],
+        ],
         Library => vec![
             rect(3., 4., 5., 16.),
             rect(10., 4., 4., 16.),

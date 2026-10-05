@@ -6,6 +6,8 @@ This development build includes native pen/pad input, vector editing, search ove
 
 The interface opens to a minimal document library with folders, favorites, recent notes, and grid/list views. Open a document for a compact writing toolbar and a collapsible page strip; the tab strip includes a + picker for opening an existing document or creating one. Drag tabs to reorder them. Right-click a library card or use its … menu to rename, duplicate, favorite, move, tag, trash or restore that document. Folio uses original icons and Linux-native GPUI rendering.
 
+The tab strip is Folio's title bar, with the + picker immediately after the tabs and minimize, maximize/restore and close buttons at the far right. Drag empty space to move the window; double-click it to maximize or restore. Window edges and corners resize it. Dragging a tab reorders documents. The title bar remains available in the library and above dialogs, and closing saves pending note changes.
+
 **Settings → Appearance** provides neutral Light/Dark themes, separate custom colors for each mode, corner radius and reset. Paper follows the theme by default; turn off **Paper follows appearance** to keep white paper or choose a fixed paper color. **Keep ink readable** adjusts low-contrast handwriting and text only on screen and can be disabled. Original document colors, PDF/image backgrounds and exports stay intact.
 
 ## Tablet stability notice

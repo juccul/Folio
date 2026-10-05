@@ -89,7 +89,8 @@ fn main() -> anyhow::Result<()> {
         let window = cx.open_window(WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             app_id: Some("io.github.folio.Notes".into()),
-            titlebar: Some(TitlebarOptions {title:Some("Folio - Notes".into()), ..Default::default()}),
+            titlebar: Some(TitlebarOptions {title:Some("Folio - Notes".into()), appears_transparent: true, ..Default::default()}),
+            window_decorations: Some(WindowDecorations::Client),
             window_min_size: Some(size(px(1000.), px(620.))),
             ..Default::default()
         }, |window,cx|cx.new(|cx| {

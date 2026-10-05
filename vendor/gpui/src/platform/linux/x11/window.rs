@@ -1528,8 +1528,9 @@ impl PlatformWindow for X11Window {
     fn window_decorations(&self) -> crate::Decorations {
         let state = self.0.state.borrow();
 
-        // Client window decorations require compositor support
-        if !state.client_side_decorations_supported {
+        // Only transparent client frames require compositor support. Opaque
+        // applications can draw their own titlebar without GTK frame extents.
+        if !state.client_side_decorations_supported && state.is_transparent() {
             return Decorations::Server;
         }
 
@@ -1606,9 +1607,10 @@ impl PlatformWindow for X11Window {
 
         if matches!(decorations, crate::WindowDecorations::Client)
             && !state.client_side_decorations_supported
+            && state.is_transparent()
         {
             log::info!(
-                "x11: no compositor present, falling back to server-side window decorations"
+                "x11: transparent client decorations unsupported, falling back to server-side window decorations"
             );
             decorations = crate::WindowDecorations::Server;
         }

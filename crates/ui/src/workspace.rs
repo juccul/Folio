@@ -516,31 +516,7 @@ impl NotesView {
             .bg(rgb(theme.sidebar))
             .border_r_1()
             .border_color(theme.border)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_6()
-                    .pt_7()
-                    .pb_3()
-                    .child(
-                        div()
-                            .size(px(32.))
-                            .rounded(px(theme.radius))
-                            .bg(rgb(theme.accent))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon(Icon::Book, theme.primary_foreground)),
-                    )
-                    .child(
-                        div()
-                            .text_xl()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Folio"),
-                    ),
-            )
+            .pt_5()
             .child(filters)
             .child(
                 div()
@@ -1050,23 +1026,46 @@ impl NotesView {
                     .child("Stored on this device"),
             )
     }
-    pub(super) fn document_tabs(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn document_tabs(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
         let active = self.controller.requested_note();
-        if !self.open_tabs.contains(&active) {
+        if !self.library_open && !self.open_tabs.contains(&active) {
             self.open_tabs.push(active);
         }
         self.open_tabs
             .retain(|id| self.controller.notes.iter().any(|n| n.id == *id));
         let mut tabs = div()
             .id("document-tabs")
-            .flex_1()
+            .flex_initial()
             .min_w_0()
             .overflow_x_scroll()
             .flex()
             .items_center()
             .gap_1();
-        for id in self.open_tabs.clone() {
+        if self.library_open {
+            tabs = tabs.child(
+                div()
+                    .px_3()
+                    .h(px(34.))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(icon(Icon::Book, theme.muted))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Folio"),
+                    ),
+            );
+        }
+        for id in self
+            .open_tabs
+            .clone()
+            .into_iter()
+            .filter(|_| !self.library_open)
+        {
             let Some(n) = self.controller.notes.iter().find(|n| n.id == id) else {
                 continue;
             };
@@ -1093,6 +1092,7 @@ impl NotesView {
             tabs = tabs.child(
                 div()
                     .h(px(34.))
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
                     .rounded_t_md()
@@ -1103,6 +1103,10 @@ impl NotesView {
                     } else {
                         theme.chrome
                     }))
+                    // The outer tab consumes presses after its child controls
+                    // have registered clicks and tab drags.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                     .child(
                         self.control(
                             format!("tab-{id}"),
@@ -1177,18 +1181,41 @@ impl NotesView {
             .bg(rgb(theme.chrome))
             .border_b_1()
             .border_color(theme.border)
+            .on_mouse_down(MouseButton::Left, super::titlebar::background_press)
+            .on_mouse_down(MouseButton::Right, |event, window, cx| {
+                if window.window_controls().window_menu {
+                    window.show_window_menu(event.position);
+                }
+                cx.stop_propagation();
+            })
             .child(tabs)
             .child(
-                self.icon_button(
-                    "new-tab",
-                    "Open or create a document · Ctrl+T",
-                    Icon::Plus,
-                    false,
-                    cx,
-                    |this, w, cx| this.modal(Modal::OpenDocument, w, cx),
-                )
-                .mb(px(3.))
-                .size(px(30.)),
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_shrink_0()
+                    .mb(px(3.))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        self.icon_button(
+                            "new-tab",
+                            "Open or create a document · Ctrl+T",
+                            Icon::Plus,
+                            false,
+                            cx,
+                            |this, w, cx| this.modal(Modal::OpenDocument, w, cx),
+                        )
+                        .size(px(30.)),
+                    ),
+            )
+            .child(div().flex_1().h_full())
+            .child(
+                self.window_controls(window, cx)
+                    .flex_shrink_0()
+                    .mb(px(3.))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation()),
             )
     }
     pub(super) fn header(&mut self, cx: &mut Context<Self>) -> Div {

@@ -14,6 +14,7 @@ mod motion;
 mod navigation;
 mod painting;
 mod theme;
+mod titlebar;
 mod validation;
 mod workspace;
 use field::{Field, FieldBoundsChanged, Submitted};
@@ -1065,12 +1066,16 @@ impl NotesView {
         let theme = Theme::new(&self.controller.settings);
         let id = id.into();
         let label = label.into();
+        let window_control = id.as_ref().starts_with("window-");
         let navigation = self.library_open
             || id.as_ref().starts_with("tab-")
             || id.as_ref().starts_with("close-tab-")
             || matches!(id.as_ref(), "library" | "new-tab" | "settings" | "search");
-        let enabled = (!self.blocking_overlay() || self.building_overlay)
-            && (!self.controller.loading_note() || navigation || self.building_overlay)
+        let enabled = (!self.blocking_overlay() || self.building_overlay || window_control)
+            && (!self.controller.loading_note()
+                || navigation
+                || self.building_overlay
+                || window_control)
             && match id.as_ref() {
                 "undo" => self.controller.session().history.can_undo(),
                 "redo" => self.controller.session().history.can_redo(),
@@ -1149,7 +1154,7 @@ impl NotesView {
             &label,
             action.clone(),
             enabled,
-            !self.blocking_overlay() || self.building_overlay,
+            !self.blocking_overlay() || self.building_overlay || window_control,
             cx,
         );
         let bridge = self.accessibility.clone();
@@ -2684,6 +2689,7 @@ impl Render for NotesView {
             .size_full()
             .relative()
             .flex()
+            .flex_col()
             .bg(rgb(theme.bg))
             .text_color(rgb(theme.ink))
             .font_family("Noto Sans")
@@ -2819,9 +2825,10 @@ impl Render for NotesView {
             )
             .on_action(cx.listener(|this, _: &Import, _, cx| this.import(cx)))
             .on_action(cx.listener(|this, _: &Export, _, cx| this.export(ExportKind::Pdf, cx)));
+        let mut body = div().relative().flex().flex_1().min_h_0().min_w_0();
         if self.library_open {
             self.canvas_bounds = None;
-            root = root.child(self.library_sidebar(cx)).child(
+            body = body.child(self.library_sidebar(cx)).child(
                 self.library(cx).opacity(library_alpha).on_drop(cx.listener(
                     |this, paths: &ExternalPaths, _, cx| {
                         for path in paths.paths() {
@@ -2834,7 +2841,6 @@ impl Render for NotesView {
                 )),
             );
         } else {
-            let tabs = self.document_tabs(cx);
             let header = self.header(cx);
             let toolbar = self.toolbar(cx);
             let footer = self.footer(cx);
@@ -2852,14 +2858,13 @@ impl Render for NotesView {
             if self.controller.math_session.is_some() {
                 workspace = workspace.child(self.math_panel(window, cx));
             }
-            root = root.child(
+            body = body.child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .h_full()
                     .flex()
                     .flex_col()
-                    .child(tabs)
                     .child(header)
                     .child(toolbar)
                     .child(workspace)
@@ -2874,7 +2879,7 @@ impl Render for NotesView {
             if self.building_overlay {
                 self.accessibility.begin();
             }
-            root = root.child(
+            body = body.child(
                 div()
                     .absolute()
                     .inset_0()
@@ -2888,7 +2893,7 @@ impl Render for NotesView {
             if self.building_overlay {
                 self.accessibility.begin();
             }
-            root = root.child(
+            body = body.child(
                 div()
                     .absolute()
                     .inset_0()
@@ -2901,7 +2906,7 @@ impl Render for NotesView {
             if self.building_overlay {
                 self.accessibility.begin();
             }
-            root = root.child(
+            body = body.child(
                 div()
                     .absolute()
                     .inset_0()
@@ -2914,7 +2919,7 @@ impl Render for NotesView {
             if self.building_overlay {
                 self.accessibility.begin();
             }
-            root = root.child(
+            body = body.child(
                 div()
                     .absolute()
                     .inset_0()
@@ -2927,7 +2932,7 @@ impl Render for NotesView {
         {
             self.building_overlay = true;
             self.accessibility.begin();
-            root = root.child(
+            body = body.child(
                 div()
                     .occlude()
                     .absolute()
@@ -2963,7 +2968,8 @@ impl Render for NotesView {
             );
         }
         self.building_overlay = false;
+        root = root.child(self.document_tabs(window, cx)).child(body);
         self.accessibility.publish(self, window, cx);
-        root
+        titlebar::frame(root, window)
     }
 }
