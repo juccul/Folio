@@ -1,0 +1,21 @@
+[package]
+name = "folio-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+gpui.workspace = true
+folio-app = { path = "../app" }
+folio-document = { path = "../document" }
+folio-canvas = { path = "../canvas" }
+folio-ink = { path = "../ink" }
+folio-input = { path = "../input" }
+folio-export = { path = "../export" }
+image.workspace = true
+unicode-segmentation = "1.12"
+smallvec = "1"
+accesskit = "=0.25.1"
+accesskit_unix = "=0.24.0"
+folio-storage = { path = "../storage" }

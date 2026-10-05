@@ -1,0 +1,23 @@
+/target/
+*.db
+*.db-shm
+*.db-wal
+*.log
+/artifacts/
+
+# Local runtime state, note databases, and Python environments.
+/.cache/
+/.config/
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3-shm
+*.sqlite3-wal
+*.db-journal
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*

@@ -1,0 +1,1 @@
+Retained dependency license and copyright texts. Regenerate with `python3 scripts/dependency-notices.py` after updating Cargo.lock. These files retain notices. Where packages omit standalone license files, manifest/readme/source headers are retained for attribution. Exact source packages are identified by Cargo.lock and LICENSES.md.

@@ -1,0 +1,2 @@
+https://raw.githubusercontent.com/LaurenzV/krilla/main/LICENSE_MIT
+https://raw.githubusercontent.com/LaurenzV/krilla/main/NOTICE.md

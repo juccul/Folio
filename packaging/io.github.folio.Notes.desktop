@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Folio
+Comment=Offline vector handwriting and notes
+Exec=folio %F
+Icon=io.github.folio.Notes
+Terminal=false
+Categories=Office;Graphics;
+MimeType=application/pdf;image/png;image/jpeg;image/webp;
+StartupNotify=true
+StartupWMClass=io.github.folio.Notes
+Keywords=Notes;Handwriting;Stylus;Notebook;PDF;
+Actions=NewNote;
+
+[Desktop Action NewNote]
+Name=New note
+Exec=folio --new-note

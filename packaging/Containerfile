@@ -1,0 +1,9 @@
+# Build/runtime verification image; builds against Debian bookworm's older glibc.
+FROM docker.io/library/rust:1.98-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev \
+  libfreetype6-dev libwayland-dev libvulkan1 mesa-vulkan-drivers \
+  poppler-utils fonts-noto-core fonts-noto-cjk python3 && rm -rf /var/lib/apt/lists/*
+WORKDIR /work
+ENV CARGO_TARGET_DIR=/work/artifacts/debian-target CXX=gcc
+CMD ["cargo", "build", "--release", "--locked", "-p", "folio"]

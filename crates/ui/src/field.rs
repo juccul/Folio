@@ -1,0 +1,556 @@
+//! Reusable GPUI text input with UTF-16 IME ranges and grapheme-safe editing.
+use gpui::{prelude::*, *};
+use std::ops::Range;
+use unicode_segmentation::UnicodeSegmentation;
+actions!(
+    field,
+    [
+        Backspace,
+        Delete,
+        Left,
+        Right,
+        Home,
+        End,
+        SelectLeft,
+        SelectRight,
+        SelectAll,
+        Copy,
+        Cut,
+        Paste,
+        Enter,
+        Submit
+    ]
+);
+pub struct Submitted;
+impl EventEmitter<Submitted> for Field {}
+pub struct FieldBoundsChanged;
+impl EventEmitter<FieldBoundsChanged> for Field {}
+pub struct Field {
+    pub content: String,
+    pub focus: FocusHandle,
+    pub multiline: bool,
+    pub height: Option<f32>,
+    pub secret: bool,
+    pub theme: super::Theme,
+    selection: Range<usize>,
+    marked: Option<Range<usize>>,
+    layouts: Vec<(usize, ShapedLine)>,
+    pub(super) bounds: Option<Bounds<Pixels>>,
+    selecting: bool,
+}
+impl Field {
+    pub fn new(content: String, multiline: bool, cx: &mut Context<Self>) -> Self {
+        let end = content.len();
+        Self {
+            content,
+            focus: cx.focus_handle(),
+            multiline,
+            height: None,
+            secret: false,
+            theme: super::Theme::new(&folio_app::Settings::default()),
+            selection: end..end,
+            marked: None,
+            layouts: vec![],
+            bounds: None,
+            selecting: false,
+        }
+    }
+    pub fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
+        self.content = content;
+        let end = self.content.len();
+        self.selection = end..end;
+        self.marked = None;
+        cx.notify();
+    }
+    pub fn bindings(cx: &mut App) {
+        cx.bind_keys([
+            KeyBinding::new("backspace", Backspace, Some("FolioField")),
+            KeyBinding::new("delete", Delete, Some("FolioField")),
+            KeyBinding::new("left", Left, Some("FolioField")),
+            KeyBinding::new("right", Right, Some("FolioField")),
+            KeyBinding::new("home", Home, Some("FolioField")),
+            KeyBinding::new("end", End, Some("FolioField")),
+            KeyBinding::new("shift-left", SelectLeft, Some("FolioField")),
+            KeyBinding::new("shift-right", SelectRight, Some("FolioField")),
+            KeyBinding::new("ctrl-a", SelectAll, Some("FolioField")),
+            KeyBinding::new("ctrl-c", Copy, Some("FolioField")),
+            KeyBinding::new("ctrl-x", Cut, Some("FolioField")),
+            KeyBinding::new("ctrl-v", Paste, Some("FolioField")),
+            KeyBinding::new("enter", Enter, Some("FolioField")),
+            KeyBinding::new("ctrl-enter", Submit, Some("FolioField")),
+        ]);
+    }
+    fn previous(&self) -> usize {
+        self.content[..self.selection.start]
+            .grapheme_indices(true)
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    }
+    fn next(&self) -> usize {
+        self.content[self.selection.end..]
+            .graphemes(true)
+            .next()
+            .map(|s| self.selection.end + s.len())
+            .unwrap_or(self.content.len())
+    }
+    fn utf8(&self, u16_offset: usize) -> usize {
+        let mut count = 0;
+        for (i, c) in self.content.char_indices() {
+            if count >= u16_offset {
+                return i;
+            }
+            count += c.len_utf16();
+        }
+        self.content.len()
+    }
+    fn utf16(&self, byte: usize) -> usize {
+        self.content[..byte.min(self.content.len())]
+            .encode_utf16()
+            .count()
+    }
+    fn range(&self, r: Range<usize>) -> Range<usize> {
+        self.utf8(r.start)..self.utf8(r.end)
+    }
+    fn index_at(&self, p: Point<Pixels>) -> usize {
+        let Some(bounds) = self.bounds else {
+            return self.content.len();
+        };
+        let row = (f32::from(p.y - bounds.top()) / 26.).floor().max(0.) as usize;
+        let Some((offset, line)) = self
+            .layouts
+            .get(row.min(self.layouts.len().saturating_sub(1)))
+        else {
+            return 0;
+        };
+        let index = line.closest_index_for_x(p.x - bounds.left());
+        if self.secret {
+            self.content[*offset..]
+                .char_indices()
+                .nth(index)
+                .map(|(i, _)| offset + i)
+                .unwrap_or(self.content.len())
+        } else {
+            offset + index
+        }
+    }
+    fn replace(&mut self, r: Range<usize>, text: &str, cx: &mut Context<Self>) {
+        let text = if self.multiline {
+            text.to_string()
+        } else {
+            text.replace(['\n', '\r'], " ")
+        };
+        self.content.replace_range(r.clone(), &text);
+        let end = r.start + text.len();
+        self.selection = end..end;
+        self.marked = None;
+        cx.notify();
+    }
+}
+impl Focusable for Field {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+impl EntityInputHandler for Field {
+    fn text_for_range(
+        &mut self,
+        r: Range<usize>,
+        actual: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        let r = self.range(r);
+        *actual = Some(self.utf16(r.start)..self.utf16(r.end));
+        Some(self.content[r].into())
+    }
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: self.utf16(self.selection.start)..self.utf16(self.selection.end),
+            reversed: false,
+        })
+    }
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+        self.marked
+            .clone()
+            .map(|r| self.utf16(r.start)..self.utf16(r.end))
+    }
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.marked = None;
+        cx.notify();
+    }
+    fn replace_text_in_range(
+        &mut self,
+        r: Option<Range<usize>>,
+        text: &str,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let r = r
+            .map(|r| self.range(r))
+            .or(self.marked.clone())
+            .unwrap_or(self.selection.clone());
+        self.replace(r, text, cx);
+    }
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        r: Option<Range<usize>>,
+        text: &str,
+        selection: Option<Range<usize>>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let r = r
+            .map(|r| self.range(r))
+            .or(self.marked.clone())
+            .unwrap_or(self.selection.clone());
+        let start = r.start;
+        self.replace(r, text, cx);
+        self.marked = Some(start..start + text.len());
+        if let Some(sel) = selection {
+            let byte = |n| {
+                text.char_indices()
+                    .scan(0, |count, (i, c)| {
+                        let before = *count;
+                        *count += c.len_utf16();
+                        Some((i, before))
+                    })
+                    .find(|(_, count)| *count >= n)
+                    .map(|(i, _)| i)
+                    .unwrap_or(text.len())
+            };
+            self.selection = start + byte(sel.start)..start + byte(sel.end);
+        }
+        cx.notify();
+    }
+    fn bounds_for_range(
+        &mut self,
+        r: Range<usize>,
+        bounds: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let r = self.range(r);
+        let (row, (offset, line)) = self
+            .layouts
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, (offset, _))| *offset <= r.start)?;
+        Some(Bounds::new(
+            point(
+                bounds.left()
+                    + line.x_for_index(if self.secret {
+                        self.content[*offset..r.start].chars().count()
+                    } else {
+                        r.start - offset
+                    }),
+                bounds.top() + px(row as f32 * 26.),
+            ),
+            size(px(2.), px(26.)),
+        ))
+    }
+    fn character_index_for_point(
+        &mut self,
+        p: Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
+        Some(self.utf16(self.index_at(p)))
+    }
+}
+struct FieldElement {
+    field: Entity<Field>,
+    multiline: bool,
+    height: Option<f32>,
+}
+impl IntoElement for FieldElement {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+impl Element for FieldElement {
+    type RequestLayoutState = ();
+    type PrepaintState = Vec<(usize, ShapedLine)>;
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        style.size.height = px(self
+            .height
+            .unwrap_or(if self.multiline { 208. } else { 28. }))
+        .into();
+        (window.request_layout(style, [], cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let field = self.field.read(cx);
+        let mut offset = 0;
+        let style = window.text_style();
+        field
+            .content
+            .split('\n')
+            .map(|text| {
+                let raw_len = text.len();
+                let displayed = if field.secret {
+                    "*".repeat(text.chars().count())
+                } else {
+                    text.to_string()
+                };
+                let text = displayed.as_str();
+                let run = TextRun {
+                    len: text.len(),
+                    font: style.font(),
+                    color: style.color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let line =
+                    window
+                        .text_system()
+                        .shape_line(text.to_string().into(), px(16.), &[run], None);
+                let item = (offset, line);
+                offset += raw_len + 1;
+                item
+            })
+            .collect()
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        lines: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let field = self.field.read(cx);
+        let selection = if field.secret {
+            field.content[..field.selection.start].chars().count()
+                ..field.content[..field.selection.end].chars().count()
+        } else {
+            field.selection.clone()
+        };
+        let theme = field.theme;
+        let focused = field.focus.is_focused(window);
+        let focus = field.focus.clone();
+        window.handle_input(
+            &focus,
+            ElementInputHandler::new(bounds, self.field.clone()),
+            cx,
+        );
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            for (row, (offset, line)) in lines.iter().enumerate() {
+                let y = bounds.top() + px(row as f32 * 26.);
+                let end = offset + line.len();
+                if selection.start <= end && selection.end >= *offset && !selection.is_empty() {
+                    let start = selection.start.saturating_sub(*offset).min(line.len());
+                    let end = selection.end.saturating_sub(*offset).min(line.len());
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(bounds.left() + line.x_for_index(start), y),
+                            size(
+                                (line.x_for_index(end) - line.x_for_index(start)).max(px(2.)),
+                                px(26.),
+                            ),
+                        ),
+                        rgba((theme.accent << 8) | 0x30),
+                    ));
+                }
+                let _ = line.paint(point(bounds.left(), y), px(26.), window, cx);
+                if focused
+                    && selection.is_empty()
+                    && selection.start >= *offset
+                    && selection.start <= end
+                {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(
+                                bounds.left() + line.x_for_index(selection.start - offset),
+                                y,
+                            ),
+                            size(px(1.5), px(22.)),
+                        ),
+                        rgb(theme.ink),
+                    ));
+                }
+            }
+        });
+        self.field.update(cx, |field, cx| {
+            field.layouts = lines.clone();
+            if field.bounds != Some(bounds) {
+                field.bounds = Some(bounds);
+                // Publish the bounds after a newly revealed field is painted so
+                // its accessibility node can be focused on the next frame.
+                cx.emit(FieldBoundsChanged);
+            }
+        });
+    }
+}
+impl Render for Field {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.theme;
+        div()
+            .id("text-field")
+            .key_context("FolioField")
+            .track_focus(&self.focus)
+            .w_full()
+            .bg(rgb(theme.surface))
+            .text_color(rgb(theme.ink))
+            .border_1()
+            .border_color(theme.input)
+            .rounded(px(theme.radius))
+            .focus(move |s| s.border_color(rgb(theme.ring)))
+            .p_3()
+            .overflow_hidden()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    this.focus.focus(window);
+                    let i = this.index_at(event.position);
+                    this.selection = i..i;
+                    this.selecting = true;
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.selecting = false),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if this.selecting {
+                    let i = this.index_at(event.position);
+                    this.selection.end = i;
+                    self_sort(&mut this.selection);
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Backspace, _, cx| {
+                let r = if this.selection.is_empty() {
+                    this.previous()..this.selection.end
+                } else {
+                    this.selection.clone()
+                };
+                this.replace(r, "", cx)
+            }))
+            .on_action(cx.listener(|this, _: &Delete, _, cx| {
+                let r = if this.selection.is_empty() {
+                    this.selection.start..this.next()
+                } else {
+                    this.selection.clone()
+                };
+                this.replace(r, "", cx)
+            }))
+            .on_action(cx.listener(|this, _: &Left, _, cx| {
+                let i = if this.selection.is_empty() {
+                    this.previous()
+                } else {
+                    this.selection.start
+                };
+                this.selection = i..i;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &Right, _, cx| {
+                let i = if this.selection.is_empty() {
+                    this.next()
+                } else {
+                    this.selection.end
+                };
+                this.selection = i..i;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &Home, _, cx| {
+                this.selection = 0..0;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &End, _, cx| {
+                let n = this.content.len();
+                this.selection = n..n;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectLeft, _, cx| {
+                this.selection.start = this.previous();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectRight, _, cx| {
+                this.selection.end = this.next();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectAll, _, cx| {
+                this.selection = 0..this.content.len();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &Copy, _, cx| {
+                if this.secret {
+                    return;
+                }
+                if !this.selection.is_empty() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        this.content[this.selection.clone()].into(),
+                    ))
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Cut, _, cx| {
+                if this.secret {
+                    let r = this.selection.clone();
+                    this.replace(r, "", cx);
+                    return;
+                }
+                if !this.selection.is_empty() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        this.content[this.selection.clone()].into(),
+                    ));
+                    this.replace(this.selection.clone(), "", cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Paste, _, cx| {
+                if let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) {
+                    this.replace(this.selection.clone(), &text, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Enter, _, cx| {
+                if this.multiline {
+                    this.replace(this.selection.clone(), "\n", cx)
+                } else {
+                    cx.emit(Submitted)
+                }
+            }))
+            .on_action(cx.listener(|_, _: &Submit, _, cx| cx.emit(Submitted)))
+            .child(FieldElement {
+                field: cx.entity(),
+                multiline: self.multiline,
+                height: self.height,
+            })
+    }
+}
+fn self_sort(r: &mut Range<usize>) {
+    if r.start > r.end {
+        std::mem::swap(&mut r.start, &mut r.end)
+    }
+}

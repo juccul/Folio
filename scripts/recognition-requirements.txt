@@ -1,0 +1,7 @@
+# Install torch/torchvision CPU wheels first from https://download.pytorch.org/whl/cpu.
+# CPU inference is the fully open-source default; CUDA is optional.
+torch==2.9.1
+torchvision==0.24.1
+transformers==5.18.0
+numpy==2.2.6
+Pillow==12.3.0

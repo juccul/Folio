@@ -1,0 +1,11 @@
+[package]
+name = "folio-math"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+folio-document = { path = "../document" }
+thiserror.workspace = true
+latex-rust = "=2.1.0"
+resvg.workspace = true

@@ -1,0 +1,7 @@
+[build]
+jobs = 2
+
+# FreeType's bundled sources are C. This also builds on minimal Linux systems
+# with gcc but no g++; an explicit CXX in the environment takes precedence.
+[env]
+CXX = { value = "gcc", force = false }

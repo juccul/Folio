@@ -1,0 +1,23 @@
+[package]
+name = "folio-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+folio-document = { path = "../document" }
+folio-ink = { path = "../ink" }
+folio-input = { path = "../input" }
+folio-canvas = { path = "../canvas" }
+folio-storage = { path = "../storage" }
+folio-search = { path = "../search" }
+folio-shapes = { path = "../shapes" }
+folio-gestures = { path = "../gestures" }
+folio-math = { path = "../math" }
+folio-pdf = { path = "../pdf" }
+folio-export = { path = "../export" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+folio-platform = { path = "../platform" }
+image.workspace = true
