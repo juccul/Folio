@@ -2,7 +2,23 @@
 
 Offline handwriting and mixed-media notes for Linux, built in Rust with GPUI. Raw tablet samples and editable vector ink are the document's source of truth.
 
-This development build includes native pen/pad input, vector editing, search over titles/tags/typed text, mixed-media/PDF notes, persistent undo, recovery and accessibility interfaces. Optional offline recognition converts selected handwriting into editable text or LaTeX. Normal note taking needs no model or Python runtime. Physical pen latency and desktop/device compatibility still require broader testing. See [DEVELOPMENT.md](DEVELOPMENT.md) for the exact status.
+Folio 1.0 includes native pen/pad input, vector editing, search over titles/tags/typed text, mixed-media/PDF notes, persistent undo, recovery and accessibility interfaces. Optional offline recognition converts selected handwriting into editable text or LaTeX. Normal note taking needs no model or Python runtime. Physical pen latency and desktop/device compatibility still require broader testing. See [DEVELOPMENT.md](DEVELOPMENT.md) for the exact status.
+
+## Releases
+
+Download [Folio 1.0.0](https://github.com/juccul/Folio/releases/tag/v1.0.0) for **Linux x86_64 / amd64**. Sign in to GitHub with access to this private repository.
+
+| Format | Download | Install |
+| --- | --- | --- |
+| RPM — Fedora and compatible distributions | [folio-1.0.0-1.x86_64.rpm](https://github.com/juccul/Folio/releases/download/v1.0.0/folio-1.0.0-1.x86_64.rpm) | `sudo dnf install ./folio-1.0.0-1.x86_64.rpm` |
+| DEB — Debian and Ubuntu | [folio_1.0.0_amd64.deb](https://github.com/juccul/Folio/releases/download/v1.0.0/folio_1.0.0_amd64.deb) | `sudo apt install ./folio_1.0.0_amd64.deb` |
+| Flatpak | [folio-1.0.0-x86_64.flatpak](https://github.com/juccul/Folio/releases/download/v1.0.0/folio-1.0.0-x86_64.flatpak) | `flatpak install --user ./folio-1.0.0-x86_64.flatpak` |
+
+Launch **Folio** from your application menu, or run `folio` for native packages and `flatpak run io.github.folio.Notes` for Flatpak. Native packages require glibc 2.35+, Python 3.10+, a working Vulkan driver and a desktop session; the package manager installs declared dependencies. Flatpak uses the Freedesktop 25.08 runtime. If Flathub is not configured, add it first with `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`. Installing the runtime may need internet; Folio works offline afterward.
+
+All three packages include the **offline CPU math solver** and its pinned SymPy/mpmath dependencies. Flatpak also bundles PDF preview tools; RPM/DEB install Poppler through your package manager. The GLM-OCR checkpoint and neural inference runtime are **optional and not included**; see [recognition setup](#install-optional-offline-recognition). A Flatpak OCR pack must use a Python/runtime compatible with its sandbox. Native and Flatpak builds have separate default data directories; use the Flatpak file picker for importing and exporting files.
+
+The release also includes SHA-256 checksums, complete corresponding Rust/Poppler source, and [release notes](RELEASE_NOTES.md). Verify downloaded files with `sha256sum --check SHA256SUMS` after placing the release assets together.
 
 The interface opens to a minimal document library with folders, favorites, recent notes, and grid/list views. Open a document for a compact writing toolbar and a collapsible page strip; the tab strip includes a + picker for opening an existing document or creating one. Drag tabs to reorder them. Right-click a library card or use its … menu to rename, duplicate, favorite, move, tag, trash or restore that document. Folio uses original icons and Linux-native GPUI rendering.
 
@@ -181,7 +197,8 @@ cargo run --locked -p folio-app --example validate -- artifacts/validation
 WAYLAND_DISPLAY= ./target/release/folio --data-dir /tmp/folio-x11-smoke --smoke-test
 python3 scripts/dependency-notices.py
 python3 scripts/package.py
-python3 scripts/package-distros.py
+python3 scripts/package-distros.py --math-python /path/to/math-runtime/bin/python
+python3 scripts/package-flatpak.py --math-python /path/to/math-runtime/bin/python
 cargo run --release --locked -p folio-app --example benchmark -- 10000
 dbus-run-session -- python3 scripts/verify-accessibility.py
 ```
@@ -192,6 +209,8 @@ The package script produces a Linux binary archive with notices and a correspond
 
 To record physical input locally, start with `FOLIO_PEN_RECORD=/new/path.jsonl`; the file must not already exist. `FOLIO_PROFILE_INK=1` reports dispatch-to-CPU-paint metrics on exit. These exclude GPU presentation and display scanout. Recording is optional and bounded.
 
-The archives in `artifacts/dist` use a Debian bookworm build (glibc 2.35 or newer). The desktop archive contains no recognition models or inference runtime; extract it and launch `bin/folio`. RPM and Debian packages contain the same desktop app.
+The 1.0 release uses a Debian bookworm build (glibc 2.35 or newer). Build it with `packaging/Containerfile`, then pass `--binary artifacts/debian-target/release/folio` to the packaging scripts. RPM and DEB bundle the math worker with portable relative paths; `--math-python` must have the pinned math requirements installed. Flatpak requires the installed Freedesktop SDK/Platform 25.08 and verifies its pinned Poppler source before building. It grants display and GPU access, uses file chooser portals, and grants no network or host filesystem permission.
+
+For the complete release source archive, run `scripts/package.py --no-build --binary artifacts/debian-target/release/folio --poppler-source artifacts/flatpak/poppler-26.10.0.tar.xz`. The separate desktop tar archive excludes math and OCR runtimes; the release installers include math. No package copies development databases, model caches or virtual environments.
 
 A cross-distribution build image is provided in `packaging/Containerfile`; it builds against Debian bookworm rather than this machine’s newer glibc. Package dependency metadata must match the chosen binary. Native COSMIC/KDE and physical tablet certification require their own sessions/devices.

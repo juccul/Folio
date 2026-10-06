@@ -28,6 +28,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--binary',type=Path,help='Use a separately built distribution-compatible executable')
     parser.add_argument('--no-build', action='store_true', help='Package an already-built release binary')
+    parser.add_argument('--poppler-source', type=Path, help='Include the exact Flatpak Poppler source archive')
     parser.add_argument('--output', default='artifacts/dist')
     args = parser.parse_args()
     if not args.no_build:
@@ -57,6 +58,12 @@ def main():
         with tarfile.open(source_archive, 'w:gz', compresslevel=6) as archive:
             for item in ['Cargo.toml', 'Cargo.lock', 'apps', 'crates', 'vendor', 'scripts', 'packaging', 'third_party', 'README.md', 'DEVELOPMENT.md', 'RECOGNITION_RESEARCH.md', 'MATH_SOLVER_DESIGN.md', 'LICENSE', 'LICENSES.md']:
                 add(archive, ROOT / item, f'{source_name}/{item}')
+            for item in ['RELEASE_NOTES.md', 'RELEASE_VALIDATION.md', 'OPTIMIZATION_AND_BUGFIX_REPORT.md']:
+                if (ROOT / item).exists():
+                    add(archive, ROOT / item, f'{source_name}/{item}')
+            if args.poppler_source:
+                add(archive, args.poppler_source,
+                    f'{source_name}/third_party/flatpak/{args.poppler_source.name}')
             add(archive, config_path, f'{source_name}/.cargo/config.toml')
             add(archive, vendor, f'{source_name}/third_party/source')
     archives=[binary_archive,source_archive]

@@ -1,0 +1,14 @@
+# Folio 1.0.0 package validation
+
+Validated on 2026-10-06. Downloads target Linux x86_64; the app executable was built with Rust 1.98.1 in Debian Bookworm, with a maximum required glibc symbol version of 2.35.
+
+- **DEB:** Installed with `dpkg -i` in an isolated Debian Bookworm build container. Desktop launcher reports `Folio 1.0.0`; bundled math imports SymPy 1.14.0/mpmath 1.3.0. Actual installation exposed and verified the fix for unsupported PAX tar headers. Payload entries use GNU tar headers, integer timestamps and root ownership.
+- **RPM:** Installed using `dnf install` in a fresh Fedora 44 container, resolving the package's declared runtime dependencies. Launcher reports `Folio 1.0.0`; bundled math imports the pinned versions. The RPM is unsigned.
+- **Native package workflows:** The extracted DEB passed the full native pen/editor smoke replay and 35 solver/LaTeX/theme/Unicode UI checks in private Xvfb/D-Bus sessions. The packaged math worker also passed malformed-request, computation-timeout and recovery tests using its bundled dependencies. The RPM and DEB use the same executable and math payload.
+- **Flatpak:** Installed the actual bundle into a private test installation using the already installed Freedesktop 25.08 runtime. Runtime loader/version checks, a real equation-solving request with steps, PDF-to-PNG preview rendering, and native pen/editor smoke replay all passed. No SDK-only libraries are required at runtime. The bundle has display, IPC and GPU permissions, with no network or host filesystem permission.
+- **Source:** Extracted the corresponding source archive and resolved its complete Cargo metadata with `--locked --offline` and an empty Cargo home, confirming that its vendored dependency graph is self-contained. The exact checksum-pinned Poppler 26.10.0 source is included; the packaged math dependencies contain their Python sources and license notices.
+- **Metadata/checks:** AppStream validation, desktop-file validation, Rust formatting, workspace compilation and Python packaging-script compilation passed. `git diff --check` passed. The preceding optimization pass passed 162 Rust tests, 38 Python tests and isolated X11/Wayland UI regressions; details are in `OPTIMIZATION_AND_BUGFIX_REPORT.md`.
+
+Test logs and screenshots are local under `artifacts/release-1.0`; they are excluded from Git and released packages. Installation tests did not install Folio into the user's normal environment or access their note databases. The private Flatpak test installation reuses existing read-only runtime deployments.
+
+These are automated and container checks, not physical-tablet or broad Linux distribution certification. Recognition weights/runtime are optional and excluded from these downloads. Flatpak PDF previews use bundled Poppler; native packages use the distribution package. Flatpak file chooser behavior depends on the user's desktop portal and was not independently certified on every desktop.

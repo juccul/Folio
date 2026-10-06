@@ -4,6 +4,10 @@ use gpui::*;
 use std::{path::PathBuf, time::Duration};
 fn main() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args().collect();
+    if args.iter().any(|s| s == "--version" || s == "-V") {
+        println!("Folio {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if args.iter().any(|s| s == "--help" || s == "-h") {
         println!(
             "Folio — offline vector handwriting for Linux\n\nUsage: folio [--data-dir PATH] [--new-note] [--open-note UUID] [--recover] [--smoke-test] [PDF/IMAGE…]\n\nData: $FOLIO_DATA_DIR or $XDG_DATA_HOME/folio\nP/E/L/H/T/S: tools · Ctrl+S: save · Ctrl+F: search · Ctrl+0: fit"

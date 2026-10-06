@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+folio_bundle_root=$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
+unset PYTHONHOME
+export PYTHONPATH="$folio_bundle_root/math-solver/site-packages"
+export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+exec /usr/bin/python3 -s "$@"
