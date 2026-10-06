@@ -60,6 +60,7 @@ pub struct Session {
     pub index: SpatialIndex,
     pub order_positions: HashMap<Id, usize>,
     pending_journal: Vec<JournalEvent>,
+    linked_math: HashSet<Id>,
 }
 impl Session {
     fn new(document: Document) -> Self {
@@ -71,8 +72,10 @@ impl Session {
             .enumerate()
             .map(|(i, id)| (*id, i))
             .collect();
+        let linked_math = linked_math_objects(&document.pages[0]);
         Self {
             document,
+            linked_math,
             history: History::default(),
             page: 0,
             viewport: Viewport::default(),
@@ -130,6 +133,18 @@ impl Session {
                 self.order_positions.insert(*id, suffix + offset);
             }
         }
+        if pages_changed || old_page != self.page {
+            self.linked_math = linked_math_objects(page);
+        } else {
+            for id in &object_changes {
+                if page.objects.get(id).is_some_and(|object|
+                    matches!(object.as_ref(), Object::Equation(equation) if equation.math_link.is_some())) {
+                    self.linked_math.insert(*id);
+                } else {
+                    self.linked_math.remove(id);
+                }
+            }
+        }
         self.selection.retain(|id| page.objects.contains_key(id));
         if old_page != self.page {
             self.index.rebuild(page);
@@ -142,6 +157,7 @@ impl Session {
         self.selection
             .retain(|id| self.document.pages[self.page].objects.contains_key(id));
         self.index.rebuild(&self.document.pages[self.page]);
+        self.linked_math = linked_math_objects(&self.document.pages[self.page]);
         self.order_positions = self.document.pages[self.page]
             .order
             .iter()
@@ -149,6 +165,21 @@ impl Session {
             .map(|(i, id)| (*id, i))
             .collect();
     }
+}
+fn linked_math_objects(page: &Page) -> HashSet<Id> {
+    page.objects
+        .values()
+        .filter_map(|object| match object.as_ref() {
+            Object::Equation(equation) if equation.math_link.is_some() => Some(equation.id),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Immutable target captured before a native export dialog can switch focus.
+pub struct ExportSnapshot {
+    document: Document,
+    page: Id,
 }
 pub enum Interaction {
     Ink {
@@ -276,10 +307,11 @@ impl Controller {
         std::fs::create_dir_all(&assets).map_err(|e| e.to_string())?;
         let database = data_dir.join("notes.sqlite3");
         let mut store = Store::open(&database).map_err(|e| e.to_string())?;
-        let settings: Settings = store
+        let mut settings: Settings = store
             .setting("preferences")
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
+        settings.normalize();
         let mut notes = store.list_notes().map_err(|e| e.to_string())?;
         let notebooks = store.notebooks().map_err(|e| e.to_string())?;
         let document = if let Some(n) = notes.iter().find(|n| !n.trashed) {
@@ -489,16 +521,22 @@ impl Controller {
         self.finish();
         let documents = self
             .sessions
-            .values_mut()
+            .values()
             .map(|s| {
                 let mut delta = Delta::full(&s.document);
                 delta.journal = vec![JournalEvent::Replace(s.history.clone())];
-                s.pending_journal.clear();
                 delta
             })
             .collect::<Vec<_>>();
         for delta in documents {
-            self.queued = self.persistence.save_blocking(delta)?;
+            let note = delta.metadata.id;
+            let sequence = self.persistence.save_blocking(delta)?;
+            self.queued = sequence;
+            self.save_notes.insert(sequence, note);
+            self.dirty_notes.remove(&note);
+            if let Some(session) = self.sessions.get_mut(&note) {
+                session.pending_journal.clear();
+            }
         }
         self.persistence.flush()
     }
@@ -1731,14 +1769,25 @@ impl Controller {
             self.pending_navigation = None;
         }
     }
-    pub fn export(&mut self, path: PathBuf, kind: ExportKind) {
-        self.submit(Job::Export {
-            doc: self.session().document.clone(),
+    pub fn prepare_export(&mut self) -> ExportSnapshot {
+        self.finish();
+        ExportSnapshot {
+            document: self.session().document.clone(),
             page: self.page().id,
+        }
+    }
+    pub fn export_prepared(&mut self, snapshot: ExportSnapshot, path: PathBuf, kind: ExportKind) {
+        self.submit(Job::Export {
+            doc: snapshot.document,
+            page: snapshot.page,
             assets: self.assets.clone(),
             path,
             kind,
         });
+    }
+    pub fn export(&mut self, path: PathBuf, kind: ExportKind) {
+        let snapshot = self.prepare_export();
+        self.export_prepared(snapshot, path, kind);
     }
     pub fn import(&mut self, path: PathBuf) {
         self.import_into(self.active, path);
@@ -1913,7 +1962,13 @@ impl Controller {
             match receipt.result {
                 Ok(()) => {
                     self.saved = self.saved.max(receipt.sequence);
-                    if self.saved >= self.queued {
+                    if self.saved >= self.queued
+                        && self.dirty_notes.is_empty()
+                        && self
+                            .sessions
+                            .values()
+                            .all(|session| session.pending_journal.is_empty())
+                    {
                         self.status = "All changes saved".into()
                     }
                 }

@@ -511,6 +511,26 @@ def check_work(original, next_line, variable, compiler):
         return other,'conditional','The expressions agree where the original expression is defined. Keep the original domain restrictions.'
     return other,'verified','The expressions are equivalent with the same recorded restrictions.'
 
+def check_real_integral_domain(lower, upper, variable, conditions):
+    if lower.free_symbols or upper.free_symbols or lower.is_real is False or upper.is_real is False:
+        raise MathInputError('Choose real bounds with defined parameter values for this definite integral.')
+    if lower == upper:
+        return
+    interval = s.Interval(s.Min(lower, upper), s.Max(lower, upper))
+    permitted = s.S.Reals
+    for condition in conditions:
+        if condition.free_symbols - {variable}:
+            raise MathInputError('Define the remaining parameters before checking the integral domain.')
+        try:
+            permitted = s.Intersection(permitted, s.solve_univariate_inequality(condition, variable, relational=False))
+        except (NotImplementedError, ValueError, TypeError):
+            raise MathInputError('Could not verify the original domain over this integration interval.')
+    excluded = s.Complement(interval, permitted)
+    # Isolated excluded endpoints/poles are handled by SymPy's convergence
+    # calculation. An undefined subinterval cannot become a real integral.
+    if excluded.is_empty is not True and not isinstance(excluded, s.FiniteSet):
+        raise MathInputError('The integration interval extends outside the original real domain.')
+
 def solve(request):
     source=request.get('expression','').strip()
     operation=request.get('operation','auto')
@@ -549,7 +569,7 @@ def solve(request):
     bindings=build_bindings(request.get('variables',{}),compiler)
     compiler.conditions=[]  # Conditions from resolved numeric bindings have already been checked.
     variable_name=request.get('variable','x') or 'x'
-    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,31}',variable_name):
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,31}',variable_name) or variable_name in ('pi','e','i','oo'):
         raise MathInputError('Choose a valid target variable name.')
     source,operation,variable_name,integral_bounds=parse_calculus(source,operation,variable_name)
     compiler.bindings={name:value for name,value in bindings.items() if name!=variable_name or operation in ('evaluate','simplify','factor','live','auto')}
@@ -564,7 +584,7 @@ def solve(request):
     if operation in ('auto','live'):
         operation='solve' if isinstance(expression,Relational) else 'simplify'
         if len(lines)>1: operation='solve'
-    if operation=='solve' and variable not in free and len(free)==1:
+    if operation in ('solve','check') and variable not in free and len(free)==1:
         variable=next(iter(free));variable_name=str(variable)
     report={'version':VERSION,'input':source,'input_latex':latex(expression),'source_tree':trees[0].json(),
             'answer':'','answer_latex':'','approximate':'','title':'Solution','restrictions':restrictions(compiler.conditions),
@@ -638,9 +658,10 @@ def solve(request):
         if integral_bounds:
             lower=normal(compiler.compile(parse(integral_bounds[0],bindings)))
             upper=normal(compiler.compile(parse(integral_bounds[1],bindings)))
-            antiderivative=answer-s.Symbol('C')
+            if domain == 'real':
+                check_real_integral_domain(lower, upper, variable, compiler.conditions)
             definite=s.integrate(expression,(variable,lower,upper))
-            if definite.has(s.Integral,s.zoo,s.nan,s.oo,-s.oo): raise MathInputError('Could not establish a finite definite integral.')
+            if definite.has(s.Integral,s.zoo,s.nan,s.oo,-s.oo) or (domain == 'real' and definite.is_real is False): raise MathInputError('Could not establish a finite definite integral.')
             report['steps'].append(step('definite_integral',s.Integral(expression,(variable,lower,upper)),definite,
                                         'Evaluate the definite integral with its interval and convergence conditions.'))
             answer=definite

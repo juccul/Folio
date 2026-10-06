@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--fixture',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--latex',action='store_true',help='Also verify editable LaTeX result workflows')
+    parser.add_argument('--edge-cases',action='store_true',help='Check selection reversal and Unicode clipboard editing')
     parser.add_argument('--graph-theme',action='store_true',help='Verify graph colors and live theme changes')
     args=parser.parse_args()
     if os.environ.get('FOLIO_VIRTUAL_DISPLAY')!='1' or os.environ.get('WAYLAND_DISPLAY'):
@@ -139,6 +140,13 @@ def main():
                 labels=[n.get_name() for n in nodes()]
                 assert 'Real' not in labels and 'Define variable' not in labels
                 assert 'Next mathematical line' not in labels and 'Graph x range' not in labels
+                if args.edge_cases:
+                    clipboard=Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+                    for text,expected in [('abcdef','f'),('ab👩‍💻é','é')]:
+                        paste('Math expression',text)
+                        client.key('End');client.key('Left',1);client.key('Left',1);client.key('Right',1)
+                        client.key('c',4);time.sleep(.2)
+                        assert clipboard.wait_for_text()==expected,(text,clipboard.wait_for_text())
                 fill('Math expression','4/2');click('Use selection')
                 click('Solve problem');wait_result()
                 assert any('Solution: {4}' in n.get_name() for n in nodes()), 'Use selection did not restore the selected problem'
@@ -308,6 +316,7 @@ def main():
                     'guided_learning':True,'bidirectional_guide':True,'working_examples':True,'clear_add_options':True,'keyboard_submit':True,'compact_layout':True,'hidden_range_independent':True,'source_preserved':True,'worked_solution_undo_redo':True,
                     'rendered_steps':True,'next_step_check':True,'page_variable':True,'live_result':True,
                     'graph':True,'word_problem_review':True,'private_display':True}
+                if args.edge_cases: result.update(selection_reversal=True,unicode_grapheme_clipboard=True)
                 if args.latex: result.update(editable_latex=True,latex_copy=True,latex_apply=True,invalid_latex_preserves_result=True,latex_static_equation_undo_redo=True,source_editor_resets=True,focused_editor=True,apply_returns_to_answer=True)
                 if args.graph_theme: result.update(graph_light_palette=True,graph_dark_palette=True,graph_custom_paper=True,graph_fixed_paper_theme_switch=True,graph_source_preserved=True)
                 (args.output/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))

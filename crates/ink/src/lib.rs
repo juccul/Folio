@@ -347,20 +347,7 @@ pub fn hit_stroke(stroke: &InkStroke, p: Point, radius: f32) -> bool {
     })
 }
 pub fn swept_hit(stroke: &InkStroke, a: Point, b: Point, r: f32) -> bool {
-    let bounds = Rect::from_points(
-        stroke
-            .display_path()
-            .iter()
-            .map(|p| stroke.transform.apply(p.position)),
-    )
-    .expand(
-        stroke
-            .display_path()
-            .iter()
-            .map(|p| p.radius)
-            .fold(0., f32::max)
-            * stroke.transform.scale(),
-    );
+    let bounds = stroke.bounds();
     if !bounds.intersects(Rect::from_points([a, b]).expand(r)) {
         return false;
     }

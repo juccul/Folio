@@ -65,7 +65,11 @@ impl Thumbnails {
                 images: vec![],
                 properties: page.properties.clone(),
             };
-            for object in page.ordered_objects() {
+            let hidden = page.hidden_sources();
+            for object in page
+                .ordered_objects()
+                .filter(|object| !hidden.contains(&object.id()))
+            {
                 let mut b;
                 let color = match object.as_ref() {
                     Object::Stroke(s) => {
@@ -1034,8 +1038,24 @@ impl NotesView {
         }
         self.open_tabs
             .retain(|id| self.controller.notes.iter().any(|n| n.id == *id));
+        if self.library_open {
+            self.tab_target = None;
+            self.tab_scroll.set_offset(Point::default());
+        } else if let Some(index) = self.open_tabs.iter().position(|id| *id == active) {
+            let target = (
+                active,
+                index,
+                window.viewport_size().width,
+                self.controller.settings.ui_scale,
+            );
+            if self.tab_target != Some(target) {
+                self.tab_scroll.scroll_to_item(index);
+                self.tab_target = Some(target);
+            }
+        }
         let mut tabs = div()
             .id("document-tabs")
+            .track_scroll(&self.tab_scroll)
             .flex_initial()
             .min_w_0()
             .overflow_x_scroll()

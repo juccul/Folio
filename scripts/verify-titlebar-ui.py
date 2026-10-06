@@ -174,6 +174,9 @@ def main():
                 controls=bounds('Minimize window');close=bounds('Close window')
                 assert 0 < picker[0] and picker[0]+picker[2] < controls[0],(picker,controls)
                 assert 0 <= geometry()[2]-close[0]-close[2] <= 20,(geometry(),close)
+                closing=[n for n in nodes() if n.get_role()==Atspi.Role.PUSH_BUTTON and n.get_name()=='Close tab']
+                active_close=closing[-1].get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                assert 0 <= active_close.x and active_close.x+active_close.width < picker[0],(active_close,picker)
                 capture('overflow-tabs')
                 click('Open or create a document · Ctrl+T');wait('Cancel');click('Cancel')
                 for _ in range(6):
@@ -205,7 +208,7 @@ def main():
                 with sqlite3.connect(database) as db: count=db.execute('SELECT count(*) FROM notes').fetchone()[0]
                 click('Close window');assert app.wait(timeout=5)==0
                 with sqlite3.connect(database) as db: assert db.execute('SELECT count(*) FROM notes').fetchone()[0]==count
-                result={name:True for name in ['client_decorations','picker_follows_tabs','picker_visible_with_overflow','sidebar_navigation','control_order','native_window_drag','tabs_do_not_move_window','native_tab_reorder','maximize_restore','background_double_click','edge_resize','minimize','controls_available_in_dialog','library_titlebar','close_flushes_and_exits','private_compositor']}
+                result={name:True for name in ['client_decorations','picker_follows_tabs','picker_visible_with_overflow','active_tab_visible_with_overflow','sidebar_navigation','control_order','native_window_drag','tabs_do_not_move_window','native_tab_reorder','maximize_restore','background_double_click','edge_resize','minimize','controls_available_in_dialog','library_titlebar','close_flushes_and_exits','private_compositor']}
                 (args.output/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
     finally:
         if bus and session:

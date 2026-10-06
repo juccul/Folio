@@ -259,6 +259,36 @@ impl Store {
             path,
         })
     }
+    /// Background reads reuse the schema initialized by the owning controller.
+    /// Opening a tab or searching must not request a write lock or scan the
+    /// entire database for integrity on each keystroke.
+    pub fn open_reader(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let connection = Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.busy_timeout(std::time::Duration::from_secs(3))?;
+        let version: i32 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if !(3..=4).contains(&version) {
+            return Err(Error::Invalid(format!(
+                "Database version {version} requires initialization by the application"
+            )));
+        }
+        Ok(Self { connection, path })
+    }
+
+    /// Document and undo history must come from the same committed WAL snapshot.
+    pub fn load_with_history(&self, id: Id) -> Result<Option<(Document, History)>> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let result = self
+            .load_snapshot(id)?
+            .map(|document| self.history(id).map(|history| (document, history)))
+            .transpose()?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
     pub fn list_notes(&self) -> Result<Vec<NoteMetadata>> {
         let mut q = self.connection.prepare("SELECT metadata FROM notes")?;
         let rows = q.query_map([], |r| r.get::<_, String>(0))?;
@@ -270,6 +300,12 @@ impl Store {
         Ok(notes)
     }
     pub fn load(&self, id: Id) -> Result<Option<Document>> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let document = self.load_snapshot(id)?;
+        transaction.commit()?;
+        Ok(document)
+    }
+    fn load_snapshot(&self, id: Id) -> Result<Option<Document>> {
         let metadata: Option<String> = self
             .connection
             .query_row(
@@ -342,6 +378,11 @@ impl Store {
         }
         let note = delta.metadata.id.to_string();
         tx.execute("INSERT INTO notes VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata",params![note,serde_json::to_string(&delta.metadata)?])?;
+        let page_ids = delta
+            .page_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
         // Header order is authoritative, and page deletion cascades its object rows.
         let current = {
             let mut q = tx.prepare("SELECT id FROM pages WHERE note_id=?1")?;
@@ -349,7 +390,7 @@ impl Store {
                 .collect::<std::result::Result<Vec<_>, _>>()?
         };
         for old in current {
-            if !delta.page_ids.iter().any(|id| id.to_string() == old) {
+            if !Id::parse_str(&old).is_ok_and(|id| page_ids.contains(&id)) {
                 tx.execute("DELETE FROM search WHERE page_id=?1", [&old])?;
                 tx.execute("DELETE FROM pages WHERE id=?1", [old])?;
             }
@@ -358,7 +399,7 @@ impl Store {
             tx.execute("INSERT INTO pages VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET position=excluded.position,header=excluded.header",params![p.id.to_string(),note,p.position as i64,serde_json::to_string(p)?])?;
         }
         for o in &delta.objects {
-            if !delta.page_ids.contains(&o.page) {
+            if !page_ids.contains(&o.page) {
                 continue;
             }
             tx.execute("DELETE FROM drafts WHERE id=?1", [o.id.to_string()])?;
@@ -787,6 +828,70 @@ mod tests {
     fn path() -> PathBuf {
         std::env::temp_dir().join(format!("folio-storage-test-{}.db", Id::new_v4()))
     }
+    #[test]
+    fn reader_works_during_a_write_and_never_creates_or_modifies_a_database() {
+        let path = path();
+        assert!(Store::open_reader(&path).is_err());
+        assert!(!path.exists());
+        let mut writer = Store::open(&path).unwrap();
+        let document = Document::new("Before commit");
+        writer.save(&Delta::full(&document)).unwrap();
+        let transaction = writer.connection.unchecked_transaction().unwrap();
+        transaction
+            .execute("UPDATE notes SET metadata='not committed'", [])
+            .unwrap();
+        let reader = Store::open_reader(&path).unwrap();
+        assert_eq!(
+            reader.load(document.metadata.id).unwrap().unwrap(),
+            document
+        );
+        assert!(reader.connection.execute("DELETE FROM notes", []).is_err());
+        transaction.rollback().unwrap();
+        drop(reader);
+        drop(writer);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_transaction_keeps_document_and_history_on_one_snapshot() {
+        let path = path();
+        let mut writer = Store::open(&path).unwrap();
+        let mut document = Document::new("Before");
+        writer.save(&Delta::full(&document)).unwrap();
+        let reader = Store::open_reader(&path).unwrap();
+        // A concurrent commit between the first document query and history
+        // query must remain invisible until the reader ends its transaction.
+        let transaction = reader.connection.unchecked_transaction().unwrap();
+        assert_eq!(
+            reader.load_snapshot(document.metadata.id).unwrap().unwrap(),
+            document
+        );
+        let before = document.metadata.clone();
+        let mut after = before.clone();
+        after.title = "After".into();
+        let command = Command {
+            label: "Rename".into(),
+            changes: vec![Change::Metadata { before, after }],
+        };
+        let mut history = History::default();
+        history.execute(command.clone(), &mut document);
+        let mut delta = Delta::command(&document, &command);
+        delta.journal.push(JournalEvent::Execute(command));
+        writer.save(&delta).unwrap();
+        assert!(!reader.history(document.metadata.id).unwrap().can_undo());
+        transaction.commit().unwrap();
+        let (loaded, history) = reader
+            .load_with_history(document.metadata.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, document);
+        assert!(history.can_undo());
+        assert!(reader.load_with_history(Id::new_v4()).unwrap().is_none());
+        drop(reader);
+        drop(writer);
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn version_two_search_migration_preserves_documents_and_undo() {
         let path = path();

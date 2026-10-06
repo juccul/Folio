@@ -153,24 +153,36 @@ impl Transform {
             .compose(Self::translate(-center.x, -center.y))
     }
     pub fn inverse(self) -> Option<Self> {
-        let det = self.a * self.d - self.b * self.c;
+        if ![self.a, self.b, self.c, self.d, self.tx, self.ty]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            return None;
+        }
+        let det = self.a as f64 * self.d as f64 - self.b as f64 * self.c as f64;
         if det.abs() < 1e-6 {
             return None;
         }
         let r = Self {
-            a: self.d / det,
-            b: -self.b / det,
-            c: -self.c / det,
-            d: self.a / det,
+            a: (self.d as f64 / det) as f32,
+            b: (-self.b as f64 / det) as f32,
+            c: (-self.c as f64 / det) as f32,
+            d: (self.a as f64 / det) as f32,
             tx: 0.,
             ty: 0.,
         };
         let p = r.apply(Point::new(-self.tx, -self.ty));
-        Some(Self {
+        let inverse = Self {
             tx: p.x,
             ty: p.y,
             ..r
-        })
+        };
+        [
+            inverse.a, inverse.b, inverse.c, inverse.d, inverse.tx, inverse.ty,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(inverse)
     }
     pub fn scale(self) -> f32 {
         (self.a * self.d - self.b * self.c).abs().sqrt()
@@ -218,6 +230,18 @@ pub struct PenStyle {
     pub opacity: f32,
     pub stabilization: f32,
     pub pressure_gamma: f32,
+}
+impl PenStyle {
+    pub fn valid(&self) -> bool {
+        self.width.is_finite()
+            && self.width > 0.
+            && self.opacity.is_finite()
+            && (0.0..=1.0).contains(&self.opacity)
+            && self.stabilization.is_finite()
+            && (0.0..=1.0).contains(&self.stabilization)
+            && self.pressure_gamma.is_finite()
+            && self.pressure_gamma > 0.
+    }
 }
 impl Default for PenStyle {
     fn default() -> Self {
@@ -285,6 +309,14 @@ pub struct InkStroke {
     pub refinement_enabled: bool,
 }
 impl InkStroke {
+    pub fn bounds(&self) -> Rect {
+        let mut radius = 0.0_f32;
+        let bounds = Rect::from_points(self.display_path().iter().map(|point| {
+            radius = radius.max(point.radius);
+            self.transform.apply(point.position)
+        }));
+        expand_brush_bounds(bounds, radius, self.transform)
+    }
     pub fn display_path(&self) -> &[PathPoint] {
         if self.refinement_enabled {
             self.refined_path
@@ -426,12 +458,8 @@ impl Object {
     pub fn bounds(&self) -> Rect {
         let t = self.transform();
         match self {
-            Self::Stroke(s) => Rect::from_points(
-                s.display_path().iter().map(|p| t.apply(p.position)),
-            )
-            .expand(s.display_path().iter().map(|p| p.radius).fold(0., f32::max) * t.scale()),
-            Self::Shape(s) => Rect::from_points(s.vertices.iter().copied().map(|p| t.apply(p)))
-                .expand(s.style.width * t.scale()),
+            Self::Stroke(s) => s.bounds(),
+            Self::Shape(s) => brush_bounds(s.vertices.iter().copied(), s.style.width, t),
             Self::Text(o) => transformed_rect(o.rect, t),
             Self::Image(o) => transformed_rect(o.rect, t),
             Self::Equation(o) => transformed_rect(o.rect, t),
@@ -450,6 +478,24 @@ impl Object {
             Self::Equation(e) => &e.latex,
             _ => "",
         }
+    }
+}
+fn brush_bounds(
+    points: impl IntoIterator<Item = Point>,
+    radius: f32,
+    transform: Transform,
+) -> Rect {
+    let bounds = Rect::from_points(points.into_iter().map(|point| transform.apply(point)));
+    expand_brush_bounds(bounds, radius, transform)
+}
+fn expand_brush_bounds(bounds: Rect, radius: f32, transform: Transform) -> Rect {
+    // A circular brush becomes an ellipse under nonuniform scaling/shearing.
+    // The row norms give its extents along each axis; determinant scale does not.
+    let x = radius * transform.a.hypot(transform.c);
+    let y = radius * transform.b.hypot(transform.d);
+    Rect {
+        min: Point::new(bounds.min.x - x, bounds.min.y - y),
+        max: Point::new(bounds.max.x + x, bounds.max.y + y),
     }
 }
 fn transformed_rect(r: Rect, t: Transform) -> Rect {
@@ -636,8 +682,69 @@ impl Document {
                 let Some(o) = page.objects.get(id) else {
                     return Err("Missing object".into());
                 };
+                if !ids.insert(*id) {
+                    return Err("Duplicate object ID across pages".into());
+                }
                 if *id != o.id() {
                     return Err("Mismatched object ID".into());
+                }
+                let rect = match o.as_ref() {
+                    Object::Text(text) => {
+                        if !text.font_size.is_finite() || text.font_size <= 0. {
+                            return Err("Invalid text font size".into());
+                        }
+                        Some(text.rect)
+                    }
+                    Object::Image(image) => Some(image.rect),
+                    Object::Equation(equation) => Some(equation.rect),
+                    Object::Stroke(stroke) => {
+                        if !stroke.style.valid() {
+                            return Err("Invalid stroke style".into());
+                        }
+                        None
+                    }
+                    Object::Shape(shape) => {
+                        if !shape.style.valid()
+                            || shape.vertices.len() < 2
+                            || shape
+                                .vertices
+                                .iter()
+                                .any(|point| !point.x.is_finite() || !point.y.is_finite())
+                        {
+                            return Err("Invalid shape geometry or style".into());
+                        }
+                        None
+                    }
+                };
+                if rect.is_some_and(|rect| {
+                    ![
+                        rect.min.x,
+                        rect.min.y,
+                        rect.max.x,
+                        rect.max.y,
+                        rect.width(),
+                        rect.height(),
+                    ]
+                    .iter()
+                    .all(|value| value.is_finite())
+                        || rect.width() <= 0.
+                        || rect.height() <= 0.
+                }) {
+                    return Err("Invalid object rectangle".into());
+                }
+                let bounds = o.bounds();
+                if ![
+                    bounds.min.x,
+                    bounds.min.y,
+                    bounds.max.x,
+                    bounds.max.y,
+                    bounds.width(),
+                    bounds.height(),
+                ]
+                .iter()
+                .all(|value| value.is_finite())
+                {
+                    return Err("Object geometry overflows its transform".into());
                 }
                 if let Object::Equation(e) = o.as_ref()
                     && let Some(link) = &e.math_link
@@ -998,5 +1105,125 @@ mod tests {
         let mut d = Document::new("x");
         d.version += 1;
         assert!(d.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod edge_case_tests {
+    use super::*;
+    fn text() -> Arc<Object> {
+        Arc::new(Object::Text(TextBlock {
+            id: Id::new_v4(),
+            text: "Example".into(),
+            rect: Rect::new(0., 0., 100., 40.),
+            transform: Transform::default(),
+            font_family: "sans-serif".into(),
+            font_size: 20.,
+            color: Color::INK,
+            bold: false,
+            italic: false,
+            underline: false,
+            alignment: Alignment::Left,
+            list: ListStyle::None,
+        }))
+    }
+    #[test]
+    fn duplicate_object_ids_across_pages_are_rejected() {
+        let mut doc = Document::new("Collision");
+        doc.pages.push(Page::new());
+        let object = text();
+        for page in &mut doc.pages {
+            page.order.push(object.id());
+            page.objects.insert(object.id(), object.clone());
+        }
+        assert!(doc.validate().is_err());
+    }
+    #[test]
+    fn malformed_geometry_and_styles_are_rejected_before_rendering() {
+        for variant in 0..5 {
+            let mut doc = Document::new("Malformed");
+            let mut object = text().as_ref().clone();
+            if let Object::Text(text) = &mut object {
+                match variant {
+                    0 => text.font_size = f32::INFINITY,
+                    1 => text.font_size = 0.,
+                    2 => text.rect.max.x = f32::NAN,
+                    3 => text.rect.max.y = text.rect.min.y - 1.,
+                    _ => text.transform.a = f32::NAN,
+                }
+            }
+            let id = object.id();
+            doc.pages[0].order.push(id);
+            doc.pages[0].objects.insert(id, Arc::new(object));
+            assert!(
+                doc.validate().is_err(),
+                "Accepted malformed variant {variant}"
+            );
+        }
+        let mut doc = Document::new("Shape");
+        let shape = Object::Shape(Shape {
+            id: Id::new_v4(),
+            kind: ShapeKind::Line,
+            vertices: vec![Point::new(0., 0.), Point::new(f32::INFINITY, 10.)],
+            style: PenStyle::default(),
+            transform: Transform::default(),
+            source_strokes: vec![],
+        });
+        doc.pages[0].order.push(shape.id());
+        doc.pages[0].objects.insert(shape.id(), Arc::new(shape));
+        assert!(doc.validate().is_err());
+    }
+    #[test]
+    fn anisotropic_ink_bounds_contain_the_transformed_brush() {
+        let stroke = InkStroke {
+            id: Id::new_v4(),
+            raw: Arc::new(vec![StrokePoint::new(Point::new(0., 0.), 0.5, 0)]),
+            path: Arc::new(vec![PathPoint {
+                position: Point::new(0., 0.),
+                radius: 4.,
+            }]),
+            style: PenStyle::default(),
+            transform: Transform {
+                a: 10.,
+                d: 0.1,
+                c: 3.,
+                ..Default::default()
+            },
+            created_at: 0,
+            fragment_path: None,
+            refined_path: None,
+            refinement_enabled: false,
+        };
+        let object = Object::Stroke(stroke.clone());
+        let bounds = object.bounds();
+        for i in 0..360 {
+            let angle = (i as f32).to_radians();
+            let p = stroke
+                .transform
+                .apply(Point::new(4. * angle.cos(), 4. * angle.sin()));
+            assert!(
+                bounds.contains(p),
+                "Bounds {bounds:?} exclude transformed brush {p:?}"
+            );
+        }
+    }
+    #[test]
+    fn nonfinite_or_singular_transforms_have_no_inverse() {
+        for transform in [
+            Transform {
+                a: f32::NAN,
+                ..Default::default()
+            },
+            Transform {
+                tx: f32::INFINITY,
+                ..Default::default()
+            },
+            Transform {
+                a: 0.,
+                ..Default::default()
+            },
+        ] {
+            assert!(transform.inverse().is_none());
+        }
     }
 }

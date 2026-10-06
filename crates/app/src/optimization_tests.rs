@@ -153,3 +153,129 @@ fn repeated_note_load_requests_are_coalesced() {
     assert!(app.sessions.contains_key(&first));
     cleanup(app, root);
 }
+
+#[test]
+fn late_save_receipt_cannot_hide_new_unsaved_edits() {
+    let (mut app, root) = fixture();
+    app.add_text("Saved earlier".into(), Point::new(0., 0.));
+    app.persistence.flush().unwrap(); // Leave the successful receipt unpolled.
+    app.set_autosave(false);
+    app.add_text("Still unsaved".into(), Point::new(0., 200.));
+    assert!(app.status.contains("Unsaved"));
+    app.tick();
+    assert!(app.status.contains("Unsaved"), "{}", app.status);
+    cleanup(app, root);
+}
+
+#[test]
+fn export_snapshot_keeps_note_page_and_content_after_navigation() {
+    let (mut app, root) = fixture();
+    app.add_text("Original export".into(), Point::new(0., 0.));
+    let snapshot = app.prepare_export();
+    app.add_page();
+    app.add_text("Different page".into(), Point::new(0., 0.));
+    app.create_note();
+    app.add_text("Different document".into(), Point::new(0., 0.));
+    let path = root.join("snapshot.txt");
+    app.export_prepared(snapshot, path.clone(), ExportKind::Text);
+    let start = Instant::now();
+    while app.has_background_work() {
+        app.tick();
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "Original export");
+    cleanup(app, root);
+}
+
+#[test]
+fn linked_math_index_tracks_edits_undo_redo_and_page_changes() {
+    let (mut app, root) = fixture();
+    app.add_text("Ordinary text".into(), Point::new(0., 0.));
+    assert!(app.session().linked_math.is_empty());
+    let equation = Object::Equation(Equation {
+        id: Id::new_v4(),
+        latex: "a=5".into(),
+        rendered_svg: None,
+        rect: Rect::new(0., 0., 180., 64.),
+        source_strokes: vec![],
+        transform: Transform::default(),
+        math_link: Some(MathLink {
+            expression: "a:=5".into(),
+            operation: "assign".into(),
+            variable: "x".into(),
+            domain: "real".into(),
+            angle: "radians".into(),
+            method: String::new(),
+            x_min: -10.,
+            x_max: 10.,
+            live: false,
+            sources: vec![],
+            ink_region: None,
+        }),
+    });
+    let id = equation.id();
+    app.commit(
+        "Definition",
+        vec![Change::Object {
+            page: app.page().id,
+            id,
+            before: None,
+            after: Some(Arc::new(equation)),
+            index: app.page().order.len(),
+        }],
+    );
+    assert_eq!(app.session().linked_math, HashSet::from([id]));
+    assert_eq!(app.math_variables().unwrap()["a"], "5");
+    app.undo();
+    assert!(app.session().linked_math.is_empty());
+    assert!(app.math_variables().unwrap().is_empty());
+    app.redo();
+    app.add_page();
+    assert!(app.session().linked_math.is_empty());
+    app.change_page(0);
+    assert_eq!(app.session().linked_math, HashSet::from([id]));
+    app.session_mut().selection = HashSet::from([id]);
+    app.delete_selection();
+    assert!(app.session().linked_math.is_empty());
+    app.undo();
+    assert_eq!(app.session().linked_math, HashSet::from([id]));
+    cleanup(app, root);
+}
+
+#[test]
+fn a_failed_close_flush_is_tracked_and_retried() {
+    let (mut app, root) = fixture();
+    app.add_text("Durable".into(), Point::new(0., 0.));
+    app.flush().unwrap();
+    app.tick();
+    let injector = Store::open(&app.database).unwrap();
+    injector.connection.execute_batch("CREATE TRIGGER reject_note_write BEFORE UPDATE ON notes BEGIN SELECT RAISE(FAIL,'simulated storage failure'); END;").unwrap();
+    assert!(app.flush().is_err());
+    app.tick();
+    assert!(
+        app.dirty_notes.contains(&app.active),
+        "Failed full flush did not schedule recovery"
+    );
+    injector
+        .connection
+        .execute_batch("DROP TRIGGER reject_note_write;")
+        .unwrap();
+    drop(injector);
+    app.last_retry = Instant::now() - Duration::from_secs(3);
+    let start = Instant::now();
+    while !app.dirty_notes.is_empty() || app.saved < app.queued {
+        app.tick();
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(
+        Store::open_reader(&app.database)
+            .unwrap()
+            .load(app.active)
+            .unwrap()
+            .unwrap(),
+        app.session().document
+    );
+    cleanup(app, root);
+}

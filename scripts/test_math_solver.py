@@ -11,6 +11,26 @@ def solve(expression,operation='auto',**options):
     return solver.solve(dict(expression=expression,operation=operation,**options))
 
 class SolverTests(unittest.TestCase):
+    def test_reserved_constants_cannot_be_differentiation_variables(self):
+        for variable in ('pi', 'e', 'i', 'oo'):
+            with self.subTest(variable=variable), self.assertRaisesRegex(ValueError, 'variable'):
+                solve('x^2', operation='differentiate', variable=variable)
+
+    def test_real_definite_integrals_retain_original_domain(self):
+        for expression in (r'\int_{-1}^{1} sqrt(x) dx', r'\int_{-1}^{1} ln(x) dx'):
+            with self.subTest(expression=expression), self.assertRaisesRegex(ValueError, 'domain'):
+                solve(expression)
+        # An isolated pole is permitted if the improper integral converges.
+        self.assertEqual(solve(r'\int_{0}^{1} ln(x) dx')['answer'], '-1')
+        self.assertEqual(solve(r'\int_{-1}^{1} x/x dx')['answer'], '2')
+        self.assertIn('I', solve(r'\int_{-1}^{1} sqrt(x) dx', domain='complex')['answer'])
+        with self.assertRaisesRegex(ValueError, 'finite'):
+            solve(r'\int_{-1}^{1} 1/x dx')
+
+    def test_next_step_checks_infer_the_single_unknown(self):
+        self.assertEqual(solve('2y+3=11', operation='check', next_line='2y=8')['status'], 'verified')
+        self.assertEqual(solve('2y+3=11', operation='check', next_line='y=5')['status'], 'incorrect')
+
     def test_spaced_digits_require_review_instead_of_silent_multiplication(self):
         with self.assertRaisesRegex(ValueError,'Adjacent numbers'):
             solve('2 x+3=1 1')

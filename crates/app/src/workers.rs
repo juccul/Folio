@@ -314,18 +314,18 @@ fn process(job: Job) -> Result<Finished, String> {
                 database,
                 generation,
             } => {
-                let store = folio_storage::Store::open(database)?;
+                let store = folio_storage::Store::open_reader(database)?;
                 Finished::Search {
                     generation,
                     results: folio_search::search(&store.connection, &query)?,
                 }
             }
             Job::Load { id, database } => {
-                let store = folio_storage::Store::open(database)?;
-                Finished::Loaded(
-                    store.load(id)?.ok_or("Note no longer exists")?,
-                    store.history(id)?,
-                )
+                let store = folio_storage::Store::open_reader(database)?;
+                let (document, history) = store
+                    .load_with_history(id)?
+                    .ok_or("Note no longer exists")?;
+                Finished::Loaded(document, history)
             }
             Job::Export {
                 doc,

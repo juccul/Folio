@@ -146,6 +146,8 @@ pub struct NotesView {
     list_view: bool,
     sort_by_name: bool,
     open_tabs: Vec<Id>,
+    tab_scroll: ScrollHandle,
+    tab_target: Option<(Id, usize, Pixels, f32)>,
     document_menu: Option<(Id, Point<Pixels>)>,
     document_menu_folders: bool,
     thumbnails: workspace::Thumbnails,
@@ -216,6 +218,8 @@ impl NotesView {
             list_view: false,
             sort_by_name: false,
             open_tabs: vec![],
+            tab_scroll: ScrollHandle::new(),
+            tab_target: None,
             document_menu: None,
             document_menu_folders: false,
             thumbnails: workspace::Thumbnails::default(),
@@ -768,11 +772,12 @@ impl NotesView {
             .title
             .replace(['/', '\\'], "-");
         let suggested = format!("{title}.{ext}");
+        let snapshot = self.controller.prepare_export();
         let path = cx.prompt_for_new_path(&self.controller.data_dir, Some(&suggested));
         cx.spawn(async move |view, cx| match path.await {
             Ok(Ok(Some(path))) => {
                 let _ = view.update(cx, |view, cx| {
-                    view.controller.export(path, kind);
+                    view.controller.export_prepared(snapshot, path, kind);
                     cx.notify();
                 });
             }

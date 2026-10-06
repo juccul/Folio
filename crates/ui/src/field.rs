@@ -33,6 +33,7 @@ pub struct Field {
     pub secret: bool,
     pub theme: super::Theme,
     selection: Range<usize>,
+    selection_anchor: usize,
     marked: Option<Range<usize>>,
     layouts: Vec<(usize, ShapedLine)>,
     pub(super) bounds: Option<Bounds<Pixels>>,
@@ -49,6 +50,7 @@ impl Field {
             secret: false,
             theme: super::Theme::new(&folio_app::Settings::default()),
             selection: end..end,
+            selection_anchor: end,
             marked: None,
             layouts: vec![],
             bounds: None,
@@ -58,7 +60,7 @@ impl Field {
     pub fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
         self.content = content;
         let end = self.content.len();
-        self.selection = end..end;
+        self.select(end, end);
         self.marked = None;
         cx.notify();
     }
@@ -79,6 +81,23 @@ impl Field {
             KeyBinding::new("enter", Enter, Some("FolioField")),
             KeyBinding::new("ctrl-enter", Submit, Some("FolioField")),
         ]);
+    }
+    fn select(&mut self, anchor: usize, head: usize) {
+        select_range(
+            &mut self.selection,
+            &mut self.selection_anchor,
+            anchor,
+            head,
+        );
+    }
+    fn move_cursor(&mut self, forward: bool, extend: bool) {
+        move_selection(
+            &self.content,
+            &mut self.selection,
+            &mut self.selection_anchor,
+            forward,
+            extend,
+        );
     }
     fn previous(&self) -> usize {
         self.content[..self.selection.start]
@@ -110,7 +129,9 @@ impl Field {
             .count()
     }
     fn range(&self, r: Range<usize>) -> Range<usize> {
-        self.utf8(r.start)..self.utf8(r.end)
+        let start = self.utf8(r.start);
+        let end = self.utf8(r.end);
+        start.min(end)..start.max(end)
     }
     fn index_at(&self, p: Point<Pixels>) -> usize {
         let Some(bounds) = self.bounds else {
@@ -142,7 +163,7 @@ impl Field {
         };
         self.content.replace_range(r.clone(), &text);
         let end = r.start + text.len();
-        self.selection = end..end;
+        self.select(end, end);
         self.marked = None;
         cx.notify();
     }
@@ -172,7 +193,7 @@ impl EntityInputHandler for Field {
     ) -> Option<UTF16Selection> {
         Some(UTF16Selection {
             range: self.utf16(self.selection.start)..self.utf16(self.selection.end),
-            reversed: false,
+            reversed: self.selection_anchor != self.selection.start,
         })
     }
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
@@ -224,7 +245,7 @@ impl EntityInputHandler for Field {
                     .map(|(i, _)| i)
                     .unwrap_or(text.len())
             };
-            self.selection = start + byte(sel.start)..start + byte(sel.end);
+            self.select(start + byte(sel.start), start + byte(sel.end));
         }
         cx.notify();
     }
@@ -434,7 +455,7 @@ impl Render for Field {
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     this.focus.focus(window);
                     let i = this.index_at(event.position);
-                    this.selection = i..i;
+                    this.select(i, i);
                     this.selecting = true;
                     cx.notify();
                 }),
@@ -446,8 +467,7 @@ impl Render for Field {
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 if this.selecting {
                     let i = this.index_at(event.position);
-                    this.selection.end = i;
-                    self_sort(&mut this.selection);
+                    this.select(this.selection_anchor, i);
                     cx.notify();
                 }
             }))
@@ -468,42 +488,31 @@ impl Render for Field {
                 this.replace(r, "", cx)
             }))
             .on_action(cx.listener(|this, _: &Left, _, cx| {
-                let i = if this.selection.is_empty() {
-                    this.previous()
-                } else {
-                    this.selection.start
-                };
-                this.selection = i..i;
+                this.move_cursor(false, false);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Right, _, cx| {
-                let i = if this.selection.is_empty() {
-                    this.next()
-                } else {
-                    this.selection.end
-                };
-                this.selection = i..i;
+                this.move_cursor(true, false);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Home, _, cx| {
-                this.selection = 0..0;
+                this.select(0, 0);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &End, _, cx| {
-                let n = this.content.len();
-                this.selection = n..n;
+                this.select(this.content.len(), this.content.len());
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &SelectLeft, _, cx| {
-                this.selection.start = this.previous();
+                this.move_cursor(false, true);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &SelectRight, _, cx| {
-                this.selection.end = this.next();
+                this.move_cursor(true, true);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| {
-                this.selection = 0..this.content.len();
+                this.select(0, this.content.len());
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Copy, _, cx| {
@@ -549,8 +558,81 @@ impl Render for Field {
             })
     }
 }
-fn self_sort(r: &mut Range<usize>) {
-    if r.start > r.end {
-        std::mem::swap(&mut r.start, &mut r.end)
+fn select_range(range: &mut Range<usize>, anchor: &mut usize, start: usize, head: usize) {
+    *anchor = start;
+    *range = start.min(head)..start.max(head);
+}
+fn move_selection(
+    content: &str,
+    range: &mut Range<usize>,
+    anchor: &mut usize,
+    forward: bool,
+    extend: bool,
+) {
+    let head = if range.start == *anchor {
+        range.end
+    } else {
+        range.start
+    };
+    let next = if !extend && range.start != range.end {
+        if forward { range.end } else { range.start }
+    } else if forward {
+        content[head..]
+            .graphemes(true)
+            .next()
+            .map_or(content.len(), |grapheme| head + grapheme.len())
+    } else {
+        content[..head]
+            .grapheme_indices(true)
+            .next_back()
+            .map_or(0, |(index, _)| index)
+    };
+    select_range(range, anchor, if extend { *anchor } else { next }, next);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{move_selection, select_range};
+    #[::core::prelude::v1::test]
+    fn reversing_shift_selection_shrinks_then_crosses_its_anchor() {
+        let text = "abcdef";
+        let (mut range, mut anchor) = (3..3, 3);
+        for _ in 0..2 {
+            move_selection(text, &mut range, &mut anchor, false, true);
+        }
+        assert_eq!(range, 1..3);
+        move_selection(text, &mut range, &mut anchor, true, true);
+        assert_eq!(range, 2..3);
+        for _ in 0..2 {
+            move_selection(text, &mut range, &mut anchor, true, true);
+        }
+        assert_eq!(range, 3..4);
+        assert_eq!(anchor, 3);
+        move_selection(text, &mut range, &mut anchor, false, false);
+        assert_eq!(range, 3..3);
+        move_selection(text, &mut range, &mut anchor, true, false);
+        assert_eq!(range, 4..4);
+    }
+    #[::core::prelude::v1::test]
+    fn mouse_selection_keeps_anchor_when_dragging_backwards_and_crossing() {
+        let (mut range, mut anchor) = (4..4, 4);
+        for (head, expected) in [(2, 2..4), (1, 1..4), (3, 3..4), (5, 4..5)] {
+            select_range(&mut range, &mut anchor, 4, head);
+            assert_eq!(range, expected);
+            assert_eq!(anchor, 4);
+        }
+    }
+    #[::core::prelude::v1::test]
+    fn cursor_moves_by_grapheme_without_splitting_emoji_or_combining_marks() {
+        let text = "a👩‍💻e\u{301}";
+        let (mut range, mut anchor) = (text.len()..text.len(), text.len());
+        move_selection(text, &mut range, &mut anchor, false, true);
+        assert_eq!(&text[range.clone()], "e\u{301}");
+        move_selection(text, &mut range, &mut anchor, false, true);
+        assert_eq!(&text[range.clone()], "👩‍💻e\u{301}");
+        move_selection(text, &mut range, &mut anchor, true, true);
+        assert_eq!(&text[range.clone()], "e\u{301}");
+        move_selection(text, &mut range, &mut anchor, true, true);
+        assert!(range.is_empty());
     }
 }

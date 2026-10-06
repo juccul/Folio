@@ -2,13 +2,17 @@
 
 Updated 2026-10-05. Folio is a runnable Rust/GPUI Linux desktop application. Production certification still requires physical tablets and additional desktop/distribution sessions; synthetic events and CPU benchmarks do not establish hardware-to-display latency.
 
+## Optimization and edge-case audit
+
+The 2026-10-05 audit fixes reader/write contention and inconsistent loads, export-dialog targets, save acknowledgements and failed-flush recovery, selection reversal, tab overflow, malformed geometry/preferences and definite-integral domains. It adds indexed linked-math bookkeeping and faster database reader setup. See [OPTIMIZATION_AND_BUGFIX_REPORT.md](OPTIMIZATION_AND_BUGFIX_REPORT.md) for reproduced failures, CPU measurements, coverage and limits. Validation is under `artifacts/validation/optimization-pass`.
+
 ## Application title bar
 
 Folio requests client decorations and uses the document tab strip as its title bar. The + picker follows the last tab; tabs scroll when space runs out, while the picker stays visible and minimize, maximize/restore and close stay at the far right. Empty-space presses start compositor-driven movement; double-click toggles maximize and right-click opens the native window menu. Tabs consume their own presses and retain drag reordering. Edge/corner hitboxes resize floating windows and are omitted on maximized/fullscreen or tiled edges. The library shows the same title bar without changing the open-tab list. Dialogs occupy the area below it, and window controls remain accessible during overlays and document loading. Close explicitly flushes pending note changes and reports failure instead of removing the window.
 
 The vendored X11 backend now allows opaque client frames without a compositor or GTK frame-extents support; transparent frames retain the existing server-decoration fallback. Verification is recorded under `artifacts/validation/titlebar`, including private Mutter/Xwayland window movement, tab reordering, controls and resize, native Wayland controls, and existing pen/navigation and solver regressions. No physical desktop or tablet is controlled by these tests.
 
-The final release passes 90 focused Rust tests, strict all-targets Clippy and formatting, 13 Mutter/Xwayland title-bar checks, seven native Wayland checks, 33 solver/graph/editor regressions, and the native pen/navigation/tab-reordering smoke replay.
+The earlier title-bar release passed 90 focused Rust tests, strict all-targets Clippy and formatting, 13 Mutter/Xwayland title-bar checks, seven native Wayland checks, 33 solver/graph/editor regressions, and the native pen/navigation/tab-reordering smoke replay. The current audit and expanded validation are recorded above.
 
 ## Offline solving and live math — current implementation
 

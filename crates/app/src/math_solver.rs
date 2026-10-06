@@ -675,7 +675,12 @@ impl Controller {
     }
     pub fn math_variables(&self) -> Result<BTreeMap<String, String>, String> {
         let mut variables = BTreeMap::new();
-        for object in self.page().ordered_objects() {
+        for object in self
+            .session()
+            .linked_math
+            .iter()
+            .filter_map(|id| self.page().objects.get(id))
+        {
             if let Object::Equation(e) = object.as_ref()
                 && let Some(link) = &e.math_link
                 && link.operation == "assign"
@@ -1173,36 +1178,34 @@ impl Controller {
                     return changed;
                 }
             };
-            let mut candidates: Vec<_> = self
-                .page()
-                .ordered_objects()
-                .filter_map(|o| {
-                    if let Object::Equation(e) = o.as_ref()
-                        && let Some(link) = &e.math_link
-                        && link.live
-                    {
-                        Some((o.clone(), link.clone()))
-                    } else {
-                        None
-                    }
+            let mut ids: Vec<_> = self
+                .session()
+                .linked_math
+                .iter()
+                .copied()
+                .filter(|id| {
+                    self.page().objects.get(id).is_some_and(|object| {
+                        matches!(object.as_ref(), Object::Equation(equation)
+                        if equation.math_link.as_ref().is_some_and(|link| link.live))
+                    })
                 })
+                .collect();
+            ids.sort_unstable_by_key(|id| self.session().order_positions[id]);
+            if self.math_scan_cursor >= ids.len() {
+                self.math_scan_cursor = 0;
+            }
+            let candidates = ids
+                .into_iter()
                 .skip(self.math_scan_cursor)
                 .take(32)
-                .collect();
-            if candidates.is_empty() {
-                self.math_scan_cursor = 0;
-                candidates = self
-                    .page()
-                    .ordered_objects()
-                    .filter_map(|o| match o.as_ref() {
-                        Object::Equation(e) if e.math_link.as_ref().is_some_and(|l| l.live) => {
-                            Some((o.clone(), e.math_link.clone().unwrap()))
-                        }
-                        _ => None,
-                    })
-                    .take(32)
-                    .collect();
-            }
+                .filter_map(|id| self.page().objects.get(&id))
+                .filter_map(|object| match object.as_ref() {
+                    Object::Equation(equation) => {
+                        Some((object.clone(), equation.math_link.clone()?))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
             self.math_scan_cursor += candidates.len();
             for (before, mut link) in candidates {
                 if self.math_live_pending.contains(&before.id()) {
