@@ -518,6 +518,8 @@ pub enum Paper {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PageProperties {
+    #[serde(default)]
+    pub bookmark: Option<String>,
     pub width: f32,
     pub height: f32,
     pub paper: Paper,
@@ -527,6 +529,7 @@ pub struct PageProperties {
 impl Default for PageProperties {
     fn default() -> Self {
         Self {
+            bookmark: None,
             width: 794.,
             height: 1123.,
             paper: Paper::Ruled,
@@ -583,6 +586,46 @@ impl Page {
             groups: Vec::new(),
             revision: 0,
         }
+    }
+    /// Clone editable content with fresh identities and remap page-local dependencies.
+    pub fn duplicate(&self) -> Self {
+        let mut page = self.clone();
+        page.id = Id::new_v4();
+        page.revision = 0;
+        let ids: BTreeMap<_, _> = self.order.iter().map(|id| (*id, Id::new_v4())).collect();
+        page.objects = self
+            .objects
+            .values()
+            .map(|object| {
+                let mut object = object.as_ref().clone();
+                object.set_id(ids[&object.id()]);
+                match &mut object {
+                    Object::Shape(shape) => {
+                        shape.source_strokes.retain(|id| ids.contains_key(id));
+                        for id in &mut shape.source_strokes {
+                            *id = ids[id];
+                        }
+                    }
+                    Object::Equation(equation) => {
+                        equation.source_strokes.retain(|id| ids.contains_key(id));
+                        for id in &mut equation.source_strokes {
+                            *id = ids[id];
+                        }
+                        if let Some(link) = &mut equation.math_link {
+                            link.sources.retain(|id| ids.contains_key(id));
+                            for id in &mut link.sources {
+                                *id = ids[id];
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                (object.id(), Arc::new(object))
+            })
+            .collect();
+        page.order = self.order.iter().map(|id| ids[id]).collect();
+        page.groups.clear();
+        page
     }
     pub fn ordered_objects(&self) -> impl Iterator<Item = &Arc<Object>> {
         self.order.iter().filter_map(|id| self.objects.get(id))

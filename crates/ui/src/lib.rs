@@ -65,6 +65,8 @@ actions!(
 );
 #[derive(Clone)]
 enum Modal {
+    PageBookmark,
+    MovePage,
     Recognition,
     Rename,
     RenameDocument(Id),
@@ -98,6 +100,8 @@ enum Modal {
 impl Modal {
     fn title(&self) -> &'static str {
         match self {
+            Self::PageBookmark => "Name bookmark (empty removes it)",
+            Self::MovePage => "Move page to notebook",
             Self::Recognition => "Review recognized writing",
             Self::Rename | Self::RenameDocument(_) => "Rename note",
             Self::DocumentTags(_) => "Note tags",
@@ -328,6 +332,13 @@ impl NotesView {
         self.more_open = false;
         self.pen_settings = false;
         let content = match &modal {
+            Modal::PageBookmark => self
+                .controller
+                .page()
+                .properties
+                .bookmark
+                .clone()
+                .unwrap_or_default(),
             Modal::Recognition => self
                 .controller
                 .recognition_review
@@ -450,6 +461,8 @@ impl NotesView {
                     return;
                 }
             }
+            Modal::PageBookmark => self.controller.bookmark_page(content),
+            Modal::MovePage => {}
             Modal::Recognition => {
                 if let Err(error) = self.controller.replace_recognized_writing(content) {
                     self.modal_error = Some(error);
@@ -1539,6 +1552,9 @@ impl NotesView {
                     4,
                 ),
                 ("delete-page", "Delete current page", 5),
+                ("duplicate-page", "Duplicate current page", 16),
+                ("bookmark-page", "Name page bookmark…", 17),
+                ("move-page", "Move page to notebook…", 18),
                 ("page-size", "Custom page size", 6),
                 ("infinite", "Toggle infinite canvas", 7),
                 ("insert-space", "Insert 80 units below selection", 8),
@@ -1559,6 +1575,9 @@ impl NotesView {
                             3 => this.import(cx),
                             4 => this.controller.metadata(|m| m.trashed = !m.trashed),
                             5 => this.controller.delete_page(),
+                            16 => this.controller.duplicate_page(),
+                            17 => this.modal(Modal::PageBookmark, window, cx),
+                            18 => this.modal(Modal::MovePage, window, cx),
                             6 => this.modal(Modal::PageSize, window, cx),
                             7 => {
                                 let p = this.controller.page().properties.clone();
@@ -2017,7 +2036,61 @@ impl NotesView {
                     _ => "Left, top, width and height as fractions from 0 to 1.",
                 }))
             })
-            .child(field);
+            .when(!matches!(modal, Modal::MovePage), |panel| panel.child(field));
+        if matches!(modal, Modal::MovePage) {
+            let mut destinations = div()
+                .id("move-page-destinations")
+                .max_h(px(300.))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap_2();
+            for note in self
+                .controller
+                .notes
+                .clone()
+                .into_iter()
+                .filter(|n| !n.trashed && n.id != self.controller.active)
+            {
+                let id = note.id;
+                destinations = destinations.child(
+                    self.button(
+                        format!("move-page-{id}"),
+                        note.title,
+                        false,
+                        cx,
+                        move |this, w, cx| {
+                            this.controller.move_page_to(id);
+                            this.close_modal(w, cx);
+                        },
+                    )
+                    .justify_start(),
+                );
+            }
+            panel = panel.child(div().text_sm().child("The destination is saved before removing the source. Undo in the source restores a copy.")).child(destinations);
+            if !self
+                .controller
+                .notes
+                .iter()
+                .any(|n| !n.trashed && n.id != self.controller.active)
+            {
+                panel = panel.child("Create another notebook to move pages into it.");
+            }
+            panel = panel.child(
+                self.button("cancel-modal", "Cancel", false, cx, |this, w, cx| {
+                    this.cancel_modal(w, cx)
+                }),
+            );
+            return div()
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00000070))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(panel);
+        }
         if matches!(modal, Modal::Recognition) {
             let math = self
                 .controller
