@@ -13,6 +13,7 @@ mod math_panel;
 mod motion;
 mod navigation;
 mod painting;
+mod portable;
 mod region;
 mod theme;
 mod titlebar;
@@ -739,7 +740,7 @@ impl NotesView {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Import PDF or image".into()),
+            prompt: Some("Import PDF, image or editable Folio notebook".into()),
         });
         cx.spawn(async move |view, cx| match paths.await {
             Ok(Ok(Some(paths))) => {
@@ -775,6 +776,7 @@ impl NotesView {
     fn export(&mut self, kind: ExportKind, cx: &mut Context<Self>) {
         self.export_open = false;
         let ext = match kind {
+            ExportKind::Notebook => "folio",
             ExportKind::Svg => "svg",
             ExportKind::Png => "png",
             ExportKind::Pdf => "pdf",
@@ -1110,6 +1112,7 @@ impl NotesView {
                 || self.building_overlay
                 || window_control)
             && match id.as_ref() {
+                "open-restored-library" => !self.controller.has_background_work(),
                 "undo" => self.controller.session().history.can_undo(),
                 "redo" => self.controller.session().history.can_redo(),
                 "math-apply-latex" => {
@@ -1547,6 +1550,11 @@ impl NotesView {
             );
             for (id, label, kind) in [
                 ("export-pdf", "PDF · all pages", ExportKind::Pdf),
+                (
+                    "export-notebook",
+                    "Editable notebook · with assets",
+                    ExportKind::Notebook,
+                ),
                 ("export-svg", "SVG · current page", ExportKind::Svg),
                 ("export-png", "PNG · current page", ExportKind::Png),
                 (
@@ -1831,6 +1839,25 @@ impl NotesView {
             .min_h_0()
             .overflow_y_scroll()
             .child(self.appearance_panel(cx));
+        body = body.child(div().mt_3().text_sm().font_weight(FontWeight::SEMIBOLD).child("Backup and restore"))
+            .child(self.button("backup-library", "Back up library…", false, cx, |this, _, cx| this.backup_dialog(cx)).justify_start())
+            .child(self.button("restore-library", "Restore backup to a new library…", false, cx, |this, _, cx| this.restore_dialog(cx)).justify_start())
+            .child(div().text_xs().text_color(rgb(theme.muted)).child("Includes notebooks, assets, folders, preferences and undo history. Downloadable OCR/math runtimes are excluded."));
+        if let Some(path) = &self.controller.restored_library {
+            body = body
+                .child(
+                    div()
+                        .text_xs()
+                        .child(format!("Restored: {}", path.display())),
+                )
+                .child(self.button(
+                    "open-restored-library",
+                    "Open restored library",
+                    true,
+                    cx,
+                    |this, w, cx| this.open_restored_library(w, cx),
+                ));
+        }
         for (id, label, enabled, kind) in [
             (
                 "segment-eraser",

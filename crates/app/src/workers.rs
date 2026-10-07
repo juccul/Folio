@@ -10,12 +10,26 @@ use std::{
 };
 #[derive(Clone, Copy, Debug)]
 pub enum ExportKind {
+    Notebook,
     Svg,
     Png,
     Pdf,
     Text,
 }
 pub enum Job {
+    Backup {
+        root: PathBuf,
+        path: PathBuf,
+    },
+    Restore {
+        path: PathBuf,
+        destination: PathBuf,
+    },
+    ImportNotebook {
+        note: Id,
+        path: PathBuf,
+        assets: PathBuf,
+    },
     LibraryPreview {
         note: Id,
         updated: u64,
@@ -78,6 +92,11 @@ pub enum Job {
     },
 }
 pub enum Finished {
+    Restored(PathBuf),
+    NotebookImported {
+        note: Id,
+        document: Document,
+    },
     LibraryPreview {
         note: Id,
         updated: u64,
@@ -174,9 +193,9 @@ impl Workers {
                                 _ => None,
                             };
                             let import_note = match &task.job {
-                                Job::ImportPdf { note, .. } | Job::ImportImage { note, .. } => {
-                                    Some(*note)
-                                }
+                                Job::ImportPdf { note, .. }
+                                | Job::ImportImage { note, .. }
+                                | Job::ImportNotebook { note, .. } => Some(*note),
                                 _ => None,
                             };
                             let failure = match &task.job {
@@ -280,6 +299,18 @@ impl Drop for Workers {
 fn process(job: Job) -> Result<Finished, String> {
     (|| -> Result<Finished, Box<dyn std::error::Error>> {
         Ok(match job {
+            Job::Backup { root, path } => {
+                crate::portable::backup(&root, &path)?;
+                Finished::Exported(path)
+            }
+            Job::Restore { path, destination } => {
+                crate::portable::restore(&path, &destination)?;
+                Finished::Restored(destination)
+            }
+            Job::ImportNotebook { note, path, assets } => Finished::NotebookImported {
+                note,
+                document: crate::portable::import_notebook(&path, &assets)?,
+            },
             Job::LibraryPreview {
                 note,
                 updated,
@@ -359,6 +390,7 @@ fn process(job: Job) -> Result<Finished, String> {
             } => {
                 let p = doc.page(page).ok_or("Page no longer exists")?;
                 match kind {
+                    ExportKind::Notebook => crate::portable::export_notebook(&doc, &assets, &path)?,
                     ExportKind::Svg => {
                         if let Some(bg) = &p.properties.pdf {
                             folio_pdf::render_preview(bg, &assets)?;

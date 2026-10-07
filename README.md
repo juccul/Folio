@@ -238,3 +238,11 @@ The document grid shows the first page's content with a page count and last-edit
 ## Learning the tools
 
 Open Help and choose **Open starter notebook** to create an editable four-page guide to pen tools, held shapes, selection, recognition, solving and organization. Opening Help alone creates nothing and existing notes remain intact. Crop and PDF-region tools accept a rectangle drawn with the mouse or pen and reject stale selections after navigation or source edits.
+
+## Portable notebooks and library backups
+
+**Export → Editable notebook · with assets** writes a `.folio` archive containing editable vector objects, raw ink, page settings, bookmarks and referenced images/PDFs. Import it from the library to create a notebook, or from an editor to append pages. Imported identities and asset filenames are remapped, so importing the same file twice cannot overwrite another notebook. PDF/SVG/PNG exports remain available. Notebook archives contain current content; full undo history is included in library backups.
+
+In **Settings → Backup and restore**, **Back up library…** writes a `.foliobackup` containing a consistent SQLite snapshot, all assets and quarantined assets. It preserves folders, preferences and durable undo history. Downloadable OCR/math runtimes and old automatic snapshots are excluded. **Restore backup to a new library…** asks for a backup file and a parent folder, then validates checksums and database integrity in a separate directory. **Open restored library** saves the current library before opening the restored one. The original remains intact.
+
+Archives have a versioned SHA-256 manifest, reject duplicate paths, traversal, symlinks and special files, and allow at most 16,384 files / 2 GiB of uncompressed content. Notebook JSON is limited to 128 MiB. Export publishes the archive only after it is complete. Keep an external copy of library backups.
