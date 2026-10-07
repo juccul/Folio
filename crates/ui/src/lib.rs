@@ -15,6 +15,7 @@ mod navigation;
 mod painting;
 mod portable;
 mod region;
+mod templates;
 mod theme;
 mod titlebar;
 mod validation;
@@ -67,6 +68,9 @@ actions!(
 );
 #[derive(Clone)]
 enum Modal {
+    SaveTemplate,
+    Templates,
+    RenameTemplate(Id),
     PageBookmark,
     MovePage,
     Recognition,
@@ -102,6 +106,9 @@ enum Modal {
 impl Modal {
     fn title(&self) -> &'static str {
         match self {
+            Self::SaveTemplate => "Save page as template",
+            Self::Templates => "Page templates",
+            Self::RenameTemplate(_) => "Rename template",
             Self::PageBookmark => "Name bookmark (empty removes it)",
             Self::MovePage => "Move page to notebook",
             Self::Recognition => "Review recognized writing",
@@ -336,6 +343,21 @@ impl NotesView {
         self.more_open = false;
         self.pen_settings = false;
         let content = match &modal {
+            Modal::SaveTemplate => self
+                .controller
+                .page()
+                .properties
+                .bookmark
+                .clone()
+                .unwrap_or_else(|| self.controller.session().document.metadata.title.clone()),
+            Modal::RenameTemplate(id) => self
+                .controller
+                .settings
+                .templates
+                .iter()
+                .find(|t| t.id == *id)
+                .map(|t| t.name.clone())
+                .unwrap_or_default(),
             Modal::PageBookmark => self
                 .controller
                 .page()
@@ -445,6 +467,19 @@ impl NotesView {
         let field = field.clone();
         let content = field.read(cx).content.clone();
         match modal {
+            Modal::SaveTemplate | Modal::RenameTemplate(_) => {
+                let result = if let Modal::RenameTemplate(id) = modal {
+                    self.controller.rename_template(id, content)
+                } else {
+                    self.controller.save_page_template(content)
+                };
+                if let Err(error) = result {
+                    self.modal_error = Some(error);
+                    cx.notify();
+                    return;
+                }
+            }
+            Modal::Templates => {}
             Modal::MathPdfRegion => {
                 let values = content
                     .split(',')
@@ -1599,6 +1634,8 @@ impl NotesView {
                 ("cleanup-assets", "Quarantine unused assets", 14),
                 ("open-math-solver", "Math solver", 15),
                 ("cover-page", "Use current page as cover", 19),
+                ("save-page-template", "Save page as template…", 20),
+                ("page-templates", "Add page from template…", 21),
             ] {
                 panel = panel.child(
                     self.button(id, label, false, cx, move |this, window, cx| {
@@ -1611,6 +1648,8 @@ impl NotesView {
                             4 => this.controller.metadata(|m| m.trashed = !m.trashed),
                             5 => this.controller.delete_page(),
                             19 => this.controller.use_page_as_cover(),
+                            20 => this.modal(Modal::SaveTemplate, window, cx),
+                            21 => this.modal(Modal::Templates, window, cx),
                             16 => this.controller.duplicate_page(),
                             17 => this.modal(Modal::PageBookmark, window, cx),
                             18 => this.modal(Modal::MovePage, window, cx),
@@ -2092,7 +2131,25 @@ impl NotesView {
                     _ => "Left, top, width and height as fractions from 0 to 1.",
                 }))
             })
-            .when(!matches!(modal, Modal::MovePage), |panel| panel.child(field));
+            .when(!matches!(modal, Modal::MovePage | Modal::Templates), |panel| panel.child(field));
+        if matches!(modal, Modal::Templates) {
+            panel = panel.child(self.template_picker(cx)).child(self.button(
+                "cancel-modal",
+                "Close",
+                false,
+                cx,
+                |this, w, cx| this.cancel_modal(w, cx),
+            ));
+            return div()
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00000070))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(panel);
+        }
         if matches!(modal, Modal::MovePage) {
             let mut destinations = div()
                 .id("move-page-destinations")

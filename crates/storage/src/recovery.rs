@@ -225,6 +225,18 @@ pub fn quarantine_orphans(root: &Path) -> Result<usize> {
                 .collect::<std::result::Result<Vec<_>, _>>()?
         };
         let store = Store { connection, path };
+        if let Some(preferences) = store.setting::<serde_json::Value>("preferences")?
+            && let Some(templates) = preferences.get("templates").and_then(|v| v.as_array())
+        {
+            for template in templates {
+                for key in ["asset", "preview"] {
+                    if let Some(name) = template.get(key).and_then(|v| v.as_str()) {
+                        keep.insert(name.into());
+                    }
+                }
+            }
+        }
+
         for metadata in notes {
             let note: NoteMetadata = serde_json::from_str(&metadata)?;
             if let Some(document) = store.load(note.id)? {

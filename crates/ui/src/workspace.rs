@@ -1764,6 +1764,16 @@ impl NotesView {
                 )
                 .m_2(),
             )
+            .child(
+                self.button(
+                    "page-from-template",
+                    "Add from template…",
+                    false,
+                    cx,
+                    |this, w, cx| this.modal(Modal::Templates, w, cx),
+                )
+                .m_2(),
+            )
             .child(rows)
             .child(
                 self.button("add-page", "＋  Add page", true, cx, |this, _, _| {

@@ -11,6 +11,7 @@ mod optimization_tests;
 mod page_actions;
 pub mod portable;
 mod starter;
+mod templates;
 pub use library_actions::NoteAction;
 pub mod appearance;
 mod math_solver;
@@ -28,7 +29,7 @@ pub use folio_math::{VectorCommand, VectorFormula};
 use folio_storage::{Delta, JournalEvent, Persistence, Store};
 pub use math_solver::{MathReport, MathRequest, MathSession, MathStep};
 pub use recognition::{RecognitionKind, RecognitionReview};
-pub use settings::Settings;
+pub use settings::{PageTemplate, Settings};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -2222,6 +2223,29 @@ impl Controller {
                         self.pending_note = None;
                         if let Some((note, page)) = self.pending_navigation.take() {
                             self.navigate_search(note, page);
+                        }
+                    }
+                }
+                Finished::TemplateSaved(template) => {
+                    self.settings.templates.push(template);
+                    self.store_settings();
+                    self.status = "Page template saved".into();
+                }
+                Finished::TemplatePage { note, page } => {
+                    self.import_finished(note);
+                    if let Some(session) = self.sessions.get(&note) {
+                        let index = session.document.pages.len();
+                        self.commit_to(
+                            note,
+                            "Add template page",
+                            vec![Change::Page {
+                                index,
+                                before: None,
+                                after: Some(page),
+                            }],
+                        );
+                        if note == self.active {
+                            self.change_page(index);
                         }
                     }
                 }
