@@ -8,7 +8,7 @@ use std::{
 };
 pub use uuid::Uuid;
 pub type Id = Uuid;
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -568,7 +568,15 @@ pub struct InkGroup {
     pub revision: u64,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InkText {
+    pub text: String,
+    pub sources: Vec<Id>,
+    pub bounds: Rect,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Page {
+    #[serde(default)]
+    pub ink_text: Vec<InkText>,
     pub id: Id,
     pub properties: PageProperties,
     pub objects: BTreeMap<Id, Arc<Object>>,
@@ -579,6 +587,7 @@ pub struct Page {
 impl Page {
     pub fn new() -> Self {
         Self {
+            ink_text: vec![],
             id: Id::new_v4(),
             properties: PageProperties::default(),
             objects: BTreeMap::new(),
@@ -625,6 +634,11 @@ impl Page {
             .collect();
         page.order = self.order.iter().map(|id| ids[id]).collect();
         page.groups.clear();
+        for entry in &mut page.ink_text {
+            for source in &mut entry.sources {
+                *source = ids[source];
+            }
+        }
         page
     }
     pub fn ordered_objects(&self) -> impl Iterator<Item = &Arc<Object>> {
@@ -642,11 +656,26 @@ impl Page {
             .collect()
     }
     pub fn text(&self) -> String {
-        self.ordered_objects()
+        let mut text = self
+            .ordered_objects()
             .map(|o| o.searchable_text().to_owned())
             .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n")
+            .collect::<Vec<_>>();
+        if !self.ink_text.is_empty() {
+            let hidden = self.hidden_sources();
+            text.extend(
+                self.ink_text
+                    .iter()
+                    .filter(|entry| {
+                        entry
+                            .sources
+                            .iter()
+                            .all(|id| self.objects.contains_key(id) && !hidden.contains(id))
+                    })
+                    .map(|entry| entry.text.clone()),
+            );
+        }
+        text.join("\n")
     }
 }
 impl Default for Page {
@@ -709,6 +738,36 @@ impl Document {
         for page in &self.pages {
             if !ids.insert(page.id) {
                 return Err("Duplicate page ID".into());
+            }
+            for entry in &page.ink_text {
+                if entry.text.trim().is_empty()
+                    || entry.text.len() > 65536
+                    || entry.sources.is_empty()
+                    || entry.sources.len() > 4096
+                    || entry
+                        .sources
+                        .iter()
+                        .collect::<std::collections::HashSet<_>>()
+                        .len()
+                        != entry.sources.len()
+                    || !entry.sources.iter().all(|id| {
+                        page.objects
+                            .get(id)
+                            .is_some_and(|o| matches!(o.as_ref(), Object::Stroke(_)))
+                    })
+                    || ![
+                        entry.bounds.min.x,
+                        entry.bounds.min.y,
+                        entry.bounds.max.x,
+                        entry.bounds.max.y,
+                    ]
+                    .iter()
+                    .all(|v| v.is_finite())
+                    || entry.bounds.width() <= 0.
+                    || entry.bounds.height() <= 0.
+                {
+                    return Err("Invalid handwriting search annotation".into());
+                }
             }
             let p = &page.properties;
             if !p.width.is_finite() || !p.height.is_finite() || p.width <= 0. || p.height <= 0. {
@@ -883,6 +942,11 @@ pub struct Notebook {
 /// Reversible, object-sized commands. History never copies a whole document.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Change {
+    InkText {
+        page: Id,
+        before: Vec<InkText>,
+        after: Vec<InkText>,
+    },
     Groups {
         page: Id,
         before: Vec<InkGroup>,
@@ -920,6 +984,20 @@ impl Command {
         doc.version = FORMAT_VERSION;
         let mut inserted = Vec::new();
         let mut apply = |c: &Change, doc: &mut Document| match c {
+            Change::InkText {
+                page,
+                before,
+                after,
+            } => {
+                if let Some(page) = doc.page_mut(*page) {
+                    page.ink_text = if forward {
+                        after.clone()
+                    } else {
+                        before.clone()
+                    };
+                    page.revision += 1;
+                }
+            }
             Change::Groups {
                 page,
                 before,

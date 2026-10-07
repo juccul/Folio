@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 folio-document = { path = "../document" }
 rusqlite.workspace = true
+unicode-normalization = "0.1.25"

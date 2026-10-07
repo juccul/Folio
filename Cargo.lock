@@ -2025,6 +2025,7 @@ version = "0.1.0"
 dependencies = [
  "folio-document",
  "rusqlite",
+ "unicode-normalization",
 ]
 
 [[package]]

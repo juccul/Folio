@@ -2,6 +2,7 @@
 //! the GPUI layer only displays state and forwards user actions.
 #[cfg(test)]
 mod gesture_tests;
+mod handwriting_search;
 mod library_actions;
 mod library_previews;
 #[cfg(test)]
@@ -234,6 +235,7 @@ pub struct RasterPreview {
     pub bgra: Arc<Vec<u8>>,
 }
 pub struct Controller {
+    pub recognition_for_index: bool,
     pub restored_library: Option<PathBuf>,
     library_previews: HashMap<Id, (u64, Arc<Page>, usize)>,
     library_preview_pending: HashSet<Id>,
@@ -345,6 +347,7 @@ impl Controller {
         sessions.insert(active, session);
         let style = settings.default_pen.clone();
         let controller = Self {
+            recognition_for_index: false,
             restored_library: None,
             library_previews: HashMap::new(),
             library_preview_pending: HashSet::new(),
@@ -487,9 +490,12 @@ impl Controller {
     pub fn commit(&mut self, label: &str, changes: Vec<Change>) {
         self.commit_to(self.active, label, changes)
     }
-    fn commit_to(&mut self, note: Id, label: &str, changes: Vec<Change>) {
+    fn commit_to(&mut self, note: Id, label: &str, mut changes: Vec<Change>) {
         if changes.is_empty() {
             return;
+        }
+        if let Some(session) = self.sessions.get(&note) {
+            handwriting_search::maintain_index(&session.document, &mut changes);
         }
         let cmd = Command {
             label: label.into(),
@@ -668,45 +674,19 @@ impl Controller {
         let mut d = Document::new(format!("{} (copy)", old.metadata.title));
         d.metadata.tags = old.metadata.tags;
         d.metadata.notebook = old.metadata.notebook;
+        let mut cover = None;
         d.pages = old
             .pages
-            .into_iter()
-            .map(|mut p| {
-                p.id = Id::new_v4();
-                let mut id_map = HashMap::new();
-                for id in &p.order {
-                    id_map.insert(*id, Id::new_v4());
+            .iter()
+            .map(|page| {
+                let copy = page.duplicate();
+                if Some(page.id) == old.metadata.cover_page {
+                    cover = Some(copy.id);
                 }
-                let mut objects = std::collections::BTreeMap::new();
-                for old in p.objects.values() {
-                    let mut o = old.as_ref().clone();
-                    o.set_id(id_map[&o.id()]);
-                    match &mut o {
-                        Object::Shape(s) => {
-                            for id in &mut s.source_strokes {
-                                *id = id_map.get(id).copied().unwrap_or(*id)
-                            }
-                        }
-                        Object::Equation(e) => {
-                            for id in &mut e.source_strokes {
-                                *id = id_map.get(id).copied().unwrap_or(*id)
-                            }
-                            if let Some(link) = &mut e.math_link {
-                                for id in &mut link.sources {
-                                    *id = id_map.get(id).copied().unwrap_or(*id);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    objects.insert(o.id(), Arc::new(o));
-                }
-                p.order = p.order.iter().map(|id| id_map[id]).collect();
-                p.objects = objects;
-                p.groups.clear();
-                p
+                copy
             })
             .collect();
+        d.metadata.cover_page = cover;
         let id = d.metadata.id;
         self.notes.insert(0, d.metadata.clone());
         let delta = Delta::full(&d);
@@ -1784,16 +1764,23 @@ impl Controller {
                 .position(|p| p.id == page)
                 .unwrap_or(0);
             s.refresh();
-            let query = self.search_query.to_lowercase();
-            let highlights: Vec<_> = s
+            let query = self.search_query.clone();
+            let mut highlights: Vec<_> = s
                 .page()
                 .ordered_objects()
                 .filter(|o| {
-                    o.searchable_text().to_lowercase().contains(&query)
+                    folio_search::matches_text(o.searchable_text(), &query)
                         && !o.searchable_text().is_empty()
                 })
                 .map(|o| o.bounds())
                 .collect();
+            highlights.extend(
+                s.page()
+                    .ink_text
+                    .iter()
+                    .filter(|entry| folio_search::matches_text(&entry.text, &query))
+                    .map(|entry| entry.bounds),
+            );
             if let Some(r) = highlights.first() {
                 s.viewport.pan = Point::new(
                     100. - r.min.x * s.viewport.zoom,

@@ -92,6 +92,7 @@ pub fn recover(root: &Path) -> Result<RecoveryReport> {
                         }
                     };
                     let mut page = Page {
+                        ink_text: vec![],
                         id: header.id,
                         properties: header.properties,
                         objects: Default::default(),
@@ -146,6 +147,25 @@ pub fn recover(root: &Path) -> Result<RecoveryReport> {
                         }
                     }
                     page.order = order;
+                    // Validate annotations only after all surviving ink has been recovered.
+                    // A corrupt neighbor must not discard the user's corrected handwriting text.
+                    for annotation in header.ink_text {
+                        let mut isolated = page.clone();
+                        isolated.ink_text = vec![annotation.clone()];
+                        match (Document {
+                            version: FORMAT_VERSION,
+                            metadata: metadata.clone(),
+                            pages: vec![isolated],
+                        })
+                        .validate()
+                        {
+                            Ok(()) => page.ink_text.push(annotation),
+                            Err(error) => report.issues.push(format!(
+                                "Search annotation on page {} skipped: {error}",
+                                page.id
+                            )),
+                        }
+                    }
                     let candidate = Document {
                         version: FORMAT_VERSION,
                         metadata: metadata.clone(),
