@@ -23,6 +23,8 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PageHeader {
+    #[serde(default)]
+    pub ink_text: Vec<InkText>,
     pub id: Id,
     pub properties: PageProperties,
     pub position: usize,
@@ -84,6 +86,7 @@ impl Delta {
                 .iter()
                 .enumerate()
                 .map(|(position, p)| PageHeader {
+                    ink_text: p.ink_text.clone(),
                     id: p.id,
                     properties: p.properties.clone(),
                     position,
@@ -127,7 +130,8 @@ impl Delta {
             .filter_map(|c| match c {
                 Change::Object { page, .. }
                 | Change::Properties { page, .. }
-                | Change::Groups { page, .. } => Some(*page),
+                | Change::Groups { page, .. }
+                | Change::InkText { page, .. } => Some(*page),
                 _ => None,
             })
             .collect::<std::collections::HashSet<_>>();
@@ -156,6 +160,7 @@ impl Delta {
             .filter(|(_, p)| all_pages || touched.contains(&p.id))
         {
             delta.pages.push(PageHeader {
+                ink_text: p.ink_text.clone(),
                 id: p.id,
                 properties: p.properties.clone(),
                 position,
@@ -184,7 +189,7 @@ impl Store {
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )?;
         let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 4 {
+        if version > 5 {
             return Err(Error::Invalid(format!(
                 "Database version {version} is newer than this application"
             )));
@@ -270,7 +275,7 @@ impl Store {
         )?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i32 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if !(3..=4).contains(&version) {
+        if !(3..=5).contains(&version) {
             return Err(Error::Invalid(format!(
                 "Database version {version} requires initialization by the application"
             )));
@@ -324,6 +329,7 @@ impl Store {
             objects
         };
         let page = Page {
+            ink_text: header.ink_text,
             id: header.id,
             properties: header.properties,
             objects,
@@ -370,6 +376,7 @@ impl Store {
                 objects.insert(o.id(), Arc::new(o));
             }
             pages.push(Page {
+                ink_text: h.ink_text,
                 id: h.id,
                 properties: h.properties,
                 objects,
@@ -412,7 +419,13 @@ impl Store {
                 .as_ref()
                 .is_some_and(|o| matches!(o.as_ref(), Object::Equation(e) if e.math_link.is_some()))
         }) {
-            tx.pragma_update(None, "user_version", 4)?;
+            let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            if version < 4 {
+                tx.pragma_update(None, "user_version", 4)?;
+            }
+        }
+        if delta.pages.iter().any(|page| !page.ink_text.is_empty()) || delta.journal.iter().any(|event| matches!(event, JournalEvent::Execute(command) if command.changes.iter().any(|c| matches!(c, Change::InkText { .. })))) {
+            tx.pragma_update(None, "user_version", 5)?;
         }
         let note = delta.metadata.id.to_string();
         tx.execute("INSERT INTO notes VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata",params![note,serde_json::to_string(&delta.metadata)?])?;

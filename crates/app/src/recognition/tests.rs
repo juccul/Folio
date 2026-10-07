@@ -279,3 +279,158 @@ fn cancel_kills_worker_and_late_result_cannot_reopen_review() {
     assert_eq!(app.page().objects.len(), 1);
     clean(app, root);
 }
+
+#[test]
+fn reviewed_ink_index_keeps_raw_strokes_searches_unicode_and_tracks_undo_and_reopen() {
+    let (mut app, root) = fixture();
+    let id = draw(&mut app, 20.);
+    app.session_mut().selection = HashSet::from([id]);
+    let old = app.page().objects[&id].clone();
+    review(&mut app);
+    app.keep_ink_and_index("Café tomorrow".into()).unwrap();
+    assert_eq!(app.page().objects[&id], old);
+    assert_eq!(app.page().ink_text.len(), 1);
+    let bounds = app.page().ink_text[0].bounds;
+    app.transform_selection(Transform::translate(100., 50.), "Move writing");
+    assert_eq!(app.page().ink_text[0].text, "Café tomorrow");
+    assert!((app.page().ink_text[0].bounds.min.x - bounds.min.x - 100.).abs() < 0.001);
+    app.flush().unwrap();
+    app.search("cafe tom".into());
+    let start = Instant::now();
+    while app.has_background_work() {
+        app.tick();
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(app.search_results.len(), 1);
+    let note = app.active;
+    let page = app.page().id;
+    app.navigate_search(note, page);
+    assert_eq!(app.search_highlights, vec![app.page().ink_text[0].bounds]);
+    app.session_mut().selection = HashSet::from([id]);
+    app.delete_selection();
+    assert!(app.page().ink_text.is_empty());
+    app.undo();
+    assert_eq!(app.page().ink_text[0].text, "Café tomorrow");
+    app.clear_handwriting_index();
+    assert!(app.page().ink_text.is_empty());
+    app.undo();
+    app.flush().unwrap();
+    let store = Store::open_reader(&app.database).unwrap();
+    assert_eq!(
+        store
+            .connection
+            .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        5
+    );
+    drop(store);
+    drop(app);
+    let mut app = Controller::open(root.clone()).unwrap();
+    app.switch_note(note);
+    assert_eq!(app.page().ink_text[0].text, "Café tomorrow");
+    app.duplicate_page();
+    assert_eq!(app.page().ink_text.len(), 1);
+    assert_ne!(app.page().ink_text[0].sources[0], id);
+    app.session().document.validate().unwrap();
+    let cover = app.page().id;
+    app.metadata(|metadata| metadata.cover_page = Some(cover));
+    app.duplicate_note();
+    assert_ne!(app.active, note);
+    app.session().document.validate().unwrap();
+    assert!(
+        app.session()
+            .document
+            .pages
+            .iter()
+            .all(|p| p.ink_text[0].sources[0] != id)
+    );
+    assert_ne!(app.session().document.metadata.cover_page, Some(cover));
+    clean(app, root);
+}
+#[test]
+fn changed_or_overwritten_ink_cannot_keep_stale_index_and_undo_restores_reviewed_text() {
+    let (mut app, root) = fixture();
+    let id = draw(&mut app, 20.);
+    app.session_mut().selection = HashSet::from([id]);
+    review(&mut app);
+    app.transform_selection(Transform::translate(20., 0.), "Move");
+    assert!(app.keep_ink_and_index("stale".into()).is_err());
+    app.session_mut().selection = HashSet::from([id]);
+    review(&mut app);
+    app.keep_ink_and_index("original".into()).unwrap();
+    draw(&mut app, 40.);
+    assert!(app.page().ink_text.is_empty());
+    app.undo();
+    assert_eq!(app.page().ink_text[0].text, "original");
+    app.redo();
+    assert!(app.page().ink_text.is_empty());
+    clean(app, root);
+}
+
+#[test]
+fn salvage_keeps_valid_reviewed_ink_and_skips_annotations_with_missing_sources() {
+    let (mut app, root) = fixture();
+    let ink = draw(&mut app, 20.);
+    app.session_mut().selection = HashSet::from([ink]);
+    review(&mut app);
+    app.keep_ink_and_index("Recovered handwriting".into())
+        .unwrap();
+    app.add_text("Corrupt neighbor".into(), Point::new(300., 50.));
+    let neighbor = *app.page().order.last().unwrap();
+    let note = app.active;
+    let page = app.page().id;
+    app.flush().unwrap();
+    drop(app);
+    // Force object-by-object salvage, rather than restoring a healthy snapshot.
+    for snapshot in folio_storage::recovery::snapshots(&root).unwrap() {
+        std::fs::remove_file(snapshot).unwrap();
+    }
+    let store = Store::open(root.join("notes.sqlite3")).unwrap();
+    store
+        .connection
+        .execute(
+            "UPDATE objects SET data='corrupt' WHERE id=?1",
+            [neighbor.to_string()],
+        )
+        .unwrap();
+    let raw: String = store
+        .connection
+        .query_row(
+            "SELECT header FROM pages WHERE id=?1",
+            [page.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut header: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let mut invalid = header["ink_text"][0].clone();
+    invalid["sources"] = serde_json::json!([Id::new_v4()]);
+    header["ink_text"].as_array_mut().unwrap().push(invalid);
+    store
+        .connection
+        .execute(
+            "UPDATE pages SET header=?1 WHERE id=?2",
+            [header.to_string(), page.to_string()],
+        )
+        .unwrap();
+    drop(store);
+    let report = folio_storage::recovery::recover(&root).unwrap();
+    assert!(report.snapshot.is_none());
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.contains("Search annotation"))
+    );
+    let mut recovered = Controller::open(report.destination.clone()).unwrap();
+    recovered.switch_note(note);
+    assert!(recovered.page().objects.contains_key(&ink));
+    assert!(!recovered.page().objects.contains_key(&neighbor));
+    assert_eq!(recovered.page().ink_text.len(), 1);
+    assert_eq!(recovered.page().ink_text[0].text, "Recovered handwriting");
+    recovered.search("Recovered handwriting".into());
+    wait_workers(&mut recovered);
+    assert_eq!(recovered.search_results.len(), 1);
+    clean(recovered, report.destination);
+    std::fs::remove_dir_all(root).unwrap();
+}

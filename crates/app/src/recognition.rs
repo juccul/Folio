@@ -465,6 +465,7 @@ impl Controller {
         })
     }
     pub fn recognize_selection(&mut self, kind: RecognitionKind) -> Result<(), String> {
+        self.recognition_for_index = false;
         self.finish();
         if self.recognition_pending {
             return Err("Recognition is already running".into());
@@ -493,6 +494,7 @@ impl Controller {
         Ok(())
     }
     pub fn cancel_recognition(&mut self) {
+        self.recognition_for_index = false;
         self.recognition_generation = self.recognition_generation.wrapping_add(1);
         self.recognition_service.cancel(self.recognition_generation);
         self.recognition_pending = false;

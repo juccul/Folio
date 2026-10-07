@@ -180,7 +180,7 @@ PDF metadata/import/export use Rust. Requested-page previews require `pdftoppm` 
 
 Clean equations can be inserted by entering LaTeX in the document menu. A bundled open font and pure Rust renderer generate SVG offline; existing equation objects remain editable. Selected handwriting can be recognized as editable text or LaTeX through the optional offline OCR pack described above. Spellchecking and a graphical model/device configuration editor are not available. Shape snapping, scratch erase and encircle selection remain geometric pen features.
 
-Search indexes titles, tags, typed text and LaTeX equation source with SQLite FTS5. Selecting a result opens its page and highlights matching objects. On first opening a database from an older version, a transaction rebuilds the derived index to exclude old OCR text. Original stroke data, previous group metadata and undo history remain readable; the derived search index is upgraded to schema 3. Saving live math links upgrades the database to schema 4; builds that do not support the resulting schema refuse to open it.
+Search indexes titles, tags, typed text, LaTeX equation source and explicitly reviewed handwriting annotations with SQLite FTS5. Selecting a result opens its page and highlights matching objects. On first opening a database from an older version, a transaction rebuilds the derived index to exclude old OCR text. Original stroke data, previous group metadata and undo history remain readable; the derived search index is upgraded to schema 3. Saving live math links upgrades the database to schema 4; builds that do not support the resulting schema refuse to open it.
 
 ## Save, backup and recovery
 
@@ -250,3 +250,11 @@ Archives have a versioned SHA-256 manifest, reject duplicate paths, traversal, s
 ## Reusable page templates
 
 Choose **Document menu → Save page as template…** to save a named snapshot of the current page, including paper, dimensions, headings, handwriting, images and PDF backgrounds. **Add page from template…** in the document menu or page strip opens a preview picker with Add page, Rename and Remove controls. Adding a template creates a separate editable page as one undoable action; later edits do not alter the saved template. Templates and their assets are included in library backups. Remove hides a template from the picker; asset quarantine handles its unused files without permanently deleting them.
+
+## Search handwriting without replacing it
+
+Select a line or short paragraph and choose **Index handwriting…**, or use **Document menu → Index page handwriting…** for a modest page. Review and correct the OCR text, then choose **Keep ink and index**. The normal text-recognition review also offers **Keep ink and make searchable**. Original vector strokes and raw samples remain intact; no background OCR starts merely because you write or search. The optional local OCR model uses the existing first-use setup.
+
+**Ctrl+F** finds indexed handwriting with Unicode/accent-aware prefix queries. Opening a result highlights its source region. Moving, rotating or restyling the indexed strokes keeps the text and updates the region. Changing their geometry, deleting/replacing them, converting them to shapes/equations, or writing over the indexed region invalidates the annotation. Undo restores the writing and index together. **Clear page handwriting index** is also undoable. Page duplication, templates and notebook archives remap index source identities.
+
+Dense pages may exceed the OCR selection/token limit; index smaller paragraphs instead. Indexing uses document format 4 and database schema 5; older builds refuse a database that has used this feature. OCR annotations are reviewed text, not a guarantee of recognition accuracy.

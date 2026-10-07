@@ -503,7 +503,12 @@ impl NotesView {
             Modal::PageBookmark => self.controller.bookmark_page(content),
             Modal::MovePage => {}
             Modal::Recognition => {
-                if let Err(error) = self.controller.replace_recognized_writing(content) {
+                let result = if self.controller.recognition_for_index {
+                    self.controller.keep_ink_and_index(content)
+                } else {
+                    self.controller.replace_recognized_writing(content)
+                };
+                if let Err(error) = result {
                     self.modal_error = Some(error);
                     field.read(cx).focus.focus(window);
                     cx.notify();
@@ -1374,6 +1379,21 @@ impl NotesView {
                     |this, _, _| this.controller.cancel_recognition(),
                 ));
         } else if self.controller.can_recognize_selection() {
+            row = row.child(
+                self.button(
+                    "index-handwriting",
+                    "Index handwriting…",
+                    false,
+                    cx,
+                    |this, _, _| {
+                        if let Err(e) = this.controller.index_selected_handwriting() {
+                            this.controller.error = Some(e);
+                        }
+                    },
+                )
+                .text_xs()
+                .px_2(),
+            );
             for (id, label, kind) in [
                 ("recognize-text", "Recognize text", RecognitionKind::Text),
                 ("recognize-math", "Recognize math", RecognitionKind::Math),
@@ -1636,6 +1656,8 @@ impl NotesView {
                 ("cover-page", "Use current page as cover", 19),
                 ("save-page-template", "Save page as template…", 20),
                 ("page-templates", "Add page from template…", 21),
+                ("index-page-handwriting", "Index page handwriting…", 22),
+                ("clear-page-index", "Clear page handwriting index", 23),
             ] {
                 panel = panel.child(
                     self.button(id, label, false, cx, move |this, window, cx| {
@@ -1648,6 +1670,12 @@ impl NotesView {
                             4 => this.controller.metadata(|m| m.trashed = !m.trashed),
                             5 => this.controller.delete_page(),
                             19 => this.controller.use_page_as_cover(),
+                            22 => {
+                                if let Err(e) = this.controller.index_page_handwriting() {
+                                    this.controller.error = Some(e);
+                                }
+                            }
+                            23 => this.controller.clear_handwriting_index(),
                             20 => this.modal(Modal::SaveTemplate, window, cx),
                             21 => this.modal(Modal::Templates, window, cx),
                             16 => this.controller.duplicate_page(),
@@ -2213,13 +2241,35 @@ impl NotesView {
             panel = panel.child(div().text_sm().text_color(rgb(theme.muted)).child(if math {
                 "Check and edit the LaTeX. Copy keeps your ink; replacement inserts a rendered, editable equation."
             } else {
-                "Check and edit the text. Copy keeps your ink; replacement can be undone."
+                "Review and correct the text. Make searchable attaches it to the original ink; replacement inserts typed text. Both can be undone."
             })).child(self.button("copy-recognized-text", "Copy text", false, cx, |this, _, cx| {
                 if let Some((Modal::Recognition, field)) = &this.modal {
                     cx.write_to_clipboard(ClipboardItem::new_string(field.read(cx).content.clone()));
                     this.controller.status = "Recognized text copied".into();
                 }
             }));
+            if !math && self.controller.can_index_review() {
+                panel = panel.child(self.button(
+                    "keep-ink-index",
+                    "Keep ink and make searchable",
+                    false,
+                    cx,
+                    |this, w, cx| {
+                        let text = this
+                            .modal
+                            .as_ref()
+                            .map(|(_, field)| field.read(cx).content.clone())
+                            .unwrap_or_default();
+                        match this.controller.keep_ink_and_index(text) {
+                            Ok(()) => this.close_modal(w, cx),
+                            Err(e) => {
+                                this.modal_error = Some(e);
+                                cx.notify();
+                            }
+                        }
+                    },
+                ));
+            }
             if math {
                 panel = panel.child(self.button(
                     "solve-recognized-math",
@@ -2326,31 +2376,41 @@ impl NotesView {
             for r in self.controller.search_results.clone() {
                 let note = r.note;
                 let page = r.page;
+                let title = r.title.clone();
                 results = results.child(
-                    div()
-                        .id(SharedString::from(format!("result-{note}-{page}")))
-                        .p_3()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(rgb(theme.selected)))
-                        .child(div().font_weight(FontWeight::SEMIBOLD).child(r.title))
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(theme.muted))
-                                .child(r.snippet),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
+                    self.control(
+                        format!("result-{note}-{page}"),
+                        format!("Open result: {} · {}", r.title, r.snippet),
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .items_start()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(theme.muted))
+                                    .child(r.snippet),
+                            )
+                            .into_any_element(),
+                        false,
+                        cx,
+                        move |this, window, cx| {
                             this.controller.navigate_search(note, page);
                             this.show_editor();
                             this.close_modal(window, cx);
-                        })),
+                        },
+                    )
+                    .p_3()
+                    .w_full()
+                    .justify_start(),
                 );
             }
             if !self.controller.search_query.is_empty() && self.controller.search_results.is_empty()
             {
                 results = results.child(div().p_3().text_sm().text_color(rgb(theme.muted)).child(
-                    "No matches. Search covers note titles, tags, typed text and LaTeX equations.",
+                    "No matches. Search covers titles, tags, typed text, equations and handwriting you have indexed.",
                 ));
             }
             panel = panel.child(results);
@@ -2362,7 +2422,11 @@ impl NotesView {
                 .justify_between()
                 .child(div().text_xs().text_color(rgb(theme.muted)).child(
                     if matches!(modal, Modal::Recognition) {
-                        "Ctrl + Enter to replace"
+                        if self.controller.recognition_for_index {
+                            "Ctrl + Enter to index"
+                        } else {
+                            "Ctrl + Enter to replace"
+                        }
                     } else if multiline {
                         "Ctrl + Enter to save"
                     } else {
@@ -2383,7 +2447,11 @@ impl NotesView {
                             if search {
                                 "Search"
                             } else if matches!(modal, Modal::Recognition) {
-                                "Replace writing"
+                                if self.controller.recognition_for_index {
+                                    "Keep ink and index"
+                                } else {
+                                    "Replace writing"
+                                }
                             } else if matches!(modal, Modal::OpenDocument) {
                                 "Open"
                             } else {
