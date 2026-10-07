@@ -36,10 +36,14 @@ impl NotesView {
                 .border_1().border_color(theme.border).rounded(px(theme.radius + 4.)).shadow_sm()
                 .flex().flex_col().gap_4()
                 .child(div().flex().items_center().justify_between()
-                    .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("Keyboard shortcuts"))
+                    .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("Help and shortcuts"))
                     .child(self.button("close-help", "Got it", true, cx, |this, w, _| {
                         this.help_open = false; this.focus.focus(w);
                     })))
+                .child(div().text_sm().text_color(rgb(theme.muted)).child("Learn writing, selection, recognition and math with an editable example notebook."))
+                .child(self.button("create-starter", "Open starter notebook", false, cx, |this, w, _| {
+                    this.controller.create_starter_notebook(); this.help_open = false; this.show_editor(); this.focus.focus(w);
+                }))
                 .child(shortcuts)
                 .child(div().pt_3().border_t_1().border_color(theme.border).text_sm().text_color(rgb(theme.muted))
                     .child("Select handwriting and choose Recognize text or Recognize math, then review, Copy text or Replace writing. Replacement can be undone. Two-finger scrolling pans the canvas. Hold at the end of a stroke to snap a shape. Escape closes a menu or cancels recognition and your current stroke.")))

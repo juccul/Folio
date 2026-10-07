@@ -1698,6 +1698,13 @@ impl NotesView {
                     "Read PDF region",
                     false,
                     cx,
+                    |this, window, cx| this.start_pdf_region(window, cx),
+                ));
+                sources = sources.child(self.button(
+                    "math-read-pdf-coordinates",
+                    "PDF region coordinates…",
+                    false,
+                    cx,
                     |this, window, cx| this.modal(Modal::MathPdfRegion, window, cx),
                 ));
             }

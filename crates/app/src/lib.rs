@@ -9,6 +9,7 @@ mod management_tests;
 #[cfg(test)]
 mod optimization_tests;
 mod page_actions;
+mod starter;
 pub use library_actions::NoteAction;
 pub mod appearance;
 mod math_solver;
