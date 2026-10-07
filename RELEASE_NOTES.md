@@ -1,14 +1,14 @@
-# Folio 1.0.0
+# Folio 0.1.0
 
-Folio is a Linux notebook for editable vector handwriting, PDF annotation, rendered LaTeX and step-by-step math. This refreshed 1.0 release distributes **only the x86_64 Flatpak**, with automatic OCR setup and Vulkan Q8 acceleration.
+Folio is a Linux notebook for editable vector handwriting, PDF annotation, rendered LaTeX and step-by-step math. This initial 0.1.0 release distributes **only the x86_64 Flatpak**, with automatic OCR setup and Vulkan Q8 acceleration.
 
 ## Install or update
 
-Download `folio-1.0.0-x86_64.flatpak`, then run:
+Download `folio-0.1.0-x86_64.flatpak`, then run:
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-flatpak install --user --reinstall ./folio-1.0.0-x86_64.flatpak
+flatpak install --user --reinstall ./folio-0.1.0-x86_64.flatpak
 flatpak run io.github.folio.Notes
 ```
 
@@ -23,7 +23,7 @@ Close an already running Folio window before launching the updated build. Folio 
 - Recognition works offline after setup. Notes, handwriting, images and PDFs stay local; only model/runtime assets are fetched from Hugging Face and GitHub. Flatpak has network permission for this setup and GPU permission for acceleration.
 - Working existing recognition packs and explicit Python pack overrides remain supported. First GPU use can take several seconds to initialize; subsequent requests reuse the model.
 
-## Included in 1.0
+## Included in 0.1.0
 
 - Pressure-sensitive vector handwriting, erasing and shape gestures, selection, typed text/images, persistent undo and recovery.
 - A document library with folders, favorites, recent notes and trash; browser-style tabs and window controls.
@@ -36,10 +36,10 @@ Existing Flatpak notes remain in `~/.var/app/io.github.folio.Notes/data/folio`. 
 
 ## Verification and source
 
-170 Rust workspace tests passed, along with strict Clippy, formatting, private native UI checks, NVIDIA/AMD/CPU OCR and a Flatpak first-use download followed by offline OCR. See [release validation](https://github.com/juccul/Folio/blob/v1.0.0/RELEASE_VALIDATION.md).
+168 default Rust workspace tests passed after cleanup, along with math unit/protocol checks, private native UI checks, formatting and package validation. Prior recognition checks covered NVIDIA/AMD/CPU OCR and a Flatpak first-use download followed by offline OCR; recognition behavior is unchanged by the version reset. See [release validation](https://github.com/juccul/Folio/blob/v0.1.0/RELEASE_VALIDATION.md).
 
-The SHA-256 checksum for the single Flatpak download is shown below. Matching source, build scripts, locked dependencies, notices and the exact Poppler source are available in the [v1.0.0 source tag](https://github.com/juccul/Folio/tree/v1.0.0). GitHub also provides the tag's source ZIP/tarball. Cargo fetches unmodified registry dependencies from the lockfile; `scripts/package.py` can generate a complete vendored source archive for offline builds. Bundled math packages contain their Python source and notices. Folio is GPL-3.0-or-later; third-party licenses are retained.
+The SHA-256 checksum for the single Flatpak download is shown below. Matching source, build scripts, locked dependencies, notices and the exact Poppler source are available in the [v0.1.0 source tag](https://github.com/juccul/Folio/tree/v0.1.0). GitHub also provides the tag's source ZIP/tarball. Cargo fetches unmodified registry dependencies from the lockfile; `scripts/package.py` can generate a complete vendored source archive for offline builds. Bundled math packages contain their Python source and notices. Folio is GPL-3.0-or-later; third-party licenses are retained.
 
 ```text
-3fe0da14808749428f4c877453059133d5c70e95d55332b65c4b21de252a9531  folio-1.0.0-x86_64.flatpak
+dc3b0af7ed2a9e8e95228f94f94b867993c147dd4b9f49bae933815264547249  folio-0.1.0-x86_64.flatpak
 ```

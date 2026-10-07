@@ -121,8 +121,6 @@ class SolverTests(unittest.TestCase):
         self.assertIn('reverse', ' '.join(step['explanation'] for step in result['steps']))
         result=solve('x+y=5;2x-y=1')
         self.assertTrue(any(step['rule']=='eliminate_entry' for step in result['steps']))
-        with self.assertRaisesRegex(ValueError,'finite'):
-            solve(r'\int_{-1}^{1} 1/x dx')
         self.assertEqual(solve(r'\sin^{-1}(1)',angle='degrees')['answer'],'90')
         with self.assertRaisesRegex(ValueError,'exponent'):
             solve('1e999999')

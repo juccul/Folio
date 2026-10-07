@@ -1,4 +1,5 @@
 use super::*;
+use folio_document::*;
 use std::f32::consts::{PI, TAU};
 
 fn samples(points: &[Point]) -> Vec<StrokePoint> {

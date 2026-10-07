@@ -49,8 +49,9 @@ print(json.dumps(result))
             raise ValueError(f"Packaging needs {name}=={expected}, got {dist['version']}")
         for key in ("package", "metadata"):
             source = Path(dist[key])
+            # Keep runtime modules and distribution notices; omit upstream test suites.
             shutil.copytree(source, math_pack / "site-packages" / source.name,
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"))
+                            ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc", "*.pyo"))
     config = {"python": "../bin/math-python", "worker": "math-solver-worker.py",
               "timeout_seconds": 8, "sympy": "1.14.0", "mpmath": "1.3.0",
               "engine": "folio-math-1"}

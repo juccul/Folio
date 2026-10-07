@@ -2,23 +2,21 @@
 
 Offline handwriting and mixed-media notes for Linux, built in Rust with GPUI. Raw tablet samples and editable vector ink are the document's source of truth.
 
-Folio 1.0 includes native pen/pad input, vector editing, search over titles/tags/typed text, mixed-media/PDF notes, persistent undo, recovery and accessibility interfaces. Optional offline recognition converts selected handwriting into editable text or LaTeX. Normal note taking needs no model or Python runtime. Physical pen latency and desktop/device compatibility still require broader testing. See [DEVELOPMENT.md](DEVELOPMENT.md) for the exact status.
+Folio 0.1.0 includes native pen/pad input, vector editing, search over titles/tags/typed text, mixed-media/PDF notes, persistent undo, recovery and accessibility interfaces. Optional offline recognition converts selected handwriting into editable text or LaTeX. Normal note taking needs no model or Python runtime. Physical pen latency and desktop/device compatibility still require broader testing. See [DEVELOPMENT.md](DEVELOPMENT.md) for the exact status.
 
 ## Releases
 
-Download [Folio 1.0.0](https://github.com/juccul/Folio/releases/tag/v1.0.0) for **Linux x86_64 / amd64**. Sign in to GitHub with access to this private repository.
+Download [Folio 0.1.0](https://github.com/juccul/Folio/releases/tag/v0.1.0) for **Linux x86_64 / amd64**. Sign in to GitHub with access to this private repository.
 
 | Format | Download | Install |
 | --- | --- | --- |
-| RPM — Fedora and compatible distributions | [folio-1.0.0-1.x86_64.rpm](https://github.com/juccul/Folio/releases/download/v1.0.0/folio-1.0.0-1.x86_64.rpm) | `sudo dnf install ./folio-1.0.0-1.x86_64.rpm` |
-| DEB — Debian and Ubuntu | [folio_1.0.0_amd64.deb](https://github.com/juccul/Folio/releases/download/v1.0.0/folio_1.0.0_amd64.deb) | `sudo apt install ./folio_1.0.0_amd64.deb` |
-| Flatpak | [folio-1.0.0-x86_64.flatpak](https://github.com/juccul/Folio/releases/download/v1.0.0/folio-1.0.0-x86_64.flatpak) | `flatpak install --user ./folio-1.0.0-x86_64.flatpak` |
+| Flatpak | [folio-0.1.0-x86_64.flatpak](https://github.com/juccul/Folio/releases/download/v0.1.0/folio-0.1.0-x86_64.flatpak) | `flatpak install --user ./folio-0.1.0-x86_64.flatpak` |
 
-Launch **Folio** from your application menu, or run `folio` for native packages and `flatpak run io.github.folio.Notes` for Flatpak. Native packages require glibc 2.35+, Python 3.10+, a working Vulkan driver and a desktop session; the package manager installs declared dependencies. Flatpak uses the Freedesktop 25.08 runtime. If Flathub is not configured, add it first with `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`. Installing the runtime may need internet; Folio works offline afterward.
+Launch **Folio** from your application menu, or run `flatpak run io.github.folio.Notes`. The Flatpak uses the Freedesktop 25.08 runtime. If Flathub is not configured, add it first with `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`. Installation may download the runtime; note taking and math solving then work offline.
 
-All three packages include the **offline CPU math solver** and its pinned SymPy/mpmath dependencies. Flatpak also bundles PDF preview tools; RPM/DEB install Poppler through your package manager. The GLM-OCR checkpoint and neural inference runtime are **optional and not included**; see [recognition setup](#install-optional-offline-recognition). A Flatpak OCR pack must use a Python/runtime compatible with its sandbox. Native and Flatpak builds have separate default data directories; use the Flatpak file picker for importing and exporting files.
+The Flatpak includes the **offline CPU math solver**, pinned SymPy/mpmath dependencies and PDF preview tools. GLM-OCR Q8 weights and the Vulkan inference runtime download automatically on the first OCR request if no usable model pack exists; see [recognition setup](#install-optional-offline-recognition). Use the Flatpak file picker for importing and exporting files.
 
-The release also includes SHA-256 checksums, complete corresponding Rust/Poppler source, and [release notes](RELEASE_NOTES.md). Verify downloaded files with `sha256sum --check SHA256SUMS` after placing the release assets together.
+The [release notes](RELEASE_NOTES.md) include the Flatpak SHA-256 checksum and a link to matching source. Check the downloaded file with `sha256sum folio-0.1.0-x86_64.flatpak` and compare its output to the release notes.
 
 The interface opens to a minimal document library with folders, favorites, recent notes, and grid/list views. Open a document for a compact writing toolbar and a collapsible page strip; the tab strip includes a + picker for opening an existing document or creating one. Drag tabs to reorder them. Right-click a library card or use its … menu to rename, duplicate, favorite, move, tag, trash or restore that document. Folio uses original icons and Linux-native GPUI rendering.
 
@@ -28,7 +26,7 @@ The tab strip is Folio's title bar, with the + picker immediately after the tabs
 
 ## Tablet stability notice
 
-Release 0.1.1 fixes a Wayland tablet-pad announcement abort in 0.1.0. The portable launcher temporarily uses X11/Xwayland on GNOME (`FOLIO_NATIVE_WAYLAND=1` opts into Wayland). Real Bluetooth Intuos testing also exposed a GNOME/Mutter 50.5 proximity-out crash with Folio closed; this app hotfix does not resolve that system crash. The user subsequently reported normal tablet operation after a restart. See [DEVELOPMENT.md](DEVELOPMENT.md) for the incident and exact verification limits.
+The current release includes the fix for a Wayland tablet-pad announcement abort found in an early development build. The portable launcher temporarily uses X11/Xwayland on GNOME (`FOLIO_NATIVE_WAYLAND=1` opts into Wayland). Real Bluetooth Intuos testing also exposed a GNOME/Mutter 50.5 proximity-out crash with Folio closed; this app hotfix does not resolve that system crash. The user subsequently reported normal tablet operation after a restart. See [DEVELOPMENT.md](DEVELOPMENT.md) for the incident and exact verification limits.
 
 For the specific Intuos BT S in this incident, two short sniff-disable interventions (60 and about 82 seconds) maintained operation; the user reported failures after restoration and on a subsequent unguarded reconnection. [The foreground compatibility helper](scripts/keep-tablet-active.py) maintains that per-tablet setting while running, with restoration when stopped. It requires sudo for the native HCI interface and installs no service or permanent setting. One-hour stability and GNOME crash prevention remain unverified; this is an optional diagnostic workaround, not a requirement for ordinary Folio use. The incident report records its command and limits.
 
@@ -213,12 +211,16 @@ dbus-run-session -- python3 scripts/verify-accessibility.py
 
 The native smoke test opens a real GPUI window, dispatches synthetic rich tablet frames at 8 ms intervals, validates pressure/tilt retention, exercises a stylus-operated selection button without drawing through its overlay, edits/pages, and flushes storage. This is not a physical tablet or end-to-end latency measurement. The headless validation generates real exports, searches Unicode text, imports a two-page PDF, and reloads the database.
 
+On a private Xvfb/D-Bus session, add `--virtual-display --shortcuts` to `scripts/verify-accessibility.py` to check Ctrl+N, actual modal typing through the native clipboard, Escape and Ctrl+S. This option requires GTK 3 Python introspection bindings and targets only the launched test app's window; use a disposable display, never your desktop session.
+
 The package script produces a Linux binary archive with notices and a corresponding source archive; it does not install or publish anything. The binary still depends on the system's Linux libraries, graphics driver, fonts and optional tools. Original source is GPL-3.0-or-later. Dependency and font notices are in [LICENSES.md](LICENSES.md).
 
 To record physical input locally, start with `FOLIO_PEN_RECORD=/new/path.jsonl`; the file must not already exist. `FOLIO_PROFILE_INK=1` reports dispatch-to-CPU-paint metrics on exit. These exclude GPU presentation and display scanout. Recording is optional and bounded.
 
-The refreshed 1.0 release publishes only the x86_64 Flatpak, with automatic OCR downloads and Vulkan Q8 acceleration. The native packaging scripts remain available for local builds. The release uses a Debian bookworm build (glibc 2.35 or newer). Build it with `packaging/Containerfile`, then pass `--binary artifacts/debian-target/release/folio` to the packaging scripts. RPM and DEB bundle the math worker with portable relative paths; `--math-python` must have the pinned math requirements installed. Flatpak requires the installed Freedesktop SDK/Platform 25.08 and verifies its pinned Poppler source before building. It grants display and GPU access, uses file chooser portals, and grants network access for first-use OCR downloads, and grants no host filesystem permission.
+The 0.1.0 release publishes only the x86_64 Flatpak, with automatic OCR downloads and Vulkan Q8 acceleration. The native packaging scripts remain available for local builds. The release uses a Debian bookworm build (glibc 2.35 or newer). Build it with `packaging/Containerfile`, then pass `--binary artifacts/debian-target/release/folio` to the packaging scripts. RPM and DEB bundle the math worker with portable relative paths; `--math-python` must have the pinned math requirements installed. Flatpak requires the installed Freedesktop SDK/Platform 25.08 and verifies its pinned Poppler source before building. It grants display and GPU access, uses file chooser portals, and grants network access for first-use OCR downloads, and grants no host filesystem permission.
 
 For the complete release source archive, run `scripts/package.py --no-build --binary artifacts/debian-target/release/folio`. The separate desktop tar archive excludes math and OCR runtimes; the release installers include math. No package copies development databases, model caches or virtual environments.
+
+Installer math payloads retain the SymPy/mpmath runtime and distribution notices while excluding their upstream `tests` directories.
 
 A cross-distribution build image is provided in `packaging/Containerfile`; it builds against Debian bookworm rather than this machine’s newer glibc. Package dependency metadata must match the chosen binary. Native COSMIC/KDE and physical tablet certification require their own sessions/devices.

@@ -1,6 +1,8 @@
-# Development status — Folio 0.1.10
+# Development status — Folio 0.1.0
 
-Updated 2026-10-05. Folio is a runnable Rust/GPUI Linux desktop application. Production certification still requires physical tablets and additional desktop/distribution sessions; synthetic events and CPU benchmarks do not establish hardware-to-display latency.
+Updated 2026-10-07. Folio is a runnable Rust/GPUI Linux desktop application. Production certification still requires physical tablets and additional desktop/distribution sessions; synthetic events and CPU benchmarks do not establish hardware-to-display latency.
+
+The public release version is reset to 0.1.0. Historical sections below retain their original internal development build numbers. This release includes Vulkan Q8 OCR with verified first-use downloads and the test/payload cleanup recorded in `TEST_FILE_AUDIT.md`.
 
 ## Optimization and edge-case audit
 
@@ -160,7 +162,7 @@ Release verification: the 64 workspace tests, strict Clippy and the Debian relea
 
 Latest outcome: the user reports that the tablet works normally after a restart. No permanent compatibility service or Bluetooth configuration change was installed. Leave the optional helper off while normal operation continues. The short sniff-disable trials describe the affected session; they do not establish that future sessions need a workaround. The restart's scope and subsequent stable duration were not captured, so the exact cause and lasting resolution remain unconfirmed.
 
-Real Intuos BT S testing exposed an abort missed by synthetic smoke replay: the Wayland pad group child event was registered as opcode 1 instead of 0. The hotfix uses generated protocol opcode constants for all tablet child registrations. `scripts/verify-tablet-protocol.py` executes those registrations against the protocol's child-event metadata using a private socket pair, without connecting to GNOME or input devices. It fails on the original release and passes all six child events with the fix. The 0.1.0 packages are withdrawn; their synthetic input checks did not establish real-device stability.
+Real Intuos BT S testing exposed an abort missed by synthetic smoke replay: the Wayland pad group child event was registered as opcode 1 instead of 0. The hotfix uses generated protocol opcode constants for all tablet child registrations. `scripts/verify-tablet-protocol.py` executes those registrations against the protocol's child-event metadata using a private socket pair, without connecting to GNOME or input devices. It fails on the earliest development build and passes all six child events with the fix. Those early development packages were withdrawn; their synthetic input checks did not establish real-device stability.
 
 The user's GNOME/Mutter 50.5 also crashed twice after Folio had exited. An October 1 core has the identical fault offset (`libmutter-18.so.0 + 0xa9e61`), while this project's files were created on October 3; the same compositor fault had occurred before Folio. Both cores resolve to `meta_wayland_tablet_update_sprite` writing through a null current tablet during proximity-out, after Bluetooth tablet reconnects. System input/GNOME package checksums are intact, their installs predate this work, and no Folio service, system driver, udev/Xorg rule or global accessibility setting was installed/changed. Root cause of the Bluetooth proximity sequence remains unresolved; fixing Folio's child-event registration does not fix this compositor failure or exclude an indirect trigger in the affected session. No system package, driver, pairing, GNOME extension or desktop configuration was reset by the agent.
 

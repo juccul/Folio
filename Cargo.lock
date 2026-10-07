@@ -1897,7 +1897,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "folio"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "folio-app",
@@ -1909,7 +1909,7 @@ dependencies = [
 
 [[package]]
 name = "folio-app"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -1936,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "folio-canvas"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "folio-document",
  "folio-ink",
@@ -1944,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "folio-document"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1954,7 +1954,7 @@ dependencies = [
 
 [[package]]
 name = "folio-export"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "folio-document",
@@ -1969,7 +1969,7 @@ dependencies = [
 
 [[package]]
 name = "folio-gestures"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "folio-document",
  "folio-ink",
@@ -1978,7 +1978,7 @@ dependencies = [
 
 [[package]]
 name = "folio-ink"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "folio-document",
  "serde",
@@ -1986,14 +1986,14 @@ dependencies = [
 
 [[package]]
 name = "folio-input"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "folio-document",
 ]
 
 [[package]]
 name = "folio-math"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "folio-document",
  "latex-rust",
@@ -2003,7 +2003,7 @@ dependencies = [
 
 [[package]]
 name = "folio-pdf"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "folio-document",
  "folio-platform",
@@ -2014,14 +2014,14 @@ dependencies = [
 
 [[package]]
 name = "folio-platform"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "folio-search"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "folio-document",
  "rusqlite",
@@ -2029,14 +2029,14 @@ dependencies = [
 
 [[package]]
 name = "folio-shapes"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "folio-document",
 ]
 
 [[package]]
 name = "folio-storage"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "folio-document",
  "rusqlite",
@@ -2047,7 +2047,7 @@ dependencies = [
 
 [[package]]
 name = "folio-ui"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
  "accesskit",
  "accesskit_unix",

@@ -224,7 +224,11 @@ fn install(pack: &Path, context: &Context<'_>) -> Result<PathBuf> {
         .https_only(true)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(20))
-        .user_agent("Folio/1.0 OCR asset setup")
+        .user_agent(concat!(
+            "Folio/",
+            env!("CARGO_PKG_VERSION"),
+            " OCR asset setup"
+        ))
         .build()
         .map_err(io)?;
     let mut completed = 0;

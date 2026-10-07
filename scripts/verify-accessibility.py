@@ -16,11 +16,11 @@ def main():
     parser.add_argument('--navigation',action='store_true',help='Exercise document management menus and the tab picker on throwaway notes')
     parser.add_argument('--polish',action='store_true',help='Check modal isolation, selection preservation, validation and motion preferences')
     parser.add_argument('--appearance',action='store_true',help='Exercise theme customization and themed/fixed paper on throwaway notes')
-    parser.add_argument('--without-recognition',action='store_true',help='Check retired recognition controls and legacy configuration on a private fixture')
+    parser.add_argument('--shortcuts',action='store_true',help='Verify native Ctrl+N, modal typing and Ctrl+S on an isolated test display')
     parser.add_argument('--screenshots',type=Path,help='Save only the test application client window')
     args=parser.parse_args()
     if (args.appearance or args.navigation or args.polish) and not (args.fixture and args.virtual_display):parser.error('--appearance requires a throwaway --fixture and --virtual-display')
-    if args.without_recognition and not (args.fixture and args.virtual_display):parser.error('--without-recognition requires a throwaway --fixture and --virtual-display')
+    if args.shortcuts and not args.virtual_display:parser.error('--shortcuts requires an isolated --virtual-display')
     if (args.fixture or args.screenshots) and not args.virtual_display:parser.error('Fixture screenshots require --virtual-display')
     launcher=subprocess.Popen(['/usr/libexec/at-spi-bus-launcher','--launch-immediately'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     time.sleep(.3)
@@ -35,15 +35,6 @@ def main():
     with tempfile.TemporaryDirectory(prefix='folio-a11y-') as root:
         if args.fixture:shutil.copytree(args.fixture,root,dirs_exist_ok=True,ignore=shutil.ignore_patterns('session.lock','*.sqlite3-wal','*.sqlite3-shm'))
         env=os.environ.copy();env['WAYLAND_DISPLAY']=''
-        if args.without_recognition:
-            import sqlite3
-            with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
-                row=db.execute("SELECT data FROM settings WHERE key='preferences'").fetchone()
-                preferences=json.loads(row[0]) if row else {}
-                preferences.update(auto_recognition=True,ocr_engine='trocr',spellcheck=True,
-                    trocr_model='/missing/text-model',math_model='/missing/math-model',python='/missing/python')
-                db.execute("INSERT OR REPLACE INTO settings(key,data) VALUES('preferences',?)",(json.dumps(preferences),))
-            env['FOLIO_RECOGNITION_PACK']='/missing/retired-pack'
         with open('/tmp/folio-a11y-runtime.log','w') as log:
             app=subprocess.Popen([str(args.binary.resolve()),'--data-dir',root],env=env,stdout=log,stderr=log)
             try:
@@ -97,28 +88,6 @@ def main():
                     initial_notes=db.execute('SELECT count(*) FROM notes').fetchone()[0]
                     initial_objects=db.execute('SELECT count(*) FROM objects').fetchone()[0]
                 capture('library-light')
-                if args.without_recognition:
-                    def no_recognition_controls():
-                        names={n.get_name() for n in controls()}
-                        retired=['Recognize handwriting','Recognize text','Copy as Text','Correct text',
-                            'Use offline model pack','Math model','Model directory','Recognition language',
-                            'Python executable','Math recognizer executable','Spellchecking dictionary',
-                            'Spellcheck recognized handwriting','Recognize after writing pauses',
-                            'Reflow handwriting','Strike through a whole word','Draw a caret between lines']
-                        assert not any(name.startswith(prefix) for name in names for prefix in retired), names
-                        return names
-                    click('Open Field notes');no_recognition_controls()
-                    client.key('a',4);time.sleep(.3);no_recognition_controls()
-                    client.key('Escape');click('Settings')
-                    names=no_recognition_controls()
-                    assert any(name.startswith('Hold to snap shapes') for name in names), names
-                    threads=[p.read_text().strip() for p in Path(f'/proc/{app.pid}/task').glob('*/comm')]
-                    assert 'folio-ocr' not in threads, threads
-                    assert not any('recogn' in name.lower() for name in threads), threads
-                    status=Path(f'/proc/{app.pid}/status').read_text()
-                    memory=next(line for line in status.splitlines() if line.startswith('VmRSS:'))
-                    print('NO_RECOGNITION_UI_OK: legacy config ignored; editor/selection/settings controls absent; '+memory)
-                    client.key('Escape');click('Library ·',True)
                 if args.fixture:
                     click('List view');capture('library-list')
                     click('Grid view');click('Favorites');capture('library-favorites');click('Documents')
@@ -239,6 +208,27 @@ def main():
                 buttons=controls()
                 assert any(n.get_name()=='Undo' for n in buttons), 'Editor controls must follow notebook creation'
                 undo=next(n for n in buttons if n.get_name()=='Undo');assert undo.get_action_iface().get_n_actions()>0
+                if args.shortcuts:
+                    gi.require_version('Gtk','3.0')
+                    from gi.repository import Gtk,Gdk
+                    assert Gtk.init_check([])[0], 'No private GTK display for clipboard verification'
+                    client.key('n',4);time.sleep(.5)
+                    with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
+                        assert db.execute('SELECT count(*) FROM notes').fetchone()[0]==initial_notes+2, 'Ctrl+N did not create exactly one document'
+                        objects_before=list(db.execute('SELECT id,data FROM objects ORDER BY id'))
+                    client.key('f',4);client.key('a',4)
+                    for char in 'pel':client.key(char)
+                    assert any(n.get_role()==Atspi.Role.ENTRY and n.get_name()=='Search your notes' for n in walk(target)), 'Typing tool shortcuts closed the search field'
+                    client.key('a',4);client.key('c',4)
+                    clipboard=Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+                    assert clipboard.wait_for_text()=='pel', 'Tool shortcut letters did not reach the focused field'
+                    client.key('Escape');client.key('s',4);time.sleep(.3)
+                    assert not any(n.get_role()==Atspi.Role.ENTRY for n in walk(target)), 'Escape did not close search'
+                    with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
+                        assert db.execute('SELECT count(*) FROM notes').fetchone()[0]==initial_notes+2, 'Modal typing created a document'
+                        assert list(db.execute('SELECT id,data FROM objects ORDER BY id'))==objects_before, 'Modal typing or saving mutated document objects'
+                    initial_notes+=1
+                    print('SHORTCUTS_OK: Ctrl+N, actual modal text/clipboard, Escape, Ctrl+S, document preservation',flush=True)
                 if not any(n.get_name()=='Hide pages' for n in controls()):click('Page thumbnails',True)
                 click('Add page')
                 assert any(n.get_name()=='Go to page 2' for n in controls()),'Virtual page controls must be accessible'
@@ -247,6 +237,7 @@ def main():
                 with sqlite3.connect(Path(root)/'notes.sqlite3') as db:assert db.execute('SELECT count(*) FROM notes').fetchone()[0]==initial_notes+1
                 buttons=controls()
                 result={'application':target.get_name(),'accessible_controls':len(buttons),'labels':[n.get_name() for n in buttons],'native_click_created_note':True,'native_page_sidebar_add_navigate':True,'native_return_to_library':True}
+                if args.shortcuts:result['native_shortcuts_and_modal_typing']=True
                 destination=ROOT/'artifacts/validation/accessibility.json';destination.parent.mkdir(parents=True,exist_ok=True);destination.write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
             finally:
                 if args.virtual_display and 'client' in locals():client.close()
