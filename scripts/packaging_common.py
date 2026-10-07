@@ -67,3 +67,4 @@ def stage_metadata(prefix):
     ):
         copy(source, prefix / destination)
     shutil.copytree(ROOT / "third_party/licenses", prefix / "share/doc/folio/third_party")
+    shutil.copytree(ROOT / "third_party/ocr", prefix / "share/doc/folio/ocr")

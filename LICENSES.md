@@ -6,7 +6,8 @@ For dual-licensed dependencies, select MIT where offered, otherwise Apache-2.0 w
 
 ## Bundled components and system tools
 
-- Optional recognition: GLM-OCR weights are declared MIT in the upstream model card. One local model handles text and math through native Transformers classes; no GLM SDK or layout-detector code is bundled. Setup retains the model card, attribution, pinned revision and file hashes. Python (PSF), PyTorch (BSD-3-Clause), torchvision (BSD-3-Clause), Transformers (Apache-2.0), NumPy (BSD-3-Clause) and Pillow (HPND) are optional separately installed components. The standard archive contains no model, Python wheel, CUDA runtime or dataset. Earlier ConvText inference modules remain as historical source under [third_party/htr-convtext](third_party/htr-convtext), with their GPL-3.0 license; current recognition does not load them.
+- First-use recognition downloads pinned GLM-OCR Q8_0 weights and the llama.cpp b11457 Vulkan runtime separately from the application. Both upstream components declare MIT licenses. Retained model attribution/card and llama.cpp license are in [third_party/ocr](third_party/ocr); setup copies model notices into the downloaded pack and preserves the runtime archive LICENSE. Model inference is local; the SDK and layout detector are not included.
+- Optional Python recognition: GLM-OCR weights are declared MIT in the upstream model card. One local model handles text and math through native Transformers classes; no GLM SDK or layout-detector code is bundled. Setup retains the model card, attribution, pinned revision and file hashes. Python (PSF), PyTorch (BSD-3-Clause), torchvision (BSD-3-Clause), Transformers (Apache-2.0), NumPy (BSD-3-Clause) and Pillow (HPND) are optional separately installed components. The standard archive contains no model, Python wheel, CUDA runtime or dataset. Earlier ConvText inference modules remain as historical source under [third_party/htr-convtext](third_party/htr-convtext), with their GPL-3.0 license; current recognition does not load them.
 - GPUI 0.2.2: Apache-2.0; local tablet/rendering patches are documented in [vendor/README.md](vendor/README.md). All upstream notices are retained.
 - xattr 0.2.3: MIT or Apache-2.0; local Linux ENODATA compatibility patch.
 - proc-macro-error2 2.0.1: MIT or Apache-2.0; local public proc_macro re-export compatibility patch.
@@ -80,6 +81,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [av1-grain](https://github.com/rust-av/av1-grain) | 0.2.5 | BSD-2-Clause | [notices](third_party/licenses/av1-grain-0.2.5/) |
 | [avif-serialize](https://github.com/kornelski/avif-serialize) | 0.8.9 | BSD-3-Clause | [notices](third_party/licenses/avif-serialize-0.8.9/) |
 | [base64](https://github.com/marshallpierce/rust-base64) | 0.22.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/base64-0.22.1/) |
+| [base64](https://github.com/marshallpierce/rust-base64) | 0.23.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/base64-0.23.1/) |
 | [bit-set](https://github.com/contain-rs/bit-set) | 0.8.0 | Apache-2.0 OR MIT | [notices](third_party/licenses/bit-set-0.8.0/) |
 | [bit-vec](https://github.com/contain-rs/bit-vec) | 0.8.0 | Apache-2.0 OR MIT | [notices](third_party/licenses/bit-vec-0.8.0/) |
 | [bit_field](https://github.com/phil-opp/rust-bit-field) | 0.10.3 | Apache-2.0/MIT | [notices](third_party/licenses/bit_field-0.10.3/) |
@@ -407,6 +409,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [regex](https://github.com/rust-lang/regex) | 1.13.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/regex-1.13.1/) |
 | [regex-automata](https://github.com/rust-lang/regex) | 0.4.18 | MIT OR Apache-2.0 | [notices](third_party/licenses/regex-automata-0.4.18/) |
 | [regex-syntax](https://github.com/rust-lang/regex) | 0.8.11 | MIT OR Apache-2.0 | [notices](third_party/licenses/regex-syntax-0.8.11/) |
+| [reqwest](https://github.com/seanmonstar/reqwest) | 0.12.28 | MIT OR Apache-2.0 | [notices](third_party/licenses/reqwest-0.12.28/) |
 | [resvg](https://github.com/linebender/resvg) | 0.45.1 | Apache-2.0 OR MIT | [notices](third_party/licenses/resvg-0.45.1/) |
 | [resvg](https://github.com/linebender/resvg) | 0.47.0 | Apache-2.0 OR MIT | [notices](third_party/licenses/resvg-0.47.0/) |
 | [rgb](https://github.com/kornelski/rust-rgb) | 0.8.53 | MIT | [notices](third_party/licenses/rgb-0.8.53/) |
@@ -503,6 +506,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [sysinfo](https://github.com/GuillaumeGomez/sysinfo) | 0.31.4 | MIT | [notices](third_party/licenses/sysinfo-0.31.4/) |
 | [taffy](https://github.com/DioxusLabs/taffy) | 0.9.0 | MIT | [notices](third_party/licenses/taffy-0.9.0/) |
 | [take-until](https://github.com/hdevalke/take-until.git) | 0.2.0 | MIT | [notices](third_party/licenses/take-until-0.2.0/) |
+| [tar](https://github.com/composefs/tar-rs) | 0.4.46 | MIT OR Apache-2.0 | [notices](third_party/licenses/tar-0.4.46/) |
 | [tempfile](https://github.com/Stebalien/tempfile) | 3.27.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/tempfile-3.27.0/) |
 | [termcolor](https://github.com/BurntSushi/termcolor) | 1.4.1 | Unlicense OR MIT | [notices](third_party/licenses/termcolor-1.4.1/) |
 | [thiserror](https://github.com/dtolnay/thiserror) | 1.0.69 | MIT OR Apache-2.0 | [notices](third_party/licenses/thiserror-1.0.69/) |
@@ -525,6 +529,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [toml_edit](https://github.com/toml-rs/toml) | 0.25.15+spec-1.1.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/toml_edit-0.25.15+spec-1.1.0/) |
 | [toml_parser](https://github.com/toml-rs/toml) | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/toml_parser-1.1.3+spec-1.1.0/) |
 | [tower](https://github.com/tower-rs/tower) | 0.5.3 | MIT | [notices](third_party/licenses/tower-0.5.3/) |
+| [tower-http](https://github.com/tower-rs/tower-http) | 0.6.11 | MIT | [notices](third_party/licenses/tower-http-0.6.11/) |
 | [tower-layer](https://github.com/tower-rs/tower) | 0.3.3 | MIT | [notices](third_party/licenses/tower-layer-0.3.3/) |
 | [tower-service](https://github.com/tower-rs/tower) | 0.3.3 | MIT | [notices](third_party/licenses/tower-service-0.3.3/) |
 | [tracing](https://github.com/tokio-rs/tracing) | 0.1.44 | MIT | [notices](third_party/licenses/tracing-0.1.44/) |
@@ -588,6 +593,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [x11rb](https://github.com/psychon/x11rb) | 0.13.2 | MIT OR Apache-2.0 | [notices](third_party/licenses/x11rb-0.13.2/) |
 | [x11rb-protocol](https://github.com/psychon/x11rb) | 0.13.2 | MIT OR Apache-2.0 | [notices](third_party/licenses/x11rb-protocol-0.13.2/) |
 | [xattr](https://github.com/Stebalien/xattr) | 0.2.3 | MIT/Apache-2.0 | [notices](third_party/licenses/xattr-0.2.3/) |
+| [xattr](https://github.com/Stebalien/xattr) | 1.6.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/xattr-1.6.1/) |
 | [xcb](https://github.com/rust-x-bindings/rust-xcb) | 1.7.1 | MIT | [notices](third_party/licenses/xcb-1.7.1/) |
 | [xcursor](https://github.com/esposm03/xcursor-rs) | 0.3.11 | MIT | [notices](third_party/licenses/xcursor-0.3.11/) |
 | [xim-ctext](https://github.com/Riey/xim-rs) | 0.3.0 | MIT | [notices](third_party/licenses/xim-ctext-0.3.0/) |

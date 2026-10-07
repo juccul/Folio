@@ -1722,7 +1722,7 @@ impl NotesView {
             ))
             .child(div().text_xs().text_color(rgb(theme.muted)).child(
                 if self.controller.recognition_pending {
-                    "Recognizing writing… (Esc to cancel)".into()
+                    format!("{} (Esc to cancel)", self.controller.recognition_status)
                 } else if self.controller.busy > 0 {
                     format!(
                         "{} background task{}",

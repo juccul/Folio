@@ -1,0 +1,6 @@
+GLM-OCR by Z.ai / zai-org. Model weights declared MIT in the retained model card.
+Original model: https://huggingface.co/zai-org/GLM-OCR/tree/2e85a62840ccac27daa451df36c736c4636b8628
+Q8_0 conversion: ggml-org/GLM-OCR-GGUF, revision 65a42de1148dbed2297e922b5dbc7d9b70c36578.
+https://huggingface.co/ggml-org/GLM-OCR-GGUF/tree/65a42de1148dbed2297e922b5dbc7d9b70c36578
+Runtime: llama.cpp b11457, MIT; see runtime/llama-b11457/LICENSE.
+Both language and vision models use Q8_0. The SDK and PP-DocLayout-V3 are not included.

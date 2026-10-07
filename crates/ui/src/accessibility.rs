@@ -319,7 +319,7 @@ impl Accessibility {
         {
             let mut result = Node::new(Role::Status);
             let label = if view.controller.recognition_pending {
-                "Reading your selection…".into()
+                view.controller.recognition_status.clone()
             } else if session.pending {
                 if view.math_inputs.as_ref().is_some_and(|i| i.latex_open) {
                     "Updating the answer…".into()
@@ -369,7 +369,11 @@ impl Accessibility {
             children.push(NodeId(9));
         }
         let mut status = Node::new(Role::Status);
-        status.set_label(view.controller.status.clone());
+        status.set_label(if view.controller.recognition_pending {
+            view.controller.recognition_status.clone()
+        } else {
+            view.controller.status.clone()
+        });
         nodes.push((NodeId(4), status));
         children.push(NodeId(4));
         root.set_children(children);

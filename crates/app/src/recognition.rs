@@ -59,6 +59,7 @@ struct Task {
     pack: PathBuf,
     review: RecognitionReview,
     image: Option<ImageSource>,
+    auto_setup: bool,
 }
 enum ImageSource {
     Object(Arc<Object>, PathBuf),
@@ -70,9 +71,14 @@ struct ResultMessage {
     result: Result<String, String>,
 }
 
+struct StatusMessage {
+    generation: u64,
+    text: String,
+}
 pub(super) struct Service {
     sender: Option<mpsc::SyncSender<Task>>,
     results: mpsc::Receiver<ResultMessage>,
+    status: mpsc::Receiver<StatusMessage>,
     process: Arc<Mutex<Option<Child>>>,
     generation: Arc<AtomicU64>,
 }
@@ -85,6 +91,7 @@ impl Service {
     pub fn new() -> Self {
         let (sender, jobs) = mpsc::sync_channel::<Task>(1);
         let (tx, results) = mpsc::channel();
+        let (progress, status) = mpsc::channel();
         let process: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
         let generation = Arc::new(AtomicU64::new(0));
         let worker_process = process.clone();
@@ -93,11 +100,75 @@ impl Service {
             .name("folio-recognition".into())
             .spawn(move || {
                 let mut client: Option<Client> = None;
+                let mut native_client: Option<native::Native> = None;
                 while let Ok(task) = jobs.recv() {
                     if task.generation != worker_generation.load(Ordering::Acquire) {
                         continue;
                     }
+                    let report_progress = |text: String| {
+                        let _ = progress.send(StatusMessage {
+                            generation: task.generation,
+                            text,
+                        });
+                    };
+                    let context = native::Context {
+                        generation: task.generation,
+                        current: &worker_generation,
+                        process: &worker_process,
+                        progress: &report_progress,
+                    };
+                    let native_pack = std::fs::read(&task.pack)
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                        .is_some_and(|config| config["backend"] == "llama-vulkan");
+                    let use_native =
+                        native_pack || (task.auto_setup && !legacy_pack_available(&task.pack));
                     let result = (|| {
+                        if use_native {
+                            if client.is_some() {
+                                stop_process(&worker_process);
+                                client = None;
+                            }
+                            let alive = worker_process
+                                .lock()
+                                .unwrap()
+                                .as_mut()
+                                .is_some_and(|p| matches!(p.try_wait(), Ok(None)));
+                            if native_client.as_ref().is_none_or(|c| c.pack != task.pack) || !alive
+                            {
+                                stop_process(&worker_process);
+                                native_client = Some(native::Native::load(&task.pack, &context)?);
+                            }
+                            let (request, temporary_image) = prepare_request(&task)?;
+                            let mut result = native_client
+                                .as_ref()
+                                .unwrap()
+                                .recognize(&request, &context);
+                            if result
+                                .as_ref()
+                                .is_err_and(|error| error.starts_with("OCR runtime unavailable:"))
+                                && native_client.as_ref().unwrap().is_gpu()
+                            {
+                                eprintln!(
+                                    "Folio OCR GPU failed: {}; retrying on CPU",
+                                    result.as_ref().unwrap_err()
+                                );
+                                report_progress("GPU OCR failed; retrying on CPU…".into());
+                                stop_process(&worker_process);
+                                native_client =
+                                    Some(native::Native::load_cpu(&task.pack, &context)?);
+                                result = native_client
+                                    .as_ref()
+                                    .unwrap()
+                                    .recognize(&request, &context);
+                            }
+                            drop(temporary_image);
+                            return result;
+                        }
+                        if native_client.take().is_some() {
+                            stop_process(&worker_process);
+                        }
+                        report_progress("Recognizing writing…".into());
                         let alive = worker_process
                             .lock()
                             .unwrap()
@@ -164,81 +235,9 @@ impl Service {
                             stop_process(&worker_process);
                             return Err("Recognition cancelled".into());
                         }
-                        let strokes = task
-                            .review
-                            .sources
-                            .iter()
-                            .filter_map(|o| {
-                                let Object::Stroke(s) = o.as_ref() else {
-                                    return None;
-                                };
-                                Some(
-                                    s.display_path()
-                                        .iter()
-                                        .map(|p| {
-                                            let p = s.transform.apply(p.position);
-                                            [p.x, p.y]
-                                        })
-                                        .collect(),
-                                )
-                            })
-                            .collect();
+                        let (request, temporary_image) = prepare_request(&task)?;
                         let c = client.as_mut().unwrap();
-                        let mut temporary_image = TemporaryImage(None);
-                        let image_path = if let Some(image) = &task.image {
-                            let path = std::env::temp_dir()
-                                .join(format!("folio-ocr-{}.png", Id::new_v4()));
-                            temporary_image.0 = Some(path.clone());
-                            match image {
-                                ImageSource::Object(object, assets) => {
-                                    let (_, pixels) = folio_export::raster_object_limited(
-                                        object, assets, 1_400_000,
-                                    )
-                                    .map_err(|e| e.to_string())?;
-                                    pixels.save_png(&path).map_err(|e| e.to_string())?;
-                                }
-                                ImageSource::Pdf(background, assets, bounds) => {
-                                    folio_pdf::render_preview(background, assets)
-                                        .map_err(|e| e.to_string())?;
-                                    let source = folio_export::asset_path(
-                                        assets,
-                                        background
-                                            .preview_asset
-                                            .as_deref()
-                                            .ok_or("PDF preview missing")?,
-                                    )
-                                    .map_err(|e| e.to_string())?;
-                                    let image = image::open(source).map_err(|e| e.to_string())?;
-                                    let (width, height) = (image.width(), image.height());
-                                    let x = (bounds.min.x * width as f32).floor() as u32;
-                                    let y = (bounds.min.y * height as f32).floor() as u32;
-                                    let w = (bounds.width() * width as f32).ceil() as u32;
-                                    let h = (bounds.height() * height as f32).ceil() as u32;
-                                    image
-                                        .crop_imm(
-                                            x,
-                                            y,
-                                            w.min(width - x).max(1),
-                                            h.min(height - y).max(1),
-                                        )
-                                        .resize(1400, 1000, image::imageops::FilterType::Lanczos3)
-                                        .save(&path)
-                                        .map_err(|e| e.to_string())?;
-                                }
-                            }
-                            Some(path)
-                        } else {
-                            None
-                        };
-                        serde_json::to_writer(
-                            &mut c.input,
-                            &Request {
-                                kind: task.review.kind,
-                                strokes,
-                                image_path: image_path.clone(),
-                            },
-                        )
-                        .map_err(|e| e.to_string())?;
+                        serde_json::to_writer(&mut c.input, &request).map_err(|e| e.to_string())?;
                         c.input
                             .write_all(b"\n")
                             .and_then(|_| c.input.flush())
@@ -271,6 +270,7 @@ impl Service {
                     if result.is_err() {
                         stop_process(&worker_process);
                         client = None;
+                        native_client = None;
                     }
                     if tx
                         .send(ResultMessage {
@@ -289,6 +289,7 @@ impl Service {
         Self {
             sender: Some(sender),
             results,
+            status,
             process,
             generation,
         }
@@ -297,6 +298,85 @@ impl Service {
         self.generation.store(generation, Ordering::Release);
         stop_process(&self.process);
     }
+}
+fn prepare_request(task: &Task) -> Result<(Request, TemporaryImage), String> {
+    let strokes = task
+        .review
+        .sources
+        .iter()
+        .filter_map(|o| {
+            let Object::Stroke(s) = o.as_ref() else {
+                return None;
+            };
+            Some(
+                s.display_path()
+                    .iter()
+                    .map(|p| {
+                        let p = s.transform.apply(p.position);
+                        [p.x, p.y]
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let mut temporary_image = TemporaryImage(None);
+    let image_path = if let Some(image) = &task.image {
+        let path = std::env::temp_dir().join(format!("folio-ocr-{}.png", Id::new_v4()));
+        temporary_image.0 = Some(path.clone());
+        match image {
+            ImageSource::Object(object, assets) => {
+                let (_, pixels) = folio_export::raster_object_limited(object, assets, 1_400_000)
+                    .map_err(|e| e.to_string())?;
+                pixels.save_png(&path).map_err(|e| e.to_string())?;
+            }
+            ImageSource::Pdf(background, assets, bounds) => {
+                folio_pdf::render_preview(background, assets).map_err(|e| e.to_string())?;
+                let source = folio_export::asset_path(
+                    assets,
+                    background
+                        .preview_asset
+                        .as_deref()
+                        .ok_or("PDF preview missing")?,
+                )
+                .map_err(|e| e.to_string())?;
+                let image = image::open(source).map_err(|e| e.to_string())?;
+                let (width, height) = (image.width(), image.height());
+                let x = (bounds.min.x * width as f32).floor() as u32;
+                let y = (bounds.min.y * height as f32).floor() as u32;
+                let w = (bounds.width() * width as f32).ceil() as u32;
+                let h = (bounds.height() * height as f32).ceil() as u32;
+                image
+                    .crop_imm(x, y, w.min(width - x).max(1), h.min(height - y).max(1))
+                    .resize(1400, 1000, image::imageops::FilterType::Lanczos3)
+                    .save(&path)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Some(path)
+    } else {
+        None
+    };
+    Ok((
+        Request {
+            kind: task.review.kind,
+            strokes,
+            image_path,
+        },
+        temporary_image,
+    ))
+}
+fn legacy_pack_available(path: &std::path::Path) -> bool {
+    let Some(config) = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    else {
+        return false;
+    };
+    let root = path.parent().unwrap_or(std::path::Path::new("."));
+    let resolve = |key: &str| config[key].as_str().map(|value| root.join(value));
+    resolve("python").is_some_and(|p| p.is_file())
+        && resolve("worker").is_some_and(|p| p.is_file())
+        && resolve("ocr_model").is_none_or(|p| p.join("model.safetensors").is_file())
 }
 fn stop_process(process: &Mutex<Option<Child>>) {
     if let Some(mut child) = process.lock().unwrap().take() {
@@ -324,15 +404,13 @@ impl Controller {
             .and_then(|p| p.parent()?.parent().map(PathBuf::from))
         {
             let pack = root.join("recognition/pack.json");
-            if pack.is_file() {
-                return pack;
-            }
-        }
-        // Development only; release builds require a user/portable pack.
-        if cfg!(debug_assertions) {
-            let pack = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../artifacts/recognition-v2/pack.json");
-            if pack.is_file() {
+            if pack.is_file()
+                && (legacy_pack_available(&pack)
+                    || std::fs::read(&pack)
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                        .is_some_and(|config| config["backend"] == "llama-vulkan"))
+            {
                 return pack;
             }
         }
@@ -392,9 +470,6 @@ impl Controller {
             return Err("Recognition is already running".into());
         }
         let pack = self.recognition_pack();
-        if !pack.is_file() {
-            return Err("Offline recognition pack is missing. Install it using scripts/setup-recognition.py (see README).".into());
-        }
         let review = self.recognition_snapshot(kind)?;
         self.recognition_generation = self.recognition_generation.wrapping_add(1);
         self.recognition_service
@@ -406,6 +481,7 @@ impl Controller {
             .unwrap()
             .try_send(Task {
                 generation: self.recognition_generation,
+                auto_setup: std::env::var_os("FOLIO_RECOGNITION_CONFIG").is_none(),
                 pack,
                 review,
                 image: None,
@@ -413,12 +489,14 @@ impl Controller {
             .map_err(|_| "Recognition worker is busy; try again".to_string())?;
         self.recognition_review = None;
         self.recognition_pending = true;
+        self.recognition_status = "Preparing recognition…".into();
         Ok(())
     }
     pub fn cancel_recognition(&mut self) {
         self.recognition_generation = self.recognition_generation.wrapping_add(1);
         self.recognition_service.cancel(self.recognition_generation);
         self.recognition_pending = false;
+        self.recognition_status.clear();
         self.recognition_replacing = false;
         self.recognition_review = None;
     }
@@ -454,6 +532,7 @@ impl Controller {
             .unwrap()
             .try_send(Task {
                 generation: self.recognition_generation,
+                auto_setup: std::env::var_os("FOLIO_RECOGNITION_CONFIG").is_none(),
                 pack: self.recognition_pack(),
                 review,
                 image: Some(ImageSource::Object(sources[0].clone(), self.assets.clone())),
@@ -461,6 +540,7 @@ impl Controller {
             .map_err(|_| "Recognition worker is busy")?;
         self.recognition_review = None;
         self.recognition_pending = true;
+        self.recognition_status = "Preparing recognition…".into();
         Ok(())
     }
     pub fn recognize_pdf_math_region(
@@ -523,6 +603,7 @@ impl Controller {
             .unwrap()
             .try_send(Task {
                 generation: self.recognition_generation,
+                auto_setup: std::env::var_os("FOLIO_RECOGNITION_CONFIG").is_none(),
                 pack: self.recognition_pack(),
                 review,
                 image: Some(ImageSource::Pdf(background, self.assets.clone(), fractions)),
@@ -530,6 +611,7 @@ impl Controller {
             .map_err(|_| "Recognition worker is busy")?;
         self.recognition_review = None;
         self.recognition_pending = true;
+        self.recognition_status = "Preparing recognition…".into();
         Ok(())
     }
     pub(super) fn recognize_math_sources(
@@ -571,12 +653,14 @@ impl Controller {
             .unwrap()
             .try_send(Task {
                 generation: self.recognition_generation,
+                auto_setup: std::env::var_os("FOLIO_RECOGNITION_CONFIG").is_none(),
                 pack: self.recognition_pack(),
                 review,
                 image: None,
             })
             .map_err(|_| "Recognition is busy")?;
         self.recognition_pending = true;
+        self.recognition_status = "Preparing recognition…".into();
         self.recognition_review = None;
         Ok(())
     }
@@ -599,6 +683,12 @@ impl Controller {
     }
     pub(super) fn poll_recognition(&mut self) -> bool {
         let mut changed = false;
+        while let Ok(message) = self.recognition_service.status.try_recv() {
+            if self.recognition_pending && message.generation == self.recognition_generation {
+                self.recognition_status = message.text;
+                changed = true;
+            }
+        }
         while let Ok(message) = self.recognition_service.results.try_recv() {
             if message.generation != self.recognition_generation {
                 continue;
@@ -659,6 +749,7 @@ impl Controller {
             })?;
             self.busy += 1;
             self.recognition_pending = true;
+            self.recognition_status = "Preparing recognition…".into();
             self.recognition_replacing = true;
             self.recognition_review = None;
             return Ok(());
@@ -711,6 +802,7 @@ impl Controller {
             return;
         }
         self.recognition_pending = false;
+        self.recognition_status.clear();
         self.recognition_replacing = false;
         if !self.recognition_is_current(&review) {
             self.error = Some(
@@ -759,5 +851,6 @@ impl Controller {
     }
 }
 
+mod native;
 #[cfg(test)]
 mod tests;

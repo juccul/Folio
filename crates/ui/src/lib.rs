@@ -1293,16 +1293,13 @@ impl NotesView {
         );
         if self.controller.recognition_pending {
             row = row
-                .child(
-                    div()
-                        .text_xs()
-                        .px_2()
-                        .child(if self.controller.recognition_replacing {
-                            "Rendering equation…"
-                        } else {
-                            "Recognizing writing…"
-                        }),
-                )
+                .child(div().text_xs().px_2().max_w(px(280.)).truncate().child(
+                    if self.controller.recognition_replacing {
+                        "Rendering equation…".to_string()
+                    } else {
+                        self.controller.recognition_status.clone()
+                    },
+                ))
                 .child(self.button(
                     "cancel-recognition",
                     "Cancel recognition",

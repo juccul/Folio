@@ -1,41 +1,45 @@
 # Folio 1.0.0
 
-Folio is an offline Linux notebook for editable vector handwriting, mixed-media notes, PDF annotation, rendered LaTeX and step-by-step math.
+Folio is a Linux notebook for editable vector handwriting, PDF annotation, rendered LaTeX and step-by-step math. This refreshed 1.0 release distributes **only the x86_64 Flatpak**, with automatic OCR setup and Vulkan Q8 acceleration.
 
-## Downloads and installation
+## Install or update
 
-These packages are for **x86_64 / amd64 Linux**:
+Download `folio-1.0.0-x86_64.flatpak`, then run:
 
-| Package | Installation |
-| --- | --- |
-| `folio-1.0.0-1.x86_64.rpm` | `sudo dnf install ./folio-1.0.0-1.x86_64.rpm` |
-| `folio_1.0.0_amd64.deb` | `sudo apt install ./folio_1.0.0_amd64.deb` |
-| `folio-1.0.0-x86_64.flatpak` | `flatpak install --user ./folio-1.0.0-x86_64.flatpak` |
+```sh
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak install --user --reinstall ./folio-1.0.0-x86_64.flatpak
+flatpak run io.github.folio.Notes
+```
 
-Launch Folio from your application menu. Native packages also provide `folio`; Flatpak uses `flatpak run io.github.folio.Notes`.
+Close an already running Folio window before launching the updated build. Folio is also available from the application menu. The bundle uses the Freedesktop 25.08 runtime, which Flatpak may download during installation.
 
-Native packages need glibc 2.35+, Python 3.10+, a Vulkan driver and a desktop session. RPM/DEB declare their runtime dependencies, including Poppler for PDF previews. Flatpak needs the Freedesktop 25.08 runtime; if necessary, configure Flathub with `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`. The initial runtime installation may use internet. Folio itself works offline, with no account or cloud service.
+## OCR setup and Vulkan
+
+- Request **Recognize text**, **Recognize math** or OCR from the math solver. If no usable pack exists, Folio automatically downloads and verifies GLM-OCR **Q8_0** language/vision weights and the llama.cpp Vulkan runtime.
+- The first-use download is approximately **1.47 GB**, with approximately **1.56 GB** installed storage. The Flatpak itself contains no OCR weights, CUDA toolkit or Python OCR environment.
+- OCR prefers a supported discrete Vulkan GPU, then another available GPU, and falls back to CPU when GPU loading fails. A GPU inference runtime failure gets a CPU retry. NVIDIA and AMD were tested; Intel remains untested.
+- Setup shows progress and supports cancellation, resumable downloads and retry. Downloads use pinned revisions and SHA-256 checks before activation.
+- Recognition works offline after setup. Notes, handwriting, images and PDFs stay local; only model/runtime assets are fetched from Hugging Face and GitHub. Flatpak has network permission for this setup and GPU permission for acceleration.
+- Working existing recognition packs and explicit Python pack overrides remain supported. First GPU use can take several seconds to initialize; subsequent requests reuse the model.
 
 ## Included in 1.0
 
-- Pressure-sensitive handwriting, editable vector ink, erasing, shape gestures, selection, text and image insertion, persistent undo and recovery.
-- A document library with folders, favorites, recent notes and trash; browser-style document tabs and custom window controls.
-- PDF import, lazy page previews and vector/searchable annotated PDF export.
-- Rendered, editable LaTeX and an offline CPU math solver with step-by-step rules, algebra, calculus, graphs and work checking. The packages bundle SymPy 1.14.0 and mpmath 1.3.0; Flatpak also includes Poppler 26.10.0 for PDF previews.
-- Optional GLM-OCR handwriting-to-text and handwriting-to-LaTeX, including review, copying and undoable ink replacement. **OCR model weights and the neural inference runtime are not bundled.** Install a compatible recognition pack separately using the README. A Flatpak recognition runtime must work inside its sandbox.
+- Pressure-sensitive vector handwriting, erasing and shape gestures, selection, typed text/images, persistent undo and recovery.
+- A document library with folders, favorites, recent notes and trash; browser-style tabs and window controls.
+- PDF import, lazy previews and vector/searchable annotated PDF export. Poppler 26.10.0 is included.
+- Editable LaTeX and an offline CPU math solver for supported arithmetic, algebra, calculus, graphs, teaching steps and work checking. SymPy 1.14.0 and mpmath 1.3.0 are included.
+- OCR review, copying, undoable ink replacement and native LaTeX rendering. Transparent image areas are composited onto white for recognition.
+- The persistence, selection, geometry, export and notebook performance fixes documented in `OPTIMIZATION_AND_BUGFIX_REPORT.md`.
 
-## Reliability and performance
+Existing Flatpak notes remain in `~/.var/app/io.github.folio.Notes/data/folio`. Import/export uses desktop file chooser portals; no host filesystem permission is granted. The GNOME launcher uses X11/Xwayland; `FOLIO_NATIVE_WAYLAND=1` opts into native Wayland. OCR output should be reviewed, and unsupported mathematics is reported explicitly.
 
-This release includes the optimization and edge-case fixes recorded in `OPTIMIZATION_AND_BUGFIX_REPORT.md`: cheaper background database reads and linked-math lookup, consistent document/history snapshots, safer save acknowledgements and exports during navigation, Unicode selection fixes, tab overflow handling, stronger geometry/document validation and improved mathematical domain checking.
+## Verification and source
 
-## Data and compatibility
+170 Rust workspace tests passed, along with strict Clippy, formatting, private native UI checks, NVIDIA/AMD/CPU OCR and a Flatpak first-use download followed by offline OCR. See [release validation](https://github.com/juccul/Folio/blob/v1.0.0/RELEASE_VALIDATION.md).
 
-Existing notes remain readable. Native and Flatpak use separate default data directories; back up existing data before migrating it. Flatpak uses the desktop file chooser portal for import/export and has no network permission by default. The GNOME launcher uses X11/Xwayland for the previously documented tablet compatibility issue; `FOLIO_NATIVE_WAYLAND=1` opts into native Wayland.
+The SHA-256 checksum for the single Flatpak download is shown below. Matching source, build scripts, locked dependencies, notices and the exact Poppler source are available in the [v1.0.0 source tag](https://github.com/juccul/Folio/tree/v1.0.0). GitHub also provides the tag's source ZIP/tarball. Cargo fetches unmodified registry dependencies from the lockfile; `scripts/package.py` can generate a complete vendored source archive for offline builds. Bundled math packages contain their Python source and notices. Folio is GPL-3.0-or-later; third-party licenses are retained.
 
-Validation uses automated Rust/Python checks, isolated native UI sessions and package smoke tests. Broad physical-tablet and distribution certification remains incomplete. OCR output needs review, and unsupported mathematics is reported explicitly.
-
-## Checksums and source
-
-`SHA256SUMS` covers the released packages and `folio-1.0.0-source.tar.gz`. Check it with `sha256sum --check SHA256SUMS` after downloading all listed assets.
-
-The source archive includes the locked vendored Rust dependency graph for offline builds and the exact Poppler source used by Flatpak. Bundled math packages include their Python source and license notices in each installer. Original Folio source is GPL-3.0-or-later; dependency notices accompany every package.
+```text
+3fe0da14808749428f4c877453059133d5c70e95d55332b65c4b21de252a9531  folio-1.0.0-x86_64.flatpak
+```

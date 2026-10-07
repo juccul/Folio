@@ -2,7 +2,7 @@
 """Build a real x86_64 Flatpak bundle with offline math and PDF previews.
 
 Requires installed Freedesktop SDK/Platform 25.08, cmake/ninja in the SDK, and a
-Python with scripts/math-solver-requirements.txt. No app/model network permission.
+Python with scripts/math-solver-requirements.txt. Network is used only for first-use OCR asset downloads.
 Poppler is fetched only at build time and verified against a pinned SHA-256.
 """
 import argparse
@@ -40,9 +40,13 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     source_archive = work / f'poppler-{POPPLER_VERSION}.tar.xz'
     if not source_archive.exists():
-        temporary = source_archive.with_suffix('.tmp')
-        urllib.request.urlretrieve(f'https://poppler.freedesktop.org/{source_archive.name}', temporary)
-        temporary.replace(source_archive)
+        retained_source = ROOT / 'third_party/flatpak' / source_archive.name
+        if retained_source.is_file():
+            copy(retained_source, source_archive)
+        else:
+            temporary = source_archive.with_suffix('.tmp')
+            urllib.request.urlretrieve(f'https://poppler.freedesktop.org/{source_archive.name}', temporary)
+            temporary.replace(source_archive)
     if hashlib.sha256(source_archive.read_bytes()).hexdigest() != POPPLER_SHA256:
         raise SystemExit('Poppler source SHA-256 mismatch')
     source = work / f'poppler-{POPPLER_VERSION}'
@@ -81,7 +85,7 @@ def main():
         'import sympy, mpmath; assert sympy.__version__ == "1.14.0"; '
         'assert mpmath.__version__ == "1.3.0"; print("Offline math runtime OK")')
     run('flatpak', 'build-finish', '--command=folio', '--share=ipc',
-        '--socket=x11', '--socket=wayland', '--device=dri', build)
+        '--socket=x11', '--socket=wayland', '--device=dri', '--share=network', build)
     repository = work / 'repo'
     run('flatpak', 'build-export', repository, build, 'stable')
     bundle = args.output / f'folio-{version()}-x86_64.flatpak'

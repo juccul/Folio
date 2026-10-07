@@ -1773,9 +1773,9 @@ impl NotesView {
                     .items_center()
                     .justify_between()
                     .child(div().text_sm().child(if reading {
-                        "Reading your selection…"
+                        self.controller.recognition_status.clone()
                     } else {
-                        "Solving…"
+                        "Solving…".to_string()
                     }))
                     .child(
                         self.button("cancel-math", "Cancel", false, cx, |this, _, cx| {

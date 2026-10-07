@@ -69,7 +69,7 @@ For X11:
 WAYLAND_DISPLAY= ./target/release/folio
 ```
 
-An initial dependency fetch needs internet access. Built applications make no cloud requests, require no account, and do not download models.
+An initial dependency fetch needs internet access. The application requires no account and sends no documents to cloud services. First-use OCR setup downloads verified model/runtime assets; recognition then works offline.
 
 Data goes to `$XDG_DATA_HOME/folio` or `~/.local/share/folio`. Override it with `--data-dir PATH` or `FOLIO_DATA_DIR`. One application writer is allowed per data directory. PDFs/images passed on the command line each create their own document. Home imports also create new documents; editor imports add to the document where you started the import, even if you change tabs while it runs. Desktop files and an SVG icon are in [packaging](packaging).
 
@@ -79,7 +79,7 @@ Lasso or rectangle-select handwriting and choose **Recognize text** or **Recogni
 
 Both recognition actions use one shared **GLM-OCR** model. Text recognition renders the entire selection as one image, preserving paragraph layout; math uses the formula prompt and removes outer display-math wrappers before review. Select a line, short paragraph or individual expression. In the local CPU benchmark, GLM had 3.32% nonspace character error on 100 English handwriting lines and matched 30/100 handwritten formulas after formatting normalization. Its text accuracy improved over ConvText, while math accuracy was lower than Qwen's earlier 47/100 result. Results still need review. No correction service, account or cloud call is involved. See [GLM-OCR benchmarks](GLM_OCR_BENCHMARK_RESULTS.md).
 
-Recognition defaults to unquantized BF16 weights, with an optional INT8 pack for trials. A separate [INT8 and 4-bit NF4 benchmark](GLM_OCR_QUANTIZATION_BENCHMARK_RESULTS.md) compares offline CPU/GPU accuracy, latency, storage and memory; its benchmark exports do not change the default recognition pack.
+Automatic first-use recognition uses Q8_0 weights with Vulkan GPU acceleration and CPU fallback. Existing Python BF16/INT8 packs remain supported. A separate [INT8 and 4-bit NF4 benchmark](GLM_OCR_QUANTIZATION_BENCHMARK_RESULTS.md) compares offline CPU/GPU accuracy, latency, storage and memory; its benchmark exports do not change the default recognition pack.
 
 CUDA recognition uses an optimized image-patch projection. In the same-cohort [encoding benchmark](GLM_OCR_ENCODING_OPTIMIZATION_RESULTS.md), GPU text median fell from 6.03 seconds to 214 ms and math from 3.17 seconds to 272 ms; text character error stayed at 3.39%, with 31/100 formula matches versus 30/100 before. Model weights and image resolution are preserved. The earlier quantization GPU timings used the original encoder.
 
@@ -106,9 +106,17 @@ The math engine is a separate CPU SymPy worker; it needs no neural weights or GP
 
 Saved math links use document format 3 and database schema 4. Earlier notes remain readable; older Folio builds refuse databases that have used math links. See [implementation and coverage](MATH_SOLVER_DESIGN.md).
 
-### Install optional offline recognition
+### OCR setup and offline recognition
 
-This workspace has a configured CPU pack at `artifacts/recognition-v2/pack.json`, linked as `target/recognition`, so both local debug and release builds find it automatically. You can also set `FOLIO_RECOGNITION_CONFIG` to an absolute pack path when launching Folio. A pack at `recognition/pack.json` inside the Folio data directory takes precedence over a portable pack beside the executable's `bin` directory. The environment override takes precedence over both.
+Request **Recognize text**, **Recognize math**, or **Solve** on handwriting, an image, or a PDF region. If no usable recognition pack is installed, Folio automatically downloads GLM-OCR **Q8_0** and the llama.cpp Vulkan runtime: **1.47 GB** downloaded, about **1.56 GB** installed. Files come directly from Hugging Face and GitHub at pinned revisions, and each SHA-256 is checked before installation. The status bar and math panel show setup progress. **Cancel** or **Esc** stops the request; request OCR again to resume an interrupted download. On a connection or checksum error, the same OCR action retries setup. Notes remain editable during setup.
+
+OCR prefers a supported discrete Vulkan GPU, then another available GPU, and falls back to CPU if no GPU can load the model. Both language and vision weights use Q8_0. No CUDA toolkit, PyTorch or Python OCR runtime is needed. First GPU use can take several seconds to initialize; subsequent requests reuse the resident model. Supported automatic downloads currently target **x86_64 Linux**; Intel Vulkan has not been tested. GPU drivers must already support Vulkan. The downloaded Ubuntu runtime requires glibc 2.34 or later; Folio's 1.0 packages require 2.35 or later.
+
+After setup, recognition works offline. Only model/runtime assets are downloaded; handwriting, images and PDFs stay local. The native recognizer runs with offline loading and an authenticated loopback endpoint that bypasses HTTP proxies. Flatpak enables network access for asset setup and keeps its existing GPU access. Downloaded files live under `recognition/glm-ocr-q8-b11457` in the Folio data directory (Flatpak: `~/.var/app/io.github.folio.Notes/data/folio`). Model and runtime notices are retained there. `last-runtime.log` contains runtime diagnostics.
+
+Working Python recognition packs remain supported. `FOLIO_RECOGNITION_CONFIG` selects an explicit pack and reports errors instead of silently replacing a missing/broken explicit Python pack. Otherwise a data-directory pack takes precedence over a usable portable pack beside the executable's `bin` directory. To choose CPU or a particular GPU in a native pack, set `device` in `recognition/pack.json` to `cpu`, `auto`, or a device ID such as `Vulkan1`, then restart Folio. To switch an existing Python installation to automatic Q8, move its `pack.json` aside and restart; keep the old pack to restore it.
+
+The following manual Python setup is optional for reproducing the earlier BF16/CUDA benchmarks.
 
 To reproduce setup on another Linux machine, install Python 3.12, create a virtual environment, and install the CPU runtime while connected (or use an offline wheelhouse):
 
@@ -126,7 +134,7 @@ Obtain the pinned [GLM-OCR checkpoint](https://huggingface.co/zai-org/GLM-OCR/tr
   --ocr-model /path/to/glm-ocr --copy-model
 ```
 
-Setup verifies every supplied model/config/tokenizer file against pinned SHA-256 hashes and retains the upstream model card and license declaration. GLM weights are about 2.65 GB (2.47 GiB), shared between text and math. Without `--copy-model`, the pack references the supplied model directory. `pack.json` stores an absolute Python path; recreate the runtime or update that path when moving the pack. Rerun setup to migrate an older ConvText/Qwen pack to GLM. The application never downloads missing models. It reports missing packs/models in the UI, and remains usable for writing. Runtime inference disables Hub networking and internet sockets and uses built-in model classes. The resident process keeps the same GLM model loaded when switching between text and math. CPU is the default; optional `--device cuda` needs separately installed compatible CUDA wheels/drivers. Four CPU threads are used by default.
+Setup verifies every supplied model/config/tokenizer file against pinned SHA-256 hashes and retains the upstream model card and license declaration. GLM weights are about 2.65 GB (2.47 GiB), shared between text and math. Without `--copy-model`, the pack references the supplied model directory. `pack.json` stores an absolute Python path; recreate the runtime or update that path when moving the pack. Rerun setup to migrate an older ConvText/Qwen pack to GLM. An explicitly selected Python pack reports missing files in the UI. Its runtime disables Hub networking and internet sockets and uses built-in model classes. The resident process keeps the same GLM model loaded when switching between text and math. CPU is the default; optional `--device cuda` needs separately installed compatible CUDA wheels/drivers. Four CPU threads are used by default.
 
 This workspace also has a ready CUDA pack at `artifacts/recognition-cuda/pack.json`. Launch the optimized GPU configuration with:
 
@@ -209,8 +217,8 @@ The package script produces a Linux binary archive with notices and a correspond
 
 To record physical input locally, start with `FOLIO_PEN_RECORD=/new/path.jsonl`; the file must not already exist. `FOLIO_PROFILE_INK=1` reports dispatch-to-CPU-paint metrics on exit. These exclude GPU presentation and display scanout. Recording is optional and bounded.
 
-The 1.0 release uses a Debian bookworm build (glibc 2.35 or newer). Build it with `packaging/Containerfile`, then pass `--binary artifacts/debian-target/release/folio` to the packaging scripts. RPM and DEB bundle the math worker with portable relative paths; `--math-python` must have the pinned math requirements installed. Flatpak requires the installed Freedesktop SDK/Platform 25.08 and verifies its pinned Poppler source before building. It grants display and GPU access, uses file chooser portals, and grants no network or host filesystem permission.
+The refreshed 1.0 release publishes only the x86_64 Flatpak, with automatic OCR downloads and Vulkan Q8 acceleration. The native packaging scripts remain available for local builds. The release uses a Debian bookworm build (glibc 2.35 or newer). Build it with `packaging/Containerfile`, then pass `--binary artifacts/debian-target/release/folio` to the packaging scripts. RPM and DEB bundle the math worker with portable relative paths; `--math-python` must have the pinned math requirements installed. Flatpak requires the installed Freedesktop SDK/Platform 25.08 and verifies its pinned Poppler source before building. It grants display and GPU access, uses file chooser portals, and grants network access for first-use OCR downloads, and grants no host filesystem permission.
 
-For the complete release source archive, run `scripts/package.py --no-build --binary artifacts/debian-target/release/folio --poppler-source artifacts/flatpak/poppler-26.10.0.tar.xz`. The separate desktop tar archive excludes math and OCR runtimes; the release installers include math. No package copies development databases, model caches or virtual environments.
+For the complete release source archive, run `scripts/package.py --no-build --binary artifacts/debian-target/release/folio`. The separate desktop tar archive excludes math and OCR runtimes; the release installers include math. No package copies development databases, model caches or virtual environments.
 
 A cross-distribution build image is provided in `packaging/Containerfile`; it builds against Debian bookworm rather than this machine’s newer glibc. Package dependency metadata must match the chosen binary. Native COSMIC/KDE and physical tablet certification require their own sessions/devices.
