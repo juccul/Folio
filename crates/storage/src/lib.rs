@@ -586,6 +586,20 @@ impl Store {
         )?;
         Ok(())
     }
+    pub fn backup_to(&self, path: &Path) -> Result<()> {
+        if path.exists() {
+            return Err(Error::Invalid(
+                "Backup snapshot destination already exists".into(),
+            ));
+        }
+        let mut target = Connection::open(path)?;
+        rusqlite::backup::Backup::new(&self.connection, &mut target)?.run_to_completion(
+            256,
+            std::time::Duration::from_millis(5),
+            None,
+        )?;
+        Ok(())
+    }
     pub fn checkpoint(&self) -> Result<PathBuf> {
         let backup = self
             .path

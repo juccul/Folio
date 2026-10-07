@@ -254,3 +254,29 @@ fn library_covers_read_only_selected_page_without_opening_a_session() {
         .unwrap();
     assert_eq!(fallback.text(), "First page");
 }
+
+#[test]
+fn editable_notebook_import_is_one_undoable_command_and_reopens_with_assets() {
+    let mut a = app();
+    a.add_text("Shared notes".into(), Point::new(20., 20.));
+    a.bookmark_page("Chapter".into());
+    let exported = a.data_dir.join("shared.folio");
+    portable::export_notebook(&a.session().document, &a.assets, &exported).unwrap();
+    let old = a.active;
+    let imported = a.import_as_note(exported);
+    settle(&mut a);
+    assert_ne!(old, imported);
+    assert_eq!(a.session().document.pages.len(), 1);
+    assert_eq!(a.page().text(), "Shared notes");
+    assert_eq!(a.page().properties.bookmark.as_deref(), Some("Chapter"));
+    a.undo();
+    assert!(a.page().objects.is_empty());
+    a.redo();
+    assert_eq!(a.page().text(), "Shared notes");
+    a.flush().unwrap();
+    let store = Store::open_reader(&a.database).unwrap();
+    assert_eq!(
+        store.load(imported).unwrap().unwrap().pages[0].text(),
+        "Shared notes"
+    );
+}

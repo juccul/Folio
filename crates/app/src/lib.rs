@@ -9,6 +9,7 @@ mod management_tests;
 #[cfg(test)]
 mod optimization_tests;
 mod page_actions;
+pub mod portable;
 mod starter;
 pub use library_actions::NoteAction;
 pub mod appearance;
@@ -232,6 +233,7 @@ pub struct RasterPreview {
     pub bgra: Arc<Vec<u8>>,
 }
 pub struct Controller {
+    pub restored_library: Option<PathBuf>,
     library_previews: HashMap<Id, (u64, Arc<Page>, usize)>,
     library_preview_pending: HashSet<Id>,
     library_preview_failed: HashMap<Id, u64>,
@@ -342,6 +344,7 @@ impl Controller {
         sessions.insert(active, session);
         let style = settings.default_pen.clone();
         let controller = Self {
+            restored_library: None,
             library_previews: HashMap::new(),
             library_preview_pending: HashSet::new(),
             library_preview_failed: HashMap::new(),
@@ -1808,6 +1811,17 @@ impl Controller {
         }
     }
     pub fn export_prepared(&mut self, snapshot: ExportSnapshot, path: PathBuf, kind: ExportKind) {
+        let extension = match kind {
+            ExportKind::Notebook => "folio",
+            ExportKind::Pdf => "pdf",
+            ExportKind::Svg => "svg",
+            ExportKind::Png => "png",
+            ExportKind::Text => "txt",
+        };
+        if let Err(error) = self.validate_export_destination(&path, extension) {
+            self.error = Some(error);
+            return;
+        }
         self.submit(Job::Export {
             doc: snapshot.document,
             page: snapshot.page,
@@ -1844,7 +1858,13 @@ impl Controller {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase();
-        let job = if ext == "pdf" {
+        let job = if ext == "folio" {
+            Job::ImportNotebook {
+                note,
+                path,
+                assets: self.assets.clone(),
+            }
+        } else if ext == "pdf" {
             Job::ImportPdf {
                 note,
                 path,
@@ -1876,6 +1896,15 @@ impl Controller {
         }
     }
     fn apply_pdf(&mut self, note: Id, pages: Vec<Page>) {
+        self.apply_pages(note, pages, "Import PDF", None);
+    }
+    fn apply_pages(
+        &mut self,
+        note: Id,
+        pages: Vec<Page>,
+        label: &str,
+        metadata: Option<NoteMetadata>,
+    ) {
         if pages.is_empty() {
             return;
         }
@@ -1905,7 +1934,15 @@ impl Controller {
             before: None,
             after: Some(page),
         }));
-        self.commit_to(note, "Import PDF", changes);
+        if let Some(metadata) = metadata {
+            let before = self.sessions[&note].document.metadata.clone();
+            let mut after = before.clone();
+            after.title = metadata.title;
+            after.tags = metadata.tags;
+            after.cover_page = metadata.cover_page;
+            changes.push(Change::Metadata { before, after });
+        }
+        self.commit_to(note, label, changes);
         if note == self.active {
             self.change_page(index);
             self.session_mut().viewport = Viewport::default();
@@ -2187,6 +2224,24 @@ impl Controller {
                             self.navigate_search(note, page);
                         }
                     }
+                }
+                Finished::Restored(path) => {
+                    self.status = format!("Backup restored to {}", path.display());
+                    self.restored_library = Some(path);
+                }
+                Finished::NotebookImported { note, document } => {
+                    self.import_finished(note);
+                    let empty = self.sessions.get(&note).is_some_and(|s| {
+                        s.document.pages.len() == 1
+                            && s.document.pages[0].objects.is_empty()
+                            && s.document.pages[0].properties.pdf.is_none()
+                    });
+                    self.apply_pages(
+                        note,
+                        document.pages,
+                        "Import editable notebook",
+                        empty.then_some(document.metadata),
+                    );
                 }
                 Finished::Exported(path) => {
                     self.status = format!(
