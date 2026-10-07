@@ -3,6 +3,16 @@ use super::*;
 use folio_document::{Object, Page};
 use std::{collections::HashMap, sync::Arc};
 
+fn edited_label(updated: u64) -> String {
+    let minutes = folio_document::now_ms().saturating_sub(updated) / 60_000;
+    match minutes {
+        0 => "Edited just now".into(),
+        1..=59 => format!("Edited {minutes} min ago"),
+        60..=1439 => format!("Edited {} h ago", minutes / 60),
+        _ => format!("Edited {} days ago", minutes / 1440),
+    }
+}
+
 struct Hint(SharedString, Theme);
 impl Render for Hint {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -610,45 +620,19 @@ impl NotesView {
                     ),
             )
     }
-    pub(super) fn library(&mut self, cx: &mut Context<Self>) -> Div {
+    fn library_items(
+        &mut self,
+        notes: Vec<folio_document::NoteMetadata>,
+        include_new: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let theme = Theme::new(&self.controller.settings);
-        let title = match self.controller.filter {
-            NoteFilter::All => "Documents".to_string(),
-            NoteFilter::Favorites => "Favorites".into(),
-            NoteFilter::Recent => "Recent".into(),
-            NoteFilter::Trash => "Trash".into(),
-            NoteFilter::Notebook(id) => self
-                .controller
-                .notebooks
-                .iter()
-                .find(|n| n.id == id)
-                .map(|n| n.name.clone())
-                .unwrap_or("Folder".into()),
-        };
-        let mut notes = self
-            .controller
-            .visible_notes()
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        if self.sort_by_name {
-            notes.sort_by_key(|n| n.title.to_lowercase());
-        } else {
-            notes.sort_by_key(|n| std::cmp::Reverse(n.updated_at));
-        }
-        let count = notes.len();
-        let mut shelf = div()
-            .id("library-shelf")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .p_7();
         let mut items = div()
             .flex()
             .when(self.list_view, |s| s.flex_col())
             .when(!self.list_view, |s| s.flex_wrap())
             .gap_6();
-        if self.controller.filter != NoteFilter::Trash {
+        if include_new {
             let cover = div()
                 .w(px(148.))
                 .h(px(198.))
@@ -739,42 +723,44 @@ impl NotesView {
                     )
                 })
                 .unwrap_or_else(|| "Document".into());
-            let tint = theme.selected;
+            let preview = self.controller.library_preview(id);
+            let details = preview
+                .as_ref()
+                .map(|(_, count)| format!("{count} page{}", if *count == 1 { "" } else { "s" }))
+                .unwrap_or(details);
+            let cover_content = if let Some((page, _)) = &preview {
+                if let Some(pdf) = &page.properties.pdf {
+                    self.controller.request_pdf_background(pdf.clone());
+                }
+                self.thumbnails.element(page, &self.controller, 144.)
+            } else {
+                div().text_xs().text_color(rgb(theme.muted)).child(
+                    if self.controller.library_cover_unavailable(id) {
+                        "Preview unavailable"
+                    } else {
+                        "Loading preview…"
+                    },
+                )
+            };
             let cover = div()
                 .relative()
                 .w(px(148.))
                 .h(px(198.))
-                .rounded(px(theme.radius))
                 .overflow_hidden()
+                .rounded(px(theme.radius))
                 .border_1()
                 .border_color(theme.border)
-                .bg(rgb(tint))
-                .child(
-                    div()
-                        .absolute()
-                        .left_5()
-                        .right_4()
-                        .top_8()
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .child(
-                            div()
-                                .text_size(px(17.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(rgb(theme.ink))
-                                .max_h(px(104.))
-                                .overflow_hidden()
-                                .child(n.title.clone()),
-                        )
-                        .child(icon(Icon::Book, theme.muted)),
-                )
+                .bg(rgb(theme.sidebar))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(cover_content)
                 .when(n.favorite, |s| {
                     s.child(
                         div()
                             .absolute()
-                            .right_3()
-                            .bottom_3()
+                            .right_2()
+                            .bottom_2()
                             .child(icon(Icon::Star, theme.ink)),
                     )
                 });
@@ -801,6 +787,12 @@ impl NotesView {
                             n.tags.join(" · ")
                         }),
                 );
+            let metadata = metadata.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme.muted))
+                    .child(edited_label(n.updated_at)),
+            );
             let content = if self.list_view {
                 div()
                     .w_full()
@@ -872,6 +864,78 @@ impl NotesView {
                     ),
             );
         }
+        items
+    }
+    pub(super) fn library(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let theme = Theme::new(&self.controller.settings);
+        let title = match self.controller.filter {
+            NoteFilter::All => "Documents".to_string(),
+            NoteFilter::Favorites => "Favorites".into(),
+            NoteFilter::Recent => "Recent".into(),
+            NoteFilter::Trash => "Trash".into(),
+            NoteFilter::Notebook(id) => self
+                .controller
+                .notebooks
+                .iter()
+                .find(|n| n.id == id)
+                .map(|n| n.name.clone())
+                .unwrap_or("Folder".into()),
+        };
+        let mut notes = self
+            .controller
+            .visible_notes()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if self.sort_by_name {
+            notes.sort_by_key(|n| n.title.to_lowercase());
+        } else {
+            notes.sort_by_key(|n| std::cmp::Reverse(n.updated_at));
+        }
+        let count = notes.len();
+        let mut shelf = div()
+            .id("library-shelf")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .p_7();
+        let columns = if self.list_view {
+            1
+        } else {
+            ((f32::from(window.viewport_size().width) / self.controller.settings.ui_scale - 272.)
+                / 208.)
+                .floor()
+                .max(1.) as usize
+        };
+        let include_new = self.controller.filter != NoteFilter::Trash;
+        let total = notes.len() + usize::from(include_new);
+        let list = uniform_list(
+            "library-rows",
+            total.div_ceil(columns),
+            cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
+                let mut rows = Vec::new();
+                for row in range {
+                    let start = row * columns;
+                    let end = (start + columns).min(total);
+                    let first = start.saturating_sub(usize::from(include_new));
+                    let last = end.saturating_sub(usize::from(include_new));
+                    rows.push(
+                        this.library_items(
+                            notes[first..last].to_vec(),
+                            include_new && start == 0,
+                            cx,
+                        )
+                        .h(px(if this.list_view { 92. } else { 320. }))
+                        .items_start(),
+                    );
+                }
+                this.accessibility.publish(this, window, cx);
+                rows
+            }),
+        )
+        .flex_1()
+        .min_h_0();
         if count == 0 {
             let (heading, message, symbol) = match self.controller.filter {
                 NoteFilter::Trash => (
@@ -917,7 +981,7 @@ impl NotesView {
                     .child(div().text_sm().text_color(rgb(theme.muted)).child(message)),
             );
         }
-        shelf = shelf.child(items);
+        shelf = shelf.child(list);
         div()
             .flex_1()
             .min_w_0()

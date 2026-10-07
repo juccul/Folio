@@ -16,6 +16,12 @@ pub enum ExportKind {
     Text,
 }
 pub enum Job {
+    LibraryPreview {
+        note: Id,
+        updated: u64,
+        cover: Option<Id>,
+        database: PathBuf,
+    },
     Cleanup {
         root: PathBuf,
     },
@@ -72,6 +78,11 @@ pub enum Job {
     },
 }
 pub enum Finished {
+    LibraryPreview {
+        note: Id,
+        updated: u64,
+        result: Result<Option<(Page, usize)>, String>,
+    },
     Cleaned(usize),
     Equation {
         note: Id,
@@ -221,7 +232,7 @@ impl Workers {
     }
     pub fn submit(&self, job: Job) -> Result<(), String> {
         let sender = match &job {
-            Job::Search { .. } | Job::Load { .. } => &self.search,
+            Job::Search { .. } | Job::Load { .. } | Job::LibraryPreview { .. } => &self.search,
             _ => &self.documents,
         };
         let key = match &job {
@@ -269,6 +280,18 @@ impl Drop for Workers {
 fn process(job: Job) -> Result<Finished, String> {
     (|| -> Result<Finished, Box<dyn std::error::Error>> {
         Ok(match job {
+            Job::LibraryPreview {
+                note,
+                updated,
+                cover,
+                database,
+            } => Finished::LibraryPreview {
+                note,
+                updated,
+                result: folio_storage::Store::open_reader(database)
+                    .and_then(|store| store.library_preview(note, cover))
+                    .map_err(|e| e.to_string()),
+            },
             Job::Cleanup { root } => {
                 Finished::Cleaned(folio_storage::recovery::quarantine_orphans(&root)?)
             }

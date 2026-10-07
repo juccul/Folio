@@ -230,3 +230,7 @@ A cross-distribution build image is provided in `packaging/Containerfile`; it bu
 Open the page strip with **Ctrl+Shift+P**. Drag a thumbnail onto another to reorder pages. **Duplicate page** creates editable content with new object identities, including remapped shape and live-math source links. **Name bookmark** labels a page; an empty name removes the bookmark. These changes support undo/redo and survive reopening.
 
 **Move to notebook** lets you choose another document. Folio saves the destination copy before removing the source; moving the only page leaves a blank page. Undo in the source restores a copy, while the destination has its own undo history. If a save fails, the source is retained; an interrupted move may leave a destination copy. Restore trashed notebooks before moving pages.
+
+## Library previews
+
+The document grid shows the first page's content with a page count and last-edited label. In the document menu, **Use current page as cover** chooses a different page. If that page is deleted, the first page is used. Library rows are virtualized; visible covers load asynchronously from a consistent database snapshot without opening full editor sessions. The cover cache retains at most 128 pages and queues at most eight reads at a time.

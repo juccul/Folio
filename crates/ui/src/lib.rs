@@ -1564,6 +1564,7 @@ impl NotesView {
                 ("retry-previews", "Retry failed previews", 13),
                 ("cleanup-assets", "Quarantine unused assets", 14),
                 ("open-math-solver", "Math solver", 15),
+                ("cover-page", "Use current page as cover", 19),
             ] {
                 panel = panel.child(
                     self.button(id, label, false, cx, move |this, window, cx| {
@@ -1575,6 +1576,7 @@ impl NotesView {
                             3 => this.import(cx),
                             4 => this.controller.metadata(|m| m.trashed = !m.trashed),
                             5 => this.controller.delete_page(),
+                            19 => this.controller.use_page_as_cover(),
                             16 => this.controller.duplicate_page(),
                             17 => this.modal(Modal::PageBookmark, window, cx),
                             18 => this.modal(Modal::MovePage, window, cx),
@@ -2904,16 +2906,16 @@ impl Render for NotesView {
         if self.library_open {
             self.canvas_bounds = None;
             body = body.child(self.library_sidebar(cx)).child(
-                self.library(cx).opacity(library_alpha).on_drop(cx.listener(
-                    |this, paths: &ExternalPaths, _, cx| {
+                self.library(window, cx)
+                    .opacity(library_alpha)
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                         for path in paths.paths() {
                             let id = this.controller.import_as_note(path.clone());
                             this.open_tabs.push(id);
                         }
                         this.show_editor();
                         cx.notify();
-                    },
-                )),
+                    })),
             );
         } else {
             let header = self.header(cx);

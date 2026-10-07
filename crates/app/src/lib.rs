@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod gesture_tests;
 mod library_actions;
+mod library_previews;
 #[cfg(test)]
 mod management_tests;
 #[cfg(test)]
@@ -230,6 +231,10 @@ pub struct RasterPreview {
     pub bgra: Arc<Vec<u8>>,
 }
 pub struct Controller {
+    library_previews: HashMap<Id, (u64, Arc<Page>, usize)>,
+    library_preview_pending: HashSet<Id>,
+    library_preview_failed: HashMap<Id, u64>,
+    library_preview_recency: std::collections::VecDeque<Id>,
     math_service: math_solver::Service,
     math_generation: u64,
     pub math_session: Option<MathSession>,
@@ -336,6 +341,10 @@ impl Controller {
         sessions.insert(active, session);
         let style = settings.default_pen.clone();
         let controller = Self {
+            library_previews: HashMap::new(),
+            library_preview_pending: HashSet::new(),
+            library_preview_failed: HashMap::new(),
+            library_preview_recency: std::collections::VecDeque::new(),
             math_service: math_solver::Service::new(),
             math_generation: 0,
             math_session: None,
@@ -2025,6 +2034,28 @@ impl Controller {
                     result,
                 } => {
                     self.finish_recognized_equation(generation, review, result);
+                }
+                Finished::LibraryPreview {
+                    note,
+                    updated,
+                    result,
+                } => {
+                    self.library_preview_pending.remove(&note);
+                    if self
+                        .notes
+                        .iter()
+                        .any(|n| n.id == note && n.updated_at == updated)
+                    {
+                        match result {
+                            Ok(Some((page, count))) => {
+                                self.cache_library_preview(note, updated, page, count)
+                            }
+                            Ok(None) => {}
+                            Err(_) => {
+                                self.library_preview_failed.insert(note, updated);
+                            }
+                        }
+                    }
                 }
                 Finished::Cancelled => {}
                 Finished::Cleaned(count) => {
