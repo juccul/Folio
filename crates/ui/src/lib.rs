@@ -13,6 +13,7 @@ mod math_panel;
 mod motion;
 mod navigation;
 mod painting;
+mod region;
 mod theme;
 mod titlebar;
 mod validation;
@@ -129,6 +130,7 @@ impl Modal {
     }
 }
 pub struct NotesView {
+    region_selection: Option<region::Selection>,
     pub controller: Controller,
     math_inputs: Option<math_panel::Inputs>,
     diagnostics: diagnostics::Diagnostics,
@@ -201,6 +203,7 @@ impl NotesView {
         })
         .detach();
         Self {
+            region_selection: None,
             controller,
             math_inputs: None,
             diagnostics: diagnostics::Diagnostics::new(),
@@ -823,7 +826,10 @@ impl NotesView {
         if event.phase == TabletPhase::Down && !bounds.contains(&event.position) {
             return;
         }
-        if self.controller.interaction.is_none() && !bounds.contains(&event.position) {
+        if self.controller.interaction.is_none()
+            && self.region_selection.is_none()
+            && !bounds.contains(&event.position)
+        {
             return;
         }
         self.last_tablet = Some(Instant::now());
@@ -857,6 +863,9 @@ impl NotesView {
         if phase == Phase::Down {
             self.focus.focus(window);
         }
+        if self.region_input(input.phase, input.position, cx) {
+            return;
+        }
         self.controller.pointer(input);
         self.check_text(window, cx);
         cx.notify();
@@ -888,7 +897,10 @@ impl NotesView {
         if phase == Phase::Down && !bounds.contains(&position) {
             return;
         }
-        if self.controller.interaction.is_none() && !bounds.contains(&position) {
+        if self.controller.interaction.is_none()
+            && self.region_selection.is_none()
+            && !bounds.contains(&position)
+        {
             return;
         }
         let position = DocPoint::new(
@@ -922,6 +934,9 @@ impl NotesView {
         };
         if phase == Phase::Up && self.mouse_pan {
             self.mouse_pan = false;
+        }
+        if self.region_input(event.phase, event.position, cx) {
+            return;
         }
         self.controller.pointer(event);
         self.check_text(window, cx);
@@ -1380,8 +1395,19 @@ impl NotesView {
             row = row
                 .child(
                     self.button("crop-image", "Crop…", false, cx, |this, w, cx| {
-                        this.modal(Modal::Crop, w, cx)
+                        this.start_image_crop(w, cx)
                     })
+                    .text_xs()
+                    .px_2(),
+                )
+                .child(
+                    self.button(
+                        "crop-image-coordinates",
+                        "Crop with numbers…",
+                        false,
+                        cx,
+                        |this, w, cx| this.modal(Modal::Crop, w, cx),
+                    )
                     .text_xs()
                     .px_2(),
                 )
@@ -1759,6 +1785,7 @@ impl NotesView {
                         cx,
                         move |this, _, _| {
                             this.controller.set_style(preset.clone());
+                            this.region_selection = None;
                             this.controller.set_tool(Tool::Pen)
                         },
                     )
@@ -2471,6 +2498,7 @@ fn this_region(controller: &mut Controller, values: &[f32]) -> Result<(), String
 }
 impl Render for NotesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.cancel_region_after_navigation();
         self.building_overlay = false;
         let accessibility = self.accessibility.clone();
         for request in accessibility.drain() {
@@ -2631,6 +2659,7 @@ impl Render for NotesView {
             move |bounds, hitbox, window, cx| {
                 paint_entity.update(cx, |view, cx| {
                     view.painter.paint(&mut view.controller, bounds, window, cx);
+                    view.paint_region(bounds, window);
                     view.diagnostics.painted();
                 });
                 let tablet_entity = paint_entity.clone();
@@ -2656,7 +2685,9 @@ impl Render for NotesView {
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                     if phase.bubble() {
                         move_entity.update(cx, |v, cx| {
-                            let phase = if v.controller.interaction.is_some() {
+                            let phase = if v.controller.interaction.is_some()
+                                || (v.region_selection.is_some() && event.pressed_button.is_some())
+                            {
                                 Phase::Move
                             } else {
                                 Phase::Hover
@@ -2814,6 +2845,11 @@ impl Render for NotesView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Escape, w, cx| {
+                if this.region_selection.take().is_some() {
+                    this.controller.status = "Region selection cancelled".into();
+                    cx.notify();
+                    return;
+                }
                 if this.modal.is_some() {
                     this.cancel_modal(w, cx)
                 } else {
@@ -2848,26 +2884,32 @@ impl Render for NotesView {
                     this.controller
                         .set_style(this.writing_style.take().unwrap_or_default());
                 }
+                this.region_selection = None;
                 this.controller.set_tool(Tool::Pen);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Eraser, _, cx| {
+                this.region_selection = None;
                 this.controller.set_tool(Tool::Eraser);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Lasso, _, cx| {
+                this.region_selection = None;
                 this.controller.set_tool(Tool::Lasso);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Hand, _, cx| {
+                this.region_selection = None;
                 this.controller.set_tool(Tool::Hand);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Text, _, cx| {
+                this.region_selection = None;
                 this.controller.set_tool(Tool::Text);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Shapes, _, cx| {
+                this.region_selection = None;
                 this.controller.set_tool(Tool::Shape);
                 cx.notify();
             }))
@@ -2944,6 +2986,28 @@ impl Render for NotesView {
                     .flex_col()
                     .child(header)
                     .child(toolbar)
+                    .when(self.region_selection.is_some(), |body| {
+                        body.child(
+                            div()
+                                .px_4()
+                                .py_2()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child("Drag a rectangle on the page")
+                                .child(self.button(
+                                    "cancel-region",
+                                    "Cancel · Esc",
+                                    false,
+                                    cx,
+                                    |this, _, _| {
+                                        this.region_selection = None;
+                                        this.controller.status =
+                                            "Region selection cancelled".into();
+                                    },
+                                )),
+                        )
+                    })
                     .child(workspace)
                     .child(footer),
             );

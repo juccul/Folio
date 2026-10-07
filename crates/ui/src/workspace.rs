@@ -1449,6 +1449,7 @@ impl NotesView {
                             this.controller
                                 .set_style(this.writing_style.take().unwrap_or_default());
                         }
+                        this.region_selection = None;
                         this.controller.set_tool(tool);
                     }),
                 );
