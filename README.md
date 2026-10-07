@@ -258,3 +258,7 @@ Select a line or short paragraph and choose **Index handwriting…**, or use **D
 **Ctrl+F** finds indexed handwriting with Unicode/accent-aware prefix queries. Opening a result highlights its source region. Moving, rotating or restyling the indexed strokes keeps the text and updates the region. Changing their geometry, deleting/replacing them, converting them to shapes/equations, or writing over the indexed region invalidates the annotation. Undo restores the writing and index together. **Clear page handwriting index** is also undoable. Page duplication, templates and notebook archives remap index source identities.
 
 Dense pages may exceed the OCR selection/token limit; index smaller paragraphs instead. Indexing uses document format 4 and database schema 5; older builds refuse a database that has used this feature. OCR annotations are reviewed text, not a guarantee of recognition accuracy.
+
+## Check tablet input
+
+Open **Help → Start input check** to inspect pressure, tilt, eraser and tablet-pad delivery while writing on a test page. Stop/reset the check and save a local JSON report. The timing report measures delivery to CPU canvas paint; physical pen-to-screen latency requires the [camera procedure and validation matrix](INPUT_VALIDATION.md). Physical desktop/tablet trials remain pending.

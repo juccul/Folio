@@ -2,6 +2,7 @@
 //! to folio-app; ink geometry remains independent of GPUI.
 mod accessibility;
 mod diagnostics;
+mod input_check;
 mod recovery;
 pub use recovery::RecoveryView;
 mod appearance;
@@ -990,6 +991,10 @@ impl NotesView {
         }
     }
     fn pad(&mut self, event: &TabletPadEvent, cx: &mut Context<Self>) {
+        if let Some(check) = &mut self.diagnostics.check {
+            check.pad(event);
+            cx.notify();
+        }
         if self.library_open
             || self.blocking_overlay()
             || self.controller.loading_note()
@@ -3159,6 +3164,9 @@ impl Render for NotesView {
                                     },
                                 )),
                         )
+                    })
+                    .when(self.diagnostics.check.is_some(), |body| {
+                        body.child(self.input_check_panel(cx))
                     })
                     .child(workspace)
                     .child(footer),
