@@ -656,6 +656,8 @@ impl Default for Page {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NoteMetadata {
+    #[serde(default)]
+    pub cover_page: Option<Id>,
     pub id: Id,
     pub title: String,
     pub notebook: Option<Id>,
@@ -677,6 +679,7 @@ impl Document {
         Self {
             version: FORMAT_VERSION,
             metadata: NoteMetadata {
+                cover_page: None,
                 id: Id::new_v4(),
                 title: title.into(),
                 notebook: None,

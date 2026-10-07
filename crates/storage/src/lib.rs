@@ -299,6 +299,44 @@ impl Store {
         notes.sort_by_key(|n| std::cmp::Reverse(n.updated_at));
         Ok(notes)
     }
+    /// Read just the chosen cover page and page count in one WAL snapshot.
+    pub fn library_preview(&self, note: Id, cover: Option<Id>) -> Result<Option<(Page, usize)>> {
+        let tx = self.connection.unchecked_transaction()?;
+        let header: Option<String> = tx.query_row(
+            "SELECT header FROM pages WHERE note_id=?1 ORDER BY CASE WHEN id=?2 THEN 0 ELSE 1 END,position LIMIT 1",
+            params![note.to_string(), cover.map(|id| id.to_string())], |r| r.get(0)).optional()?;
+        let Some(header) = header else {
+            return Ok(None);
+        };
+        let header: PageHeader = serde_json::from_str(&header)?;
+        let count = tx.query_row(
+            "SELECT count(*) FROM pages WHERE note_id=?1",
+            [note.to_string()],
+            |r| r.get::<_, i64>(0),
+        )?;
+        let objects = {
+            let mut query = tx.prepare("SELECT data FROM objects WHERE page_id=?1")?;
+            let mut objects = std::collections::BTreeMap::new();
+            for row in query.query_map([header.id.to_string()], |r| r.get::<_, String>(0))? {
+                let object: Object = serde_json::from_str(&row?)?;
+                objects.insert(object.id(), Arc::new(object));
+            }
+            objects
+        };
+        let page = Page {
+            id: header.id,
+            properties: header.properties,
+            objects,
+            order: header.order,
+            groups: header.groups,
+            revision: header.revision,
+        };
+        tx.commit()?;
+        let mut check = Document::new("preview");
+        check.pages = vec![page.clone()];
+        check.validate().map_err(Error::Invalid)?;
+        Ok(Some((page, count as usize)))
+    }
     pub fn load(&self, id: Id) -> Result<Option<Document>> {
         let transaction = self.connection.unchecked_transaction()?;
         let document = self.load_snapshot(id)?;

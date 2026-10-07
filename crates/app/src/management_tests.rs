@@ -229,3 +229,28 @@ fn moving_only_page_saves_a_remapped_copy_and_keeps_source_undoable() {
         "Keep this page"
     );
 }
+
+#[test]
+fn library_covers_read_only_selected_page_without_opening_a_session() {
+    let mut a = app();
+    a.add_text("First page".into(), Point::new(20., 20.));
+    a.add_page();
+    a.add_text("Custom cover".into(), Point::new(20., 20.));
+    a.use_page_as_cover();
+    let note = a.active;
+    a.flush().unwrap();
+    a.create_note();
+    a.sessions.remove(&note);
+    assert!(a.library_preview(note).is_none());
+    settle(&mut a);
+    let (cover, count) = a.library_preview(note).unwrap();
+    assert_eq!(cover.text(), "Custom cover");
+    assert_eq!(count, 2);
+    assert!(!a.sessions.contains_key(&note));
+    let store = Store::open_reader(&a.database).unwrap();
+    let (fallback, _) = store
+        .library_preview(note, Some(Id::new_v4()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(fallback.text(), "First page");
+}
