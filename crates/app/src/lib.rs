@@ -7,6 +7,7 @@ mod library_actions;
 mod management_tests;
 #[cfg(test)]
 mod optimization_tests;
+mod page_actions;
 pub use library_actions::NoteAction;
 pub mod appearance;
 mod math_solver;
@@ -493,7 +494,16 @@ impl Controller {
     pub fn undo(&mut self) {
         self.cancel();
         let s = self.session_mut();
+        let current_page = s.page().id;
         if let Some(cmd) = s.history.undo(&mut s.document) {
+            if cmd
+                .changes
+                .iter()
+                .any(|change| matches!(change, Change::Page { .. }))
+                && let Some(index) = s.document.pages.iter().position(|p| p.id == current_page)
+            {
+                s.page = index;
+            }
             s.refresh_command(&cmd);
             let mut delta = Delta::command(&s.document, &cmd);
             delta.journal.push(JournalEvent::Undo);
@@ -504,7 +514,16 @@ impl Controller {
     pub fn redo(&mut self) {
         self.cancel();
         let s = self.session_mut();
+        let current_page = s.page().id;
         if let Some(cmd) = s.history.redo(&mut s.document) {
+            if cmd
+                .changes
+                .iter()
+                .any(|change| matches!(change, Change::Page { .. }))
+                && let Some(index) = s.document.pages.iter().position(|p| p.id == current_page)
+            {
+                s.page = index;
+            }
             s.refresh_command(&cmd);
             let mut delta = Delta::command(&s.document, &cmd);
             delta.journal.push(JournalEvent::Redo);

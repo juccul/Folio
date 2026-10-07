@@ -261,6 +261,17 @@ impl Thumbnails {
     }
 }
 
+#[derive(Clone)]
+struct PageDrag(Id);
+impl Render for PageDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .p_3()
+            .bg(rgb(0xf0f0f0))
+            .text_color(rgb(0x171717))
+            .child("Move page")
+    }
+}
 impl NotesView {
     /// Open a document without changing its model or viewport.
     pub fn show_editor(&mut self) {
@@ -1566,6 +1577,11 @@ impl NotesView {
                     }
                     let page = &this.controller.session().document.pages[index];
                     let thumbnail = this.thumbnails.element(page, &this.controller, 122.);
+                    let page_id = page.id;
+                    let label = page.properties.bookmark.as_ref().map_or_else(
+                        || format!("Go to page {}", index + 1),
+                        |name| format!("Go to page {} · {name}", index + 1),
+                    );
                     let active = index == this.controller.session().page;
                     let content = div()
                         .flex()
@@ -1575,20 +1591,29 @@ impl NotesView {
                         .child(thumbnail)
                         .child(
                             div()
+                                .w(px(122.))
+                                .truncate()
                                 .text_xs()
                                 .text_color(rgb(if active { theme.accent } else { theme.muted }))
-                                .child(format!("{}", index + 1)),
+                                .child(page.properties.bookmark.clone().map_or_else(
+                                    || format!("{}", index + 1),
+                                    |name| format!("{} · {name}", index + 1),
+                                )),
                         );
                     rows.push(
                         div().h(px(260.)).px_3().py_2().child(
                             this.control(
                                 format!("page-{}", page.id),
-                                format!("Go to page {}", index + 1),
+                                label,
                                 content.into_any_element(),
                                 active,
                                 cx,
                                 move |this, _, _| this.controller.change_page(index),
                             )
+                            .on_drag(PageDrag(page_id), |drag, _, _, cx| cx.new(|_| drag.clone()))
+                            .on_drop(cx.listener(move |this, drag: &PageDrag, _, _| {
+                                this.controller.reorder_page(drag.0, page_id)
+                            }))
                             .p_3()
                             .w_full()
                             .border_2()
@@ -1643,6 +1668,36 @@ impl NotesView {
                         .size(px(28.))
                         .bg(rgb(theme.sidebar)),
                     ),
+            )
+            .child(
+                self.button(
+                    "duplicate-page-panel",
+                    "Duplicate page",
+                    false,
+                    cx,
+                    |this, _, _| this.controller.duplicate_page(),
+                )
+                .m_2(),
+            )
+            .child(
+                self.button(
+                    "bookmark-page-panel",
+                    "Name bookmark…",
+                    false,
+                    cx,
+                    |this, w, cx| this.modal(Modal::PageBookmark, w, cx),
+                )
+                .m_2(),
+            )
+            .child(
+                self.button(
+                    "move-page-panel",
+                    "Move to notebook…",
+                    false,
+                    cx,
+                    |this, w, cx| this.modal(Modal::MovePage, w, cx),
+                )
+                .m_2(),
             )
             .child(rows)
             .child(

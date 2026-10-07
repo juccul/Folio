@@ -224,3 +224,9 @@ For the complete release source archive, run `scripts/package.py --no-build --bi
 Installer math payloads retain the SymPy/mpmath runtime and distribution notices while excluding their upstream `tests` directories.
 
 A cross-distribution build image is provided in `packaging/Containerfile`; it builds against Debian bookworm rather than this machine’s newer glibc. Package dependency metadata must match the chosen binary. Native COSMIC/KDE and physical tablet certification require their own sessions/devices.
+
+## Organizing pages
+
+Open the page strip with **Ctrl+Shift+P**. Drag a thumbnail onto another to reorder pages. **Duplicate page** creates editable content with new object identities, including remapped shape and live-math source links. **Name bookmark** labels a page; an empty name removes the bookmark. These changes support undo/redo and survive reopening.
+
+**Move to notebook** lets you choose another document. Folio saves the destination copy before removing the source; moving the only page leaves a blank page. Undo in the source restores a copy, while the destination has its own undo history. If a save fails, the source is retained; an interrupted move may leave a destination copy. Restore trashed notebooks before moving pages.
