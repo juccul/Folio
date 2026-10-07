@@ -132,7 +132,9 @@ def main():
                     client.key('Escape');time.sleep(.2)
                     assert not any(n.get_name()=='Duplicate' for n in controls()), 'Escape on the canvas must still clear the selection'
                     click('Library ·',True);click('Keyboard shortcuts and help')
-                    assert {n.get_name() for n in controls()}=={'Got it'}, 'Help must isolate its controls'
+                    help_controls={n.get_name() for n in controls()}
+                    assert {'Got it','Open starter notebook','Start input check'}.issubset(help_controls)
+                    assert not help_controls-{'Got it','Open starter notebook','Start input check','Minimize window','Maximize window','Restore window','Close window'}, f'Help leaked background controls: {help_controls}'
                     client.key('Escape')
                     with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
                         prefs=json.loads(db.execute("SELECT data FROM settings WHERE key='preferences'").fetchone()[0])

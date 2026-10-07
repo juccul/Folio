@@ -44,6 +44,10 @@ impl NotesView {
                 .child(self.button("create-starter", "Open starter notebook", false, cx, |this, w, _| {
                     this.controller.create_starter_notebook(); this.help_open = false; this.show_editor(); this.focus.focus(w);
                 }))
+                .child(self.button("start-input-check", "Start input check", false, cx, |this, w, _| {
+                    this.controller.finish(); this.diagnostics.check = Some(diagnostics::InputCheck::new());
+                    this.help_open = false; this.show_editor(); this.focus.focus(w);
+                }))
                 .child(shortcuts)
                 .child(div().pt_3().border_t_1().border_color(theme.border).text_sm().text_color(rgb(theme.muted))
                     .child("Select handwriting and choose Recognize text or Recognize math, then review, Copy text or Replace writing. Replacement can be undone. Two-finger scrolling pans the canvas. Hold at the end of a stroke to snap a shape. Escape closes a menu or cancels recognition and your current stroke.")))
