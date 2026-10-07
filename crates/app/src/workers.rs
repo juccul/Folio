@@ -17,6 +17,16 @@ pub enum ExportKind {
     Text,
 }
 pub enum Job {
+    SaveTemplate {
+        document: Document,
+        assets: PathBuf,
+        name: String,
+    },
+    TemplatePage {
+        note: Id,
+        path: PathBuf,
+        assets: PathBuf,
+    },
     Backup {
         root: PathBuf,
         path: PathBuf,
@@ -92,6 +102,11 @@ pub enum Job {
     },
 }
 pub enum Finished {
+    TemplateSaved(crate::PageTemplate),
+    TemplatePage {
+        note: Id,
+        page: Page,
+    },
     Restored(PathBuf),
     NotebookImported {
         note: Id,
@@ -195,7 +210,8 @@ impl Workers {
                             let import_note = match &task.job {
                                 Job::ImportPdf { note, .. }
                                 | Job::ImportImage { note, .. }
-                                | Job::ImportNotebook { note, .. } => Some(*note),
+                                | Job::ImportNotebook { note, .. }
+                                | Job::TemplatePage { note, .. } => Some(*note),
                                 _ => None,
                             };
                             let failure = match &task.job {
@@ -299,6 +315,37 @@ impl Drop for Workers {
 fn process(job: Job) -> Result<Finished, String> {
     (|| -> Result<Finished, Box<dyn std::error::Error>> {
         Ok(match job {
+            Job::SaveTemplate {
+                document,
+                assets,
+                name,
+            } => {
+                let id = Id::new_v4();
+                let asset = format!("template-{id}.folio");
+                crate::portable::export_notebook(&document, &assets, &assets.join(&asset))?;
+                let preview = format!("template-{id}.png");
+                let preview =
+                    folio_export::png(&document.pages[0], &assets, &assets.join(&preview), 0.25)
+                        .ok()
+                        .map(|_| preview);
+                Finished::TemplateSaved(crate::PageTemplate {
+                    id,
+                    name,
+                    asset,
+                    preview,
+                })
+            }
+            Job::TemplatePage { note, path, assets } => {
+                let mut document = crate::portable::import_notebook(&path, &assets)?;
+                if document.pages.len() != 1 {
+                    return Err("A page template must contain one page".into());
+                }
+                Finished::TemplatePage {
+                    note,
+                    page: document.pages.remove(0),
+                }
+            }
+
             Job::Backup { root, path } => {
                 crate::portable::backup(&root, &path)?;
                 Finished::Exported(path)
