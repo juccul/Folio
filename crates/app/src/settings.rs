@@ -52,6 +52,7 @@ impl Default for WorkspacePreferences {
 #[serde(default)]
 pub struct Settings {
     pub templates: Vec<PageTemplate>,
+    pub starter_document: Option<Id>,
     pub workspace: WorkspacePreferences,
     pub reopen_documents: bool,
     pub collapsed_folders: Vec<Id>,
@@ -207,6 +208,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             templates: vec![],
+            starter_document: None,
             workspace: WorkspacePreferences::default(),
             reopen_documents: true,
             collapsed_folders: vec![],

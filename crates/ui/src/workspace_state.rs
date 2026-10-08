@@ -9,18 +9,29 @@ impl NotesView {
         state.library_open = self.library_open;
         state.open_tabs = self.open_tabs.iter().rev().take(128).copied().collect();
         state.open_tabs.reverse();
+        state
+            .open_tabs
+            .retain(|id| !self.controller.is_bootstrap_document(*id));
         state.active_document = self
             .controller
             .notes
             .iter()
-            .any(|n| n.id == self.controller.active)
+            .any(|n| n.id == self.controller.active && !self.controller.is_bootstrap_document(n.id))
             .then_some(self.controller.active);
-        state
-            .current_pages
-            .retain(|(id, _)| self.controller.notes.iter().any(|n| n.id == *id));
+        state.current_pages.retain(|(id, _)| {
+            self.controller
+                .notes
+                .iter()
+                .any(|n| n.id == *id && !self.controller.is_bootstrap_document(n.id))
+        });
         for (id, session) in &self.controller.sessions {
             state.current_pages.retain(|(note, _)| note != id);
-            if self.controller.notes.iter().any(|n| n.id == *id) {
+            if self
+                .controller
+                .notes
+                .iter()
+                .any(|n| n.id == *id && !self.controller.is_bootstrap_document(n.id))
+            {
                 state.current_pages.push((*id, session.page().id));
             }
         }

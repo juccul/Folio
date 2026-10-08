@@ -328,6 +328,7 @@ pub struct Controller {
     pending_imports: HashMap<Id, usize>,
     pub library_imports: HashMap<Id, LibraryImport>,
     provisional_imports: HashSet<Id>,
+    bootstrap_document: Option<Id>,
     pdf_password_queue: std::collections::VecDeque<(Id, PathBuf)>,
     pending_note: Option<Id>,
     loading_notes: HashSet<Id>,
@@ -392,7 +393,7 @@ impl Controller {
         let assets = data_dir.join("assets");
         std::fs::create_dir_all(&assets).map_err(|e| e.to_string())?;
         let database = data_dir.join("notes.sqlite3");
-        let mut store = Store::open(&database).map_err(|e| e.to_string())?;
+        let store = Store::open(&database).map_err(|e| e.to_string())?;
         let mut settings: Settings = store
             .setting("preferences")
             .map_err(|e| e.to_string())?
@@ -404,6 +405,7 @@ impl Controller {
             .reopen_documents
             .then_some(settings.workspace.active_document)
             .flatten();
+        let mut bootstrap_document = None;
         let document = if let Some(n) = notes
             .iter()
             .find(|n| Some(n.id) == preferred)
@@ -416,7 +418,7 @@ impl Controller {
         } else {
             let mut doc = Document::new("Untitled note");
             doc.pages[0].properties.paper = settings.paper;
-            store.save(&Delta::full(&doc)).map_err(|e| e.to_string())?;
+            bootstrap_document = Some(doc.metadata.id);
             notes.insert(0, doc.metadata.clone());
             doc
         };
@@ -479,7 +481,8 @@ impl Controller {
             pending_actions: HashMap::new(),
             pending_imports: HashMap::new(),
             library_imports: HashMap::new(),
-            provisional_imports: HashSet::new(),
+            provisional_imports: bootstrap_document.into_iter().collect(),
+            bootstrap_document,
             pdf_password_queue: std::collections::VecDeque::new(),
             pending_note: None,
             loading_notes: HashSet::new(),
@@ -543,7 +546,7 @@ impl Controller {
         self.session().page()
     }
     pub fn mark_note_opened(&mut self, id: Id) {
-        if !self.notes.iter().any(|n| n.id == id && !n.trashed) {
+        if self.is_bootstrap_document(id) || !self.notes.iter().any(|n| n.id == id && !n.trashed) {
             return;
         }
         self.settings.recent_documents.retain(|n| *n != id);
@@ -555,6 +558,7 @@ impl Controller {
         let mut notes: Vec<_> = self
             .notes
             .iter()
+            .filter(|n| !self.is_bootstrap_document(n.id))
             .filter(|n| match self.filter {
                 NoteFilter::Trash => n.trashed,
                 NoteFilter::Favorites => !n.trashed && n.favorite,
@@ -643,7 +647,10 @@ impl Controller {
         if let Some(session) = self.sessions.get(&note) {
             handwriting_search::maintain_index(&session.document, &mut changes);
         }
-        self.provisional_imports.remove(&note);
+        let provisional = self.provisional_imports.remove(&note);
+        if self.bootstrap_document == Some(note) {
+            self.bootstrap_document = None;
+        }
         let cmd = Command {
             label: label.into(),
             changes,
@@ -653,7 +660,11 @@ impl Controller {
         };
         s.history.execute(cmd.clone(), &mut s.document);
         s.refresh_command(&cmd);
-        let mut delta = Delta::command(&s.document, &cmd);
+        let mut delta = if provisional {
+            Delta::full(&s.document)
+        } else {
+            Delta::command(&s.document, &cmd)
+        };
         delta.journal.push(JournalEvent::Execute(cmd));
         self.refresh_metadata(note);
         if note == self.active && self.read_only() {
@@ -812,7 +823,7 @@ impl Controller {
         let delta = Delta::full(&d);
         self.notes.insert(0, d.metadata.clone());
         self.sessions.insert(id, Session::new(d));
-        self.active = id;
+        self.activate_note(id);
         self.filter = NoteFilter::All;
         self.search_highlights.clear();
         self.mark_note_opened(id);
@@ -832,6 +843,10 @@ impl Controller {
     fn activate_note(&mut self, id: Id) {
         let previous = self.active;
         self.active = id;
+        if previous != id && self.bootstrap_document == Some(previous) {
+            self.bootstrap_document = None;
+            self.notes.retain(|n| n.id != previous);
+        }
         if previous != id && !self.notes.iter().any(|n| n.id == previous) {
             self.sessions.remove(&previous);
             self.provisional_imports.remove(&previous);

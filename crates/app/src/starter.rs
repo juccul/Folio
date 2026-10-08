@@ -1,8 +1,29 @@
 use super::*;
 impl Controller {
+    /// An empty session keeps the editor usable without creating a library document.
+    pub fn is_bootstrap_document(&self, id: Id) -> bool {
+        self.bootstrap_document == Some(id)
+    }
     /// An explicit editable tutorial; opening Help alone never creates a note.
     pub fn create_starter_notebook(&mut self) {
+        if let Some(id) = self
+            .notes
+            .iter()
+            .find(|n| {
+                !n.trashed
+                    && (Some(n.id) == self.settings.starter_document
+                        || n.title == "Welcome to Folio")
+            })
+            .map(|n| n.id)
+        {
+            self.settings.starter_document = Some(id);
+            self.store_settings();
+            self.switch_note(id);
+            return;
+        }
         self.create_note();
+        self.settings.starter_document = Some(self.active);
+        self.store_settings();
         self.rename("Welcome to Folio".into());
         let pages = [
             (
@@ -17,7 +38,7 @@ Select ink, then drag it or use its resize and rotation handles.",
                 "Write a short sentence below, then use Lasso to select it.
 Choose Recognize text. Review and correct the result.
 Copy text keeps the writing; Replace writing inserts editable text and supports undo.
-The optional model downloads on first use; your pages stay local.",
+Recognition asks before downloading its optional 1.47 GB model pack; your pages stay local.",
             ),
             (
                 "Solve a problem",
@@ -68,6 +89,66 @@ mod tests {
                 .contains("2*x + 3 = 11")
         );
         app.flush().unwrap();
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod onboarding_tests {
+    use super::*;
+    #[test]
+    fn first_launch_stays_empty_until_an_intentional_action() {
+        let root = std::env::temp_dir().join(format!("folio-onboarding-{}", Id::new_v4()));
+        let mut app = Controller::open(root.clone()).unwrap();
+        let placeholder = app.active;
+        assert!(app.visible_notes().is_empty());
+        app.save();
+        app.flush().unwrap();
+        assert!(
+            Store::open(&root.join("notes.sqlite3"))
+                .unwrap()
+                .list_notes()
+                .unwrap()
+                .is_empty()
+        );
+        app.create_note();
+        assert!(!app.sessions.contains_key(&placeholder));
+        assert_eq!(app.visible_notes().len(), 1);
+        app.create_starter_notebook();
+        let starter = app.active;
+        app.rename("My tutorial".into());
+        app.create_starter_notebook();
+        assert_eq!(app.active, starter);
+        assert_eq!(app.visible_notes().len(), 2);
+        app.flush().unwrap();
+        drop(app);
+        let mut app = Controller::open(root.clone()).unwrap();
+        app.create_starter_notebook();
+        while app.has_background_work() {
+            app.tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.active, starter);
+        assert_eq!(app.visible_notes().len(), 2);
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn writing_materializes_the_ephemeral_document_with_its_page() {
+        let root = std::env::temp_dir().join(format!("folio-first-writing-{}", Id::new_v4()));
+        let mut app = Controller::open(root.clone()).unwrap();
+        let id = app.active;
+        let page = app.page().id;
+        app.add_text("First thought".into(), Point::new(10., 20.));
+        assert!(!app.is_bootstrap_document(id));
+        assert_eq!(app.visible_notes().len(), 1);
+        app.flush().unwrap();
+        drop(app);
+        let app = Controller::open(root.clone()).unwrap();
+        assert_eq!(app.active, id);
+        assert_eq!(app.page().id, page);
+        assert_eq!(app.page().text(), "First thought");
         drop(app);
         std::fs::remove_dir_all(root).unwrap();
     }

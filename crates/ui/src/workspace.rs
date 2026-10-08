@@ -862,22 +862,50 @@ impl NotesView {
                     Icon::Book,
                 ),
             };
-            shelf = shelf.child(
-                div()
-                    .py_6()
-                    .mb_4()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(icon(symbol, theme.muted))
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(heading),
-                    )
-                    .child(div().text_sm().text_color(rgb(theme.muted)).child(message)),
-            );
+            let mut empty = div()
+                .py_6()
+                .mb_4()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(icon(symbol, theme.muted))
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(heading),
+                )
+                .child(div().text_sm().text_color(rgb(theme.muted)).child(message));
+            if self.controller.filter == NoteFilter::All {
+                empty = empty.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .mt_3()
+                        .child(self.button(
+                            "start-writing",
+                            "Start writing",
+                            true,
+                            cx,
+                            |this, w, cx| this.new_notebook(w, cx),
+                        ))
+                        .child(self.button(
+                            "try-sample",
+                            "Try the sample notebook",
+                            false,
+                            cx,
+                            |this, w, cx| {
+                                this.controller.create_starter_notebook();
+                                this.show_editor();
+                                this.fit();
+                                this.focus.focus(w);
+                                cx.notify();
+                            },
+                        )),
+                );
+            }
+            shelf = shelf.child(empty);
         }
         shelf = shelf.child(list);
         let breadcrumb = if let NoteFilter::Notebook(id) = self.controller.filter {
