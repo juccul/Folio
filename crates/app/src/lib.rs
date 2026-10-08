@@ -60,6 +60,7 @@ pub enum NoteFilter {
     Recent,
     Trash,
     Notebook(Id),
+    NotebookTrash(Id),
 }
 pub struct Session {
     pub document: Document,
@@ -561,6 +562,7 @@ impl Controller {
             .filter(|n| !self.is_bootstrap_document(n.id))
             .filter(|n| match self.filter {
                 NoteFilter::Trash => n.trashed,
+                NoteFilter::NotebookTrash(id) => n.trashed && n.notebook == Some(id),
                 NoteFilter::Favorites => !n.trashed && n.favorite,
                 NoteFilter::Notebook(id) => !n.trashed && n.notebook == Some(id),
                 NoteFilter::Recent => !n.trashed && self.settings.recent_documents.contains(&n.id),
@@ -997,14 +999,13 @@ impl Controller {
         Ok(())
     }
     pub fn delete_empty_notebook(&mut self, id: Id) -> Result<(), String> {
-        if self.notebooks.iter().any(|n| n.parent == Some(id))
-            || self.notes.iter().any(|n| n.notebook == Some(id))
-        {
-            return Err("Move the notes and child folders before deleting this folder".into());
+        if let Some(reason) = self.folder_deletion_reason(id) {
+            return Err(reason);
         }
         self.notebooks.retain(|n| n.id != id);
         self.persistence.delete_notebook(id);
-        if self.filter == NoteFilter::Notebook(id) {
+        if matches!(self.filter, NoteFilter::Notebook(folder) | NoteFilter::NotebookTrash(folder) if folder == id)
+        {
             self.filter = NoteFilter::All;
         }
         Ok(())

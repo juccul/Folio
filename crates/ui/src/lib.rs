@@ -1431,6 +1431,12 @@ impl NotesView {
                 || self.building_overlay
                 || window_control)
             && match id.as_ref() {
+                "delete-folder" => match self.controller.filter {
+                    NoteFilter::Notebook(id) | NoteFilter::NotebookTrash(id) => {
+                        self.controller.folder_deletion_reason(id).is_none()
+                    }
+                    _ => false,
+                },
                 key if key.starts_with("folder-destination-") => {
                     let destination = key
                         .strip_prefix("folder-destination-")

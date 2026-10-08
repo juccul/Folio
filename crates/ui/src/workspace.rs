@@ -293,7 +293,9 @@ impl NotesView {
             ("recent", "Recent", Icon::Clock, NoteFilter::Recent),
             ("trash", "Trash", Icon::Trash, NoteFilter::Trash),
         ] {
-            let active = self.controller.filter == filter;
+            let active = self.controller.filter == filter
+                || (filter == NoteFilter::Trash
+                    && matches!(self.controller.filter, NoteFilter::NotebookTrash(_)));
             let content = div()
                 .flex()
                 .items_center()
@@ -353,7 +355,7 @@ impl NotesView {
             if branch && collapsed {
                 collapsed_depth = Some(depth);
             }
-            let active = self.controller.filter == NoteFilter::Notebook(id);
+            let active = matches!(self.controller.filter, NoteFilter::Notebook(folder) | NoteFilter::NotebookTrash(folder) if folder == id);
             let content = div()
                 .flex()
                 .min_w_0()
@@ -423,7 +425,7 @@ impl NotesView {
                     .child("Keep related documents together."),
             );
         }
-        if let NoteFilter::Notebook(id) = self.controller.filter {
+        if let NoteFilter::Notebook(id) | NoteFilter::NotebookTrash(id) = self.controller.filter {
             folders = folders
                 .child(
                     self.button(
@@ -475,6 +477,31 @@ impl NotesView {
                     .justify_start()
                     .bg(rgb(theme.sidebar)),
                 );
+            if let Some(reason) = self.controller.folder_deletion_reason(id) {
+                folders = folders.child(
+                    div()
+                        .p_2()
+                        .text_xs()
+                        .text_color(rgb(theme.muted))
+                        .child(reason),
+                );
+            }
+            let (_, trashed, _) = self.controller.folder_contents(id);
+            if trashed > 0 {
+                folders = folders.child(
+                    self.button(
+                        "view-folder-trash",
+                        format!("View {trashed} in Trash"),
+                        false,
+                        cx,
+                        move |this, _, _| {
+                            this.controller.filter = NoteFilter::NotebookTrash(id);
+                        },
+                    )
+                    .text_xs()
+                    .justify_start(),
+                );
+            }
         }
         div()
             .w(rems(13.5))
@@ -776,6 +803,7 @@ impl NotesView {
             NoteFilter::Favorites => "Favorites".into(),
             NoteFilter::Recent => "Recent".into(),
             NoteFilter::Trash => "Trash".into(),
+            NoteFilter::NotebookTrash(id) => format!("Trash · {}", self.controller.folder_path(id)),
             NoteFilter::Notebook(id) => self
                 .controller
                 .notebooks
@@ -836,7 +864,7 @@ impl NotesView {
         .min_h_0();
         if count == 0 {
             let (heading, message, symbol) = match self.controller.filter {
-                NoteFilter::Trash => (
+                NoteFilter::Trash | NoteFilter::NotebookTrash(_) => (
                     "Trash is empty",
                     "Deleted documents appear here. You can restore them whenever you need.",
                     Icon::Trash,
@@ -941,6 +969,28 @@ impl NotesView {
                 );
             }
             Some(row)
+        } else if let NoteFilter::NotebookTrash(id) = self.controller.filter {
+            Some(
+                div()
+                    .id("folder-trash-navigation")
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(self.button(
+                        "back-to-folder",
+                        "Back to folder",
+                        false,
+                        cx,
+                        move |this, _, _| this.controller.filter = NoteFilter::Notebook(id),
+                    ))
+                    .child(self.button(
+                        "view-all-trash",
+                        "View all Trash",
+                        false,
+                        cx,
+                        |this, _, _| this.controller.filter = NoteFilter::Trash,
+                    )),
+            )
         } else {
             None
         };

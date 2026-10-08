@@ -1,6 +1,58 @@
 //! Stable folder hierarchy and unambiguous paths shared by navigation and pickers.
 use super::*;
 impl Controller {
+    /// Direct contents; child folders must be moved before their parent can be deleted.
+    pub fn folder_contents(&self, id: Id) -> (usize, usize, usize) {
+        let live = self
+            .notes
+            .iter()
+            .filter(|n| n.notebook == Some(id) && !n.trashed)
+            .count();
+        let trash = self
+            .notes
+            .iter()
+            .filter(|n| n.notebook == Some(id) && n.trashed)
+            .count();
+        let children = self
+            .notebooks
+            .iter()
+            .filter(|n| n.parent == Some(id))
+            .count();
+        (live, trash, children)
+    }
+    pub fn folder_deletion_reason(&self, id: Id) -> Option<String> {
+        if !self.notebooks.iter().any(|n| n.id == id) {
+            return Some("This folder no longer exists.".into());
+        }
+        let (live, trash, children) = self.folder_contents(id);
+        let mut contents = Vec::new();
+        for (count, label) in [
+            (live, "document"),
+            (trash, "trashed document"),
+            (children, "subfolder"),
+        ] {
+            if count > 0 {
+                contents.push(format!(
+                    "{count} {label}{}",
+                    if count == 1 { "" } else { "s" }
+                ));
+            }
+        }
+        if contents.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "Move {} before deleting this folder.{}",
+                contents.join(", "),
+                if trash > 0 {
+                    " Restore and move trashed documents, or permanently delete them in Trash."
+                } else {
+                    ""
+                }
+            ))
+        }
+    }
+
     pub(super) fn validate_folder_name(
         &self,
         name: &str,
@@ -206,5 +258,49 @@ mod tests {
         drop(a);
         let a = Controller::open(root_dir).unwrap();
         assert_eq!(a.folder_path(child), "Notes");
+    }
+}
+
+#[cfg(test)]
+mod deletion_tests {
+    use super::*;
+    #[test]
+    fn folder_deletion_explains_hidden_trash_and_filters_recovery_by_identity() {
+        let root = std::env::temp_dir().join(format!("folio-folder-delete-{}", Id::new_v4()));
+        let mut a = Controller::open(root.clone()).unwrap();
+        let folder = a.create_notebook("Course".into(), None).unwrap();
+        let child = a.create_notebook("Child".into(), Some(folder)).unwrap();
+        a.filter = NoteFilter::Notebook(folder);
+        a.create_note();
+        let hidden = a.active;
+        a.metadata(|m| m.trashed = true);
+        a.create_note();
+        a.metadata(|m| m.trashed = true); // Other Trash is excluded from the folder view.
+        a.filter = NoteFilter::NotebookTrash(folder);
+        assert_eq!(
+            a.visible_notes().iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![hidden]
+        );
+        assert_eq!(a.folder_contents(folder), (0, 1, 1));
+        let reason = a.folder_deletion_reason(folder).unwrap();
+        assert!(reason.contains("1 trashed document"));
+        assert!(reason.contains("1 subfolder"));
+        assert_eq!(a.delete_empty_notebook(folder).unwrap_err(), reason);
+        a.move_notebook(child, None).unwrap();
+        a.switch_note(hidden);
+        a.metadata(|m| m.trashed = false);
+        a.metadata(|m| m.notebook = None);
+        assert_eq!(a.folder_contents(folder), (0, 0, 0));
+        assert!(a.folder_deletion_reason(folder).is_none());
+        a.delete_empty_notebook(folder).unwrap();
+        assert_eq!(a.filter, NoteFilter::All);
+        assert!(a.delete_empty_notebook(folder).is_err());
+        a.flush().unwrap();
+        drop(a);
+        let a = Controller::open(root.clone()).unwrap();
+        assert!(!a.notebooks.iter().any(|n| n.id == folder));
+        assert!(!a.notes.iter().find(|n| n.id == hidden).unwrap().trashed);
+        drop(a);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
