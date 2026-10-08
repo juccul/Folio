@@ -1077,6 +1077,7 @@ mod tests {
             live: true,
             sources: vec![source],
             ink_region: Some(Rect::new(20., 20., 360., 64.)),
+            last_error: Some("The source expression no longer parses".into()),
         };
         let equation = Object::Equation(Equation {
             id,
