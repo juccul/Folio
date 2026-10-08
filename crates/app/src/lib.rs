@@ -739,6 +739,14 @@ impl Controller {
     pub fn loading_note(&self) -> bool {
         self.pending_note.is_some()
     }
+    fn activate_note(&mut self, id: Id) {
+        let previous = self.active;
+        self.active = id;
+        if previous != id && !self.notes.iter().any(|n| n.id == previous) {
+            self.sessions.remove(&previous);
+            self.provisional_imports.remove(&previous);
+        }
+    }
     pub fn switch_note(&mut self, id: Id) {
         self.finish();
         self.end_temporary_selection();
@@ -746,7 +754,7 @@ impl Controller {
         self.search_highlights.clear();
         self.pending_note = None;
         if self.sessions.contains_key(&id) {
-            self.active = id;
+            self.activate_note(id);
             if self.read_only() {
                 self.tool = Tool::Hand;
             }
@@ -1052,6 +1060,7 @@ impl Controller {
             let deltas = self
                 .sessions
                 .values()
+                .filter(|s| !self.provisional_imports.contains(&s.document.metadata.id))
                 .map(|s| Delta::full(&s.document))
                 .collect::<Vec<_>>();
             for delta in deltas {
@@ -2217,6 +2226,9 @@ impl Controller {
         self.provisional_imports.contains(&note)
     }
     pub fn dismiss_failed_import(&mut self, note: Id) {
+        if note == self.active {
+            self.finish();
+        }
         if !self
             .library_imports
             .get(&note)
@@ -2227,13 +2239,17 @@ impl Controller {
         self.library_imports.remove(&note);
         if self.provisional_imports.remove(&note) {
             self.notes.retain(|n| n.id != note);
-            self.sessions.remove(&note);
             if note == self.active {
                 if let Some(id) = self.notes.iter().find(|n| !n.trashed).map(|n| n.id) {
                     self.switch_note(id);
                 } else {
                     self.create_note();
                 }
+            }
+            if self.active != note {
+                self.sessions.remove(&note);
+            } else {
+                self.provisional_imports.insert(note);
             }
             self.status = "Failed import removed".into();
         } else {
@@ -2656,7 +2672,7 @@ impl Controller {
                     }
                     if self.pending_note == Some(id) {
                         self.finish();
-                        self.active = id;
+                        self.activate_note(id);
                         if self.read_only() {
                             self.tool = Tool::Hand;
                         }
