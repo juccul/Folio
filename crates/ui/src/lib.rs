@@ -3205,6 +3205,31 @@ impl Render for NotesView {
             let toolbar = self.toolbar(cx);
             let formatting = self.text_formatting_bar(cx);
             let footer = self.footer(cx);
+            let preview_notice =
+                self.controller
+                    .page_preview_error()
+                    .map(str::to_owned)
+                    .map(|message| {
+                        div()
+                            .px_4()
+                            .py_2()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_sm()
+                                    .child(format!("Preview unavailable: {message}")),
+                            )
+                            .child(self.button(
+                                "retry-page-preview",
+                                "Retry preview",
+                                false,
+                                cx,
+                                |this, _, _| this.controller.retry_previews(),
+                            ))
+                    });
             let mut workspace = div().flex().flex_1().min_h_0();
             if self.pages_open {
                 workspace = workspace.child(
@@ -3254,6 +3279,7 @@ impl Render for NotesView {
                         body.child(self.input_check_panel(cx))
                     })
                     .children(formatting)
+                    .children(preview_notice)
                     .child(workspace)
                     .child(footer),
             );
@@ -3355,7 +3381,30 @@ impl Render for NotesView {
             );
         }
         self.building_overlay = false;
-        root = root.child(self.document_tabs(window, cx)).child(body);
+        root = root.child(self.document_tabs(window, cx));
+        if let Some(error) = self.controller.save_error.clone() {
+            root = root.child(
+                div()
+                    .px_4()
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .bg(rgb(theme.surface))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .child(format!("Changes are not saved. {error}")),
+                    )
+                    .child(
+                        self.button("retry-save", "Retry saving", false, cx, |this, _, _| {
+                            this.controller.retry_save()
+                        }),
+                    ),
+            );
+        }
+        root = root.child(body);
         self.accessibility.publish(self, window, cx);
         titlebar::frame(root, window)
     }

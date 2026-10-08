@@ -490,7 +490,9 @@ fn pdf_scroll_preview_upgrades_without_switching_pages_or_changing_content() {
     let original = a.session().document.clone();
     let current = a.page().id;
     let background = original.pages[1].properties.pdf.clone().unwrap();
-    let quick = a.assets.join(Controller::pdf_scroll_preview_asset(&background).unwrap());
+    let quick = a
+        .assets
+        .join(Controller::pdf_scroll_preview_asset(&background).unwrap());
     let sharp = a.assets.join(background.preview_asset.as_ref().unwrap());
     a.request_pdf_scroll_preview(background.clone());
     settle(&mut a);
@@ -508,7 +510,10 @@ fn pdf_scroll_preview_upgrades_without_switching_pages_or_changing_content() {
     settle(&mut a);
     let (width, height) = dimensions(&sharp);
     assert_eq!(width.max(height), 2400);
-    assert!(quick.is_file(), "Quick image remains available during sharp-image decoding");
+    assert!(
+        quick.is_file(),
+        "Quick image remains available during sharp-image decoding"
+    );
     assert_eq!(a.page().id, current);
     assert_eq!(a.session().document, original);
 }
@@ -615,4 +620,55 @@ fn resizing_text_reflows_the_frame_preserves_fonts_and_is_reversible() {
         "A sentence that should wrap when its box gets narrower."
     );
     a.flush().unwrap();
+}
+
+#[test]
+fn failed_object_preview_is_local_and_retryable() {
+    let mut a = app();
+    let id = Id::new_v4();
+    let object = Object::Image(folio_document::ImageObject {
+        id,
+        asset: "missing.png".into(),
+        rect: Rect::new(0., 0., 100., 100.),
+        transform: Transform::default(),
+        crop: None,
+    });
+    a.commit(
+        "Image",
+        vec![Change::Object {
+            page: a.page().id,
+            id,
+            before: None,
+            after: Some(Arc::new(object)),
+            index: 0,
+        }],
+    );
+    a.request_previews(&HashSet::from([id]));
+    settle(&mut a);
+    assert!(a.page_preview_error().is_some());
+    assert!(a.error.is_none());
+    a.retry_previews();
+    assert!(a.page_preview_error().is_none());
+    assert!(a.preview_failed.is_empty());
+}
+
+#[test]
+fn retry_saving_preserves_warning_until_all_documents_are_saved() {
+    let mut a = app();
+    let first = a.active;
+    a.add_text("Recovered work".into(), Point::new(10., 10.));
+    a.flush().unwrap();
+    a.dirty_notes.insert(first);
+    a.save_error = Some("Disk unavailable".into());
+    a.create_note();
+    a.retry_save();
+    assert!(a.save_error.is_some());
+    let start = Instant::now();
+    while a.save_error.is_some() {
+        a.tick();
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(a.dirty_notes.is_empty());
+    assert!(a.error.is_none());
 }

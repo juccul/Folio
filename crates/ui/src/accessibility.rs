@@ -488,7 +488,15 @@ impl Accessibility {
             children.push(NodeId(9));
         }
         let mut status = Node::new(Role::Status);
-        status.set_label(if view.controller.recognition_pending {
+        status.set_label(if let Some(error) = &view.controller.save_error {
+            format!("Changes are not saved. {error}. Retry saving is available.")
+        } else if let Some(error) = view
+            .controller
+            .page_preview_error()
+            .filter(|_| !view.library_open)
+        {
+            format!("Preview unavailable: {error}. Retry preview is available.")
+        } else if view.controller.recognition_pending {
             view.controller.recognition_status.clone()
         } else {
             view.controller.status.clone()

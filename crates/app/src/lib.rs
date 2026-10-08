@@ -307,6 +307,8 @@ pub struct Controller {
     pub cursor: Option<Point>,
     pub status: String,
     pub error: Option<String>,
+    pub save_error: Option<String>,
+    preview_errors: HashMap<(Id, Id), String>,
     pub busy: usize,
     pub pending_text: Option<Point>,
     pub pending_text_edit: Option<Id>,
@@ -423,6 +425,8 @@ impl Controller {
             cursor: None,
             status: "All changes saved".into(),
             error: None,
+            save_error: None,
+            preview_errors: HashMap::new(),
             busy: 0,
             pending_text: None,
             pending_text_edit: None,
@@ -503,7 +507,8 @@ impl Controller {
                 if let Some(s) = self.sessions.get_mut(&id) {
                     s.pending_journal = vec![JournalEvent::Replace(s.history.clone())];
                 }
-                self.error = Some(e);
+                self.status = "Changes are not saved".into();
+                self.save_error = Some(e);
             }
         }
     }
@@ -2220,6 +2225,7 @@ impl Controller {
                             .values()
                             .all(|session| session.pending_journal.is_empty())
                     {
+                        self.save_error = None;
                         self.status = "All changes saved".into()
                     }
                 }
@@ -2227,8 +2233,8 @@ impl Controller {
                     if let Some(note) = note {
                         self.dirty_notes.insert(note);
                     }
-                    self.status = "Save failed".into();
-                    self.error = Some(e)
+                    self.status = "Changes are not saved".into();
+                    self.save_error = Some(e)
                 }
             }
         }
@@ -2332,13 +2338,23 @@ impl Controller {
                         .is_some_and(|current| Arc::ptr_eq(current, &object));
                     if current {
                         self.preview_failed.insert(key, object);
-                        self.error = Some(message);
+                        self.preview_errors.insert((note, page), message);
                     }
                 }
                 Finished::PdfPreviewError { asset, message } => {
                     self.pdf_preview_pending.remove(&asset);
+                    for (&note, session) in &self.sessions {
+                        for page in &session.document.pages {
+                            if page.properties.pdf.as_ref().is_some_and(|p| {
+                                p.preview_asset.as_ref().is_some_and(|a| {
+                                    a == &asset || format!("{a}.scroll.png") == asset
+                                })
+                            }) {
+                                self.preview_errors.insert((note, page.id), message.clone());
+                            }
+                        }
+                    }
                     self.pdf_preview_failed.insert(asset);
-                    self.error = Some(message);
                 }
                 Finished::PdfPreview(asset) => {
                     self.pdf_preview_pending.remove(&asset);
@@ -2582,7 +2598,24 @@ impl Controller {
             root: self.data_dir.clone(),
         });
     }
+    pub fn page_preview_error(&self) -> Option<&str> {
+        self.preview_errors
+            .get(&(self.active, self.page().id))
+            .map(String::as_str)
+    }
+    pub fn retry_save(&mut self) {
+        let notes = self.dirty_notes.iter().copied().collect::<Vec<_>>();
+        let autosave = self.settings.autosave;
+        self.settings.autosave = true;
+        for note in notes {
+            if let Some(session) = self.sessions.get(&note) {
+                self.persist(Delta::full(&session.document));
+            }
+        }
+        self.settings.autosave = autosave;
+    }
     pub fn retry_previews(&mut self) {
+        self.preview_errors.clear();
         self.preview_failed.clear();
         self.pdf_preview_failed.clear();
     }
