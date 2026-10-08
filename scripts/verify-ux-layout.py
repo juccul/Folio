@@ -103,6 +103,19 @@ def main():
                             r=find(label).get_component_iface().get_extents(Atspi.CoordType.WINDOW)
                             assert r.width>0 and 0<=r.x and r.x+r.width<=width+2,(case,label,r.x,r.width)
                         capture('editor')
+                        click('Settings')
+                        def inside(label):
+                            r=find(label).get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                            assert r.width>0 and r.height>0 and 0<=r.x and r.x+r.width<=width+2 and 0<=r.y and r.y+r.height<=height+2,(case,label,r.x,r.y,r.width,r.height)
+                        for label in ['Appearance','Writing','Library','Accessibility','Close settings','Light appearance','Dark appearance']:
+                            inside(label)
+                        capture('settings-appearance')
+                        click('Dark appearance');capture('settings-dark');click('Light appearance')
+                        click('Writing');inside('Scratch to erase: Off');click('Scratch to erase: Off');inside('Scratch to erase: On');capture('settings-writing')
+                        click('Scratch to erase: On')
+                        click('Accessibility');inside('Reduce motion: On');capture('settings-accessibility')
+                        click('Library');inside('Open another library…');capture('settings-library')
+                        click('Close settings')
                         if scale==1. and width==1366:
                             click('Pen settings and presets');capture('presets')
                             click('Save current pen as preset…');fill('Name pen preset','Lecture pen');click('Save')

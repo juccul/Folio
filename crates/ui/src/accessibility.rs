@@ -120,6 +120,13 @@ fn semantics(key: &str) -> Semantics {
         group: None,
         toggle: false,
     };
+    if key.starts_with("settings-section-") {
+        return Semantics {
+            role: Role::Tab,
+            group: Some((49, "Settings sections", Role::TabList)),
+            toggle: false,
+        };
+    }
     if key == "tab-library"
         || key
             .strip_prefix("tab-")

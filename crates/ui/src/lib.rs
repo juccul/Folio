@@ -25,6 +25,7 @@ mod painting;
 mod pen_presets;
 mod portable;
 mod region;
+mod settings;
 mod templates;
 mod text_render;
 mod theme;
@@ -207,6 +208,7 @@ pub struct NotesView {
     motion: std::cell::RefCell<motion::Motion>,
     building_overlay: bool,
     settings_open: bool,
+    settings_section: settings::Section,
     theme_colors_open: bool,
     modal_error: Option<String>,
     attention_error: Option<String>,
@@ -304,6 +306,7 @@ impl NotesView {
             motion: Default::default(),
             building_overlay: false,
             settings_open: false,
+            settings_section: settings::Section::default(),
             theme_colors_open: false,
             modal_error: None,
             attention_error: None,
@@ -2277,267 +2280,6 @@ impl NotesView {
             panel = panel.child(recent);
         }
         panel.id("popover").overflow_y_scroll()
-    }
-    fn settings_panel(
-        &mut self,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let theme = Theme::new(&self.controller.settings);
-        let mut body = div()
-            .id("settings-body")
-            .flex()
-            .flex_col()
-            .gap_3()
-            .max_h(px((f32::from(window.viewport_size().height)
-                / self.controller.settings.ui_scale
-                - 140.)
-                .clamp(180., 570.)))
-            .min_h_0()
-            .overflow_y_scroll()
-            .child(self.appearance_panel(cx));
-        body = body.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Current library"))
-            .child(div().text_xs().child(self.controller.data_dir.display().to_string()))
-            .child(self.button("default-library","Use this library by default",false,cx,|this,_,_| { if let Err(e) = this.controller.use_library_by_default() { this.controller.error = Some(e); }}).justify_start())
-            .child(self.button("switch-library","Open another library…",false,cx,|this,w,cx| this.switch_library_dialog(w,cx)).justify_start())
-            .child(div().text_xs().child("Applies on normal restart. --data-dir and FOLIO_DATA_DIR override this preference."));
-        body = body.child(div().mt_3().text_sm().font_weight(FontWeight::SEMIBOLD).child("Backup and restore"))
-            .child(self.button("backup-library", "Back up library…", false, cx, |this, _, cx| this.backup_dialog(cx)).justify_start())
-            .child(self.button("restore-library", "Restore backup to a new library…", false, cx, |this, _, cx| this.restore_dialog(cx)).justify_start())
-            .child(div().text_xs().text_color(rgb(theme.muted)).child("Includes documents, assets, folders, preferences and undo history. Downloadable OCR/math runtimes are excluded."));
-        body=body.child(div().mt_3().text_sm().font_weight(FontWeight::SEMIBOLD).child("Library maintenance"))
-            .child(self.button("checkpoint-settings","Create recovery snapshot",false,cx,|this,_,_| this.controller.recovery_checkpoint()).justify_start())
-            .child(self.button("cleanup-assets-settings","Quarantine unused assets",false,cx,|this,_,_| this.controller.cleanup_assets()).justify_start())
-            .child(div().text_xs().text_color(rgb(theme.muted)).child("Asset cleanup becomes available when autosave is on and all work has finished saving."));
-        body=body.child(div().text_xs().child(if self.controller.recognition_ready() {"Handwriting recognition: ready offline"} else {"Handwriting recognition: not installed. Request recognition to review the download size and set it up."}));
-        body = body.child(
-            self.button(
-                "reopen-documents",
-                if self.controller.settings.reopen_documents {
-                    "Reopen previous documents: On"
-                } else {
-                    "Reopen previous documents: Off"
-                },
-                self.controller.settings.reopen_documents,
-                cx,
-                |this, _, _| {
-                    this.controller.settings.reopen_documents =
-                        !this.controller.settings.reopen_documents;
-                    this.controller.store_settings();
-                },
-            )
-            .justify_start(),
-        );
-        body = body.child(div().text_xs().child(self.controller.activity_status()));
-        for task in self.controller.tasks.iter().rev().take(8) {
-            let state = match &task.state {
-                folio_app::TaskState::Running => "Running…".into(),
-                folio_app::TaskState::Complete => "Completed".into(),
-                folio_app::TaskState::Failed(e) => format!("Failed: {e}"),
-            };
-            body = body.child(div().text_xs().child(format!("{} · {state}", task.label)));
-        }
-        if let Some(path) = &self.controller.restored_library {
-            body = body
-                .child(
-                    div()
-                        .text_xs()
-                        .child(format!("Restored: {}", path.display())),
-                )
-                .child(self.button(
-                    "open-restored-library",
-                    "Open restored library for this session",
-                    true,
-                    cx,
-                    |this, w, cx| this.open_restored_library(w, cx),
-                ));
-        }
-        for (id, label, enabled, kind) in [
-            (
-                "scratch-toggle",
-                "Scratch to erase (deliberate scribbles)",
-                self.controller.settings.scratch_erase,
-                1,
-            ),
-            (
-                "hold-toggle",
-                "Hold to snap shapes",
-                self.controller.settings.hold_shapes,
-                2,
-            ),
-            (
-                "encircle-toggle",
-                "Circle and hold to select ink",
-                self.controller.settings.encircle_select,
-                3,
-            ),
-            (
-                "autosave-toggle",
-                "Autosave each completed command",
-                self.controller.settings.autosave,
-                6,
-            ),
-        ] {
-            body = body.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .text_sm()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().flex_1().min_w_0().child(label)),
-                    )
-                    .child(self.appearance_switch(id, label, enabled, cx, move |this| {
-                        if kind == 6 {
-                            this.controller
-                                .set_autosave(!this.controller.settings.autosave);
-                            return;
-                        }
-                        let s = &mut this.controller.settings;
-                        match kind {
-                            1 => s.scratch_erase = !s.scratch_erase,
-                            2 => s.hold_shapes = !s.hold_shapes,
-                            3 => s.encircle_select = !s.encircle_select,
-
-                            _ => s.autosave = !s.autosave,
-                        }
-                    })),
-            )
-        }
-        body = body.child(
-            self.button(
-                "pad-buttons",
-                "Tablet pad button actions…",
-                false,
-                cx,
-                |this, w, cx| this.modal(Modal::PadButtons, w, cx),
-            )
-            .justify_start(),
-        );
-        body = body.child(
-            div()
-                .mt_3()
-                .pt_3()
-                .border_t_1()
-                .border_color(theme.border)
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("Accessibility"),
-        );
-        body = body.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .text_sm()
-                .child("Reduce motion")
-                .child(self.appearance_switch(
-                    "reduce-motion",
-                    "Reduce motion",
-                    self.controller.settings.reduce_motion,
-                    cx,
-                    |this| {
-                        this.controller.settings.reduce_motion =
-                            !this.controller.settings.reduce_motion;
-                    },
-                )),
-        );
-        body = body.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child("UI scale")
-                .child(
-                    div()
-                        .flex()
-                        .gap_1()
-                        .child(self.button("ui-smaller", "−", false, cx, |this, _, _| {
-                            this.controller.settings.ui_scale =
-                                (this.controller.settings.ui_scale - 0.1).max(0.8);
-                            this.controller.store_settings();
-                        }))
-                        .child(format!("{:.0}%", self.controller.settings.ui_scale * 100.))
-                        .child(self.button("ui-larger", "＋", false, cx, |this, _, _| {
-                            this.controller.settings.ui_scale =
-                                (this.controller.settings.ui_scale + 0.1).min(1.6);
-                            this.controller.store_settings();
-                        })),
-                ),
-        );
-        body = body.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child("Cursor size")
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(self.button("cursor-smaller", "−", false, cx, |this, _, _| {
-                            this.controller.settings.cursor_size =
-                                (this.controller.settings.cursor_size - 2.).max(4.);
-                            this.controller.store_settings();
-                        }))
-                        .child(format!("{:.0} px", self.controller.settings.cursor_size))
-                        .child(self.button("cursor-larger", "＋", false, cx, |this, _, _| {
-                            this.controller.settings.cursor_size =
-                                (this.controller.settings.cursor_size + 2.).min(64.);
-                            this.controller.store_settings();
-                        })),
-                ),
-        );
-        body=body.child(div().text_xs().text_color(rgb(theme.muted)).child("Draw with a stylus or mouse. Two-finger scrolling pans; Ctrl + scroll zooms. Pen input preserves pressure, tilt, buttons and timing."));
-        div()
-            .occlude()
-            .absolute()
-            .inset_0()
-            .bg(rgba(0x00000070))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .w(px(540.))
-                    .max_w_full()
-                    .p_6()
-                    .bg(rgb(theme.popover))
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded(px(theme.radius + 4.))
-                    .shadow_sm()
-                    .flex()
-                    .flex_col()
-                    .gap_5()
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_xl()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Settings"),
-                            )
-                            .child(self.button(
-                                "close-settings",
-                                "Done",
-                                true,
-                                cx,
-                                |this, w, _| {
-                                    this.settings_open = false;
-                                    this.focus.focus(w);
-                                },
-                            )),
-                    )
-                    .child(body),
-            )
     }
     fn modal_panel(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = Theme::new(&self.controller.settings);

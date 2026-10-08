@@ -58,3 +58,4 @@ Final validation on 2026-10-09:
 ## Screenshot review follow-up
 
 - Removed the floating selection toolbar. Selection operations are available on demand under Document actions → Selection, keeping the canvas clear. Native replay now exercises the editor Redo button with a stylus.
+- Rebuilt Settings as a sectioned workspace with a fixed navigation area, aligned setting rows, compact switches, and separate Writing, Library and Accessibility pages. Larger interface scales use compact horizontal navigation. Native light/dark screenshots and all six layout cases passed; 41 UI tests passed.

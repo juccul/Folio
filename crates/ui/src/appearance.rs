@@ -6,19 +6,13 @@ impl NotesView {
         let theme = Theme::new(&self.controller.settings);
         let dark = self.controller.settings.dark;
         let follows = self.controller.settings.appearance.canvas_follows_theme;
-        let adapt = self.controller.settings.appearance.adapt_ink;
-        let mut body = div().flex().flex_col().gap_4().child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("Appearance"),
-        );
         let mut modes = div()
             .flex()
             .gap_1()
             .p_1()
-            .rounded(px(theme.radius))
-            .bg(rgb(theme.selected));
+            .rounded(px(7.))
+            .bg(rgb(theme.bg))
+            .flex_shrink_0();
         for (id, label, value) in [
             ("light-theme", "Light", false),
             ("dark-theme", "Dark", true),
@@ -39,38 +33,30 @@ impl NotesView {
                         this.controller.store_settings();
                     },
                 )
-                .flex_1()
-                .when(dark == value, |s| s.bg(rgb(theme.surface)))
-                .when(dark != value, |s| s.bg(rgb(theme.selected))),
+                .px_4()
+                .py_1()
+                .rounded(px(5.))
+                .bg(rgb(if dark == value {
+                    theme.selected
+                } else {
+                    theme.bg
+                })),
             );
         }
-        // Buttons use the visible short label while retaining their accessible name.
-        body = body.child(modes).child(
-            div()
-                .text_xs()
-                .text_color(rgb(theme.muted))
-                .child("Light and dark colors are saved independently."),
-        );
-        body = body.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child("Paper follows appearance")
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(theme.muted))
-                                .child("Use themed paper, or keep a fixed paper color."),
-                        ),
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .child(
+                self.settings_row(
+                    "Color theme",
+                    "Light and dark palettes are saved separately.",
+                )
+                .child(modes),
+            )
+            .child(
+                self.settings_row(
+                    "Paper follows theme",
+                    "Match the page to your light or dark workspace.",
                 )
                 .child(self.appearance_switch(
                     "canvas-theme",
@@ -82,126 +68,131 @@ impl NotesView {
                             !this.controller.settings.appearance.canvas_follows_theme;
                     },
                 )),
-        );
+            );
         if !follows {
             body = body.child(
-                self.control(
-                    "paper-color",
-                    "Custom paper color",
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            div()
-                                .size(px(20.))
-                                .rounded(px(4.))
-                                .border_1()
-                                .border_color(theme.border)
-                                .bg(rgb(theme.canvas.paper)),
-                        )
-                        .child("Paper color")
-                        .child(div().flex_1())
-                        .child(format!("#{:06x}", theme.canvas.paper))
-                        .into_any_element(),
-                    false,
-                    cx,
-                    |this, w, cx| this.modal(Modal::CanvasColor, w, cx),
+                self.settings_row(
+                    "Paper color",
+                    "Use a fixed color for pages without a custom background.",
                 )
-                .w_full()
-                .justify_start(),
+                .child(
+                    self.control(
+                        "paper-color",
+                        "Custom paper color",
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .size(rems(1.))
+                                    .rounded(px(3.))
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .bg(rgb(theme.canvas.paper)),
+                            )
+                            .child(format!("#{:06X}", theme.canvas.paper))
+                            .into_any_element(),
+                        false,
+                        cx,
+                        |this, w, cx| this.modal(Modal::CanvasColor, w, cx),
+                    )
+                    .flex_shrink_0(),
+                ),
             );
         }
-        body = body.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child("Keep ink readable")
-                        .child(div().text_xs().text_color(rgb(theme.muted)).child(
-                            "Adjust low-contrast ink on screen. Exports keep original colors.",
-                        )),
+        body = body
+            .child(
+                self.settings_row(
+                    "Keep ink readable",
+                    "Adapt ink contrast on screen. Export colors stay original.",
                 )
                 .child(self.appearance_switch(
                     "adapt-ink",
                     "Keep ink readable",
-                    adapt,
+                    self.controller.settings.appearance.adapt_ink,
                     cx,
                     |this| {
                         this.controller.settings.appearance.adapt_ink =
                             !this.controller.settings.appearance.adapt_ink;
                     },
                 )),
-        );
-        body = body.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child("Corner radius")
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(self.button("radius-less", "−", false, cx, |this, _, _| {
-                            this.controller.settings.appearance.radius =
-                                (this.controller.settings.appearance.radius() - 2.).max(0.);
-                            this.controller.store_settings();
-                        }))
-                        .child(
-                            div()
-                                .w(px(44.))
-                                .text_sm()
-                                .text_color(rgb(theme.muted))
-                                .child(format!("{} px", theme.radius as u32)),
+            )
+            .child(
+                self.settings_row("Interface corners", "Choose how rounded controls appear.")
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .flex_shrink_0()
+                            .gap_1()
+                            .rounded(px(6.))
+                            .bg(rgb(theme.bg))
+                            .child(
+                                self.control(
+                                    "radius-less",
+                                    "Decrease corner radius",
+                                    div().child("−").into_any_element(),
+                                    false,
+                                    cx,
+                                    |this, _, _| {
+                                        this.controller.settings.appearance.radius =
+                                            (this.controller.settings.appearance.radius() - 2.)
+                                                .max(0.);
+                                        this.controller.store_settings();
+                                    },
+                                )
+                                .size(rems(2.))
+                                .p_0()
+                                .bg(transparent_black()),
+                            )
+                            .child(
+                                div()
+                                    .w(rems(3.5))
+                                    .text_sm()
+                                    .text_align(TextAlign::Center)
+                                    .child(format!("{} px", theme.radius as u32)),
+                            )
+                            .child(
+                                self.control(
+                                    "radius-more",
+                                    "Increase corner radius",
+                                    div().child("+").into_any_element(),
+                                    false,
+                                    cx,
+                                    |this, _, _| {
+                                        this.controller.settings.appearance.radius =
+                                            (this.controller.settings.appearance.radius() + 2.)
+                                                .min(20.);
+                                        this.controller.store_settings();
+                                    },
+                                )
+                                .size(rems(2.))
+                                .p_0()
+                                .bg(transparent_black()),
+                            ),
+                    ),
+            )
+            .child(
+                self.settings_row("Custom palette", "Fine-tune the colors of this theme.")
+                    .child(
+                        self.button(
+                            "customize-theme",
+                            if self.theme_colors_open {
+                                "Hide colors"
+                            } else {
+                                "Edit colors…"
+                            },
+                            self.theme_colors_open,
+                            cx,
+                            |this, _, _| this.theme_colors_open = !this.theme_colors_open,
                         )
-                        .child(self.button("radius-more", "+", false, cx, |this, _, _| {
-                            this.controller.settings.appearance.radius =
-                                (this.controller.settings.appearance.radius() + 2.).min(20.);
-                            this.controller.store_settings();
-                        })),
-                ),
-        );
-        body = body.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(self.button(
-                    "customize-theme",
-                    "Customize colors",
-                    self.theme_colors_open,
-                    cx,
-                    |this, _, _| this.theme_colors_open = !this.theme_colors_open,
-                ))
-                .child(div().flex_1())
-                .child(
-                    self.button(
-                        "reset-appearance",
-                        "Reset appearance",
-                        false,
-                        cx,
-                        |this, _, _| {
-                            this.controller.settings.appearance = Appearance::default();
-                            this.controller.store_settings();
-                        },
-                    )
-                    .text_xs()
-                    .text_color(rgb(theme.muted)),
-                ),
-        );
+                        .flex_shrink_0(),
+                    ),
+            );
         if self.theme_colors_open {
             let palette = self.controller.settings.appearance.palette(dark);
-            let mut colors = div().flex().flex_col().gap_1();
+            let mut colors = div().flex().flex_col().gap_1().mt_3();
             for token in ThemeToken::ALL {
                 let color = palette[&token];
                 colors = colors.child(
@@ -209,17 +200,17 @@ impl NotesView {
                         format!("theme-color-{}", token.key()),
                         format!("Customize {}", token.label()),
                         div()
+                            .w_full()
                             .flex()
                             .items_center()
                             .gap_3()
-                            .w_full()
                             .child(
                                 div()
-                                    .size(px(20.))
-                                    .rounded(px(4.))
+                                    .size(rems(1.))
+                                    .rounded(px(3.))
+                                    .bg(rgba(color.0))
                                     .border_1()
-                                    .border_color(theme.border)
-                                    .bg(rgba(color.0)),
+                                    .border_color(theme.border),
                             )
                             .child(token.label())
                             .child(div().flex_1())
@@ -236,20 +227,28 @@ impl NotesView {
                     )
                     .w_full()
                     .justify_start()
-                    .py_2(),
+                    .bg(transparent_black()),
                 );
             }
-            body = body
-                .child(div().text_xs().text_color(rgb(theme.muted)).child(
-                    "Mix a color interactively or enter a hex value. Reset restores the supplied palette.",
-                ))
-                .child(colors);
+            body = body.child(colors);
         }
-        body.child(div().h(px(1.)).bg(theme.border).mt_2()).child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("Writing & gestures"),
+        body.child(
+            div().mt_5().flex().justify_start().child(
+                self.button(
+                    "reset-appearance",
+                    "Reset appearance",
+                    false,
+                    cx,
+                    |this, _, _| {
+                        this.controller.settings.appearance = Appearance::default();
+                        this.controller.store_settings();
+                    },
+                )
+                .text_xs()
+                .text_color(rgb(theme.muted))
+                .bg(transparent_black())
+                .px_0(),
+            ),
         )
     }
     pub(super) fn appearance_switch(
@@ -261,50 +260,52 @@ impl NotesView {
         action: impl Fn(&mut Self) + 'static,
     ) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
+        let progress = self.motion.borrow_mut().value(
+            id,
+            if on { 1. } else { 0. },
+            self.controller.settings.reduce_motion,
+            Instant::now(),
+        );
         self.control(
             id,
             format!("{label}: {}", if on { "On" } else { "Off" }),
-            {
-                let progress = self.motion.borrow_mut().value(
-                    id,
-                    if on { 1. } else { 0. },
-                    self.controller.settings.reduce_motion,
-                    Instant::now(),
-                );
-                canvas(
-                    |_, _, _| {},
-                    move |bounds, _, window, _| {
-                        window.paint_quad(
-                            fill(
-                                bounds,
-                                rgb(super::theme::mix(theme.selected, theme.accent, progress)),
-                            )
-                            .corner_radii(px(9.)),
-                        );
-                        let knob = Bounds::new(
-                            point(
-                                bounds.origin.x + px(3. + 14. * progress),
-                                bounds.origin.y + px(3.),
-                            ),
-                            size(px(12.), px(12.)),
-                        );
-                        window.paint_quad(
-                            fill(
-                                knob,
-                                rgb(super::theme::mix(
-                                    theme.muted,
-                                    theme.primary_foreground,
-                                    progress,
-                                )),
-                            )
-                            .corner_radii(px(6.)),
-                        );
-                    },
-                )
-                .w(px(32.))
-                .h(px(18.))
-                .into_any_element()
-            },
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let height = f32::from(bounds.size.height);
+                    let inset = height * 0.15;
+                    let diameter = height - inset * 2.;
+                    window.paint_quad(
+                        fill(
+                            bounds,
+                            rgb(super::theme::mix(theme.selected, theme.accent, progress)),
+                        )
+                        .corner_radii(px(height * 0.5)),
+                    );
+                    let knob = Bounds::new(
+                        point(
+                            bounds.origin.x
+                                + px(inset + (f32::from(bounds.size.width) - height) * progress),
+                            bounds.origin.y + px(inset),
+                        ),
+                        size(px(diameter), px(diameter)),
+                    );
+                    window.paint_quad(
+                        fill(
+                            knob,
+                            rgb(super::theme::mix(
+                                theme.muted,
+                                theme.primary_foreground,
+                                progress,
+                            )),
+                        )
+                        .corner_radii(px(diameter * 0.5)),
+                    );
+                },
+            )
+            .w(rems(2.25))
+            .h(rems(1.25))
+            .into_any_element(),
             on,
             cx,
             move |this, _, _| {
@@ -312,8 +313,10 @@ impl NotesView {
                 this.controller.store_settings();
             },
         )
-        .px_1()
-        .py_2()
+        .w(rems(2.75))
+        .min_h(rems(2.25))
+        .p_0()
+        .bg(transparent_black())
         .flex_shrink_0()
     }
 }
