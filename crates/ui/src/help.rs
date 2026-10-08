@@ -40,8 +40,8 @@ impl NotesView {
                     .child(self.button("close-help", "Got it", true, cx, |this, w, _| {
                         this.help_open = false; this.focus.focus(w);
                     })))
-                .child(div().text_sm().text_color(rgb(theme.muted)).child("Learn writing, selection, recognition and math with an editable example notebook."))
-                .child(self.button("create-starter", "Open starter notebook", false, cx, |this, w, _| {
+                .child(div().text_sm().text_color(rgb(theme.muted)).child("Learn writing, selection, recognition and math with an editable example document."))
+                .child(self.button("create-starter", "Open starter document", false, cx, |this, w, _| {
                     this.controller.create_starter_notebook(); this.help_open = false; this.show_editor(); this.focus.focus(w);
                 }))
                 .child(self.button("start-input-check", "Start input check", false, cx, |this, w, _| {

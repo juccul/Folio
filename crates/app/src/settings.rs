@@ -29,6 +29,7 @@ pub struct Settings {
     pub default_pen: PenStyle,
     pub presets: Vec<PenStyle>,
     pub paper: Paper,
+    pub default_page: Option<PageProperties>,
     pub pad_buttons: Vec<String>,
     #[serde(skip_serializing)]
     pub segment_eraser: bool,
@@ -140,6 +141,7 @@ impl Default for Settings {
                 },
             ],
             paper: Paper::Ruled,
+            default_page: None,
             pad_buttons: vec![
                 "undo".into(),
                 "redo".into(),

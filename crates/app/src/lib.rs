@@ -692,20 +692,42 @@ impl Controller {
     pub fn has_background_work(&self) -> bool {
         self.busy > 0 || self.pending_search.is_some()
     }
+    pub fn default_page_properties(&self) -> PageProperties {
+        let mut properties = self
+            .settings
+            .default_page
+            .clone()
+            .filter(|p| {
+                p.width.is_finite()
+                    && p.height.is_finite()
+                    && (64.0..=100000.0).contains(&p.width)
+                    && (64.0..=100000.0).contains(&p.height)
+            })
+            .unwrap_or(PageProperties {
+                paper: self.settings.paper,
+                ..Default::default()
+            });
+        properties.pdf = None;
+        properties.bookmark = None;
+        properties
+    }
     pub fn create_note(&mut self) {
-        let properties = PageProperties {
-            paper: self.settings.paper,
-            ..PageProperties::default()
-        };
-        self.create_note_with_properties("Untitled note".into(), properties)
-            .expect("Default page properties are valid");
+        self.create_note_with_properties(
+            "Untitled document".into(),
+            self.default_page_properties(),
+        )
+        .expect("Valid default page properties");
     }
     pub fn create_note_with_properties(
         &mut self,
         title: String,
         properties: PageProperties,
     ) -> Result<Id, String> {
-        self.create_note_with_properties_inner(title, properties, true)
+        let id = self.create_note_with_properties_inner(title, properties.clone(), true)?;
+        self.settings.paper = properties.paper;
+        self.settings.default_page = Some(properties);
+        self.store_settings();
+        Ok(id)
     }
     fn create_note_with_properties_inner(
         &mut self,
@@ -715,7 +737,7 @@ impl Controller {
     ) -> Result<Id, String> {
         let title = title.trim();
         if title.is_empty() {
-            return Err("Give your notebook a name.".into());
+            return Err("Give your document a name.".into());
         }
         if !properties.width.is_finite()
             || !properties.height.is_finite()

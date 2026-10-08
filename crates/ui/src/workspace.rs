@@ -304,7 +304,16 @@ impl NotesView {
         self.pen_settings = false;
     }
     pub(super) fn new_notebook(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.modal(Modal::NewDocument, window, cx);
+        self.finish_inline_text(window, cx);
+        if self.modal.is_some() {
+            self.close_modal(window, cx);
+        }
+        self.controller.create_note();
+        self.controller.set_tool(Tool::Pen);
+        self.show_editor();
+        self.fit();
+        self.focus.focus(window);
+        cx.notify();
     }
     fn icon_button(
         &self,
@@ -527,7 +536,7 @@ impl NotesView {
                     .py_2()
                     .text_xs()
                     .text_color(rgb(theme.muted))
-                    .child("Keep related notes together."),
+                    .child("Keep related documents together."),
             );
         }
         if let NoteFilter::Notebook(id) = self.controller.filter {
@@ -1013,7 +1022,7 @@ impl NotesView {
                             .gap_3()
                             .child(self.icon_button(
                                 "search",
-                                "Search all notes · Ctrl+F",
+                                "Search all documents · Ctrl+F",
                                 Icon::Search,
                                 false,
                                 cx,
@@ -1055,7 +1064,15 @@ impl NotesView {
                                 )
                                 .bg(rgb(theme.accent))
                                 .text_color(rgb(theme.primary_foreground)),
-                            ),
+                            )
+                            .child(self.icon_button(
+                                "library-new-options",
+                                "New document with options…",
+                                Icon::Sliders,
+                                false,
+                                cx,
+                                |this, w, cx| this.modal(Modal::NewDocument, w, cx),
+                            )),
                     ),
             )
             .child(
@@ -1821,7 +1838,7 @@ impl NotesView {
             .child(
                 self.button(
                     "move-page-panel",
-                    "Move to notebook…",
+                    "Move to document…",
                     false,
                     cx,
                     |this, w, cx| this.modal(Modal::MovePage, w, cx),

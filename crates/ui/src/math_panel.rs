@@ -1332,7 +1332,7 @@ impl NotesView {
                         .font_weight(FontWeight::MEDIUM)
                         .px_2()
                         .py_1()
-                        .child("Add to your note"),
+                        .child("Add to your document"),
                 );
             if !report.steps.is_empty() {
                 options = options.child(

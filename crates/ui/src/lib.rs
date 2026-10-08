@@ -115,20 +115,20 @@ impl Modal {
             Self::Templates => "Page templates",
             Self::RenameTemplate(_) => "Rename template",
             Self::PageBookmark => "Name bookmark (empty removes it)",
-            Self::MovePage => "Move page to notebook",
+            Self::MovePage => "Move page to document",
             Self::Recognition => "Review recognized writing",
-            Self::Rename | Self::RenameDocument(_) => "Rename note",
-            Self::DocumentTags(_) => "Note tags",
+            Self::Rename | Self::RenameDocument(_) => "Rename document",
+            Self::DocumentTags(_) => "Document tags",
             Self::OpenDocument => "Open a document",
-            Self::NewDocument => "New notebook",
+            Self::NewDocument => "New document options",
             Self::PdfPassword(..) => "Unlock PDF",
             Self::MoveNotebook(_) => "Move folder",
             Self::MoveDocument(_) => "Move document to folder",
             Self::RenameNotebook(_) => "Rename folder",
             Self::Crop => "Crop image",
             Self::Notebook(_) => "New folder",
-            Self::Tags => "Note tags",
-            Self::Search => "Search your notes",
+            Self::Tags => "Document tags",
+            Self::Search => "Search your documents",
             Self::Color => "Custom ink color",
             Self::TextColor => "Text color",
             Self::ThemeColor { .. } => "Theme color",
@@ -859,7 +859,7 @@ impl NotesView {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Import PDF, image or editable Folio notebook".into()),
+            prompt: Some("Import PDF, image or editable Folio document".into()),
         });
         cx.spawn(async move |view, cx| match paths.await {
             Ok(Ok(Some(paths))) => {
@@ -1734,7 +1734,7 @@ impl NotesView {
                 ("export-pdf", "PDF · all pages", ExportKind::Pdf),
                 (
                     "export-notebook",
-                    "Editable notebook · with assets",
+                    "Editable document · with assets",
                     ExportKind::Notebook,
                 ),
                 ("export-svg", "SVG · current page", ExportKind::Svg),
@@ -1754,14 +1754,14 @@ impl NotesView {
             }
         } else if self.more_open {
             for (id, label, action) in [
-                ("rename-note", "Rename note", 0),
-                ("duplicate-note", "Duplicate note", 1),
+                ("rename-note", "Rename document", 0),
+                ("duplicate-note", "Duplicate document", 1),
                 ("tags", "Edit tags", 2),
                 ("import", "Import PDF or image", 3),
                 (
                     "trash-note",
                     if self.controller.session().document.metadata.trashed {
-                        "Restore note"
+                        "Restore document"
                     } else {
                         "Move to trash"
                     },
@@ -1770,7 +1770,7 @@ impl NotesView {
                 ("delete-page", "Delete current page", 5),
                 ("duplicate-page", "Duplicate current page", 16),
                 ("bookmark-page", "Name page bookmark…", 17),
-                ("move-page", "Move page to notebook…", 18),
+                ("move-page", "Move page to document…", 18),
                 ("page-size", "Custom page size", 6),
                 ("infinite", "Toggle infinite canvas", 7),
                 ("insert-space", "Insert 80 units below selection", 8),
@@ -2038,7 +2038,7 @@ impl NotesView {
         body = body.child(div().mt_3().text_sm().font_weight(FontWeight::SEMIBOLD).child("Backup and restore"))
             .child(self.button("backup-library", "Back up library…", false, cx, |this, _, cx| this.backup_dialog(cx)).justify_start())
             .child(self.button("restore-library", "Restore backup to a new library…", false, cx, |this, _, cx| this.restore_dialog(cx)).justify_start())
-            .child(div().text_xs().text_color(rgb(theme.muted)).child("Includes notebooks, assets, folders, preferences and undo history. Downloadable OCR/math runtimes are excluded."));
+            .child(div().text_xs().text_color(rgb(theme.muted)).child("Includes documents, assets, folders, preferences and undo history. Downloadable OCR/math runtimes are excluded."));
         if let Some(path) = &self.controller.restored_library {
             body = body
                 .child(
@@ -2282,7 +2282,7 @@ impl NotesView {
                     _ => "Left, top, width and height as fractions from 0 to 1.",
                 }))
             })
-            .when(matches!(modal, Modal::NewDocument), |panel| panel.child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Name")))
+            .when(matches!(modal, Modal::NewDocument), |panel| panel.child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Name (optional)")))
             .when(!matches!(modal, Modal::MovePage | Modal::Templates), |panel| panel.child(field.clone()));
         if matches!(modal, Modal::MoveNotebook(_) | Modal::MoveDocument(_)) {
             let query = field.read(cx).content.to_lowercase();
@@ -2401,7 +2401,7 @@ impl NotesView {
                 .iter()
                 .any(|n| !n.trashed && n.id != self.controller.active)
             {
-                panel = panel.child("Create another notebook to move pages into it.");
+                panel = panel.child("Create another document to move pages into it.");
             }
             panel = panel.child(
                 self.button("cancel-modal", "Cancel", false, cx, |this, w, cx| {
@@ -2686,7 +2686,7 @@ impl NotesView {
                             ) {
                                 "Move"
                             } else if matches!(modal, Modal::NewDocument) {
-                                "Create notebook"
+                                "Create document"
                             } else {
                                 "Save"
                             },

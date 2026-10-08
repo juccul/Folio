@@ -49,7 +49,7 @@ impl Controller {
                 let label = match action {
                     NoteAction::Rename(title) => {
                         after.title = if title.trim().is_empty() {
-                            "Untitled note".into()
+                            "Untitled document".into()
                         } else {
                             title.trim().into()
                         };

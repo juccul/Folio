@@ -824,3 +824,30 @@ fn recent_documents_follow_opening_not_editing_and_survive_restart() {
     settle(&mut a);
     assert_eq!(a.visible_notes().len(), 1);
 }
+
+#[test]
+fn quick_documents_open_with_remembered_custom_paper_and_safe_defaults() {
+    let mut a = app();
+    let properties = PageProperties {
+        paper: Paper::Grid,
+        width: 600.,
+        height: 800.,
+        infinite: true,
+        color: Some(Color::from_rgb(0xffeedd)),
+        ..Default::default()
+    };
+    a.create_note_with_properties("Configured".into(), properties.clone())
+        .unwrap();
+    a.create_note();
+    assert_eq!(a.page().properties, properties);
+    assert_eq!(a.session().document.metadata.title, "Untitled document");
+    a.flush().unwrap();
+    let root = a.data_dir.clone();
+    drop(a);
+    let mut a = Controller::open(root).unwrap();
+    a.create_note();
+    assert_eq!(a.page().properties, properties);
+    a.settings.default_page.as_mut().unwrap().width = f32::NAN;
+    a.create_note();
+    assert!(a.page().properties.width.is_finite());
+}

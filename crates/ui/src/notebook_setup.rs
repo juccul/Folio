@@ -10,12 +10,14 @@ pub(super) struct Setup {
 
 impl NotesView {
     pub(super) fn prepare_notebook_setup(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let color = cx.new(|cx| Field::new(String::new(), false, cx));
+        let properties = self.controller.default_page_properties();
+        let initial_color = properties
+            .color
+            .map(|color| color.hex())
+            .unwrap_or_default();
+        let color = cx.new(|cx| Field::new(initial_color, false, cx));
         self.notebook_setup = Some(Setup {
-            properties: PageProperties {
-                paper: self.controller.settings.paper,
-                ..Default::default()
-            },
+            properties,
             color,
             custom_color_open: false,
         });
@@ -47,9 +49,14 @@ impl NotesView {
         let setup = self
             .notebook_setup
             .as_ref()
-            .ok_or("Notebook setup is unavailable")?;
+            .ok_or("Document setup is unavailable")?;
         let mut properties = setup.properties.clone();
         properties.color = paper_color(&setup.color.read(cx).content)?;
+        let name = if name.trim().is_empty() {
+            "Untitled document".into()
+        } else {
+            name
+        };
         self.controller
             .create_note_with_properties(name, properties)?;
         Ok(())
