@@ -169,6 +169,119 @@ fn background_pdf_import_is_pinned_while_other_notes_open() {
 }
 
 #[test]
+fn organized_pages_keep_content_bookmarks_order_and_history_after_reopen() {
+    let mut a = app();
+    a.add_text("Lecture one".into(), Point::new(30., 30.));
+    a.bookmark_page("Introduction".into());
+    let first = a.page().id;
+    a.duplicate_page();
+    let second = a.page().id;
+    assert_ne!(first, second);
+    assert_eq!(a.page().text(), "Lecture one");
+    assert_ne!(a.session().document.pages[0].order, a.page().order);
+    a.reorder_page(second, first);
+    assert_eq!(a.session().document.pages[0].id, second);
+    assert_eq!(a.page().id, second);
+    a.undo();
+    assert_eq!(a.session().document.pages[0].id, first);
+    assert_eq!(a.page().id, second, "Undo must keep viewing the same page");
+    a.redo();
+    assert_eq!(a.page().id, second);
+    a.flush().unwrap();
+    let id = a.active;
+    let root = a.data_dir.clone();
+    drop(a);
+    let mut a = Controller::open(root.clone()).unwrap();
+    a.switch_note(id);
+    settle(&mut a);
+    assert_eq!(a.session().document.pages[0].id, second);
+    assert_eq!(
+        a.session().document.pages[0].properties.bookmark.as_deref(),
+        Some("Introduction")
+    );
+    a.undo();
+    assert_eq!(a.session().document.pages[0].id, first);
+    drop(a);
+    std::fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn moving_only_page_saves_a_remapped_copy_and_keeps_source_undoable() {
+    let mut a = app();
+    let source = a.active;
+    a.add_text("Keep this page".into(), Point::new(30., 30.));
+    let object = a.page().order[0];
+    a.create_note();
+    let target = a.active;
+    a.switch_note(source);
+    a.move_page_to(target);
+    settle(&mut a);
+    assert_eq!(a.sessions[&source].document.pages.len(), 1);
+    assert!(a.sessions[&source].document.pages[0].objects.is_empty());
+    let copy = &a.sessions[&target].document.pages[1];
+    assert_eq!(copy.text(), "Keep this page");
+    assert_ne!(copy.order[0], object);
+    a.undo();
+    assert_eq!(a.page().text(), "Keep this page");
+    a.flush().unwrap();
+    let store = Store::open_reader(&a.database).unwrap();
+    assert_eq!(
+        store.load(target).unwrap().unwrap().pages[1].text(),
+        "Keep this page"
+    );
+}
+
+#[test]
+fn library_covers_read_only_selected_page_without_opening_a_session() {
+    let mut a = app();
+    a.add_text("First page".into(), Point::new(20., 20.));
+    a.add_page();
+    a.add_text("Custom cover".into(), Point::new(20., 20.));
+    a.use_page_as_cover();
+    let note = a.active;
+    a.flush().unwrap();
+    a.create_note();
+    a.sessions.remove(&note);
+    assert!(a.library_preview(note).is_none());
+    settle(&mut a);
+    let (cover, count) = a.library_preview(note).unwrap();
+    assert_eq!(cover.text(), "Custom cover");
+    assert_eq!(count, 2);
+    assert!(!a.sessions.contains_key(&note));
+    let store = Store::open_reader(&a.database).unwrap();
+    let (fallback, _) = store
+        .library_preview(note, Some(Id::new_v4()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(fallback.text(), "First page");
+}
+
+#[test]
+fn editable_notebook_import_is_one_undoable_command_and_reopens_with_assets() {
+    let mut a = app();
+    a.add_text("Shared notes".into(), Point::new(20., 20.));
+    a.bookmark_page("Chapter".into());
+    let exported = a.data_dir.join("shared.folio");
+    portable::export_notebook(&a.session().document, &a.assets, &exported).unwrap();
+    let old = a.active;
+    let imported = a.import_as_note(exported);
+    settle(&mut a);
+    assert_ne!(old, imported);
+    assert_eq!(a.session().document.pages.len(), 1);
+    assert_eq!(a.page().text(), "Shared notes");
+    assert_eq!(a.page().properties.bookmark.as_deref(), Some("Chapter"));
+    a.undo();
+    assert!(a.page().objects.is_empty());
+    a.redo();
+    assert_eq!(a.page().text(), "Shared notes");
+    a.flush().unwrap();
+    let store = Store::open_reader(&a.database).unwrap();
+    assert_eq!(
+        store.load(imported).unwrap().unwrap().pages[0].text(),
+        "Shared notes"
+    );
+}
+
+#[test]
 fn configured_notebooks_preserve_canvas_choices_and_new_pages_after_save() {
     for infinite in [false, true] {
         let mut a = app();
@@ -182,6 +295,7 @@ fn configured_notebooks_preserve_canvas_choices_and_new_pages_after_save() {
             paper: Paper::Dots,
             color: Some(Color::from_rgb(0xfff7e6)),
             pdf: None,
+            bookmark: None,
         };
         let id = a
             .create_note_with_properties("  Calculus · ∫  ".into(), properties.clone())

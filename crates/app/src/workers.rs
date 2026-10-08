@@ -10,12 +10,42 @@ use std::{
 };
 #[derive(Clone, Copy, Debug)]
 pub enum ExportKind {
+    Notebook,
     Svg,
     Png,
     Pdf,
     Text,
 }
 pub enum Job {
+    SaveTemplate {
+        document: Document,
+        assets: PathBuf,
+        name: String,
+    },
+    TemplatePage {
+        note: Id,
+        path: PathBuf,
+        assets: PathBuf,
+    },
+    Backup {
+        root: PathBuf,
+        path: PathBuf,
+    },
+    Restore {
+        path: PathBuf,
+        destination: PathBuf,
+    },
+    ImportNotebook {
+        note: Id,
+        path: PathBuf,
+        assets: PathBuf,
+    },
+    LibraryPreview {
+        note: Id,
+        updated: u64,
+        cover: Option<Id>,
+        database: PathBuf,
+    },
     Cleanup {
         root: PathBuf,
     },
@@ -72,6 +102,21 @@ pub enum Job {
     },
 }
 pub enum Finished {
+    TemplateSaved(crate::PageTemplate),
+    TemplatePage {
+        note: Id,
+        page: Page,
+    },
+    Restored(PathBuf),
+    NotebookImported {
+        note: Id,
+        document: Document,
+    },
+    LibraryPreview {
+        note: Id,
+        updated: u64,
+        result: Result<Option<(Page, usize)>, String>,
+    },
     Cleaned(usize),
     Equation {
         note: Id,
@@ -163,9 +208,10 @@ impl Workers {
                                 _ => None,
                             };
                             let import_note = match &task.job {
-                                Job::ImportPdf { note, .. } | Job::ImportImage { note, .. } => {
-                                    Some(*note)
-                                }
+                                Job::ImportPdf { note, .. }
+                                | Job::ImportImage { note, .. }
+                                | Job::ImportNotebook { note, .. }
+                                | Job::TemplatePage { note, .. } => Some(*note),
                                 _ => None,
                             };
                             let failure = match &task.job {
@@ -221,7 +267,7 @@ impl Workers {
     }
     pub fn submit(&self, job: Job) -> Result<(), String> {
         let sender = match &job {
-            Job::Search { .. } | Job::Load { .. } => &self.search,
+            Job::Search { .. } | Job::Load { .. } | Job::LibraryPreview { .. } => &self.search,
             _ => &self.documents,
         };
         let key = match &job {
@@ -269,6 +315,61 @@ impl Drop for Workers {
 fn process(job: Job) -> Result<Finished, String> {
     (|| -> Result<Finished, Box<dyn std::error::Error>> {
         Ok(match job {
+            Job::SaveTemplate {
+                document,
+                assets,
+                name,
+            } => {
+                let id = Id::new_v4();
+                let asset = format!("template-{id}.folio");
+                crate::portable::export_notebook(&document, &assets, &assets.join(&asset))?;
+                let preview = format!("template-{id}.png");
+                let preview =
+                    folio_export::png(&document.pages[0], &assets, &assets.join(&preview), 0.25)
+                        .ok()
+                        .map(|_| preview);
+                Finished::TemplateSaved(crate::PageTemplate {
+                    id,
+                    name,
+                    asset,
+                    preview,
+                })
+            }
+            Job::TemplatePage { note, path, assets } => {
+                let mut document = crate::portable::import_notebook(&path, &assets)?;
+                if document.pages.len() != 1 {
+                    return Err("A page template must contain one page".into());
+                }
+                Finished::TemplatePage {
+                    note,
+                    page: document.pages.remove(0),
+                }
+            }
+
+            Job::Backup { root, path } => {
+                crate::portable::backup(&root, &path)?;
+                Finished::Exported(path)
+            }
+            Job::Restore { path, destination } => {
+                crate::portable::restore(&path, &destination)?;
+                Finished::Restored(destination)
+            }
+            Job::ImportNotebook { note, path, assets } => Finished::NotebookImported {
+                note,
+                document: crate::portable::import_notebook(&path, &assets)?,
+            },
+            Job::LibraryPreview {
+                note,
+                updated,
+                cover,
+                database,
+            } => Finished::LibraryPreview {
+                note,
+                updated,
+                result: folio_storage::Store::open_reader(database)
+                    .and_then(|store| store.library_preview(note, cover))
+                    .map_err(|e| e.to_string()),
+            },
             Job::Cleanup { root } => {
                 Finished::Cleaned(folio_storage::recovery::quarantine_orphans(&root)?)
             }
@@ -336,6 +437,7 @@ fn process(job: Job) -> Result<Finished, String> {
             } => {
                 let p = doc.page(page).ok_or("Page no longer exists")?;
                 match kind {
+                    ExportKind::Notebook => crate::portable::export_notebook(&doc, &assets, &path)?,
                     ExportKind::Svg => {
                         if let Some(bg) = &p.properties.pdf {
                             folio_pdf::render_preview(bg, &assets)?;

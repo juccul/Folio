@@ -92,6 +92,7 @@ pub fn recover(root: &Path) -> Result<RecoveryReport> {
                         }
                     };
                     let mut page = Page {
+                        ink_text: vec![],
                         id: header.id,
                         properties: header.properties,
                         objects: Default::default(),
@@ -146,6 +147,25 @@ pub fn recover(root: &Path) -> Result<RecoveryReport> {
                         }
                     }
                     page.order = order;
+                    // Validate annotations only after all surviving ink has been recovered.
+                    // A corrupt neighbor must not discard the user's corrected handwriting text.
+                    for annotation in header.ink_text {
+                        let mut isolated = page.clone();
+                        isolated.ink_text = vec![annotation.clone()];
+                        match (Document {
+                            version: FORMAT_VERSION,
+                            metadata: metadata.clone(),
+                            pages: vec![isolated],
+                        })
+                        .validate()
+                        {
+                            Ok(()) => page.ink_text.push(annotation),
+                            Err(error) => report.issues.push(format!(
+                                "Search annotation on page {} skipped: {error}",
+                                page.id
+                            )),
+                        }
+                    }
                     let candidate = Document {
                         version: FORMAT_VERSION,
                         metadata: metadata.clone(),
@@ -225,6 +245,18 @@ pub fn quarantine_orphans(root: &Path) -> Result<usize> {
                 .collect::<std::result::Result<Vec<_>, _>>()?
         };
         let store = Store { connection, path };
+        if let Some(preferences) = store.setting::<serde_json::Value>("preferences")?
+            && let Some(templates) = preferences.get("templates").and_then(|v| v.as_array())
+        {
+            for template in templates {
+                for key in ["asset", "preview"] {
+                    if let Some(name) = template.get(key).and_then(|v| v.as_str()) {
+                        keep.insert(name.into());
+                    }
+                }
+            }
+        }
+
         for metadata in notes {
             let note: NoteMetadata = serde_json::from_str(&metadata)?;
             if let Some(document) = store.load(note.id)? {

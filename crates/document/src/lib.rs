@@ -8,7 +8,7 @@ use std::{
 };
 pub use uuid::Uuid;
 pub type Id = Uuid;
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -578,6 +578,8 @@ pub enum Paper {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PageProperties {
+    #[serde(default)]
+    pub bookmark: Option<String>,
     pub width: f32,
     pub height: f32,
     pub paper: Paper,
@@ -589,6 +591,7 @@ pub struct PageProperties {
 impl Default for PageProperties {
     fn default() -> Self {
         Self {
+            bookmark: None,
             width: 794.,
             height: 1123.,
             paper: Paper::Ruled,
@@ -628,7 +631,15 @@ pub struct InkGroup {
     pub revision: u64,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InkText {
+    pub text: String,
+    pub sources: Vec<Id>,
+    pub bounds: Rect,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Page {
+    #[serde(default)]
+    pub ink_text: Vec<InkText>,
     pub id: Id,
     pub properties: PageProperties,
     pub objects: BTreeMap<Id, Arc<Object>>,
@@ -639,6 +650,7 @@ pub struct Page {
 impl Page {
     pub fn new() -> Self {
         Self {
+            ink_text: vec![],
             id: Id::new_v4(),
             properties: PageProperties::default(),
             objects: BTreeMap::new(),
@@ -646,6 +658,51 @@ impl Page {
             groups: Vec::new(),
             revision: 0,
         }
+    }
+    /// Clone editable content with fresh identities and remap page-local dependencies.
+    pub fn duplicate(&self) -> Self {
+        let mut page = self.clone();
+        page.id = Id::new_v4();
+        page.revision = 0;
+        let ids: BTreeMap<_, _> = self.order.iter().map(|id| (*id, Id::new_v4())).collect();
+        page.objects = self
+            .objects
+            .values()
+            .map(|object| {
+                let mut object = object.as_ref().clone();
+                object.set_id(ids[&object.id()]);
+                match &mut object {
+                    Object::Shape(shape) => {
+                        shape.source_strokes.retain(|id| ids.contains_key(id));
+                        for id in &mut shape.source_strokes {
+                            *id = ids[id];
+                        }
+                    }
+                    Object::Equation(equation) => {
+                        equation.source_strokes.retain(|id| ids.contains_key(id));
+                        for id in &mut equation.source_strokes {
+                            *id = ids[id];
+                        }
+                        if let Some(link) = &mut equation.math_link {
+                            link.sources.retain(|id| ids.contains_key(id));
+                            for id in &mut link.sources {
+                                *id = ids[id];
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                (object.id(), Arc::new(object))
+            })
+            .collect();
+        page.order = self.order.iter().map(|id| ids[id]).collect();
+        page.groups.clear();
+        for entry in &mut page.ink_text {
+            for source in &mut entry.sources {
+                *source = ids[source];
+            }
+        }
+        page
     }
     pub fn ordered_objects(&self) -> impl DoubleEndedIterator<Item = &Arc<Object>> {
         self.order.iter().filter_map(|id| self.objects.get(id))
@@ -662,11 +719,26 @@ impl Page {
             .collect()
     }
     pub fn text(&self) -> String {
-        self.ordered_objects()
+        let mut text = self
+            .ordered_objects()
             .map(|o| o.searchable_text().to_owned())
             .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n")
+            .collect::<Vec<_>>();
+        if !self.ink_text.is_empty() {
+            let hidden = self.hidden_sources();
+            text.extend(
+                self.ink_text
+                    .iter()
+                    .filter(|entry| {
+                        entry
+                            .sources
+                            .iter()
+                            .all(|id| self.objects.contains_key(id) && !hidden.contains(id))
+                    })
+                    .map(|entry| entry.text.clone()),
+            );
+        }
+        text.join("\n")
     }
 }
 impl Default for Page {
@@ -676,6 +748,8 @@ impl Default for Page {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NoteMetadata {
+    #[serde(default)]
+    pub cover_page: Option<Id>,
     pub id: Id,
     pub title: String,
     pub notebook: Option<Id>,
@@ -697,6 +771,7 @@ impl Document {
         Self {
             version: FORMAT_VERSION,
             metadata: NoteMetadata {
+                cover_page: None,
                 id: Id::new_v4(),
                 title: title.into(),
                 notebook: None,
@@ -726,6 +801,36 @@ impl Document {
         for page in &self.pages {
             if !ids.insert(page.id) {
                 return Err("Duplicate page ID".into());
+            }
+            for entry in &page.ink_text {
+                if entry.text.trim().is_empty()
+                    || entry.text.len() > 65536
+                    || entry.sources.is_empty()
+                    || entry.sources.len() > 4096
+                    || entry
+                        .sources
+                        .iter()
+                        .collect::<std::collections::HashSet<_>>()
+                        .len()
+                        != entry.sources.len()
+                    || !entry.sources.iter().all(|id| {
+                        page.objects
+                            .get(id)
+                            .is_some_and(|o| matches!(o.as_ref(), Object::Stroke(_)))
+                    })
+                    || ![
+                        entry.bounds.min.x,
+                        entry.bounds.min.y,
+                        entry.bounds.max.x,
+                        entry.bounds.max.y,
+                    ]
+                    .iter()
+                    .all(|v| v.is_finite())
+                    || entry.bounds.width() <= 0.
+                    || entry.bounds.height() <= 0.
+                {
+                    return Err("Invalid handwriting search annotation".into());
+                }
             }
             let p = &page.properties;
             if !p.width.is_finite() || !p.height.is_finite() || p.width <= 0. || p.height <= 0. {
@@ -900,6 +1005,11 @@ pub struct Notebook {
 /// Reversible, object-sized commands. History never copies a whole document.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Change {
+    InkText {
+        page: Id,
+        before: Vec<InkText>,
+        after: Vec<InkText>,
+    },
     Groups {
         page: Id,
         before: Vec<InkGroup>,
@@ -937,6 +1047,20 @@ impl Command {
         doc.version = FORMAT_VERSION;
         let mut inserted = Vec::new();
         let mut apply = |c: &Change, doc: &mut Document| match c {
+            Change::InkText {
+                page,
+                before,
+                after,
+            } => {
+                if let Some(page) = doc.page_mut(*page) {
+                    page.ink_text = if forward {
+                        after.clone()
+                    } else {
+                        before.clone()
+                    };
+                    page.revision += 1;
+                }
+            }
             Change::Groups {
                 page,
                 before,

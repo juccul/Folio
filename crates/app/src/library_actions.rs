@@ -8,6 +8,7 @@ pub enum NoteAction {
     Trash,
     Move(Option<Id>),
     Duplicate,
+    ReceivePage { source: Id, page: Id },
     Import(PathBuf),
 }
 impl Controller {
@@ -27,6 +28,11 @@ impl Controller {
             self.finish();
         }
         match action {
+            NoteAction::ReceivePage { source, page } => {
+                if let Err(error) = self.move_loaded_page(source, page, id) {
+                    self.error = Some(error);
+                }
+            }
             NoteAction::Duplicate => {
                 self.duplicate_loaded_note(id);
             }

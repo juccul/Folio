@@ -2,23 +2,27 @@
 
 Offline handwriting and mixed-media notes for Linux and Windows, built in Rust with GPUI. Raw tablet samples and editable vector ink are the document's source of truth.
 
-Folio 0.1.0 includes native pen/pad input, vector editing, search over titles/tags/typed text, mixed-media/PDF notes, persistent undo, recovery and accessibility interfaces. Optional offline recognition converts selected handwriting into editable text or LaTeX. Normal note taking needs no model or Python runtime. Physical pen latency and desktop/device compatibility still require broader testing. See [DEVELOPMENT.md](DEVELOPMENT.md) for the exact status.
+Folio 0.1.1 includes native pen/pad input, vector editing, search over titles/tags/typed text, mixed-media/PDF notes, persistent undo, recovery and accessibility interfaces. Optional offline recognition converts selected handwriting into editable text or LaTeX. Normal note taking needs no model or Python runtime. Physical pen latency and desktop/device compatibility still require broader testing. See [DEVELOPMENT.md](DEVELOPMENT.md) for the exact status.
 
 Windows 11 x64 build, portable package, per-user installer, and validation instructions are in [WINDOWS.md](WINDOWS.md).
 
 ## Releases
 
-Download [Folio 0.1.0](https://github.com/juccul/Folio/releases/tag/v0.1.0) for **Linux x86_64 / amd64**. Sign in to GitHub with access to this private repository.
+Download [Folio 0.1.1](https://github.com/juccul/Folio/releases/tag/v0.1.1) for **Linux x86_64 and Windows 11 x64**. Sign in to GitHub with access to this private repository.
 
 | Format | Download | Install |
 | --- | --- | --- |
-| Flatpak | [folio-0.1.0-x86_64.flatpak](https://github.com/juccul/Folio/releases/download/v0.1.0/folio-0.1.0-x86_64.flatpak) | `flatpak install --user ./folio-0.1.0-x86_64.flatpak` |
+| Windows installer | [folio-0.1.1-windows-x64-setup.exe](https://github.com/juccul/Folio/releases/download/v0.1.1/folio-0.1.1-windows-x64-setup.exe) | Run the installer; no administrator rights needed. |
+| Windows portable ZIP | [folio-0.1.1-windows-x64.zip](https://github.com/juccul/Folio/releases/download/v0.1.1/folio-0.1.1-windows-x64.zip) | Extract the complete folder and run `bin/folio.exe`. |
+| Linux Flatpak | [folio-0.1.1-x86_64.flatpak](https://github.com/juccul/Folio/releases/download/v0.1.1/folio-0.1.1-x86_64.flatpak) | `flatpak install --user ./folio-0.1.1-x86_64.flatpak` |
 
-Launch **Folio** from your application menu, or run `flatpak run io.github.folio.Notes`. The Flatpak uses the Freedesktop 25.08 runtime. If Flathub is not configured, add it first with `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`. Installation may download the runtime; note taking and math solving then work offline.
+On Windows, launch **Folio** from the Start menu. Notes are stored in `%LOCALAPPDATA%\Folio`; updates and uninstall preserve them. The installer bundles offline math, PDF tools, Python and the matching Visual C++ runtime. See [Windows instructions](WINDOWS.md).
+
+On Linux, launch **Folio** from your application menu, or run `flatpak run io.github.folio.Notes`. The Flatpak uses the Freedesktop 25.08 runtime. If Flathub is not configured, add it first with `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`. Installation may download the runtime; note taking and math solving then work offline.
 
 The Flatpak includes the **offline CPU math solver**, pinned SymPy/mpmath dependencies and PDF preview tools. GLM-OCR Q8 weights and the Vulkan inference runtime download automatically on the first OCR request if no usable model pack exists; see [recognition setup](#install-optional-offline-recognition). Use the Flatpak file picker for importing and exporting files.
 
-The [release notes](RELEASE_NOTES.md) include the Flatpak SHA-256 checksum and a link to matching source. Check the downloaded file with `sha256sum folio-0.1.0-x86_64.flatpak` and compare its output to the release notes.
+The [0.1.1 release notes](RELEASE_NOTES.md) describe the Linux and Windows downloads and matching source. `SHA256SUMS` accompanies the release assets.
 
 The interface opens to a minimal document library with folders, favorites, recent notes, and grid/list views. Open a document for a compact writing toolbar and a collapsible page strip; the tab strip includes a + picker for opening an existing document or creating one. Drag tabs to reorder them. Right-click a library card or use its … menu to rename, duplicate, favorite, move, tag, trash or restore that document. Folio uses embedded Tabler Outline icons and a matching custom marker with native GPUI rendering.
 
@@ -93,7 +97,7 @@ Answers and step formulas use native vector outlines from the bundled LaTeX rend
 
 **Define variable**, in the operation dropdown, accepts `a := 5` or `b := 3*a`. **Preview variable** checks it; **Add variable** stores the definition on the current page. Definitions apply independently of their position; duplicate definitions, undefined dependencies and cycles produce errors. **Live answer** links a calculation to its expression and page variables. Editing a definition updates dependent results and graphs. Double-click a linked result to edit its underlying expression. Linked handwriting regions recognize again after the pen settles. This is opt-in for each added result. The **Graph** tab supports explicit `y = f(x)`; enter the x range, choose **Plot graph**, then **Add graph** or **Live graph**. Discontinuities appear as gaps.
 
-Open **Check work**, enter the original problem and proposed next line, then choose **Check next step**. **Use handwritten step** reads a selected line from the page. Lost or added solutions are reported; undecidable comparisons stay unknown. **Solve problem** routes prose to supported English percentage, number, sum/difference, rectangle-area and speed/time templates. Review the translation and choose **Solve this equation**; **Translate word problem** in the operation dropdown also opens this flow explicitly. More general wording must be entered as math. Select one image and use its crop tool, or choose **Read options** (the chevron beside **Use selection**) → **Read PDF region** and enter a rectangle as left/top/width/height fractions of the page.
+Open **Check work**, enter the original problem and proposed next line, then choose **Check next step**. **Use handwritten step** reads a selected line from the page. Lost or added solutions are reported; undecidable comparisons stay unknown. **Solve problem** routes prose to supported English percentage, number, sum/difference, rectangle-area and speed/time templates. Review the translation and choose **Solve this equation**; **Translate word problem** in the operation dropdown also opens this flow explicitly. More general wording must be entered as math. Select one image and choose **Crop…**, then drag a rectangle over the image. For a PDF, choose **Read options** (the chevron beside **Use selection**) → **Read PDF region**, then drag a rectangle on the page. Escape cancels either selection. Repeated image crops compose with the previous crop; Reset crop restores the original image.
 
 The math engine is a separate CPU SymPy worker; it needs no neural weights or GPU. This workspace's installed pack is `artifacts/math-solver/pack.json`, linked from `target/math-solver`. To prepare it in an existing compatible Python runtime:
 
@@ -110,7 +114,7 @@ Saved math links use document format 3 and database schema 4. Earlier notes rema
 
 Request **Recognize text**, **Recognize math**, or **Solve** on handwriting, an image, or a PDF region. If no usable recognition pack is installed, Folio automatically downloads GLM-OCR **Q8_0** and the llama.cpp Vulkan runtime: **1.47 GB** downloaded, about **1.56 GB** installed. Files come directly from Hugging Face and GitHub at pinned revisions, and each SHA-256 is checked before installation. The status bar and math panel show setup progress. **Cancel** or **Esc** stops the request; request OCR again to resume an interrupted download. On a connection or checksum error, the same OCR action retries setup. Notes remain editable during setup.
 
-OCR prefers a supported discrete Vulkan GPU, then another available GPU, and falls back to CPU if no GPU can load the model. Both language and vision weights use Q8_0. No CUDA toolkit, PyTorch or Python OCR runtime is needed. First GPU use can take several seconds to initialize; subsequent requests reuse the resident model. Supported automatic downloads currently target **x86_64 Linux**; Intel Vulkan has not been tested. GPU drivers must already support Vulkan. The downloaded Ubuntu runtime requires glibc 2.34 or later; Folio's 1.0 packages require 2.35 or later.
+OCR prefers a supported discrete Vulkan GPU, then another available GPU, and falls back to CPU if no GPU can load the model. Both language and vision weights use Q8_0. No CUDA toolkit, PyTorch or Python OCR runtime is needed. First GPU use can take several seconds to initialize; subsequent requests reuse the resident model. Supported automatic downloads currently target **x86_64 Linux**; Intel Vulkan has not been tested. GPU drivers must already support Vulkan. The downloaded Ubuntu runtime requires glibc 2.34 or later; Folio's 0.1.0 release packages require 2.35 or later.
 
 After setup, recognition works offline. Only model/runtime assets are downloaded; handwriting, images and PDFs stay local. The native recognizer runs with offline loading and an authenticated loopback endpoint that bypasses HTTP proxies. Flatpak enables network access for asset setup and keeps its existing GPU access. Downloaded files live under `recognition/glm-ocr-q8-b11457` in the Folio data directory (Flatpak: `~/.var/app/io.github.folio.Notes/data/folio`). Model and runtime notices are retained there. `last-runtime.log` contains runtime diagnostics.
 
@@ -180,9 +184,9 @@ Click a text box to select it, then click inside again to edit on the page. The 
 
 PDF metadata/import/export use Rust. Requested-page previews require `pdftoppm` from Poppler (`poppler-utils` on Fedora/Debian). Import retains source page order, crop boxes and rotation, replaces an unused blank first page, and supports password-protected PDFs. Rendering is lazy. Annotated PDF export preserves original PDF objects and adds vector ink and searchable subset-font text. Original files remain in assets.
 
-Clean equations can be inserted by entering LaTeX in the document menu. A bundled open font and pure Rust renderer generate SVG offline; existing equation objects remain editable. Handwriting-to-text and handwriting-to-equation conversion, model configuration and spellchecking are unavailable in this version. Shape snapping, scratch erase and encircle selection remain geometric pen features.
+Clean equations can be inserted by entering LaTeX in the document menu. A bundled open font and pure Rust renderer generate SVG offline; existing equation objects remain editable. Selected handwriting can be recognized as editable text or LaTeX through the optional offline OCR pack described above. Spellchecking and a graphical model/device configuration editor are not available. Shape snapping, scratch erase and encircle selection remain geometric pen features.
 
-Search indexes titles, tags, typed text and LaTeX equation source with SQLite FTS5. Selecting a result opens its page and highlights matching objects. On first opening a database from an older version, a transaction rebuilds the derived index to exclude old OCR text. Original stroke data, previous group metadata and undo history remain readable; the database is upgraded to schema 3 and cannot be opened by older Folio builds.
+Search indexes titles, tags, typed text, LaTeX equation source and explicitly reviewed handwriting annotations with SQLite FTS5. Selecting a result opens its page and highlights matching objects. On first opening a database from an older version, a transaction rebuilds the derived index to exclude old OCR text. Original stroke data, previous group metadata and undo history remain readable; the derived search index is upgraded to schema 3. Saving live math links upgrades the database to schema 4; builds that do not support the resulting schema refuse to open it.
 
 ## Save, backup and recovery
 
@@ -226,3 +230,41 @@ For the complete release source archive, run `scripts/package.py --no-build --bi
 Installer math payloads retain the SymPy/mpmath runtime and distribution notices while excluding their upstream `tests` directories.
 
 A cross-distribution build image is provided in `packaging/Containerfile`; it builds against Debian bookworm rather than this machine’s newer glibc. Package dependency metadata must match the chosen binary. Native COSMIC/KDE and physical tablet certification require their own sessions/devices.
+
+## Organizing pages
+
+Open the page strip with **Ctrl+Shift+P**. Drag a thumbnail onto another to reorder pages. **Duplicate page** creates editable content with new object identities, including remapped shape and live-math source links. **Name bookmark** labels a page; an empty name removes the bookmark. These changes support undo/redo and survive reopening.
+
+**Move to notebook** lets you choose another document. Folio saves the destination copy before removing the source; moving the only page leaves a blank page. Undo in the source restores a copy, while the destination has its own undo history. If a save fails, the source is retained; an interrupted move may leave a destination copy. Restore trashed notebooks before moving pages.
+
+## Library previews
+
+The document grid shows the first page's content with a page count and last-edited label. In the document menu, **Use current page as cover** chooses a different page. If that page is deleted, the first page is used. Library rows are virtualized; visible covers load asynchronously from a consistent database snapshot without opening full editor sessions. The cover cache retains at most 128 pages and queues at most eight reads at a time.
+
+## Learning the tools
+
+Open Help and choose **Open starter notebook** to create an editable four-page guide to pen tools, held shapes, selection, recognition, solving and organization. Opening Help alone creates nothing and existing notes remain intact. Crop and PDF-region tools accept a rectangle drawn with the mouse or pen and reject stale selections after navigation or source edits.
+
+## Portable notebooks and library backups
+
+**Export → Editable notebook · with assets** writes a `.folio` archive containing editable vector objects, raw ink, page settings, bookmarks and referenced images/PDFs. Import it from the library to create a notebook, or from an editor to append pages. Imported identities and asset filenames are remapped, so importing the same file twice cannot overwrite another notebook. PDF/SVG/PNG exports remain available. Notebook archives contain current content; full undo history is included in library backups.
+
+In **Settings → Backup and restore**, **Back up library…** writes a `.foliobackup` containing a consistent SQLite snapshot, all assets and quarantined assets. It preserves folders, preferences and durable undo history. Downloadable OCR/math runtimes and old automatic snapshots are excluded. **Restore backup to a new library…** asks for a backup file and a parent folder, then validates checksums and database integrity in a separate directory. **Open restored library** saves the current library before opening the restored one. The original remains intact.
+
+Archives have a versioned SHA-256 manifest, reject duplicate paths, traversal, symlinks and special files, and allow at most 16,384 files / 2 GiB of uncompressed content. Notebook JSON is limited to 128 MiB. Export publishes the archive only after it is complete. Keep an external copy of library backups.
+
+## Reusable page templates
+
+Choose **Document menu → Save page as template…** to save a named snapshot of the current page, including paper, dimensions, headings, handwriting, images and PDF backgrounds. **Add page from template…** in the document menu or page strip opens a preview picker with Add page, Rename and Remove controls. Adding a template creates a separate editable page as one undoable action; later edits do not alter the saved template. Templates and their assets are included in library backups. Remove hides a template from the picker; asset quarantine handles its unused files without permanently deleting them.
+
+## Search handwriting without replacing it
+
+Select a line or short paragraph and choose **Index handwriting…**, or use **Document menu → Index page handwriting…** for a modest page. Review and correct the OCR text, then choose **Keep ink and index**. The normal text-recognition review also offers **Keep ink and make searchable**. Original vector strokes and raw samples remain intact; no background OCR starts merely because you write or search. The optional local OCR model uses the existing first-use setup.
+
+**Ctrl+F** finds indexed handwriting with Unicode/accent-aware prefix queries. Opening a result highlights its source region. Moving, rotating or restyling the indexed strokes keeps the text and updates the region. Changing their geometry, deleting/replacing them, converting them to shapes/equations, or writing over the indexed region invalidates the annotation. Undo restores the writing and index together. **Clear page handwriting index** is also undoable. Page duplication, templates and notebook archives remap index source identities.
+
+Dense pages may exceed the OCR selection/token limit; index smaller paragraphs instead. Indexing uses document format 4 and database schema 5; older builds refuse a database that has used this feature. OCR annotations are reviewed text, not a guarantee of recognition accuracy.
+
+## Check tablet input
+
+Open **Help → Start input check** to inspect pressure, tilt, eraser and tablet-pad delivery while writing on a test page. Stop/reset the check and save a local JSON report. The timing report measures delivery to CPU canvas paint; physical pen-to-screen latency requires the [camera procedure and validation matrix](INPUT_VALIDATION.md). Physical desktop/tablet trials remain pending.

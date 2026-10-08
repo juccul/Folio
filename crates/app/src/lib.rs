@@ -2,11 +2,17 @@
 //! the GPUI layer only displays state and forwards user actions.
 #[cfg(test)]
 mod gesture_tests;
+mod handwriting_search;
 mod library_actions;
+mod library_previews;
 #[cfg(test)]
 mod management_tests;
 #[cfg(test)]
 mod optimization_tests;
+mod page_actions;
+pub mod portable;
+mod starter;
+mod templates;
 pub use library_actions::NoteAction;
 pub mod appearance;
 mod math_solver;
@@ -24,7 +30,7 @@ pub use folio_math::{VectorCommand, VectorFormula};
 use folio_storage::{Delta, JournalEvent, Persistence, Store};
 pub use math_solver::{MathReport, MathRequest, MathSession, MathStep};
 pub use recognition::{RecognitionKind, RecognitionReview};
-pub use settings::Settings;
+pub use settings::{PageTemplate, Settings};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -252,6 +258,12 @@ pub struct RasterPreview {
     pub bgra: Arc<Vec<u8>>,
 }
 pub struct Controller {
+    pub recognition_for_index: bool,
+    pub restored_library: Option<PathBuf>,
+    library_previews: HashMap<Id, (u64, Arc<Page>, usize)>,
+    library_preview_pending: HashSet<Id>,
+    library_preview_failed: HashMap<Id, u64>,
+    library_preview_recency: std::collections::VecDeque<Id>,
     math_service: math_solver::Service,
     math_generation: u64,
     pub math_session: Option<MathSession>,
@@ -361,6 +373,12 @@ impl Controller {
         sessions.insert(active, session);
         let style = settings.default_pen.clone();
         let controller = Self {
+            recognition_for_index: false,
+            restored_library: None,
+            library_previews: HashMap::new(),
+            library_preview_pending: HashSet::new(),
+            library_preview_failed: HashMap::new(),
+            library_preview_recency: std::collections::VecDeque::new(),
             math_service: math_solver::Service::new(),
             math_generation: 0,
             math_session: None,
@@ -500,9 +518,12 @@ impl Controller {
     pub fn commit(&mut self, label: &str, changes: Vec<Change>) {
         self.commit_to(self.active, label, changes)
     }
-    fn commit_to(&mut self, note: Id, label: &str, changes: Vec<Change>) {
+    fn commit_to(&mut self, note: Id, label: &str, mut changes: Vec<Change>) {
         if changes.is_empty() {
             return;
+        }
+        if let Some(session) = self.sessions.get(&note) {
+            handwriting_search::maintain_index(&session.document, &mut changes);
         }
         let cmd = Command {
             label: label.into(),
@@ -521,7 +542,16 @@ impl Controller {
     pub fn undo(&mut self) {
         self.cancel();
         let s = self.session_mut();
+        let current_page = s.page().id;
         if let Some(cmd) = s.history.undo(&mut s.document) {
+            if cmd
+                .changes
+                .iter()
+                .any(|change| matches!(change, Change::Page { .. }))
+                && let Some(index) = s.document.pages.iter().position(|p| p.id == current_page)
+            {
+                s.page = index;
+            }
             s.refresh_command(&cmd);
             let mut delta = Delta::command(&s.document, &cmd);
             delta.journal.push(JournalEvent::Undo);
@@ -532,7 +562,16 @@ impl Controller {
     pub fn redo(&mut self) {
         self.cancel();
         let s = self.session_mut();
+        let current_page = s.page().id;
         if let Some(cmd) = s.history.redo(&mut s.document) {
+            if cmd
+                .changes
+                .iter()
+                .any(|change| matches!(change, Change::Page { .. }))
+                && let Some(index) = s.document.pages.iter().position(|p| p.id == current_page)
+            {
+                s.page = index;
+            }
             s.refresh_command(&cmd);
             let mut delta = Delta::command(&s.document, &cmd);
             delta.journal.push(JournalEvent::Redo);
@@ -688,45 +727,19 @@ impl Controller {
         let mut d = Document::new(format!("{} (copy)", old.metadata.title));
         d.metadata.tags = old.metadata.tags;
         d.metadata.notebook = old.metadata.notebook;
+        let mut cover = None;
         d.pages = old
             .pages
-            .into_iter()
-            .map(|mut p| {
-                p.id = Id::new_v4();
-                let mut id_map = HashMap::new();
-                for id in &p.order {
-                    id_map.insert(*id, Id::new_v4());
+            .iter()
+            .map(|page| {
+                let copy = page.duplicate();
+                if Some(page.id) == old.metadata.cover_page {
+                    cover = Some(copy.id);
                 }
-                let mut objects = std::collections::BTreeMap::new();
-                for old in p.objects.values() {
-                    let mut o = old.as_ref().clone();
-                    o.set_id(id_map[&o.id()]);
-                    match &mut o {
-                        Object::Shape(s) => {
-                            for id in &mut s.source_strokes {
-                                *id = id_map.get(id).copied().unwrap_or(*id)
-                            }
-                        }
-                        Object::Equation(e) => {
-                            for id in &mut e.source_strokes {
-                                *id = id_map.get(id).copied().unwrap_or(*id)
-                            }
-                            if let Some(link) = &mut e.math_link {
-                                for id in &mut link.sources {
-                                    *id = id_map.get(id).copied().unwrap_or(*id);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    objects.insert(o.id(), Arc::new(o));
-                }
-                p.order = p.order.iter().map(|id| id_map[id]).collect();
-                p.objects = objects;
-                p.groups.clear();
-                p
+                copy
             })
             .collect();
+        d.metadata.cover_page = cover;
         let id = d.metadata.id;
         self.notes.insert(0, d.metadata.clone());
         let delta = Delta::full(&d);
@@ -1946,16 +1959,23 @@ impl Controller {
                 .position(|p| p.id == page)
                 .unwrap_or(0);
             s.refresh();
-            let query = self.search_query.to_lowercase();
-            let highlights: Vec<_> = s
+            let query = self.search_query.clone();
+            let mut highlights: Vec<_> = s
                 .page()
                 .ordered_objects()
                 .filter(|o| {
-                    o.searchable_text().to_lowercase().contains(&query)
+                    folio_search::matches_text(o.searchable_text(), &query)
                         && !o.searchable_text().is_empty()
                 })
                 .map(|o| o.bounds())
                 .collect();
+            highlights.extend(
+                s.page()
+                    .ink_text
+                    .iter()
+                    .filter(|entry| folio_search::matches_text(&entry.text, &query))
+                    .map(|entry| entry.bounds),
+            );
             if let Some(r) = highlights.first() {
                 s.viewport.pan = Point::new(
                     100. - r.min.x * s.viewport.zoom,
@@ -1974,6 +1994,17 @@ impl Controller {
         }
     }
     pub fn export_prepared(&mut self, snapshot: ExportSnapshot, path: PathBuf, kind: ExportKind) {
+        let extension = match kind {
+            ExportKind::Notebook => "folio",
+            ExportKind::Pdf => "pdf",
+            ExportKind::Svg => "svg",
+            ExportKind::Png => "png",
+            ExportKind::Text => "txt",
+        };
+        if let Err(error) = self.validate_export_destination(&path, extension) {
+            self.error = Some(error);
+            return;
+        }
         self.submit(Job::Export {
             doc: snapshot.document,
             page: snapshot.page,
@@ -2010,7 +2041,13 @@ impl Controller {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase();
-        let job = if ext == "pdf" {
+        let job = if ext == "folio" {
+            Job::ImportNotebook {
+                note,
+                path,
+                assets: self.assets.clone(),
+            }
+        } else if ext == "pdf" {
             Job::ImportPdf {
                 note,
                 path,
@@ -2042,6 +2079,15 @@ impl Controller {
         }
     }
     fn apply_pdf(&mut self, note: Id, pages: Vec<Page>) {
+        self.apply_pages(note, pages, "Import PDF", None);
+    }
+    fn apply_pages(
+        &mut self,
+        note: Id,
+        pages: Vec<Page>,
+        label: &str,
+        metadata: Option<NoteMetadata>,
+    ) {
         if pages.is_empty() {
             return;
         }
@@ -2071,7 +2117,15 @@ impl Controller {
             before: None,
             after: Some(page),
         }));
-        self.commit_to(note, "Import PDF", changes);
+        if let Some(metadata) = metadata {
+            let before = self.sessions[&note].document.metadata.clone();
+            let mut after = before.clone();
+            after.title = metadata.title;
+            after.tags = metadata.tags;
+            after.cover_page = metadata.cover_page;
+            changes.push(Change::Metadata { before, after });
+        }
+        self.commit_to(note, label, changes);
         if note == self.active {
             self.change_page(index);
             self.session_mut().viewport = Viewport::default();
@@ -2202,6 +2256,28 @@ impl Controller {
                 } => {
                     self.finish_recognized_equation(generation, review, result);
                 }
+                Finished::LibraryPreview {
+                    note,
+                    updated,
+                    result,
+                } => {
+                    self.library_preview_pending.remove(&note);
+                    if self
+                        .notes
+                        .iter()
+                        .any(|n| n.id == note && n.updated_at == updated)
+                    {
+                        match result {
+                            Ok(Some((page, count))) => {
+                                self.cache_library_preview(note, updated, page, count)
+                            }
+                            Ok(None) => {}
+                            Err(_) => {
+                                self.library_preview_failed.insert(note, updated);
+                            }
+                        }
+                    }
+                }
                 Finished::Cancelled => {}
                 Finished::Cleaned(count) => {
                     self.status = format!(
@@ -2331,6 +2407,47 @@ impl Controller {
                             self.navigate_search(note, page);
                         }
                     }
+                }
+                Finished::TemplateSaved(template) => {
+                    self.settings.templates.push(template);
+                    self.store_settings();
+                    self.status = "Page template saved".into();
+                }
+                Finished::TemplatePage { note, page } => {
+                    self.import_finished(note);
+                    if let Some(session) = self.sessions.get(&note) {
+                        let index = session.document.pages.len();
+                        self.commit_to(
+                            note,
+                            "Add template page",
+                            vec![Change::Page {
+                                index,
+                                before: None,
+                                after: Some(page),
+                            }],
+                        );
+                        if note == self.active {
+                            self.change_page(index);
+                        }
+                    }
+                }
+                Finished::Restored(path) => {
+                    self.status = format!("Backup restored to {}", path.display());
+                    self.restored_library = Some(path);
+                }
+                Finished::NotebookImported { note, document } => {
+                    self.import_finished(note);
+                    let empty = self.sessions.get(&note).is_some_and(|s| {
+                        s.document.pages.len() == 1
+                            && s.document.pages[0].objects.is_empty()
+                            && s.document.pages[0].properties.pdf.is_none()
+                    });
+                    self.apply_pages(
+                        note,
+                        document.pages,
+                        "Import editable notebook",
+                        empty.then_some(document.metadata),
+                    );
                 }
                 Finished::Exported(path) => {
                     self.status = format!(

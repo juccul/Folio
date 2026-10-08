@@ -140,10 +140,19 @@ fn main() -> anyhow::Result<()> {
                     let events=window.update(cx,|view,_,_|view.navigation_smoke_drag())?.map_err(anyhow::Error::msg)?;
                     for event in events {cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;cx.background_executor().timer(Duration::from_millis(20)).await;}
                     cx.background_executor().timer(Duration::from_millis(150)).await;
-                    window.update(cx,|view,_,_|view.navigation_smoke_verify(a,b))?.map_err(anyhow::Error::msg)
+                    window.update(cx,|view,_,_|view.navigation_smoke_verify(a,b))?.map_err(anyhow::Error::msg)?;
+                    window.update(cx,|view,window,cx|view.region_smoke_setup(window,cx))?.map_err(anyhow::Error::msg)?;
+                    cx.background_executor().timer(Duration::from_millis(150)).await;
+                    let events=window.update(cx,|view,_,_|view.region_smoke_events())?.map_err(anyhow::Error::msg)?;
+                    for (index,event) in events.into_iter().enumerate() {
+                        cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;
+                        cx.background_executor().timer(Duration::from_millis(20)).await;
+                        if index==1 {window.update(cx,|view,_,_|view.region_smoke_outline())?.map_err(anyhow::Error::msg)?;}
+                    }
+                    window.update(cx,|view,_,_|view.region_smoke_verify())?.map_err(anyhow::Error::msg)
                 }).await;
                 match result {
-                    Ok(())=>println!("FOLIO_SMOKE_OK: native event dispatch, pressure/tilt, vector canvas, undo/redo, pages, right-click card menu, duplication, tab picker, native tab drag, durable save"),
+                    Ok(())=>println!("FOLIO_SMOKE_OK: native event dispatch, pressure/tilt, vector canvas, undo/redo, pages, right-click card menu, duplication, tab picker, native tab drag, drawn crop outline/undo, durable save"),
                     Err(error)=>{eprintln!("FOLIO_SMOKE_FAILED: {error:#}");std::process::exit(1)}
                 }
                 cx.background_executor().timer(Duration::from_millis(300)).await;

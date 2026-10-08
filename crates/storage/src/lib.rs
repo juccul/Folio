@@ -23,6 +23,8 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PageHeader {
+    #[serde(default)]
+    pub ink_text: Vec<InkText>,
     pub id: Id,
     pub properties: PageProperties,
     pub position: usize,
@@ -84,6 +86,7 @@ impl Delta {
                 .iter()
                 .enumerate()
                 .map(|(position, p)| PageHeader {
+                    ink_text: p.ink_text.clone(),
                     id: p.id,
                     properties: p.properties.clone(),
                     position,
@@ -127,7 +130,8 @@ impl Delta {
             .filter_map(|c| match c {
                 Change::Object { page, .. }
                 | Change::Properties { page, .. }
-                | Change::Groups { page, .. } => Some(*page),
+                | Change::Groups { page, .. }
+                | Change::InkText { page, .. } => Some(*page),
                 _ => None,
             })
             .collect::<std::collections::HashSet<_>>();
@@ -156,6 +160,7 @@ impl Delta {
             .filter(|(_, p)| all_pages || touched.contains(&p.id))
         {
             delta.pages.push(PageHeader {
+                ink_text: p.ink_text.clone(),
                 id: p.id,
                 properties: p.properties.clone(),
                 position,
@@ -184,7 +189,7 @@ impl Store {
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )?;
         let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 4 {
+        if version > 5 {
             return Err(Error::Invalid(format!(
                 "Database version {version} is newer than this application"
             )));
@@ -270,7 +275,7 @@ impl Store {
         )?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i32 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if !(3..=4).contains(&version) {
+        if !(3..=5).contains(&version) {
             return Err(Error::Invalid(format!(
                 "Database version {version} requires initialization by the application"
             )));
@@ -298,6 +303,45 @@ impl Store {
         }
         notes.sort_by_key(|n| std::cmp::Reverse(n.updated_at));
         Ok(notes)
+    }
+    /// Read just the chosen cover page and page count in one WAL snapshot.
+    pub fn library_preview(&self, note: Id, cover: Option<Id>) -> Result<Option<(Page, usize)>> {
+        let tx = self.connection.unchecked_transaction()?;
+        let header: Option<String> = tx.query_row(
+            "SELECT header FROM pages WHERE note_id=?1 ORDER BY CASE WHEN id=?2 THEN 0 ELSE 1 END,position LIMIT 1",
+            params![note.to_string(), cover.map(|id| id.to_string())], |r| r.get(0)).optional()?;
+        let Some(header) = header else {
+            return Ok(None);
+        };
+        let header: PageHeader = serde_json::from_str(&header)?;
+        let count = tx.query_row(
+            "SELECT count(*) FROM pages WHERE note_id=?1",
+            [note.to_string()],
+            |r| r.get::<_, i64>(0),
+        )?;
+        let objects = {
+            let mut query = tx.prepare("SELECT data FROM objects WHERE page_id=?1")?;
+            let mut objects = std::collections::BTreeMap::new();
+            for row in query.query_map([header.id.to_string()], |r| r.get::<_, String>(0))? {
+                let object: Object = serde_json::from_str(&row?)?;
+                objects.insert(object.id(), Arc::new(object));
+            }
+            objects
+        };
+        let page = Page {
+            ink_text: header.ink_text,
+            id: header.id,
+            properties: header.properties,
+            objects,
+            order: header.order,
+            groups: header.groups,
+            revision: header.revision,
+        };
+        tx.commit()?;
+        let mut check = Document::new("preview");
+        check.pages = vec![page.clone()];
+        check.validate().map_err(Error::Invalid)?;
+        Ok(Some((page, count as usize)))
     }
     pub fn load(&self, id: Id) -> Result<Option<Document>> {
         let transaction = self.connection.unchecked_transaction()?;
@@ -332,6 +376,7 @@ impl Store {
                 objects.insert(o.id(), Arc::new(o));
             }
             pages.push(Page {
+                ink_text: h.ink_text,
                 id: h.id,
                 properties: h.properties,
                 objects,
@@ -374,7 +419,13 @@ impl Store {
                 .as_ref()
                 .is_some_and(|o| matches!(o.as_ref(), Object::Equation(e) if e.math_link.is_some()))
         }) {
-            tx.pragma_update(None, "user_version", 4)?;
+            let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            if version < 4 {
+                tx.pragma_update(None, "user_version", 4)?;
+            }
+        }
+        if delta.pages.iter().any(|page| !page.ink_text.is_empty()) || delta.journal.iter().any(|event| matches!(event, JournalEvent::Execute(command) if command.changes.iter().any(|c| matches!(c, Change::InkText { .. })))) {
+            tx.pragma_update(None, "user_version", 5)?;
         }
         let note = delta.metadata.id.to_string();
         tx.execute("INSERT INTO notes VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata",params![note,serde_json::to_string(&delta.metadata)?])?;
@@ -545,6 +596,20 @@ impl Store {
         self.connection.execute(
             "INSERT INTO settings VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET data=excluded.data",
             params![key, data],
+        )?;
+        Ok(())
+    }
+    pub fn backup_to(&self, path: &Path) -> Result<()> {
+        if path.exists() {
+            return Err(Error::Invalid(
+                "Backup snapshot destination already exists".into(),
+            ));
+        }
+        let mut target = Connection::open(path)?;
+        rusqlite::backup::Backup::new(&self.connection, &mut target)?.run_to_completion(
+            256,
+            std::time::Duration::from_millis(5),
+            None,
         )?;
         Ok(())
     }

@@ -2,6 +2,7 @@
 //! to folio-app; ink geometry remains independent of GPUI.
 mod accessibility;
 mod diagnostics;
+mod input_check;
 mod recovery;
 pub use recovery::RecoveryView;
 mod appearance;
@@ -16,6 +17,9 @@ mod motion;
 mod navigation;
 mod notebook_setup;
 mod painting;
+mod portable;
+mod region;
+mod templates;
 mod text_render;
 mod theme;
 mod titlebar;
@@ -69,6 +73,11 @@ actions!(
 );
 #[derive(Clone)]
 enum Modal {
+    SaveTemplate,
+    Templates,
+    RenameTemplate(Id),
+    PageBookmark,
+    MovePage,
     Recognition,
     Rename,
     RenameDocument(Id),
@@ -100,6 +109,11 @@ enum Modal {
 impl Modal {
     fn title(&self) -> &'static str {
         match self {
+            Self::SaveTemplate => "Save page as template",
+            Self::Templates => "Page templates",
+            Self::RenameTemplate(_) => "Rename template",
+            Self::PageBookmark => "Name bookmark (empty removes it)",
+            Self::MovePage => "Move page to notebook",
             Self::Recognition => "Review recognized writing",
             Self::Rename | Self::RenameDocument(_) => "Rename note",
             Self::DocumentTags(_) => "Note tags",
@@ -127,6 +141,7 @@ impl Modal {
     }
 }
 pub struct NotesView {
+    region_selection: Option<region::Selection>,
     pub controller: Controller,
     math_inputs: Option<math_panel::Inputs>,
     diagnostics: diagnostics::Diagnostics,
@@ -202,6 +217,7 @@ impl NotesView {
         })
         .detach();
         Self {
+            region_selection: None,
             controller,
             math_inputs: None,
             diagnostics: diagnostics::Diagnostics::new(),
@@ -345,6 +361,28 @@ impl NotesView {
             self.prepare_notebook_setup(window, cx);
         }
         let content = match &modal {
+            Modal::SaveTemplate => self
+                .controller
+                .page()
+                .properties
+                .bookmark
+                .clone()
+                .unwrap_or_else(|| self.controller.session().document.metadata.title.clone()),
+            Modal::RenameTemplate(id) => self
+                .controller
+                .settings
+                .templates
+                .iter()
+                .find(|t| t.id == *id)
+                .map(|t| t.name.clone())
+                .unwrap_or_default(),
+            Modal::PageBookmark => self
+                .controller
+                .page()
+                .properties
+                .bookmark
+                .clone()
+                .unwrap_or_default(),
             Modal::Recognition => self
                 .controller
                 .recognition_review
@@ -450,6 +488,19 @@ impl NotesView {
         let field = field.clone();
         let content = field.read(cx).content.clone();
         match modal {
+            Modal::SaveTemplate | Modal::RenameTemplate(_) => {
+                let result = if let Modal::RenameTemplate(id) = modal {
+                    self.controller.rename_template(id, content)
+                } else {
+                    self.controller.save_page_template(content)
+                };
+                if let Err(error) = result {
+                    self.modal_error = Some(error);
+                    cx.notify();
+                    return;
+                }
+            }
+            Modal::Templates => {}
             Modal::NewDocument => match self.create_configured_notebook(content, cx) {
                 Ok(()) => self.show_editor(),
                 Err(error) => {
@@ -478,8 +529,15 @@ impl NotesView {
                     return;
                 }
             }
+            Modal::PageBookmark => self.controller.bookmark_page(content),
+            Modal::MovePage => {}
             Modal::Recognition => {
-                if let Err(error) = self.controller.replace_recognized_writing(content) {
+                let result = if self.controller.recognition_for_index {
+                    self.controller.keep_ink_and_index(content)
+                } else {
+                    self.controller.replace_recognized_writing(content)
+                };
+                if let Err(error) = result {
                     self.modal_error = Some(error);
                     field.read(cx).focus.focus(window);
                     cx.notify();
@@ -757,7 +815,7 @@ impl NotesView {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Import PDF or image".into()),
+            prompt: Some("Import PDF, image or editable Folio notebook".into()),
         });
         cx.spawn(async move |view, cx| match paths.await {
             Ok(Ok(Some(paths))) => {
@@ -793,6 +851,7 @@ impl NotesView {
     fn export(&mut self, kind: ExportKind, cx: &mut Context<Self>) {
         self.export_open = false;
         let ext = match kind {
+            ExportKind::Notebook => "folio",
             ExportKind::Svg => "svg",
             ExportKind::Png => "png",
             ExportKind::Pdf => "pdf",
@@ -844,7 +903,10 @@ impl NotesView {
         if event.phase == TabletPhase::Down && !bounds.contains(&event.position) {
             return;
         }
-        if self.controller.interaction.is_none() && !bounds.contains(&event.position) {
+        if self.controller.interaction.is_none()
+            && self.region_selection.is_none()
+            && !bounds.contains(&event.position)
+        {
             return;
         }
         self.last_tablet = Some(Instant::now());
@@ -877,6 +939,9 @@ impl NotesView {
         };
         if phase == Phase::Down {
             self.focus.focus(window);
+        }
+        if self.region_input(input.phase, input.position, cx) {
+            return;
         }
         let was_panning = matches!(self.controller.interaction, Some(Interaction::Pan { .. }));
         self.controller.pointer(input);
@@ -913,7 +978,10 @@ impl NotesView {
         if phase == Phase::Down && !bounds.contains(&position) {
             return;
         }
-        if self.controller.interaction.is_none() && !bounds.contains(&position) {
+        if self.controller.interaction.is_none()
+            && self.region_selection.is_none()
+            && !bounds.contains(&position)
+        {
             return;
         }
         let position = DocPoint::new(
@@ -949,6 +1017,9 @@ impl NotesView {
         if phase == Phase::Up && self.mouse_pan {
             self.mouse_pan = false;
         }
+        if self.region_input(event.phase, event.position, cx) {
+            return;
+        }
         self.controller.pointer(event);
         if phase == Phase::Up && was_panning {
             self.synchronize_page_view();
@@ -969,6 +1040,10 @@ impl NotesView {
         }
     }
     fn pad(&mut self, event: &TabletPadEvent, cx: &mut Context<Self>) {
+        if let Some(check) = &mut self.diagnostics.check {
+            check.pad(event);
+            cx.notify();
+        }
         if self.library_open
             || self.blocking_overlay()
             || self.controller.loading_note()
@@ -1142,6 +1217,7 @@ impl NotesView {
                 || self.building_overlay
                 || window_control)
             && match id.as_ref() {
+                "open-restored-library" => !self.controller.has_background_work(),
                 "undo" => self.controller.session().history.can_undo(),
                 "redo" => self.controller.session().history.can_redo(),
                 "math-apply-latex" => {
@@ -1368,6 +1444,21 @@ impl NotesView {
                     |this, _, _| this.controller.cancel_recognition(),
                 ));
         } else if self.controller.can_recognize_selection() {
+            row = row.child(
+                self.button(
+                    "index-handwriting",
+                    "Index handwriting…",
+                    false,
+                    cx,
+                    |this, _, _| {
+                        if let Err(e) = this.controller.index_selected_handwriting() {
+                            this.controller.error = Some(e);
+                        }
+                    },
+                )
+                .text_xs()
+                .px_2(),
+            );
             for (id, label, kind) in [
                 ("recognize-text", "Recognize text", RecognitionKind::Text),
                 ("recognize-math", "Recognize math", RecognitionKind::Math),
@@ -1427,8 +1518,19 @@ impl NotesView {
             row = row
                 .child(
                     self.button("crop-image", "Crop…", false, cx, |this, w, cx| {
-                        this.modal(Modal::Crop, w, cx)
+                        this.start_image_crop(w, cx)
                     })
+                    .text_xs()
+                    .px_2(),
+                )
+                .child(
+                    self.button(
+                        "crop-image-coordinates",
+                        "Crop with numbers…",
+                        false,
+                        cx,
+                        |this, w, cx| this.modal(Modal::Crop, w, cx),
+                    )
                     .text_xs()
                     .px_2(),
                 )
@@ -1489,6 +1591,11 @@ impl NotesView {
             );
             for (id, label, kind) in [
                 ("export-pdf", "PDF · all pages", ExportKind::Pdf),
+                (
+                    "export-notebook",
+                    "Editable notebook · with assets",
+                    ExportKind::Notebook,
+                ),
                 ("export-svg", "SVG · current page", ExportKind::Svg),
                 ("export-png", "PNG · current page", ExportKind::Png),
                 (
@@ -1520,6 +1627,9 @@ impl NotesView {
                     4,
                 ),
                 ("delete-page", "Delete current page", 5),
+                ("duplicate-page", "Duplicate current page", 16),
+                ("bookmark-page", "Name page bookmark…", 17),
+                ("move-page", "Move page to notebook…", 18),
                 ("page-size", "Custom page size", 6),
                 ("infinite", "Toggle infinite canvas", 7),
                 ("insert-space", "Insert 80 units below selection", 8),
@@ -1529,6 +1639,11 @@ impl NotesView {
                 ("retry-previews", "Retry failed previews", 13),
                 ("cleanup-assets", "Quarantine unused assets", 14),
                 ("open-math-solver", "Math solver", 15),
+                ("cover-page", "Use current page as cover", 19),
+                ("save-page-template", "Save page as template…", 20),
+                ("page-templates", "Add page from template…", 21),
+                ("index-page-handwriting", "Index page handwriting…", 22),
+                ("clear-page-index", "Clear page handwriting index", 23),
             ] {
                 panel = panel.child(
                     self.button(id, label, false, cx, move |this, window, cx| {
@@ -1540,6 +1655,18 @@ impl NotesView {
                             3 => this.import(cx),
                             4 => this.controller.metadata(|m| m.trashed = !m.trashed),
                             5 => this.controller.delete_page(),
+                            19 => this.controller.use_page_as_cover(),
+                            22 => {
+                                if let Err(e) = this.controller.index_page_handwriting() {
+                                    this.controller.error = Some(e);
+                                }
+                            }
+                            23 => this.controller.clear_handwriting_index(),
+                            20 => this.modal(Modal::SaveTemplate, window, cx),
+                            21 => this.modal(Modal::Templates, window, cx),
+                            16 => this.controller.duplicate_page(),
+                            17 => this.modal(Modal::PageBookmark, window, cx),
+                            18 => this.modal(Modal::MovePage, window, cx),
                             6 => this.modal(Modal::PageSize, window, cx),
                             7 => {
                                 let p = this.controller.page().properties.clone();
@@ -1719,6 +1846,7 @@ impl NotesView {
                         cx,
                         move |this, _, _| {
                             this.controller.set_style(preset.clone());
+                            this.region_selection = None;
                             this.controller.set_tool(Tool::Pen)
                         },
                     )
@@ -1764,6 +1892,25 @@ impl NotesView {
             .min_h_0()
             .overflow_y_scroll()
             .child(self.appearance_panel(cx));
+        body = body.child(div().mt_3().text_sm().font_weight(FontWeight::SEMIBOLD).child("Backup and restore"))
+            .child(self.button("backup-library", "Back up library…", false, cx, |this, _, cx| this.backup_dialog(cx)).justify_start())
+            .child(self.button("restore-library", "Restore backup to a new library…", false, cx, |this, _, cx| this.restore_dialog(cx)).justify_start())
+            .child(div().text_xs().text_color(rgb(theme.muted)).child("Includes notebooks, assets, folders, preferences and undo history. Downloadable OCR/math runtimes are excluded."));
+        if let Some(path) = &self.controller.restored_library {
+            body = body
+                .child(
+                    div()
+                        .text_xs()
+                        .child(format!("Restored: {}", path.display())),
+                )
+                .child(self.button(
+                    "open-restored-library",
+                    "Open restored library",
+                    true,
+                    cx,
+                    |this, w, cx| this.open_restored_library(w, cx),
+                ));
+        }
         for (id, label, enabled, kind) in [
             (
                 "segment-eraser",
@@ -1910,7 +2057,7 @@ impl NotesView {
                         })),
                 ),
         );
-        body=body.child(div().text_xs().text_color(rgb(theme.muted)).child("Draw with a stylus or mouse. Two-finger scrolling pans; Ctrl + scroll zooms. Tablet frames preserve pressure, tilt, buttons and timing on Wayland."));
+        body=body.child(div().text_xs().text_color(rgb(theme.muted)).child("Draw with a stylus or mouse. Two-finger scrolling pans; Ctrl + scroll zooms. Pen input preserves pressure, tilt, buttons and timing."));
         div()
             .occlude()
             .absolute()
@@ -1999,7 +2146,79 @@ impl NotesView {
                 }))
             })
             .when(matches!(modal, Modal::NewDocument), |panel| panel.child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Name")))
-            .child(field);
+            .when(!matches!(modal, Modal::MovePage | Modal::Templates), |panel| panel.child(field));
+        if matches!(modal, Modal::Templates) {
+            panel = panel.child(self.template_picker(cx)).child(self.button(
+                "cancel-modal",
+                "Close",
+                false,
+                cx,
+                |this, w, cx| this.cancel_modal(w, cx),
+            ));
+            return div()
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00000070))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(panel);
+        }
+        if matches!(modal, Modal::MovePage) {
+            let mut destinations = div()
+                .id("move-page-destinations")
+                .max_h(px(300.))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap_2();
+            for note in self
+                .controller
+                .notes
+                .clone()
+                .into_iter()
+                .filter(|n| !n.trashed && n.id != self.controller.active)
+            {
+                let id = note.id;
+                destinations = destinations.child(
+                    self.button(
+                        format!("move-page-{id}"),
+                        note.title,
+                        false,
+                        cx,
+                        move |this, w, cx| {
+                            this.controller.move_page_to(id);
+                            this.close_modal(w, cx);
+                        },
+                    )
+                    .justify_start(),
+                );
+            }
+            panel = panel.child(div().text_sm().child("The destination is saved before removing the source. Undo in the source restores a copy.")).child(destinations);
+            if !self
+                .controller
+                .notes
+                .iter()
+                .any(|n| !n.trashed && n.id != self.controller.active)
+            {
+                panel = panel.child("Create another notebook to move pages into it.");
+            }
+            panel = panel.child(
+                self.button("cancel-modal", "Cancel", false, cx, |this, w, cx| {
+                    this.cancel_modal(w, cx)
+                }),
+            );
+            return div()
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00000070))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(panel);
+        }
         if matches!(modal, Modal::NewDocument) {
             panel = panel.child(self.notebook_setup_options(cx));
         }
@@ -2012,13 +2231,35 @@ impl NotesView {
             panel = panel.child(div().text_sm().text_color(rgb(theme.muted)).child(if math {
                 "Check and edit the LaTeX. Copy keeps your ink; replacement inserts a rendered, editable equation."
             } else {
-                "Check and edit the text. Copy keeps your ink; replacement can be undone."
+                "Review and correct the text. Make searchable attaches it to the original ink; replacement inserts typed text. Both can be undone."
             })).child(self.button("copy-recognized-text", "Copy text", false, cx, |this, _, cx| {
                 if let Some((Modal::Recognition, field)) = &this.modal {
                     cx.write_to_clipboard(ClipboardItem::new_string(field.read(cx).content.clone()));
                     this.controller.status = "Recognized text copied".into();
                 }
             }));
+            if !math && self.controller.can_index_review() {
+                panel = panel.child(self.button(
+                    "keep-ink-index",
+                    "Keep ink and make searchable",
+                    false,
+                    cx,
+                    |this, w, cx| {
+                        let text = this
+                            .modal
+                            .as_ref()
+                            .map(|(_, field)| field.read(cx).content.clone())
+                            .unwrap_or_default();
+                        match this.controller.keep_ink_and_index(text) {
+                            Ok(()) => this.close_modal(w, cx),
+                            Err(e) => {
+                                this.modal_error = Some(e);
+                                cx.notify();
+                            }
+                        }
+                    },
+                ));
+            }
             if math {
                 panel = panel.child(self.button(
                     "solve-recognized-math",
@@ -2124,31 +2365,41 @@ impl NotesView {
             for r in self.controller.search_results.clone() {
                 let note = r.note;
                 let page = r.page;
+                let title = r.title.clone();
                 results = results.child(
-                    div()
-                        .id(SharedString::from(format!("result-{note}-{page}")))
-                        .p_3()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(rgb(theme.selected)))
-                        .child(div().font_weight(FontWeight::SEMIBOLD).child(r.title))
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(theme.muted))
-                                .child(r.snippet),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
+                    self.control(
+                        format!("result-{note}-{page}"),
+                        format!("Open result: {} · {}", r.title, r.snippet),
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .items_start()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(theme.muted))
+                                    .child(r.snippet),
+                            )
+                            .into_any_element(),
+                        false,
+                        cx,
+                        move |this, window, cx| {
                             this.controller.navigate_search(note, page);
                             this.show_editor();
                             this.close_modal(window, cx);
-                        })),
+                        },
+                    )
+                    .p_3()
+                    .w_full()
+                    .justify_start(),
                 );
             }
             if !self.controller.search_query.is_empty() && self.controller.search_results.is_empty()
             {
                 results = results.child(div().p_3().text_sm().text_color(rgb(theme.muted)).child(
-                    "No matches. Search covers note titles, tags, typed text and LaTeX equations.",
+                    "No matches. Search covers titles, tags, typed text, equations and handwriting you have indexed.",
                 ));
             }
             panel = panel.child(results);
@@ -2160,7 +2411,11 @@ impl NotesView {
                 .justify_between()
                 .child(div().text_xs().text_color(rgb(theme.muted)).child(
                     if matches!(modal, Modal::Recognition) {
-                        "Ctrl + Enter to replace"
+                        if self.controller.recognition_for_index {
+                            "Ctrl + Enter to index"
+                        } else {
+                            "Ctrl + Enter to replace"
+                        }
                     } else if multiline {
                         "Ctrl + Enter to save"
                     } else {
@@ -2181,7 +2436,11 @@ impl NotesView {
                             if search {
                                 "Search"
                             } else if matches!(modal, Modal::Recognition) {
-                                "Replace writing"
+                                if self.controller.recognition_for_index {
+                                    "Keep ink and index"
+                                } else {
+                                    "Replace writing"
+                                }
                             } else if matches!(modal, Modal::OpenDocument) {
                                 "Open"
                             } else if matches!(modal, Modal::NewDocument) {
@@ -2382,6 +2641,7 @@ fn this_region(controller: &mut Controller, values: &[f32]) -> Result<(), String
 }
 impl Render for NotesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.cancel_region_after_navigation();
         self.building_overlay = false;
         let accessibility = self.accessibility.clone();
         for request in accessibility.drain() {
@@ -2609,6 +2869,7 @@ impl Render for NotesView {
                     let editing = view.inline_text.as_ref().map(|e| e.id);
                     view.painter
                         .paint(&mut view.controller, bounds, editing, window, cx);
+                    view.paint_region(bounds, window);
                     view.diagnostics.painted();
                 });
                 let tablet_entity = paint_entity.clone();
@@ -2634,7 +2895,9 @@ impl Render for NotesView {
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                     if phase.bubble() {
                         move_entity.update(cx, |v, cx| {
-                            let phase = if v.controller.interaction.is_some() {
+                            let phase = if v.controller.interaction.is_some()
+                                || (v.region_selection.is_some() && event.pressed_button.is_some())
+                            {
                                 Phase::Move
                             } else {
                                 Phase::Hover
@@ -2801,6 +3064,11 @@ impl Render for NotesView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Escape, w, cx| {
+                if this.region_selection.take().is_some() {
+                    this.controller.status = "Region selection cancelled".into();
+                    cx.notify();
+                    return;
+                }
                 if this.inline_text.is_some() && this.modal.is_none() {
                     this.finish_inline_text(w, cx);
                     return;
@@ -2839,26 +3107,32 @@ impl Render for NotesView {
                     this.controller
                         .set_style(this.writing_style.take().unwrap_or_default());
                 }
+                this.region_selection = None;
                 this.controller.set_tool(Tool::Pen);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Eraser, _, cx| {
+                this.region_selection = None;
                 this.controller.set_tool(Tool::Eraser);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Lasso, _, cx| {
+                this.region_selection = None;
                 this.controller.set_tool(Tool::Lasso);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Hand, _, cx| {
+                this.region_selection = None;
                 this.controller.set_tool(Tool::Hand);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Text, _, cx| {
+                this.region_selection = None;
                 this.controller.set_tool(Tool::Text);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Shapes, _, cx| {
+                this.region_selection = None;
                 this.controller.set_tool(Tool::Shape);
                 cx.notify();
             }))
@@ -2897,16 +3171,16 @@ impl Render for NotesView {
         if self.library_open {
             self.canvas_bounds = None;
             body = body.child(self.library_sidebar(cx)).child(
-                self.library(cx).opacity(library_alpha).on_drop(cx.listener(
-                    |this, paths: &ExternalPaths, _, cx| {
+                self.library(window, cx)
+                    .opacity(library_alpha)
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                         for path in paths.paths() {
                             let id = this.controller.import_as_note(path.clone());
                             this.open_tabs.push(id);
                         }
                         this.show_editor();
                         cx.notify();
-                    },
-                )),
+                    })),
             );
         } else {
             let header = self.header(cx);
@@ -2936,6 +3210,31 @@ impl Render for NotesView {
                     .flex_col()
                     .child(header)
                     .child(toolbar)
+                    .when(self.region_selection.is_some(), |body| {
+                        body.child(
+                            div()
+                                .px_4()
+                                .py_2()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child("Drag a rectangle on the page")
+                                .child(self.button(
+                                    "cancel-region",
+                                    "Cancel · Esc",
+                                    false,
+                                    cx,
+                                    |this, _, _| {
+                                        this.region_selection = None;
+                                        this.controller.status =
+                                            "Region selection cancelled".into();
+                                    },
+                                )),
+                        )
+                    })
+                    .when(self.diagnostics.check.is_some(), |body| {
+                        body.child(self.input_check_panel(cx))
+                    })
                     .children(formatting)
                     .child(workspace)
                     .child(footer),

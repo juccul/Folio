@@ -41,6 +41,45 @@ pub fn search(conn: &Connection, query: &str) -> rusqlite::Result<Vec<SearchResu
     }
     Ok(out)
 }
+/// Approximate the unicode61 prefix matching used by FTS for object highlighting.
+pub fn matches_text(text: &str, query: &str) -> bool {
+    use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
+    let fold = |s: &str| {
+        s.nfkd()
+            .filter(|c| !is_combining_mark(*c))
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    if query.trim().is_empty() {
+        return false;
+    }
+    let text = fold(text);
+    let words: Vec<_> = text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    query.split_whitespace().all(|term| {
+        let term = fold(term);
+        let parts: Vec<_> = term
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|s| !s.is_empty())
+            .collect();
+        !parts.is_empty()
+            && words.windows(parts.len()).any(|window| {
+                window
+                    .iter()
+                    .zip(&parts)
+                    .enumerate()
+                    .all(|(index, (word, part))| {
+                        if index + 1 == parts.len() {
+                            word.starts_with(part)
+                        } else {
+                            word == part
+                        }
+                    })
+            })
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,5 +98,13 @@ mod tests {
         assert_eq!(search(&c, "hand").unwrap()[0].page, p);
         assert!(search(&c, "\" OR *").is_ok());
         assert!(search(&c, "").unwrap().is_empty());
+    }
+    #[test]
+    fn highlights_follow_unicode_prefix_terms_and_ignore_empty_queries() {
+        assert!(matches_text("Café tomorrow", "cafe tom"));
+        assert!(matches_text("alpha-beta café", "alpha-be cafe"));
+        assert!(!matches_text("Café tomorrow", "cafe yesterday"));
+        assert!(!matches_text("anything", ""));
+        assert!(!matches_text("anything", "*"));
     }
 }

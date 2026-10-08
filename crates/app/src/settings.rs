@@ -1,8 +1,17 @@
 use folio_document::*;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PageTemplate {
+    pub id: Id,
+    pub name: String,
+    pub asset: String,
+    #[serde(default)]
+    pub preview: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub templates: Vec<PageTemplate>,
     pub dark: bool,
     pub reduce_motion: bool,
     pub appearance: crate::appearance::Appearance,
@@ -23,6 +32,15 @@ pub struct Settings {
 impl Settings {
     /// Older or hand-edited preferences must not create nonfinite GPUI sizes.
     pub fn normalize(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.templates.retain(|template| {
+            !template.name.trim().is_empty()
+                && seen.insert(template.id)
+                && folio_export::asset_path(std::path::Path::new("."), &template.asset).is_ok()
+                && template.preview.as_ref().is_none_or(|name| {
+                    folio_export::asset_path(std::path::Path::new("."), name).is_ok()
+                })
+        });
         let defaults = Self::default();
         let bound = |value: f32, fallback: f32, min: f32, max: f32| {
             if value.is_finite() {
@@ -59,6 +77,7 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            templates: vec![],
             dark: false,
             reduce_motion: false,
             appearance: Default::default(),

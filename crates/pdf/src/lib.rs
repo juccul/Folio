@@ -90,6 +90,7 @@ pub fn import_with_password(
         }
         let mut page = Page::new();
         page.properties = PageProperties {
+            bookmark: None,
             width: width * 96. / 72.,
             height: height * 96. / 72.,
             paper: Paper::Blank,
