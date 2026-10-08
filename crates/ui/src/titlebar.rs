@@ -13,13 +13,15 @@ impl NotesView {
                 self.control(
                     "window-minimize",
                     "Minimize window",
-                    icon(Icon::Minimize, theme.muted).into_any_element(),
+                    window_icon(Icon::Minimize, theme.muted).into_any_element(),
                     false,
                     cx,
                     |_, window, _| window.minimize_window(),
                 )
-                .size(px(30.))
-                .p_1()
+                .w(px(34.))
+                .h(px(30.))
+                .p_0()
+                .flex_shrink_0()
                 .bg(rgb(theme.chrome)),
             );
         }
@@ -32,7 +34,7 @@ impl NotesView {
                     } else {
                         "Maximize window"
                     },
-                    icon(
+                    window_icon(
                         if maximized {
                             Icon::Restore
                         } else {
@@ -48,8 +50,10 @@ impl NotesView {
                         window.refresh();
                     },
                 )
-                .size(px(30.))
-                .p_1()
+                .w(px(34.))
+                .h(px(30.))
+                .p_0()
+                .flex_shrink_0()
                 .bg(rgb(theme.chrome)),
             );
         }
@@ -57,7 +61,7 @@ impl NotesView {
             self.control(
                 "window-close",
                 "Close window",
-                icon(Icon::Close, theme.muted).into_any_element(),
+                window_icon(Icon::Close, theme.muted).into_any_element(),
                 false,
                 cx,
                 |this, window, cx| match this.controller.flush() {
@@ -68,11 +72,44 @@ impl NotesView {
                     }
                 },
             )
-            .size(px(30.))
-            .p_1()
+            .w(px(34.))
+            .h(px(30.))
+            .p_0()
+            .flex_shrink_0()
             .bg(rgb(theme.chrome)),
         )
     }
+}
+
+// Window glyphs share a 12px optical footprint and stroke weight. General
+// toolbar SVGs have different intrinsic bounds, so equal SVG boxes do not
+// produce equally sized minimize/maximize/close marks.
+fn window_icon(kind: Icon, color: u32) -> impl IntoElement {
+    let lines: &[&[(f32, f32)]] = match kind {
+        Icon::Minimize => &[&[(3., 9.), (15., 9.)]],
+        Icon::Maximize => &[&[(3., 3.), (15., 3.), (15., 15.), (3., 15.), (3., 3.)]],
+        Icon::Restore => &[
+            &[(6., 6.), (6., 3.), (15., 3.), (15., 12.), (12., 12.)],
+            &[(3., 6.), (12., 6.), (12., 15.), (3., 15.), (3., 6.)],
+        ],
+        Icon::Close => &[&[(3., 3.), (15., 15.)], &[(15., 3.), (3., 15.)]],
+        _ => unreachable!("Not a window control"),
+    };
+    let paths = lines.iter().filter_map(|line| {
+        let mut path = PathBuilder::stroke(px(1.4));
+        path.move_to(point(px(line[0].0), px(line[0].1)));
+        for &(x, y) in &line[1..] {
+            path.line_to(point(px(x), px(y)));
+        }
+        path.build().ok()
+    }).collect::<Vec<_>>();
+    canvas(|_, _, _| (), move |bounds, _, window, _| {
+        for path in &paths {
+            window.paint_path(path.clone().transformed([
+                1., 0., 0., 1., f32::from(bounds.origin.x), f32::from(bounds.origin.y),
+            ]), rgb(color));
+        }
+    }).size(px(18.)).flex_shrink_0()
 }
 
 pub(super) fn background_press(event: &MouseDownEvent, window: &mut Window, cx: &mut App) {
