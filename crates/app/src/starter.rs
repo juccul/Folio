@@ -1,5 +1,28 @@
 use super::*;
 impl Controller {
+    pub(super) fn begin_bootstrap_writing(&mut self) {
+        let Some(id) = self.bootstrap_document.take() else {
+            return;
+        };
+        self.provisional_imports.remove(&id);
+        let doc = &self.sessions[&id].document;
+        self.notes.insert(0, doc.metadata.clone());
+        let delta = Delta::full(doc);
+        self.persist(delta);
+        self.mark_note_opened(id);
+    }
+    pub(super) fn start_empty_session(&mut self) {
+        let mut doc = Document::new("Untitled document");
+        doc.pages[0].properties = self.default_page_properties();
+        let id = doc.metadata.id;
+        self.sessions.insert(id, Session::new(doc));
+        self.activate_note(id);
+        self.bootstrap_document = Some(id);
+        self.provisional_imports.insert(id);
+        self.pending_note = None;
+        self.pending_navigation = None;
+        self.tool = Tool::Pen;
+    }
     /// An empty session keeps the editor usable without creating a library document.
     pub fn is_bootstrap_document(&self, id: Id) -> bool {
         self.bootstrap_document == Some(id)
@@ -103,6 +126,7 @@ mod onboarding_tests {
         let mut app = Controller::open(root.clone()).unwrap();
         let placeholder = app.active;
         assert!(app.visible_notes().is_empty());
+        assert!(app.notes.is_empty());
         app.save();
         app.flush().unwrap();
         assert!(
@@ -149,6 +173,33 @@ mod onboarding_tests {
         assert_eq!(app.active, id);
         assert_eq!(app.page().id, page);
         assert_eq!(app.page().text(), "First thought");
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod import_empty_tests {
+    use super::*;
+    #[test]
+    fn removing_the_only_failed_import_restores_an_empty_library() {
+        let root = std::env::temp_dir().join(format!("folio-empty-import-{}", Id::new_v4()));
+        let mut app = Controller::open(root.clone()).unwrap();
+        let id = app.import_as_note(root.join("missing.pdf"));
+        let start = Instant::now();
+        while app.has_background_work() {
+            app.tick();
+            std::thread::sleep(Duration::from_millis(5));
+            assert!(start.elapsed() < Duration::from_secs(10));
+        }
+        app.dismiss_failed_import(id);
+        assert!(app.notes.is_empty());
+        assert!(app.visible_notes().is_empty());
+        assert!(app.is_bootstrap_document(app.active));
+        app.flush().unwrap();
+        drop(app);
+        let app = Controller::open(root.clone()).unwrap();
+        assert!(app.notes.is_empty());
         drop(app);
         std::fs::remove_dir_all(root).unwrap();
     }

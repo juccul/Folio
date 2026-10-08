@@ -132,6 +132,7 @@ fn offscreen_page_preview_does_not_pollute_active_page_index() {
 #[test]
 fn repeated_note_load_requests_are_coalesced() {
     let (mut app, root) = fixture();
+    app.create_note(); // Two explicitly created documents are needed for a background load.
     let first = app.active;
     app.create_note();
     app.flush().unwrap();

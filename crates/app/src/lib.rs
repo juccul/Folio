@@ -400,7 +400,7 @@ impl Controller {
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
         settings.normalize();
-        let mut notes = store.list_notes().map_err(|e| e.to_string())?;
+        let notes = store.list_notes().map_err(|e| e.to_string())?;
         let notebooks = store.notebooks().map_err(|e| e.to_string())?;
         let preferred = settings
             .reopen_documents
@@ -417,10 +417,9 @@ impl Controller {
                 .map_err(|e| e.to_string())?
                 .ok_or("Missing note data")?
         } else {
-            let mut doc = Document::new("Untitled note");
+            let mut doc = Document::new("Untitled document");
             doc.pages[0].properties.paper = settings.paper;
             bootstrap_document = Some(doc.metadata.id);
-            notes.insert(0, doc.metadata.clone());
             doc
         };
         let active = document.metadata.id;
@@ -650,8 +649,12 @@ impl Controller {
             handwriting_search::maintain_index(&session.document, &mut changes);
         }
         let provisional = self.provisional_imports.remove(&note);
-        if self.bootstrap_document == Some(note) {
+        let first_writing = self.bootstrap_document == Some(note);
+        if first_writing {
             self.bootstrap_document = None;
+            if let Some(session) = self.sessions.get(&note) {
+                self.notes.insert(0, session.document.metadata.clone());
+            }
         }
         let cmd = Command {
             label: label.into(),
@@ -673,6 +676,9 @@ impl Controller {
             self.tool = Tool::Hand;
         }
         self.persist(delta);
+        if first_writing {
+            self.mark_note_opened(note);
+        }
     }
     pub fn undo(&mut self) {
         if self.read_only() {
@@ -1315,6 +1321,9 @@ impl Controller {
                 self.tool = Tool::Pen;
                 self.temporary_selection = false;
                 tool = Tool::Pen;
+            }
+            if tool == Tool::Pen {
+                self.begin_bootstrap_writing();
             }
             self.interaction = match tool {
                 Tool::Pen | Tool::Shape => {
@@ -2458,7 +2467,7 @@ impl Controller {
                 if let Some(id) = self.notes.iter().find(|n| !n.trashed).map(|n| n.id) {
                     self.switch_note(id);
                 } else {
-                    self.create_note();
+                    self.start_empty_session();
                 }
             }
             if self.active != note {
@@ -3544,6 +3553,7 @@ mod tests {
     }
     fn with_unloaded_note() -> (Controller, Id) {
         let mut a = app();
+        a.create_note();
         a.create_note();
         a.rename("Other note".into());
         a.flush().unwrap();

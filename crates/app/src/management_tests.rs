@@ -148,6 +148,7 @@ fn library_actions_load_the_target_without_switching_or_touching_the_active_note
 #[test]
 fn background_pdf_import_is_pinned_while_other_notes_open() {
     let mut a = app();
+    a.create_note(); // Explicit existing document, independent of first-launch onboarding.
     let id = a.active;
     *a.pending_imports.entry(id).or_default() += 1;
     for _ in 0..12 {
@@ -717,6 +718,7 @@ fn trash_is_read_only_for_all_content_and_metadata_until_restored() {
 #[test]
 fn failed_home_import_is_provisional_and_can_retry_without_losing_annotations() {
     let mut a = app();
+    a.create_note(); // Explicit existing document, independent of first-launch onboarding.
     let path = a.data_dir.join("missing.png");
     let imported = a.import_as_note(path.clone());
     settle(&mut a);
@@ -791,6 +793,8 @@ fn search_states_clear_stale_results_and_associate_latest_query_and_page() {
 #[test]
 fn recent_documents_follow_opening_not_editing_and_survive_restart() {
     let mut a = app();
+    a.create_note();
+    a.settings.recent_documents.clear(); // Start with no opening history.
     let first = a.active;
     a.filter = NoteFilter::Recent;
     assert!(a.visible_notes().is_empty());
