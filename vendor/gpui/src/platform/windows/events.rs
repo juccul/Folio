@@ -38,8 +38,25 @@ impl WindowsWindowInner {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
+        // We synthesize GPUI control events from pen frames, so ignore Windows'
+        // additional legacy mouse promotion. Real mice remain independent.
+        if (WM_MOUSEFIRST..=WM_MOUSELAST).contains(&msg) && super::pen::promoted_pen_mouse() {
+            return LRESULT(0);
+        }
+        if msg == WM_GETOBJECT {
+            let callback = self.state.borrow_mut().callbacks.accessibility_object.take();
+            if let Some(mut callback) = callback {
+                let result = callback(wparam.0, lparam.0);
+                self.state.borrow_mut().callbacks.accessibility_object = Some(callback);
+                if let Some(result) = result {
+                    return LRESULT(result);
+                }
+            }
+        }
         let handled = match msg {
             WM_ACTIVATE => self.handle_activate_msg(wparam),
+            WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP | WM_POINTERENTER | WM_POINTERLEAVE | WM_POINTERCAPTURECHANGED => self.handle_pen_message(msg, wparam),
+            WM_KILLFOCUS => { self.cancel_pens(); None },
             WM_CREATE => self.handle_create_msg(handle),
             WM_MOVE => self.handle_move_msg(handle, lparam),
             WM_SIZE => self.handle_size_msg(wparam, lparam),
@@ -748,6 +765,7 @@ impl WindowsWindowInner {
 
     fn handle_activate_msg(self: &Rc<Self>, wparam: WPARAM) -> Option<isize> {
         let activated = wparam.loword() > 0;
+        if !activated { self.cancel_pens(); }
         let this = self.clone();
         self.executor
             .spawn(async move {
@@ -953,6 +971,12 @@ impl WindowsWindowInner {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> Option<isize> {
+        // Native frame edges already belong to Windows' size loop. Routing
+        // them through client controls can consume the message and recurse.
+        if button == MouseButton::Left && matches!(wparam.0 as u32,
+            HTLEFT | HTRIGHT | HTTOP | HTBOTTOM | HTTOPLEFT | HTTOPRIGHT | HTBOTTOMLEFT | HTBOTTOMRIGHT) {
+            return None;
+        }
         let mut lock = self.state.borrow_mut();
         if let Some(mut func) = lock.callbacks.input.take() {
             let scale_factor = lock.scale_factor;

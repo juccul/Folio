@@ -1,6 +1,6 @@
 # Third-party licenses
 
-Folio's original source is GPL-3.0-or-later; see [LICENSE](LICENSE). Dependencies retain their own licenses. This inventory is generated from Cargo.lock's resolved Linux graph, including build dependencies. It records package-declared SPDX expressions without replacing upstream notices. Slash-separated legacy dual-license declarations mean alternatives.
+Folio's original source is GPL-3.0-or-later; see [LICENSE](LICENSE). Dependencies retain their own licenses. This inventory is generated from Cargo.lock's resolved Linux and Windows graphs, including build dependencies. It records package-declared SPDX expressions without replacing upstream notices. Slash-separated legacy dual-license declarations mean alternatives.
 
 For dual-licensed dependencies, select MIT where offered, otherwise Apache-2.0 where offered. In particular, `oo7` is used under Apache-2.0 rather than its alternative GPL-2.0-only license. MPL-2.0 `option-ext` is unmodified, and its source is available from the exact version linked below. Binary distributors must provide the matching Folio source and retained notices; the package script creates both archives.
 
@@ -26,7 +26,7 @@ The UI line icons and notebook cover artwork are original Folio vector drawings,
 
 The ink/geometric algorithms are original implementations. No perfect-freehand, Xournal++ or Rnote source was copied. [DEVELOPMENT.md](DEVELOPMENT.md) explains the design references and tradeoffs.
 
-## Locked Linux Rust dependencies
+## Locked Rust dependencies
 
 | Package / source | Version | Declared license | Retained text |
 | --- | --- | --- | --- |
@@ -34,6 +34,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [accesskit_atspi_common](https://github.com/AccessKit/accesskit) | 0.21.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/accesskit_atspi_common-0.21.0/) |
 | [accesskit_consumer](https://github.com/AccessKit/accesskit) | 0.39.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/accesskit_consumer-0.39.1/) |
 | [accesskit_unix](https://github.com/AccessKit/accesskit) | 0.24.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/accesskit_unix-0.24.0/) |
+| [accesskit_windows](https://github.com/AccessKit/accesskit) | 0.35.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/accesskit_windows-0.35.1/) |
 | [adler2](https://github.com/oyvindln/adler2) | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | [notices](third_party/licenses/adler2-2.0.1/) |
 | [aes](https://github.com/RustCrypto/block-ciphers) | 0.8.4 | MIT OR Apache-2.0 | [notices](third_party/licenses/aes-0.8.4/) |
 | [aes](https://github.com/RustCrypto/block-ciphers) | 0.9.3 | MIT OR Apache-2.0 | [notices](third_party/licenses/aes-0.9.3/) |
@@ -159,6 +160,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [dyn-clone](https://github.com/dtolnay/dyn-clone) | 1.0.20 | MIT OR Apache-2.0 | [notices](third_party/licenses/dyn-clone-1.0.20/) |
 | [ecb](https://github.com/RustCrypto/block-modes) | 0.2.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/ecb-0.2.1/) |
 | [either](https://github.com/rayon-rs/either) | 1.18.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/either-1.18.0/) |
+| [embed-resource](https://github.com/nabijaczleweli/rust-embed-resource) | 3.0.11 | MIT | [notices](third_party/licenses/embed-resource-3.0.11/) |
 | [encoding_rs](https://github.com/hsivonen/encoding_rs) | 0.8.42 | (Apache-2.0 OR MIT) AND BSD-3-Clause | [notices](third_party/licenses/encoding_rs-0.8.42/) |
 | [endi](https://github.com/zeenix/endi) | 1.1.1 | MIT | [notices](third_party/licenses/endi-1.1.1/) |
 | [enumflags2](https://github.com/meithecatte/enumflags2) | 0.7.12 | MIT OR Apache-2.0 | [notices](third_party/licenses/enumflags2-0.7.12/) |
@@ -198,6 +200,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [fontdb](https://github.com/RazrFalcon/fontdb) | 0.23.0 | MIT | [notices](third_party/licenses/fontdb-0.23.0/) |
 | [form_urlencoded](https://github.com/servo/rust-url) | 1.2.2 | MIT OR Apache-2.0 | [notices](third_party/licenses/form_urlencoded-1.2.2/) |
 | [freetype-sys](https://github.com/PistonDevelopers/freetype-sys.git) | 0.20.1 | MIT | [notices](third_party/licenses/freetype-sys-0.20.1/) |
+| [futf](https://github.com/servo/futf) | 0.1.5 | MIT / Apache-2.0 | [notices](third_party/licenses/futf-0.1.5/) |
 | [futures](https://github.com/rust-lang/futures-rs) | 0.3.34 | MIT OR Apache-2.0 | [notices](third_party/licenses/futures-0.3.34/) |
 | [futures-channel](https://github.com/rust-lang/futures-rs) | 0.3.34 | MIT OR Apache-2.0 | [notices](third_party/licenses/futures-channel-0.3.34/) |
 | [futures-core](https://github.com/rust-lang/futures-rs) | 0.3.34 | MIT OR Apache-2.0 | [notices](third_party/licenses/futures-core-0.3.34/) |
@@ -301,6 +304,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [lyon_geom](https://github.com/nical/lyon) | 1.0.19 | MIT OR Apache-2.0 | [notices](third_party/licenses/lyon_geom-1.0.19/) |
 | [lyon_path](https://github.com/nical/lyon) | 1.0.19 | MIT OR Apache-2.0 | [notices](third_party/licenses/lyon_path-1.0.19/) |
 | [lyon_tessellation](https://github.com/nical/lyon) | 1.0.22 | MIT OR Apache-2.0 | [notices](third_party/licenses/lyon_tessellation-1.0.22/) |
+| [mac](https://github.com/reem/rust-mac.git) | 0.1.1 | MIT/Apache-2.0 | [notices](third_party/licenses/mac-0.1.1/) |
 | [maybe-rayon](https://github.com/shssoichiro/maybe-rayon) | 0.1.1 | MIT | [notices](third_party/licenses/maybe-rayon-0.1.1/) |
 | [md-5](https://github.com/RustCrypto/hashes) | 0.10.6 | MIT OR Apache-2.0 | [notices](third_party/licenses/md-5-0.10.6/) |
 | [md-5](https://github.com/RustCrypto/hashes) | 0.11.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/md-5-0.11.0/) |
@@ -322,6 +326,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [no_std_io2](https://github.com/wcampbell0x2a/no-std-io2) | 0.9.4 | Apache-2.0 OR MIT | [notices](third_party/licenses/no_std_io2-0.9.4/) |
 | [nom](https://github.com/rust-bakery/nom) | 8.0.0 | MIT | [notices](third_party/licenses/nom-8.0.0/) |
 | [noop_proc_macro](https://github.com/lu-zero/noop_proc_macro) | 0.3.0 | MIT | [notices](third_party/licenses/noop_proc_macro-0.3.0/) |
+| [ntapi](https://github.com/MSxDOS/ntapi) | 0.4.3 | Apache-2.0 OR MIT | [notices](third_party/licenses/ntapi-0.4.3/) |
 | [num](https://github.com/rust-num/num) | 0.4.3 | MIT OR Apache-2.0 | [notices](third_party/licenses/num-0.4.3/) |
 | [num-bigint](https://github.com/rust-num/num-bigint) | 0.4.8 | MIT OR Apache-2.0 | [notices](third_party/licenses/num-bigint-0.4.8/) |
 | [num-bigint-dig](https://github.com/dignifiedquire/num-bigint) | 0.8.6 | MIT/Apache-2.0 | [notices](third_party/licenses/num-bigint-dig-0.8.6/) |
@@ -435,6 +440,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [rustybuzz](https://github.com/harfbuzz/rustybuzz) | 0.20.1 | MIT | [notices](third_party/licenses/rustybuzz-0.20.1/) |
 | [ryu](https://github.com/dtolnay/ryu) | 1.0.23 | Apache-2.0 OR BSL-1.0 | [notices](third_party/licenses/ryu-1.0.23/) |
 | [same-file](https://github.com/BurntSushi/same-file) | 1.0.6 | Unlicense/MIT | [notices](third_party/licenses/same-file-1.0.6/) |
+| [schannel](https://github.com/steffengy/schannel-rs) | 0.1.29 | MIT | [notices](third_party/licenses/schannel-0.1.29/) |
 | [schemars](https://github.com/GREsau/schemars) | 1.2.2 | MIT | [notices](third_party/licenses/schemars-1.2.2/) |
 | [schemars_derive](https://github.com/GREsau/schemars) | 1.2.2 | MIT | [notices](third_party/licenses/schemars_derive-1.2.2/) |
 | [scoped-tls](https://github.com/alexcrichton/scoped-tls) | 1.0.1 | MIT/Apache-2.0 | [notices](third_party/licenses/scoped-tls-1.0.1/) |
@@ -450,6 +456,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [serde_json](https://github.com/serde-rs/json) | 1.0.151 | MIT OR Apache-2.0 | [notices](third_party/licenses/serde_json-1.0.151/) |
 | [serde_json_lenient](https://github.com/google/serde_json_lenient) | 0.2.4 | MIT/Apache-2.0 | [notices](third_party/licenses/serde_json_lenient-0.2.4/) |
 | [serde_repr](https://github.com/dtolnay/serde-repr) | 0.1.21 | MIT OR Apache-2.0 | [notices](third_party/licenses/serde_repr-0.1.21/) |
+| [serde_spanned](https://github.com/toml-rs/toml) | 1.1.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/serde_spanned-1.1.1/) |
 | [serde_urlencoded](https://github.com/nox/serde_urlencoded) | 0.7.1 | MIT/Apache-2.0 | [notices](third_party/licenses/serde_urlencoded-0.7.1/) |
 | [sha1_smol](https://github.com/mitsuhiko/sha1-smol) | 1.0.1 | BSD-3-Clause | [notices](third_party/licenses/sha1_smol-1.0.1/) |
 | [sha2](https://github.com/RustCrypto/hashes) | 0.10.9 | MIT OR Apache-2.0 | [notices](third_party/licenses/sha2-0.10.9/) |
@@ -508,6 +515,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [take-until](https://github.com/hdevalke/take-until.git) | 0.2.0 | MIT | [notices](third_party/licenses/take-until-0.2.0/) |
 | [tar](https://github.com/composefs/tar-rs) | 0.4.46 | MIT OR Apache-2.0 | [notices](third_party/licenses/tar-0.4.46/) |
 | [tempfile](https://github.com/Stebalien/tempfile) | 3.27.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/tempfile-3.27.0/) |
+| [tendril](https://github.com/servo/tendril) | 0.4.3 | MIT/Apache-2.0 | [notices](third_party/licenses/tendril-0.4.3/) |
 | [termcolor](https://github.com/BurntSushi/termcolor) | 1.4.1 | Unlicense OR MIT | [notices](third_party/licenses/termcolor-1.4.1/) |
 | [thiserror](https://github.com/dtolnay/thiserror) | 1.0.69 | MIT OR Apache-2.0 | [notices](third_party/licenses/thiserror-1.0.69/) |
 | [thiserror](https://github.com/dtolnay/thiserror) | 2.0.21 | MIT OR Apache-2.0 | [notices](third_party/licenses/thiserror-2.0.21/) |
@@ -525,9 +533,11 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [tokio-rustls](https://github.com/rustls/tokio-rustls) | 0.26.6 | MIT OR Apache-2.0 | [notices](third_party/licenses/tokio-rustls-0.26.6/) |
 | [tokio-socks](https://github.com/sticnarf/tokio-socks) | 0.5.3 | MIT | [notices](third_party/licenses/tokio-socks-0.5.3/) |
 | [tokio-util](https://github.com/tokio-rs/tokio) | 0.7.19 | MIT | [notices](third_party/licenses/tokio-util-0.7.19/) |
+| [toml](https://github.com/toml-rs/toml) | 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/toml-1.1.6+spec-1.1.0/) |
 | [toml_datetime](https://github.com/toml-rs/toml) | 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/toml_datetime-1.1.1+spec-1.1.0/) |
 | [toml_edit](https://github.com/toml-rs/toml) | 0.25.15+spec-1.1.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/toml_edit-0.25.15+spec-1.1.0/) |
 | [toml_parser](https://github.com/toml-rs/toml) | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/toml_parser-1.1.3+spec-1.1.0/) |
+| [toml_writer](https://github.com/toml-rs/toml) | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/toml_writer-1.1.2+spec-1.1.0/) |
 | [tower](https://github.com/tower-rs/tower) | 0.5.3 | MIT | [notices](third_party/licenses/tower-0.5.3/) |
 | [tower-http](https://github.com/tower-rs/tower-http) | 0.6.11 | MIT | [notices](third_party/licenses/tower-http-0.6.11/) |
 | [tower-layer](https://github.com/tower-rs/tower) | 0.3.3 | MIT | [notices](third_party/licenses/tower-layer-0.3.3/) |
@@ -539,6 +549,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [ttf-parser](https://github.com/RazrFalcon/ttf-parser) | 0.20.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/ttf-parser-0.20.0/) |
 | [ttf-parser](https://github.com/RazrFalcon/ttf-parser) | 0.21.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/ttf-parser-0.21.1/) |
 | [ttf-parser](https://github.com/harfbuzz/ttf-parser) | 0.25.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/ttf-parser-0.25.1/) |
+| [typed-path](https://github.com/chipsenkbeil/typed-path) | 0.12.3 | MIT OR Apache-2.0 | [notices](third_party/licenses/typed-path-0.12.3/) |
 | [typeid](https://github.com/dtolnay/typeid) | 1.0.3 | MIT OR Apache-2.0 | [notices](third_party/licenses/typeid-1.0.3/) |
 | [typenum](https://github.com/paholg/typenum) | 1.20.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/typenum-1.20.1/) |
 | [unicase](https://github.com/seanmonstar/unicase) | 2.9.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/unicase-2.9.0/) |
@@ -559,6 +570,7 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [url](https://github.com/servo/rust-url) | 2.5.8 | MIT OR Apache-2.0 | [notices](third_party/licenses/url-2.5.8/) |
 | [usvg](https://github.com/linebender/resvg) | 0.45.1 | Apache-2.0 OR MIT | [notices](third_party/licenses/usvg-0.45.1/) |
 | [usvg](https://github.com/linebender/resvg) | 0.47.0 | Apache-2.0 OR MIT | [notices](third_party/licenses/usvg-0.47.0/) |
+| [utf-8](https://github.com/SimonSapin/rust-utf8) | 0.7.6 | MIT OR Apache-2.0 | [notices](third_party/licenses/utf-8-0.7.6/) |
 | [utf8_iter](https://github.com/hsivonen/utf8_iter) | 1.0.4 | Apache-2.0 OR MIT | [notices](third_party/licenses/utf8_iter-1.0.4/) |
 | [uuid](https://github.com/uuid-rs/uuid) | 1.26.1 | Apache-2.0 OR MIT | [notices](third_party/licenses/uuid-1.26.1/) |
 | [v_frame](https://github.com/rust-av/v_frame) | 0.3.9 | BSD-2-Clause | [notices](third_party/licenses/v_frame-0.3.9/) |
@@ -567,6 +579,8 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [value-bag-sval2](https://crates.io/crates/value-bag-sval2/1.14.1) | 1.14.1 | Apache-2.0 OR MIT | [notices](third_party/licenses/value-bag-sval2-1.14.1/) |
 | [vcpkg](https://github.com/mcgoo/vcpkg-rs) | 0.2.15 | MIT/Apache-2.0 | [notices](third_party/licenses/vcpkg-0.2.15/) |
 | [version_check](https://github.com/SergioBenitez/version_check) | 0.9.5 | MIT/Apache-2.0 | [notices](third_party/licenses/version_check-0.9.5/) |
+| [vswhom](https://github.com/nabijaczleweli/vswhom.rs) | 0.1.0 | MIT | [notices](third_party/licenses/vswhom-0.1.0/) |
+| [vswhom-sys](https://github.com/nabijaczleweli/vswhom-sys.rs) | 0.1.3 | MIT | [notices](third_party/licenses/vswhom-sys-0.1.3/) |
 | [waker-fn](https://github.com/smol-rs/waker-fn) | 1.2.0 | Apache-2.0 OR MIT | [notices](third_party/licenses/waker-fn-1.2.0/) |
 | [walkdir](https://github.com/BurntSushi/walkdir) | 2.5.0 | Unlicense/MIT | [notices](third_party/licenses/walkdir-2.5.0/) |
 | [want](https://github.com/seanmonstar/want) | 0.3.1 | MIT | [notices](third_party/licenses/want-0.3.1/) |
@@ -585,7 +599,46 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [weezl](https://github.com/image-rs/weezl) | 0.1.12 | MIT OR Apache-2.0 | [notices](third_party/licenses/weezl-0.1.12/) |
 | [weezl](https://github.com/image-rs/weezl) | 0.2.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/weezl-0.2.1/) |
 | [which](https://github.com/harryfei/which-rs.git) | 6.0.3 | MIT | [notices](third_party/licenses/which-6.0.3/) |
+| [winapi](https://github.com/retep998/winapi-rs) | 0.3.9 | MIT/Apache-2.0 | [notices](third_party/licenses/winapi-0.3.9/) |
+| [winapi-util](https://github.com/BurntSushi/winapi-util) | 0.1.11 | Unlicense OR MIT | [notices](third_party/licenses/winapi-util-0.1.11/) |
+| [windows](https://github.com/microsoft/windows-rs) | 0.57.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-0.57.0/) |
+| [windows](https://github.com/microsoft/windows-rs) | 0.61.3 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-0.61.3/) |
+| [windows](https://github.com/microsoft/windows-rs) | 0.62.2 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-0.62.2/) |
+| [windows-capture](https://github.com/NiiightmareXD/windows-capture) | 1.5.0 | MIT | [notices](third_party/licenses/windows-capture-1.5.0/) |
+| [windows-collections](https://github.com/microsoft/windows-rs) | 0.2.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-collections-0.2.0/) |
+| [windows-collections](https://github.com/microsoft/windows-rs) | 0.3.2 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-collections-0.3.2/) |
+| [windows-core](https://github.com/microsoft/windows-rs) | 0.57.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-core-0.57.0/) |
+| [windows-core](https://github.com/microsoft/windows-rs) | 0.61.2 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-core-0.61.2/) |
+| [windows-core](https://github.com/microsoft/windows-rs) | 0.62.2 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-core-0.62.2/) |
+| [windows-future](https://github.com/microsoft/windows-rs) | 0.2.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-future-0.2.1/) |
+| [windows-future](https://github.com/microsoft/windows-rs) | 0.3.2 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-future-0.3.2/) |
+| [windows-implement](https://github.com/microsoft/windows-rs) | 0.57.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-implement-0.57.0/) |
+| [windows-implement](https://github.com/microsoft/windows-rs) | 0.60.2 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-implement-0.60.2/) |
+| [windows-interface](https://github.com/microsoft/windows-rs) | 0.57.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-interface-0.57.0/) |
+| [windows-interface](https://github.com/microsoft/windows-rs) | 0.59.3 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-interface-0.59.3/) |
+| [windows-link](https://github.com/microsoft/windows-rs) | 0.1.3 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-link-0.1.3/) |
+| [windows-link](https://github.com/microsoft/windows-rs) | 0.2.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-link-0.2.1/) |
+| [windows-numerics](https://github.com/microsoft/windows-rs) | 0.2.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-numerics-0.2.0/) |
+| [windows-numerics](https://github.com/microsoft/windows-rs) | 0.3.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-numerics-0.3.1/) |
+| [windows-registry](https://github.com/microsoft/windows-rs) | 0.4.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-registry-0.4.0/) |
+| [windows-registry](https://github.com/microsoft/windows-rs) | 0.5.3 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-registry-0.5.3/) |
+| [windows-result](https://github.com/microsoft/windows-rs) | 0.1.2 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-result-0.1.2/) |
+| [windows-result](https://github.com/microsoft/windows-rs) | 0.3.4 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-result-0.3.4/) |
+| [windows-result](https://github.com/microsoft/windows-rs) | 0.4.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-result-0.4.1/) |
+| [windows-strings](https://github.com/microsoft/windows-rs) | 0.3.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-strings-0.3.1/) |
+| [windows-strings](https://github.com/microsoft/windows-rs) | 0.4.2 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-strings-0.4.2/) |
+| [windows-strings](https://github.com/microsoft/windows-rs) | 0.5.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-strings-0.5.1/) |
+| [windows-sys](https://github.com/microsoft/windows-rs) | 0.59.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-sys-0.59.0/) |
+| [windows-sys](https://github.com/microsoft/windows-rs) | 0.61.2 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-sys-0.61.2/) |
+| [windows-targets](https://github.com/microsoft/windows-rs) | 0.52.6 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-targets-0.52.6/) |
+| [windows-targets](https://github.com/microsoft/windows-rs) | 0.53.5 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-targets-0.53.5/) |
+| [windows-threading](https://github.com/microsoft/windows-rs) | 0.1.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-threading-0.1.0/) |
+| [windows-threading](https://github.com/microsoft/windows-rs) | 0.2.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows-threading-0.2.1/) |
+| [windows_x86_64_msvc](https://github.com/microsoft/windows-rs) | 0.52.6 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows_x86_64_msvc-0.52.6/) |
+| [windows_x86_64_msvc](https://github.com/microsoft/windows-rs) | 0.53.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/windows_x86_64_msvc-0.53.1/) |
 | [winnow](https://github.com/winnow-rs/winnow) | 1.0.4 | MIT | [notices](third_party/licenses/winnow-1.0.4/) |
+| [winreg](https://github.com/gentoo90/winreg-rs) | 0.55.0 | MIT | [notices](third_party/licenses/winreg-0.55.0/) |
+| [winsafe](https://github.com/rodrigocfd/winsafe) | 0.0.19 | MIT | [notices](third_party/licenses/winsafe-0.0.19/) |
 | [write-fonts](https://github.com/googlefonts/fontations) | 0.48.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/write-fonts-0.48.1/) |
 | [writeable](https://github.com/unicode-org/icu4x) | 0.6.4 | Unicode-3.0 | [notices](third_party/licenses/writeable-0.6.4/) |
 | [x11](https://github.com/AltF02/x11-rs.git) | 2.21.0 | MIT | [notices](third_party/licenses/x11-2.21.0/) |
@@ -629,11 +682,17 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [zerotrie](https://github.com/unicode-org/icu4x) | 0.2.5 | Unicode-3.0 | [notices](third_party/licenses/zerotrie-0.2.5/) |
 | [zerovec](https://github.com/unicode-org/icu4x) | 0.11.8 | Unicode-3.0 | [notices](third_party/licenses/zerovec-0.11.8/) |
 | [zerovec-derive](https://github.com/unicode-org/icu4x) | 0.11.6 | Unicode-3.0 | [notices](third_party/licenses/zerovec-derive-0.11.6/) |
+| [zip](https://github.com/zip-rs/zip2) | 8.6.0 | MIT | [notices](third_party/licenses/zip-8.6.0/) |
 | [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs) | 0.6.8 | Zlib | [notices](third_party/licenses/zlib-rs-0.6.8/) |
 | [zmij](https://github.com/dtolnay/zmij) | 1.0.23 | MIT | [notices](third_party/licenses/zmij-1.0.23/) |
+| [zopfli](https://github.com/zopfli-rs/zopfli) | 0.8.3 | Apache-2.0 | [notices](third_party/licenses/zopfli-0.8.3/) |
 | [zune-core](https://github.com/etemesi254/zune-image) | 0.5.3 | MIT OR Apache-2.0 OR Zlib | [notices](third_party/licenses/zune-core-0.5.3/) |
 | [zune-inflate](https://crates.io/crates/zune-inflate/0.2.54) | 0.2.54 | MIT OR Apache-2.0 OR Zlib | [notices](third_party/licenses/zune-inflate-0.2.54/) |
 | [zune-jpeg](https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg) | 0.5.15 | MIT OR Apache-2.0 OR Zlib | [notices](third_party/licenses/zune-jpeg-0.5.15/) |
 | [zvariant](https://github.com/z-galaxy/zbus/) | 5.15.0 | MIT | [notices](third_party/licenses/zvariant-5.15.0/) |
 | [zvariant_derive](https://github.com/z-galaxy/zbus/) | 5.15.0 | MIT | [notices](third_party/licenses/zvariant_derive-5.15.0/) |
 | [zvariant_utils](https://github.com/z-galaxy/zbus/) | 4.2.0 | MIT | [notices](third_party/licenses/zvariant_utils-4.2.0/) |
+
+## Windows package
+
+The Windows package bundles CPython 3.13.16 (PSF license, retained in `python/LICENSE.txt`), SymPy 1.14.0 and mpmath 1.3.0 (BSD licenses in their distribution metadata), and the Poppler Windows build v26.09.0-0 with its DLLs, data and upstream notices. The exact download URLs and hashes are recorded in `runtime-assets.json`. Poppler's Windows build and source recipes are maintained at https://github.com/oschwartz10612/poppler-windows; Poppler source is at https://poppler.freedesktop.org/. AccessKit's Windows adapter is MIT or Apache-2.0. The optional llama.cpp Windows runtime retains the same MIT notice as the Linux runtime. App-local Visual C++ runtime DLLs are Microsoft redistributable code, copyright Microsoft Corporation, distributed under the Visual Studio license's redistribution terms; their hashes are recorded in `manifest.json`.

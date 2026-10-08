@@ -221,9 +221,22 @@ fn fake_pack(root: &std::path::Path, delay: f32) {
     std::fs::write(pack.join("worker.py"), format!(
         "import sys,json,time\nfor line in sys.stdin:\n request=json.loads(line)\n time.sleep({delay})\n print(json.dumps({{'text':'recognized locally'}}),flush=True)\n"
     )).unwrap();
+    let math_config = std::env::var_os("FOLIO_MATH_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../artifacts/math-solver/pack.json")
+        });
+    let math: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&math_config).unwrap()).unwrap();
+    let python = PathBuf::from(math["python"].as_str().unwrap());
+    let python = if python.is_absolute() {
+        python
+    } else {
+        math_config.parent().unwrap().join(python)
+    };
     std::fs::write(
         pack.join("pack.json"),
-        r#"{"python":"/usr/bin/python3","worker":"worker.py"}"#,
+        serde_json::to_vec(&serde_json::json!({"python":python,"worker":"worker.py"})).unwrap(),
     )
     .unwrap();
 }

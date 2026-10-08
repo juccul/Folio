@@ -157,12 +157,14 @@ def main():
                 r=tab.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
                 before=geometry();drag(r.x+r.width/2,r.y+r.height/2,30,0)
                 assert geometry()==before,'Dragging a tab moved the window'
-                click('Open or create a document · Ctrl+T');click('＋  Create new document');wait('Open Untitled note')
-                source=bounds('Open Math solver verification');destination=bounds('Open Untitled note')
+                click('Open or create a document · Ctrl+T');click('＋  Create new document')
+                for char in 'untitled note':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
+                click('Create notebook');wait('Open untitled note')
+                source=bounds('Open Math solver verification');destination=bounds('Open untitled note')
                 before=geometry()
                 drag(source[0]+source[2]/2,source[1]+source[3]/2,
                      destination[0]+destination[2]/2-source[0]-source[2]/2,0)
-                assert bounds('Open Math solver verification')[0]>bounds('Open Untitled note')[0],'Tabs did not reorder'
+                assert bounds('Open Math solver verification')[0]>bounds('Open untitled note')[0],'Tabs did not reorder'
                 assert geometry()==before,'Reordering tabs moved the window'
                 picker_follows_tabs()
                 capture('reordered-tabs')
@@ -170,6 +172,8 @@ def main():
                 # window controls remain anchored to the right.
                 for _ in range(6):
                     click('Open or create a document · Ctrl+T');click('＋  Create new document')
+                    for char in 'untitled note':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
+                    click('Create notebook')
                 picker=bounds('Open or create a document · Ctrl+T')
                 controls=bounds('Minimize window');close=bounds('Close window')
                 assert 0 < picker[0] and picker[0]+picker[2] < controls[0],(picker,controls)

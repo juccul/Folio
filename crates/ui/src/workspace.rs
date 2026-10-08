@@ -49,17 +49,7 @@ struct Preview {
 impl Thumbnails {
     fn element(&mut self, page: &Page, controller: &Controller, width: f32) -> Div {
         let theme = Theme::new(&controller.settings);
-        let canvas_theme = if page.properties.pdf.is_some() {
-            super::theme::CanvasTheme {
-                paper: 0xffffff,
-                grid: 0xe5e5e5,
-                dots: 0xd4d4d4,
-                foreground: 0x171717,
-                adapt_ink: controller.settings.appearance.adapt_ink,
-            }
-        } else {
-            theme.canvas
-        };
+        let canvas_theme = theme.canvas_for_page(&page.properties);
         let valid =
             self.pages
                 .get(&page.id)
@@ -312,9 +302,8 @@ impl NotesView {
         self.export_open = false;
         self.pen_settings = false;
     }
-    pub(super) fn create_and_open_note(&mut self) {
-        self.controller.create_note();
-        self.show_editor();
+    pub(super) fn new_notebook(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.modal(Modal::NewDocument, window, cx);
     }
     fn icon_button(
         &self,
@@ -703,7 +692,7 @@ impl NotesView {
                     content.into_any_element(),
                     false,
                     cx,
-                    |this, _, _| this.create_and_open_note(),
+                    |this, w, cx| this.new_notebook(w, cx),
                 )
                 .when(!self.list_view, |s| s.w(px(184.)).p_3())
                 .when(self.list_view, |s| s.w_full().justify_start().p_4())
@@ -1040,7 +1029,7 @@ impl NotesView {
                                     "＋  New document",
                                     true,
                                     cx,
-                                    |this, _, _| this.create_and_open_note(),
+                                    |this, w, cx| this.new_notebook(w, cx),
                                 )
                                 .bg(rgb(theme.accent))
                                 .text_color(rgb(theme.primary_foreground)),

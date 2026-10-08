@@ -1,0 +1,66 @@
+name: Linux and Windows
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal; rustup default stable
+      - name: Prepare offline tools
+        run: |
+          python scripts/package-windows.py --runtime-only --output artifacts/tools
+          $package = (Get-ChildItem artifacts/tools -Directory -Filter 'folio-*-windows-x64' | Select-Object -First 1).FullName
+          "FOLIO_MATH_CONFIG=$package/math-solver/pack.json" >> $env:GITHUB_ENV
+          "$package/pdf/bin" >> $env:GITHUB_PATH
+          python scripts/verify-windows-runtime.py --package $package --output artifacts/runtime.json
+      - name: Check and test
+        run: |
+          ./scripts/build-windows.ps1 -Check
+          ./scripts/build-windows.ps1 -Test
+      - name: Build release and package
+        run: |
+          ./scripts/build-windows.ps1
+          python scripts/package-windows.py --output artifacts/dist
+      - name: Save portable package and runtime evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: folio-windows-x64
+          path: |
+            artifacts/dist/*.zip
+            artifacts/dist/*.sha256
+            artifacts/runtime.json
+
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install native libraries and offline math
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libfreetype-dev libclang-dev libssl-dev poppler-utils
+          python -m pip install -r scripts/math-solver-requirements.txt
+          python scripts/setup-math-solver.py
+          echo "FOLIO_MATH_CONFIG=$PWD/artifacts/math-solver/pack.json" >> "$GITHUB_ENV"
+      - name: Install Rust and test
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo test --locked --workspace
+          python scripts/test_math_worker_protocol.py

@@ -1747,6 +1747,18 @@ impl Window {
         self.platform_window.show_window_menu(position)
     }
 
+    /// Native Win32 HWND, for accessibility adapters attached to this window.
+    #[cfg(target_os = "windows")]
+    pub fn win32_handle(&self) -> isize {
+        self.platform_window.get_raw_handle().0 as isize
+    }
+
+    /// Handle WM_GETOBJECT without exposing the backend's Windows crate version.
+    #[cfg(target_os = "windows")]
+    pub fn on_accessibility_object(&self, callback: impl FnMut(usize, isize) -> Option<isize> + 'static) {
+        self.platform_window.on_accessibility_object(Box::new(callback));
+    }
+
     /// Tells the compositor to take control of window movement (Wayland and X11)
     ///
     /// Events may not be received during a move operation.
@@ -2953,11 +2965,32 @@ impl Window {
         font_size: Pixels,
         color: Hsla,
     ) -> Result<()> {
+        self.paint_glyph_transformed(origin, font_id, glyph_id, font_size, color, TransformationMatrix::unit())
+    }
+
+    /// Paint a shaped glyph through a logical-pixel affine transform.
+    pub fn paint_glyph_transformed(
+        &mut self,
+        origin: Point<Pixels>,
+        font_id: FontId,
+        glyph_id: GlyphId,
+        font_size: Pixels,
+        color: Hsla,
+        mut transformation: TransformationMatrix,
+    ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
-        let glyph_origin = origin.scale(scale_factor);
+        let density = transformation.rotation_scale[0][0]
+            .hypot(transformation.rotation_scale[1][0]).clamp(0.1, 8.);
+        let glyph_origin = origin.scale(scale_factor * density);
+        let font_size = font_size * density;
+        for row in &mut transformation.rotation_scale {
+            for value in row { *value /= density; }
+        }
+        transformation.translation[0] *= scale_factor;
+        transformation.translation[1] *= scale_factor;
 
         let subpixel_variant = Point {
             x: (glyph_origin.x.0.fract() * SUBPIXEL_VARIANTS_X as f32).floor() as u8,
@@ -2993,7 +3026,7 @@ impl Window {
                 content_mask,
                 color: color.opacity(element_opacity),
                 tile,
-                transformation: TransformationMatrix::unit(),
+                transformation,
             });
         }
         Ok(())
@@ -3014,10 +3047,30 @@ impl Window {
         glyph_id: GlyphId,
         font_size: Pixels,
     ) -> Result<()> {
+        self.paint_emoji_transformed(origin, font_id, glyph_id, font_size, TransformationMatrix::unit())
+    }
+
+    /// Paint a shaped emoji through a logical-pixel affine transform.
+    pub fn paint_emoji_transformed(
+        &mut self,
+        origin: Point<Pixels>,
+        font_id: FontId,
+        glyph_id: GlyphId,
+        font_size: Pixels,
+        mut transformation: TransformationMatrix,
+    ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let glyph_origin = origin.scale(scale_factor);
+        let density = transformation.rotation_scale[0][0]
+            .hypot(transformation.rotation_scale[1][0]).clamp(0.1, 8.);
+        let glyph_origin = origin.scale(scale_factor * density);
+        let font_size = font_size * density;
+        for row in &mut transformation.rotation_scale {
+            for value in row { *value /= density; }
+        }
+        transformation.translation[0] *= scale_factor;
+        transformation.translation[1] *= scale_factor;
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
@@ -3046,7 +3099,7 @@ impl Window {
             let opacity = self.element_opacity();
 
             self.next_frame.scene.insert_primitive(PolychromeSprite {
-                transformation:TransformationMatrix::unit(),paint_bounds:bounds,
+                transformation,paint_bounds:crate::scene::transformed_bounds(bounds, transformation),
                 order: 0,
                 pad: 0,
                 grayscale: false,

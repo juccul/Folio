@@ -10,13 +10,16 @@ mod field;
 mod graph;
 mod help;
 mod icons;
+mod inline_text;
 mod math_panel;
 mod motion;
 mod navigation;
+mod notebook_setup;
 mod painting;
 mod portable;
 mod region;
 mod templates;
+mod text_render;
 mod theme;
 mod titlebar;
 mod validation;
@@ -79,6 +82,7 @@ enum Modal {
     RenameDocument(Id),
     DocumentTags(Id),
     OpenDocument,
+    NewDocument,
     Notebook(Option<Id>),
     RenameNotebook(Id),
     MoveNotebook(Id),
@@ -86,10 +90,6 @@ enum Modal {
     Crop,
     Tags,
     Search,
-    Text {
-        position: DocPoint,
-        id: Option<Id>,
-    },
     Color,
     ThemeColor {
         dark: bool,
@@ -99,6 +99,7 @@ enum Modal {
     PageSize,
     Font,
     FontSize,
+    TextColor,
     Equation,
     EditEquation(Id),
     MathPdfRegion,
@@ -116,6 +117,7 @@ impl Modal {
             Self::Rename | Self::RenameDocument(_) => "Rename note",
             Self::DocumentTags(_) => "Note tags",
             Self::OpenDocument => "Open a document",
+            Self::NewDocument => "New notebook",
             Self::PdfPassword(..) => "Unlock PDF",
             Self::MoveNotebook(_) => "Move folder",
             Self::RenameNotebook(_) => "Rename folder",
@@ -123,9 +125,8 @@ impl Modal {
             Self::Notebook(_) => "New folder",
             Self::Tags => "Note tags",
             Self::Search => "Search your notes",
-            Self::Text { id: Some(_), .. } => "Edit text",
-            Self::Text { .. } => "Add text",
             Self::Color => "Custom ink color",
+            Self::TextColor => "Text color",
             Self::ThemeColor { .. } => "Theme color",
             Self::CanvasColor => "Paper color",
             Self::PageSize => "Custom page size",
@@ -144,8 +145,11 @@ pub struct NotesView {
     math_inputs: Option<math_panel::Inputs>,
     diagnostics: diagnostics::Diagnostics,
     pub canvas_bounds: Option<Bounds<Pixels>>,
+    canvas_document: Option<(Id, Id)>,
     focus: FocusHandle,
     modal: Option<(Modal, Entity<Field>)>,
+    notebook_setup: Option<notebook_setup::Setup>,
+    inline_text: Option<inline_text::Editor>,
     subscriptions: Vec<Subscription>,
     motion: std::cell::RefCell<motion::Motion>,
     building_overlay: bool,
@@ -217,8 +221,11 @@ impl NotesView {
             math_inputs: None,
             diagnostics: diagnostics::Diagnostics::new(),
             canvas_bounds: None,
+            canvas_document: None,
             focus,
             modal: None,
+            notebook_setup: None,
+            inline_text: None,
             subscriptions: vec![],
             motion: Default::default(),
             building_overlay: false,
@@ -247,7 +254,7 @@ impl NotesView {
             mouse_pan: false,
             start: Instant::now(),
             painter: painting::Painter::default(),
-            accessibility: std::rc::Rc::new(accessibility::Accessibility::new()),
+            accessibility: std::rc::Rc::new(accessibility::Accessibility::new(window)),
         }
     }
     pub fn bindings(cx: &mut App) {
@@ -334,8 +341,13 @@ impl NotesView {
     }
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.modal = None;
+        self.notebook_setup = None;
         self.subscriptions.clear();
-        self.focus.focus(window);
+        if let Some(editor) = &self.inline_text {
+            editor.field.read(cx).focus.focus(window);
+        } else {
+            self.focus.focus(window);
+        }
         cx.notify();
     }
     fn modal(&mut self, modal: Modal, window: &mut Window, cx: &mut Context<Self>) {
@@ -343,6 +355,10 @@ impl NotesView {
         self.document_menu = None;
         self.more_open = false;
         self.pen_settings = false;
+        self.notebook_setup = None;
+        if matches!(modal, Modal::NewDocument) {
+            self.prepare_notebook_setup(window, cx);
+        }
         let content = match &modal {
             Modal::SaveTemplate => self
                 .controller
@@ -403,21 +419,6 @@ impl NotesView {
                 .unwrap_or_default(),
             Modal::Tags => self.controller.session().document.metadata.tags.join(", "),
             Modal::Search => self.controller.search_query.clone(),
-            Modal::Text { id: Some(id), .. } => self
-                .controller
-                .page()
-                .objects
-                .get(id)
-                .map(|o| o.searchable_text().to_string())
-                .unwrap_or_default(),
-            Modal::RenameNotebook(id) => self
-                .controller
-                .notebooks
-                .iter()
-                .find(|n| n.id == *id)
-                .map(|n| n.name.clone())
-                .unwrap_or_default(),
-            Modal::Crop => "0.1, 0.1, 0.8, 0.8".into(),
             Modal::Color => self.controller.style.color.hex(),
             Modal::ThemeColor { dark, token } => {
                 self.controller.settings.appearance.palette(*dark)[token].hex()
@@ -431,11 +432,28 @@ impl NotesView {
                 self.controller.page().properties.width,
                 self.controller.page().properties.height
             ),
-            Modal::Font => "sans-serif".into(),
-            Modal::FontSize => "20".into(),
+            Modal::Font | Modal::FontSize | Modal::TextColor => self
+                .controller
+                .session()
+                .selection
+                .iter()
+                .find_map(|id| {
+                    if let Some(folio_document::Object::Text(text)) =
+                        self.controller.page().objects.get(id).map(|o| o.as_ref())
+                    {
+                        Some(match modal {
+                            Modal::Font => text.font_family.clone(),
+                            Modal::FontSize => text.font_size.to_string(),
+                            _ => text.color.hex(),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default(),
             _ => String::new(),
         };
-        let multiline = matches!(modal, Modal::Text { .. } | Modal::Recognition);
+        let multiline = matches!(modal, Modal::Recognition);
         let secret = matches!(modal, Modal::PdfPassword(..));
         let field = cx.new(|cx| {
             let mut field = Field::new(content, multiline, cx);
@@ -445,6 +463,7 @@ impl NotesView {
         });
         field.read(cx).focus.focus(window);
         self.subscriptions.clear();
+        self.observe_notebook_setup(window, cx);
         self.subscriptions.push(cx.observe(&field, |this, _, cx| {
             this.modal_error = None;
             cx.notify();
@@ -481,6 +500,14 @@ impl NotesView {
                 }
             }
             Modal::Templates => {}
+            Modal::NewDocument => match self.create_configured_notebook(content, cx) {
+                Ok(()) => self.show_editor(),
+                Err(error) => {
+                    self.modal_error = Some(error);
+                    cx.notify();
+                    return;
+                }
+            },
             Modal::MathPdfRegion => {
                 let values = content
                     .split(',')
@@ -614,13 +641,6 @@ impl NotesView {
                 cx.notify();
                 return;
             }
-            Modal::Text { position, id } => {
-                if let Some(id) = id {
-                    self.controller.edit_text(id, |t| t.text = content)
-                } else {
-                    self.controller.add_text(content, position)
-                }
-            }
             Modal::ThemeColor { dark, token } => {
                 match folio_app::appearance::ThemeColor::parse(&content) {
                     Ok(color)
@@ -688,6 +708,19 @@ impl NotesView {
                     height,
                     self.controller.page().properties.infinite,
                 );
+            }
+            Modal::TextColor => {
+                let color = match folio_app::appearance::ThemeColor::parse(&content) {
+                    Ok(color) => Color::from_rgb(color.rgb()),
+                    Err(error) => {
+                        self.modal_error = Some(error.into());
+                        cx.notify();
+                        return;
+                    }
+                };
+                for id in self.controller.session().selection.clone() {
+                    self.controller.edit_text(id, |t| t.color = color);
+                }
             }
             Modal::Font => {
                 if content.trim().is_empty() {
@@ -909,8 +942,12 @@ impl NotesView {
         if self.region_input(input.phase, input.position, cx) {
             return;
         }
+        let was_panning = matches!(self.controller.interaction, Some(Interaction::Pan { .. }));
         self.controller.pointer(input);
-        self.check_text(window, cx);
+        if phase == Phase::Up && was_panning {
+            self.synchronize_page_view();
+        }
+        self.check_text(phase, window, cx);
         cx.notify();
     }
     fn mouse(
@@ -975,6 +1012,7 @@ impl NotesView {
             buttons: 0,
             timestamp: self.start.elapsed().as_millis() as u64,
         };
+        let was_panning = matches!(self.controller.interaction, Some(Interaction::Pan { .. }));
         if phase == Phase::Up && self.mouse_pan {
             self.mouse_pan = false;
         }
@@ -982,12 +1020,22 @@ impl NotesView {
             return;
         }
         self.controller.pointer(event);
-        self.check_text(window, cx);
+        if phase == Phase::Up && was_panning {
+            self.synchronize_page_view();
+        }
+        self.check_text(phase, window, cx);
         cx.notify();
     }
-    fn check_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn check_text(&mut self, phase: Phase, window: &mut Window, cx: &mut Context<Self>) {
+        if phase != Phase::Up {
+            return;
+        }
+        if let Some(id) = self.controller.pending_text_edit.take() {
+            self.begin_inline_text(id, window, cx);
+        }
         if let Some(position) = self.controller.pending_text.take() {
-            self.modal(Modal::Text { position, id: None }, window, cx);
+            let id = self.controller.create_text_box(position);
+            self.begin_inline_text(id, window, cx);
         }
     }
     fn pad(&mut self, event: &TabletPadEvent, cx: &mut Context<Self>) {
@@ -1039,6 +1087,9 @@ impl NotesView {
                 .viewport
                 .zoom_at((event.delta * 0.01).exp(), anchor);
         }
+        if event.button.is_none() {
+            self.synchronize_page_view();
+        }
         cx.notify();
     }
     fn gesture(&mut self, event: &NavigationGesture, cx: &mut Context<Self>) {
@@ -1081,6 +1132,7 @@ impl NotesView {
                     self.controller.session_mut().viewport = original;
                 }
                 self.gesture_start = None;
+                self.synchronize_page_view();
             }
         }
         cx.notify();
@@ -1114,7 +1166,14 @@ impl NotesView {
             v.pan.x += f32::from(delta.x);
             v.pan.y += f32::from(delta.y);
         }
+        self.synchronize_page_view();
         cx.notify();
+    }
+    fn synchronize_page_view(&mut self) {
+        if let Some(bounds) = self.canvas_bounds {
+            self.controller
+                .synchronize_page_view(f32::from(bounds.size.width), f32::from(bounds.size.height));
+        }
     }
     fn button(
         &self,
@@ -1481,85 +1540,6 @@ impl NotesView {
                     .text_xs()
                     .px_2(),
                 );
-        }
-        if self.controller.session().selection.iter().any(|id| {
-            self.controller
-                .page()
-                .objects
-                .get(id)
-                .is_some_and(|o| matches!(o.as_ref(), folio_document::Object::Text(_)))
-        }) {
-            row =
-                row.child(
-                    self.button("edit-text", "Edit text", false, cx, |this, window, cx| {
-                        let id = this
-                            .controller
-                            .session()
-                            .selection
-                            .iter()
-                            .find(|id| {
-                                this.controller.page().objects.get(id).is_some_and(|o| {
-                                    matches!(o.as_ref(), folio_document::Object::Text(_))
-                                })
-                            })
-                            .copied();
-                        if let Some(id) = id {
-                            this.modal(
-                                Modal::Text {
-                                    position: DocPoint::default(),
-                                    id: Some(id),
-                                },
-                                window,
-                                cx,
-                            )
-                        }
-                    }),
-                );
-            for (id, label, kind) in [
-                ("bold", "B", 0),
-                ("italic", "I", 1),
-                ("underline", "U", 2),
-                ("bullet", "• list", 3),
-                ("numbered", "1. list", 4),
-                ("align", "Align", 5),
-            ] {
-                row = row.child(
-                    self.button(id, label, false, cx, move |this, _, _| {
-                        let ids = this.controller.session().selection.clone();
-                        for id in ids {
-                            this.controller.edit_text(id, |t| match kind {
-                                0 => t.bold = !t.bold,
-                                1 => t.italic = !t.italic,
-                                2 => t.underline = !t.underline,
-                                3 => t.list = folio_document::ListStyle::Bullet,
-                                4 => t.list = folio_document::ListStyle::Numbered,
-                                _ => {
-                                    t.alignment = match t.alignment {
-                                        folio_document::Alignment::Left => {
-                                            folio_document::Alignment::Center
-                                        }
-                                        folio_document::Alignment::Center => {
-                                            folio_document::Alignment::Right
-                                        }
-                                        folio_document::Alignment::Right => {
-                                            folio_document::Alignment::Left
-                                        }
-                                    }
-                                }
-                            })
-                        }
-                    })
-                    .text_xs()
-                    .px_2(),
-                );
-            }
-            row = row
-                .child(self.button("font", "Font", false, cx, |this, w, cx| {
-                    this.modal(Modal::Font, w, cx)
-                }))
-                .child(self.button("font-size", "Size", false, cx, |this, w, cx| {
-                    this.modal(Modal::FontSize, w, cx)
-                }));
         }
         row.flex_wrap().max_w_full()
     }
@@ -1951,7 +1931,7 @@ impl NotesView {
             ),
             (
                 "encircle-toggle",
-                "Closed loops select ink",
+                "Circle and hold to select ink",
                 self.controller.settings.encircle_select,
                 3,
             ),
@@ -2076,7 +2056,7 @@ impl NotesView {
                         })),
                 ),
         );
-        body=body.child(div().text_xs().text_color(rgb(theme.muted)).child("Draw with a stylus or mouse. Two-finger scrolling pans; Ctrl + scroll zooms. Tablet frames preserve pressure, tilt, buttons and timing on Wayland."));
+        body=body.child(div().text_xs().text_color(rgb(theme.muted)).child("Draw with a stylus or mouse. Two-finger scrolling pans; Ctrl + scroll zooms. Pen input preserves pressure, tilt, buttons and timing."));
         div()
             .occlude()
             .absolute()
@@ -2130,7 +2110,7 @@ impl NotesView {
         };
         field.update(cx, |field, _| field.theme = theme);
         let search = matches!(modal, Modal::Search);
-        let multiline = matches!(modal, Modal::Text { .. } | Modal::Recognition);
+        let multiline = matches!(modal, Modal::Recognition);
         let mut panel = div()
             .id("modal-panel")
             .max_h(px((f32::from(window.viewport_size().height)
@@ -2138,7 +2118,7 @@ impl NotesView {
                 - 48.)
                 .max(240.)))
             .overflow_y_scroll()
-            .w(px(if search { 660. } else { 520. }))
+            .w(px(if search || matches!(modal, Modal::NewDocument) { 660. } else { 520. }))
             .max_w_full()
             .p_6()
             .bg(rgb(theme.popover))
@@ -2164,6 +2144,7 @@ impl NotesView {
                     _ => "Left, top, width and height as fractions from 0 to 1.",
                 }))
             })
+            .when(matches!(modal, Modal::NewDocument), |panel| panel.child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Name")))
             .when(!matches!(modal, Modal::MovePage | Modal::Templates), |panel| panel.child(field));
         if matches!(modal, Modal::Templates) {
             panel = panel.child(self.template_picker(cx)).child(self.button(
@@ -2236,6 +2217,9 @@ impl NotesView {
                 .items_center()
                 .justify_center()
                 .child(panel);
+        }
+        if matches!(modal, Modal::NewDocument) {
+            panel = panel.child(self.notebook_setup_options(cx));
         }
         if matches!(modal, Modal::Recognition) {
             let math = self
@@ -2332,8 +2316,7 @@ impl NotesView {
                     false,
                     cx,
                     |this, w, cx| {
-                        this.create_and_open_note();
-                        this.close_modal(w, cx);
+                        this.new_notebook(w, cx);
                     },
                 )
                 .justify_start(),
@@ -2459,6 +2442,8 @@ impl NotesView {
                                 }
                             } else if matches!(modal, Modal::OpenDocument) {
                                 "Open"
+                            } else if matches!(modal, Modal::NewDocument) {
+                                "Create notebook"
                             } else {
                                 "Save"
                             },
@@ -2668,6 +2653,28 @@ impl Render for NotesView {
                         field.update(cx, |field, cx| field.set_content(value.into(), cx));
                     }
                 }
+            } else if request.target_node == accesskit::NodeId(13) {
+                if let Some(editor) = &self.inline_text {
+                    if request.action == accesskit::Action::Focus {
+                        editor.field.read(cx).focus.focus(window);
+                    }
+                    if let Some(accesskit::ActionData::Value(value)) = request.data {
+                        editor
+                            .field
+                            .update(cx, |field, cx| field.set_content(value.into(), cx));
+                    }
+                }
+            } else if request.target_node == accesskit::NodeId(12) {
+                if let Some(setup) = &self.notebook_setup {
+                    if request.action == accesskit::Action::Focus {
+                        setup.color.read(cx).focus.focus(window);
+                    }
+                    if let Some(accesskit::ActionData::Value(value)) = request.data {
+                        setup
+                            .color
+                            .update(cx, |field, cx| field.set_content(value.into(), cx));
+                    }
+                }
             } else if ((5..=8).contains(&request.target_node.0) || request.target_node.0 == 11)
                 && self.modal.is_none()
                 && !self.blocking_overlay()
@@ -2792,7 +2799,7 @@ impl Render for NotesView {
         let paint_entity = entity.clone();
         let canvas = canvas(
             move |bounds, window, cx| {
-                entity.update(cx, |view, _| {
+                entity.update(cx, |view, cx| {
                     let properties = &view.controller.page().properties;
                     let viewport = view.controller.session().viewport;
                     if !properties.infinite
@@ -2809,13 +2816,58 @@ impl Render for NotesView {
                         view.controller.session_mut().viewport.pan.x +=
                             f32::from(bounds.size.width - previous.size.width) / 2.;
                     }
+                    let canvas_document = (view.controller.active, view.controller.page().id);
+                    if let Some(previous) = view.canvas_bounds
+                        && previous.origin.y != bounds.origin.y
+                        && view.canvas_document.is_some_and(|(note, page)| {
+                            note == canvas_document.0
+                                && (page == canvas_document.1
+                                    || view.controller.interaction.is_some()
+                                    || view.controller.session().viewport.pan.y != 36.)
+                        })
+                    {
+                        let delta = f32::from(bounds.origin.y - previous.origin.y);
+                        view.controller.session_mut().viewport.pan.y -= delta;
+                        if let Some(Interaction::Pan { pan, .. }) = &mut view.controller.interaction
+                        {
+                            pan.y -= delta;
+                        }
+                        if let Some(start) = &mut view.gesture_start {
+                            start.pan.y -= delta;
+                        }
+                        cx.notify();
+                    }
+                    if let Some(editor) = &view.inline_text {
+                        let viewport = view.controller.session().viewport;
+                        editor.field.update(cx, |field, _| {
+                            if let Some(style) = &mut field.inline {
+                                let text = &style.text;
+                                style.transform = folio_document::Transform::translate(
+                                    f32::from(bounds.origin.x),
+                                    f32::from(bounds.origin.y),
+                                )
+                                .compose(viewport.transform())
+                                .compose(text.transform)
+                                .compose(
+                                    folio_document::Transform::translate(
+                                        text.rect.min.x,
+                                        text.rect.min.y,
+                                    ),
+                                );
+                                style.mask = bounds;
+                            }
+                        });
+                    }
                     view.canvas_bounds = Some(bounds);
+                    view.canvas_document = Some(canvas_document);
                 });
                 window.insert_hitbox(bounds, HitboxBehavior::Normal).id
             },
             move |bounds, hitbox, window, cx| {
                 paint_entity.update(cx, |view, cx| {
-                    view.painter.paint(&mut view.controller, bounds, window, cx);
+                    let editing = view.inline_text.as_ref().map(|e| e.id);
+                    view.painter
+                        .paint(&mut view.controller, bounds, editing, window, cx);
                     view.paint_region(bounds, window);
                     view.diagnostics.painted();
                 });
@@ -2902,6 +2954,9 @@ impl Render for NotesView {
                 }
                 cx.notify();
             }));
+        if let Some(editor) = self.inline_element(cx) {
+            center = center.child(editor);
+        }
         if self.controller.loading_note() && !self.library_open {
             center = center.child(
                 div()
@@ -2927,6 +2982,12 @@ impl Render for NotesView {
         if !self.library_open
             && !self.controller.session().selection.is_empty()
             && self.controller.math_session.is_none()
+            && self.controller.session().selection.iter().any(|id| {
+                !matches!(
+                    self.controller.page().objects.get(id).map(|o| o.as_ref()),
+                    Some(folio_document::Object::Text(_))
+                )
+            })
         {
             center = center.child(self.selection_toolbar(cx));
         }
@@ -2972,8 +3033,8 @@ impl Render for NotesView {
             }))
             .on_action(cx.listener(|_, _: &FocusNext, w, _| w.focus_next()))
             .on_action(cx.listener(|_, _: &FocusPrevious, w, _| w.focus_prev()))
-            .on_action(cx.listener(|this, _: &NewNote, _, cx| {
-                this.create_and_open_note();
+            .on_action(cx.listener(|this, _: &NewNote, window, cx| {
+                this.new_notebook(window, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &NewPage, _, cx| {
@@ -3005,6 +3066,10 @@ impl Render for NotesView {
                 if this.region_selection.take().is_some() {
                     this.controller.status = "Region selection cancelled".into();
                     cx.notify();
+                    return;
+                }
+                if this.inline_text.is_some() && this.modal.is_none() {
+                    this.finish_inline_text(w, cx);
                     return;
                 }
                 if this.modal.is_some() {
@@ -3119,6 +3184,7 @@ impl Render for NotesView {
         } else {
             let header = self.header(cx);
             let toolbar = self.toolbar(cx);
+            let formatting = self.text_formatting_bar(cx);
             let footer = self.footer(cx);
             let mut workspace = div().flex().flex_1().min_h_0();
             if self.pages_open {
@@ -3168,6 +3234,7 @@ impl Render for NotesView {
                     .when(self.diagnostics.check.is_some(), |body| {
                         body.child(self.input_check_panel(cx))
                     })
+                    .children(formatting)
                     .child(workspace)
                     .child(footer),
             );

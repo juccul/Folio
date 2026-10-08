@@ -1,0 +1,1 @@
+Source crate mac 0.1.1 from Cargo.lock. Package declares MIT/Apache-2.0, but includes no standalone license file. Upstream: https://github.com/reem/rust-mac

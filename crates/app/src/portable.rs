@@ -75,9 +75,7 @@ fn sync_directories(root: &Path) -> Result<(), String> {
             sync_directories(&entry.path())?;
         }
     }
-    File::open(root)
-        .and_then(|file| file.sync_all())
-        .map_err(|e| e.to_string())
+    folio_platform::sync_directory(root).map_err(|e| e.to_string())
 }
 fn digest(path: &Path) -> Result<String, String> {
     let mut input = File::open(path).map_err(|e| e.to_string())?;
@@ -200,11 +198,8 @@ fn write_archive(
         .map_err(|e| e.to_string())?
         .finish()
         .map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())?;
-    fs::rename(temporary, destination).map_err(|e| e.to_string())?;
-    File::open(parent)
-        .and_then(|file| file.sync_all())
-        .map_err(|e| e.to_string())?;
+    drop(file);
+    folio_platform::publish_file(&temporary, destination).map_err(|e| e.to_string())?;
     Ok(())
 }
 fn read_archive(path: &Path, stage: &Path, kind: &str) -> Result<Manifest, String> {
@@ -409,9 +404,7 @@ pub fn import_notebook(path: &Path, assets: &Path) -> Result<Document, String> {
             .map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
     }
-    File::open(assets)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|e| e.to_string())?;
+    folio_platform::sync_directory(assets).map_err(|e| e.to_string())?;
     Ok(document)
 }
 pub fn backup(root: &Path, destination: &Path) -> Result<(), String> {
@@ -481,9 +474,7 @@ pub fn restore(path: &Path, destination: &Path) -> Result<(), String> {
     fs::remove_file(stage.0.join("manifest.json")).map_err(|e| e.to_string())?;
     sync_directories(&stage.0)?;
     fs::rename(&stage.0, destination).map_err(|e| e.to_string())?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|e| e.to_string())?;
+    folio_platform::sync_directory(parent).map_err(|e| e.to_string())?;
     Ok(())
 }
 impl Controller {

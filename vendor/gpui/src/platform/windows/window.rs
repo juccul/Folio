@@ -47,6 +47,7 @@ pub struct WindowsWindowState {
     pub last_reported_capslock: Option<Capslock>,
     pub system_key_handled: bool,
     pub hovered: bool,
+    pub(super) pens: std::collections::HashMap<u32, super::pen::PenState>,
 
     pub renderer: DirectXRenderer,
 
@@ -135,6 +136,7 @@ impl WindowsWindowState {
             last_reported_capslock,
             system_key_handled,
             hovered,
+            pens: Default::default(),
             renderer,
             click_state,
             current_cursor,
@@ -206,6 +208,9 @@ impl WindowsWindowState {
 }
 
 impl WindowsWindowInner {
+    pub(super) fn get_handle(&self) -> HWND {
+        self.hwnd
+    }
     fn new(context: &mut WindowCreateContext, hwnd: HWND, cs: &CREATESTRUCTW) -> Result<Rc<Self>> {
         let state = RefCell::new(WindowsWindowState::new(
             hwnd,
@@ -337,6 +342,7 @@ pub(crate) struct Callbacks {
     pub(crate) close: Option<Box<dyn FnOnce()>>,
     pub(crate) hit_test_window_control: Option<Box<dyn FnMut() -> Option<WindowControlArea>>>,
     pub(crate) appearance_changed: Option<Box<dyn FnMut()>>,
+    pub(crate) accessibility_object: Option<Box<dyn FnMut(usize, isize) -> Option<isize>>>,
 }
 
 struct WindowCreateContext {
@@ -851,6 +857,54 @@ impl PlatformWindow for WindowsWindow {
 
     fn get_raw_handle(&self) -> HWND {
         self.0.hwnd
+    }
+
+    fn on_accessibility_object(&self, callback: Box<dyn FnMut(usize, isize) -> Option<isize>>) {
+        self.0.state.borrow_mut().callbacks.accessibility_object = Some(callback);
+    }
+
+    fn start_window_move(&self) {
+        if self.0.is_movable {
+            self.0.start_native_drag(HTCAPTION);
+        }
+    }
+
+    fn start_window_resize(&self, edge: ResizeEdge) {
+        let hit = match edge {
+            ResizeEdge::Top => HTTOP,
+            ResizeEdge::Bottom => HTBOTTOM,
+            ResizeEdge::Left => HTLEFT,
+            ResizeEdge::Right => HTRIGHT,
+            ResizeEdge::TopLeft => HTTOPLEFT,
+            ResizeEdge::TopRight => HTTOPRIGHT,
+            ResizeEdge::BottomLeft => HTBOTTOMLEFT,
+            ResizeEdge::BottomRight => HTBOTTOMRIGHT,
+        };
+        self.0.start_native_drag(hit);
+    }
+
+    fn window_decorations(&self) -> Decorations {
+        if self.0.hide_title_bar {
+            Decorations::Client { tiling: Tiling::default() }
+        } else {
+            Decorations::Server
+        }
+    }
+
+    fn show_window_menu(&self, position: Point<Pixels>) {
+        let handle = self.0.hwnd;
+        let scale = self.scale_factor();
+        self.0.executor.spawn(async move {
+            unsafe {
+                let mut cursor = POINT { x: (f32::from(position.x) * scale) as i32, y: (f32::from(position.y) * scale) as i32 };
+                ClientToScreen(handle, &mut cursor).ok().log_err();
+                let menu = GetSystemMenu(handle, false);
+                let command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, cursor.x, cursor.y, None, handle, None);
+                if command.0 != 0 {
+                    PostMessageW(Some(handle), WM_SYSCOMMAND, WPARAM(command.0 as usize), LPARAM(0)).log_err();
+                }
+            }
+        }).detach();
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {

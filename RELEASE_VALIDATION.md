@@ -1,15 +1,26 @@
-# Folio 0.1.0 Flatpak validation
+# Folio 0.1.1 release validation
 
-Validated on 2026-10-07. The version reset updates the app metadata and OCR asset-request version identifier while preserving recognition behavior. This release publishes a single Linux x86_64 Flatpak installer with first-use GLM-OCR Q8 downloads and Vulkan acceleration.
+Validated on 8 October 2026. This release publishes a Windows 11 x64 installer and portable ZIP. The previous Linux Flatpak and its validation remain available in the [0.1.0 release](https://github.com/juccul/Folio/tree/v0.1.0/RELEASE_VALIDATION.md).
 
-- **Application build:** Rust 1.98.1 in Debian Bookworm, maximum required glibc symbol version 2.35. The Flatpak runs on Freedesktop Platform 25.08 and contains the matching optimized release binary.
-- **Flatpak payload:** App version/load checks, pinned SymPy 1.14.0/mpmath 1.3.0 imports, and Poppler 26.10.0 checks pass using the Platform rather than SDK-only libraries. The package grants display, IPC, GPU and first-use download network access, with no host filesystem permission. OCR models, virtual environments and note databases are excluded.
-- **Actual installer:** The 0.1.0 single-file bundle was installed into a separate private Flatpak installation that reused read-only runtimes. Version, bundled math imports, permissions and the native editor smoke replay passed. No normal installed application or note directory was used.
-- **Recognition (prior checks; recognition behavior unchanged):** Native download code fetched and verified the runtime archive. Language/vision model files were seeded from the existing hash-verified public benchmark cache. First-use controller fixtures created the pack marker, recognized text and math, and verified review, native text/LaTeX replacement, undo, redo and reopening.
-- **GPU and offline execution (prior checks; recognition behavior unchanged):** Real Q8 text/math recognition passed on NVIDIA RTX 4070, AMD Radeon 780M, CPU and fallback with an unavailable GPU ID. Flatpak Platform 25.08 selected Vulkan1 (NVIDIA) for both language and vision, completed a real runtime download, and recognized a subsequent math fixture with network access unshared.
-- **Regression checks:** 168 default Rust workspace tests passed after removing two tests for retired uncalled gesture APIs (77 app tests, including eight native setup/image processing tests); one opt-in real-model test remains ignored. The prior recognition release passed strict Clippy; the cleanup/version reset passes workspace tests, formatting, whitespace and Python packaging-script syntax checks. Private native UI checks covered copying corrected text, review, text replacement, math cancellation, native equation rendering, undo/redo and the native editor smoke replay.
-- **Corresponding source/notices:** The release tag includes matching Folio source, Cargo.lock, local dependency patches and notices, packaging/build scripts, and the exact checksum-pinned Poppler source. The installer includes SymPy/mpmath runtime source and notices, with upstream test directories excluded. Downloaded model/runtime packs retain their upstream notices. The separate complete vendored source archive remains reproducible with `scripts/package.py`.
+- **Native build:** Built the optimized executable in the Windows 11 VirtualBox VM **Ransom**, using the x64 MSVC toolchain and the Windows SDK shader compiler. The embedded product/file version is 0.1.1. The package manifest records the executable, Cargo.lock and app-local Visual C++ runtime hashes.
+- **Regression checks:** All 216 Rust workspace tests passed on Windows and Linux. One opt-in real-model benchmark remains ignored. These checks include notebook sharing, backup/restore, library management, handwriting search, templates, bookmarks, text editing, storage migrations and Windows portable file replacement. Python math protocol and input-analysis tests, Rust formatting and packaging-script syntax checks passed.
+- **Installed package:** The actual Inno Setup installer installed Folio per user without elevation. Offline SymPy/mpmath, Unicode protocol input, malformed-request recovery and PDF previews passed from an unrelated working directory. The installed executable passed the native editor smoke replay, window movement/resizing, UI Automation actions, close/save and Windows Ink replay. Pen verification found exactly one stroke with 25 pressure/tilt samples and no duplicate mouse ink. The executable loaded its bundled Visual C++ runtime.
+- **Upgrade and uninstall:** Installed 0.1.0 into an isolated directory, then upgraded it with the 0.1.1 installer. Used disposable notes saved by the previously validated 0.1.0 package. The installer left the database unchanged; launching 0.1.1 reopened it while preserving note IDs/titles, page IDs/order and every saved object exactly. Uninstalling removed the executable while retaining the saved databases. The final 0.1.1 package remains installed in Ransom at `%LOCALAPPDATA%\Programs\Folio`.
+- **Corresponding source:** The release tag contains the matching application source, locked dependencies, local GPUI patches, build/package scripts, notices and the unmodified Poppler 26.09.0 source archive matching the Windows PDF runtime. Runtime asset URLs and SHA-256 values are pinned in `packaging/windows/runtime-assets.json`. The source snapshot used for the native build was compared with the release checkout; Rust sources, Cargo manifests and Cargo.lock match exactly.
 
-Evidence is local under `artifacts/validation/ocr-first-use`, `artifacts/validation/ocr-native-*.log`, `artifacts/test-cleanup`, and `artifacts/release-0.1.0`; these are excluded from Git and the installer. Testing used disposable synthetic/public fixtures and private native displays, without accessing personal notes or changing the installed app. These checks do not constitute broad physical-tablet or Linux distribution certification.
+## Scope
 
-The final 0.1.0 bundle contains 16,835,736 bytes. Its installed binary reports `Folio 0.1.0`; AppStream exposes only the current 0.1.0 release. The math unit/protocol checks pass with the trimmed payload on Freedesktop Platform 25.08, and the native installed editor smoke check passes.
+The earlier Windows port validation also exercised real CPU text/math OCR, native replacement, undo/redo/reopening, image rotation and PDF import. Those checks establish functionality and were not repeated as recognition-accuracy benchmarks for this release. First-use OCR still downloads about 1.47 GB of pinned model/runtime assets; the installer itself includes offline PDF and math tools.
+
+Ransom exposes a VirtualBox USB tablet pointer. No physical pen/tablet passthrough is configured. Physical pen latency, eraser/barrel buttons, palm rejection, mixed-DPI and reconnect behavior require hardware validation. Synthetic pen replay does not certify those behaviors.
+
+Build/test logs and disposable fixtures are retained locally under `artifacts/release-0.1.1`, excluded from Git and the release downloads. Validation uses synthetic notes rather than personal notes.
+
+## Release downloads
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `folio-0.1.1-windows-x64-setup.exe` | 49,463,152 | `1ec6f44ee65027ab0c2bc76f6b31a4303c3a672610958fa52c547b891061e0b1` |
+| `folio-0.1.1-windows-x64.zip` | 79,357,948 | `ab386f1e7027f4e228d1607758c5097698841827177430d58289c546cece3c79` |
+
+The same checksums accompany the downloads in `SHA256SUMS`.

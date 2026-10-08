@@ -1,7 +1,7 @@
 use super::{NotesView, Theme};
 use super::{graph, theme::CanvasTheme};
 use folio_app::{Controller, Interaction, Tool};
-use folio_canvas::Viewport;
+use folio_canvas::{PageStack, SpatialIndex, Viewport};
 use folio_document::{
     Id, Object, PageProperties, Paper, PathPoint, Point as DocPoint, Rect, Transform,
 };
@@ -65,6 +65,11 @@ struct CachedRaster {
 }
 #[derive(Default)]
 pub struct Painter {
+    text_layouts: HashMap<Id, (folio_document::TextBlock, super::text_render::Layout)>,
+    pages: HashMap<Id, Box<Painter>>,
+    index: SpatialIndex,
+    index_revision: Option<u64>,
+    order_positions: HashMap<Id, usize>,
     paths: HashMap<Id, CachedPath>,
     frame: Option<Arc<VisibleFrame>>,
     paper_cache: Option<CachedPaper>,
@@ -151,6 +156,19 @@ fn rect_points(r: Rect) -> [DocPoint; 5] {
         r.min,
     ]
 }
+fn selection_overlay(
+    bounds: Rect,
+    zoom: f32,
+    transform: Transform,
+) -> ([DocPoint; 5], [DocPoint; 2]) {
+    let outline = rect_points(bounds.expand(4.)).map(|p| transform.apply(p));
+    let rotation = [
+        DocPoint::new(bounds.center().x, bounds.min.y),
+        DocPoint::new(bounds.center().x, bounds.min.y - 24. / zoom),
+    ]
+    .map(|p| transform.apply(p));
+    (outline, rotation)
+}
 fn gpui_bounds(r: Rect) -> Bounds<Pixels> {
     Bounds::new(point_px(r.min), size(px(r.width()), px(r.height())))
 }
@@ -162,21 +180,93 @@ impl Painter {
         &mut self,
         controller: &mut Controller,
         bounds: Bounds<Pixels>,
+        editing: Option<Id>,
         window: &mut Window,
         cx: &mut Context<NotesView>,
     ) {
-        controller.request_pdf_preview();
-        let page_id = controller.page().id;
-        if self.page != Some(page_id) {
-            self.backgrounds.clear();
-            self.paths.clear();
-            self.rasters.clear();
-            self.page = Some(page_id)
+        let session = controller.session();
+        let active = session.page;
+        let viewport = session.viewport;
+        let width = f32::from(bounds.size.width);
+        let height = f32::from(bounds.size.height);
+        let frames = if let Some(stack) = PageStack::new(&session.document.pages, active) {
+            stack
+                .pages
+                .iter()
+                .filter_map(|(index, rect)| {
+                    let local = stack.viewport(viewport, active, *index);
+                    let visible = local.visible(width, height);
+                    (*index == active
+                        || visible.intersects(Rect::new(0., 0., rect.width(), rect.height())))
+                    .then_some((*index, local))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![(active, viewport)]
+        };
+        let ids = frames
+            .iter()
+            .map(|(i, _)| controller.session().document.pages[*i].id)
+            .collect::<HashSet<_>>();
+        // Retain only visible pages, so scrolling a long document cannot grow
+        // native path/image caches without bound.
+        self.pages.retain(|id, _| ids.contains(id));
+        for (index, viewport) in frames {
+            let id = controller.session().document.pages[index].id;
+            let painter = self.pages.entry(id).or_default();
+            painter.paint_page(controller, index, viewport, bounds, editing, window, cx);
         }
-        let viewport = controller.session().viewport;
+    }
+    fn paint_page(
+        &mut self,
+        controller: &mut Controller,
+        page_index: usize,
+        viewport: Viewport,
+        bounds: Bounds<Pixels>,
+        editing: Option<Id>,
+        window: &mut Window,
+        cx: &mut Context<NotesView>,
+    ) {
+        let active = page_index == controller.session().page;
+        if let Some(pdf) = controller.session().document.pages[page_index]
+            .properties
+            .pdf
+            .clone()
+        {
+            controller.request_pdf_background(pdf);
+        }
+        let page_id = controller.session().document.pages[page_index].id;
+        self.page = Some(page_id);
         let visible = viewport.visible(f32::from(bounds.size.width), f32::from(bounds.size.height));
-        let generation = controller.session().index.generation();
-        let page = controller.page();
+        let page = &controller.session().document.pages[page_index];
+        if !active && self.index_revision != Some(page.revision) {
+            self.index.rebuild(page);
+            self.index_revision = Some(page.revision);
+            self.order_positions = page
+                .order
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (*id, i))
+                .collect();
+        }
+        if !active {
+            for ((note, preview_page, id), preview) in &controller.previews {
+                if *note == controller.active
+                    && *preview_page == page_id
+                    && page
+                        .objects
+                        .get(id)
+                        .is_some_and(|o| Arc::ptr_eq(o, &preview.object))
+                {
+                    self.index.insert(*id, preview.bounds);
+                }
+            }
+        }
+        let generation = if active {
+            controller.session().index.generation()
+        } else {
+            self.index.generation()
+        };
         let valid = self.frame.as_ref().is_some_and(|frame| {
             frame.page == page_id
                 && frame.revision == page.revision
@@ -184,16 +274,18 @@ impl Painter {
                 && frame.visible == visible
         });
         if !valid {
-            let ids = controller.session().index.query(visible);
+            let ids = if active {
+                controller.session().index.query(visible)
+            } else {
+                self.index.query(visible)
+            };
             let mut ordered = ids.iter().copied().collect::<Vec<_>>();
-            ordered.sort_unstable_by_key(|id| {
-                controller
-                    .session()
-                    .order_positions
-                    .get(id)
-                    .copied()
-                    .unwrap_or(usize::MAX)
-            });
+            let positions = if active {
+                &controller.session().order_positions
+            } else {
+                &self.order_positions
+            };
+            ordered.sort_unstable_by_key(|id| positions.get(id).copied().unwrap_or(usize::MAX));
             let objects = ordered
                 .iter()
                 .filter_map(|id| page.objects.get(id))
@@ -202,6 +294,7 @@ impl Painter {
             let trim_paths = self.paths.len() > 2048;
             self.paths
                 .retain(|id, _| page.objects.contains_key(id) && (!trim_paths || ids.contains(id)));
+            self.text_layouts.retain(|id, _| ids.contains(id));
             self.frame = Some(Arc::new(VisibleFrame {
                 page: page_id,
                 revision: page.revision,
@@ -212,8 +305,16 @@ impl Painter {
             }));
         }
         let frame = self.frame.as_ref().unwrap().clone();
-        controller.request_previews(&frame.ids);
-        let properties = controller.page().properties.clone();
+        let preview_ids = frame
+            .ids
+            .iter()
+            .copied()
+            .filter(|id| Some(*id) != editing)
+            .collect();
+        controller.request_page_previews(page_index, &preview_ids);
+        let properties = controller.session().document.pages[page_index]
+            .properties
+            .clone();
         let visible_ids = &frame.ids;
         self.rasters.retain(|id, cache| {
             visible_ids.contains(id)
@@ -225,8 +326,8 @@ impl Painter {
         let world = Transform::translate(f32::from(bounds.origin.x), f32::from(bounds.origin.y))
             .compose(viewport.transform());
         let theme = Theme::new(&controller.settings);
-        let canvas_theme = theme.page_canvas(properties.pdf.is_some());
-        let graph_palette = theme.graph(properties.pdf.is_some());
+        let canvas_theme = theme.canvas_for_page(&properties);
+        let graph_palette = theme.graph_for_page(&properties);
         self.graph_palette = Some(graph_palette);
         if self.appearance != Some(canvas_theme) {
             self.colors.clear();
@@ -235,17 +336,29 @@ impl Painter {
         if self.colors.len() > 1024 {
             self.colors.clear();
         }
-        let selection = &controller.session().selection;
-        let preview_move = controller.interaction_transform();
         let empty = HashSet::new();
-        let erasing = if let Some(Interaction::Erase { ids, .. }) = &controller.interaction {
-            ids
+        let selection = if active {
+            &controller.session().selection
         } else {
             &empty
         };
+        let preview_move = if active {
+            controller.interaction_transform()
+        } else {
+            Transform::default()
+        };
+        let erasing =
+            if active && let Some(Interaction::Erase { ids, .. }) = &controller.interaction {
+                ids
+            } else {
+                &empty
+            };
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             self.paper(&properties, visible, world, window, cx, controller);
             for object in &frame.objects {
+                if editing == Some(object.id()) {
+                    continue;
+                }
                 if erasing.contains(&object.id()) {
                     if let Some(Interaction::Erase { fragments, .. }) = &controller.interaction
                         && let Some(parts) = fragments.get(&object.id())
@@ -292,6 +405,27 @@ impl Painter {
                                 alpha(color, s.style.opacity),
                             );
                         }
+                    }
+                    Object::Text(text) => {
+                        let text = if active {
+                            controller.preview_text(text)
+                        } else {
+                            text.clone()
+                        };
+                        let color = self.display_color(text.color.rgb(), canvas_theme);
+                        if self
+                            .text_layouts
+                            .get(&text.id)
+                            .is_none_or(|(cached, _)| cached != &text)
+                        {
+                            let layout = super::text_render::layout(&text, color, window);
+                            self.text_layouts.insert(text.id, (text.clone(), layout));
+                        }
+                        let layout = &self.text_layouts[&text.id].1;
+                        let transform = world
+                            .compose(text.transform)
+                            .compose(Transform::translate(text.rect.min.x, text.rect.min.y));
+                        layout.paint(transform, color, text.underline, window);
                     }
                     Object::Shape(s) => {
                         let color = self.display_color(s.style.color.rgb(), canvas_theme);
@@ -359,6 +493,9 @@ impl Painter {
                     }
                 }
             }
+            if !active {
+                return;
+            }
             for r in &controller.search_highlights {
                 let points = rect_points(*r).map(|p| world.apply(p));
                 if let Some(path) = fill_path(&points) {
@@ -371,7 +508,10 @@ impl Painter {
             if let Some(active) = &controller.interaction {
                 match active {
                     Interaction::Ink {
-                        builder, preview, ..
+                        builder,
+                        preview,
+                        suppress_tap: false,
+                        ..
                     } => {
                         let color = alpha(
                             self.display_color(builder.style().color.rgb(), canvas_theme),
@@ -447,7 +587,7 @@ impl Painter {
             }
             if let Some(rect) = controller.selection_bounds() {
                 let transform = world.compose(preview_move);
-                let points = rect_points(rect.expand(4.)).map(|p| transform.apply(p));
+                let (points, rotation) = selection_overlay(rect, viewport.zoom, transform);
                 if let Some(path) = line_path(&points, 1.2, true) {
                     window.paint_path(path, rgb(theme.accent));
                 }
@@ -464,17 +604,10 @@ impl Painter {
                         Default::default(),
                     ));
                 }
-            }
-            if let Some(bounds) = controller.selection_bounds() {
-                let center = world.apply(DocPoint::new(bounds.center().x, bounds.min.y));
-                let handle = world.apply(DocPoint::new(
-                    bounds.center().x,
-                    bounds.min.y - 24. / viewport.zoom,
-                ));
-                if let Some(path) = line_path(&[center, handle], 1., false) {
+                if let Some(path) = line_path(&rotation, 1., false) {
                     window.paint_path(path, rgb(theme.accent));
                 }
-                if let Some(path) = fill_path(&folio_ink::circle(handle, 4., 16)) {
+                if let Some(path) = fill_path(&folio_ink::circle(rotation[1], 4., 16)) {
                     window.paint_path(path, rgb(theme.accent));
                 }
             }
@@ -548,7 +681,9 @@ impl Painter {
         cx.spawn(async move |view, cx| {
             let image = task.await;
             let _ = view.update(cx, |view, cx| {
-                let painter = &mut view.painter;
+                let Some(painter) = view.painter.pages.get_mut(&page) else {
+                    return;
+                };
                 if !painter
                     .raster_pending
                     .get(&id)
@@ -598,11 +733,8 @@ impl Painter {
         controller: &Controller,
     ) {
         let theme = Theme::new(&controller.settings);
-        let paper_color = if properties.pdf.is_some() {
-            0xffffff
-        } else {
-            theme.canvas.paper
-        };
+        let canvas_theme = theme.canvas_for_page(properties);
+        let paper_color = canvas_theme.paper;
         let page = if properties.infinite {
             visible.expand(32.)
         } else {
@@ -645,7 +777,7 @@ impl Painter {
             page,
             visible,
             world,
-            canvas: theme.canvas,
+            canvas: canvas_theme,
         };
         if self
             .paper_cache
@@ -749,6 +881,49 @@ fn gpu_transform(t: Transform) -> gpui::TransformationMatrix {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    fn selection_rotation_handle_tracks_drag_without_a_release_jump_at_any_zoom() {
+        let bounds = Rect::new(100., 150., 90., 40.);
+        for zoom in [0.5, 1., 4.] {
+            let world = Transform::translate(37., -21.).compose(Transform::around(
+                DocPoint::new(0., 0.),
+                zoom,
+                0.,
+            ));
+            let delta = DocPoint::new(65., 35.);
+            let (original, original_rotation) = selection_overlay(bounds, zoom, world);
+            let (dragged, dragged_rotation) = selection_overlay(
+                bounds,
+                zoom,
+                world.compose(Transform::translate(delta.x, delta.y)),
+            );
+            for (before, after) in original
+                .into_iter()
+                .chain(original_rotation)
+                .zip(dragged.into_iter().chain(dragged_rotation))
+            {
+                assert!(
+                    after.distance(DocPoint::new(
+                        before.x + delta.x * zoom,
+                        before.y + delta.y * zoom
+                    )) < 0.001
+                );
+            }
+            let (released, released_rotation) = selection_overlay(
+                Rect::new(
+                    bounds.min.x + delta.x,
+                    bounds.min.y + delta.y,
+                    bounds.width(),
+                    bounds.height(),
+                ),
+                zoom,
+                world,
+            );
+            assert_eq!(dragged, released);
+            assert_eq!(dragged_rotation, released_rotation);
+            assert!((dragged_rotation[0].distance(dragged_rotation[1]) - 24.).abs() < 0.001);
+        }
+    }
     #[::core::prelude::v1::test]
     fn paper_grids_use_a_single_cached_compound_path() {
         let mut key = PaperKey {

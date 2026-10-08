@@ -280,3 +280,307 @@ fn editable_notebook_import_is_one_undoable_command_and_reopens_with_assets() {
         "Shared notes"
     );
 }
+
+#[test]
+fn configured_notebooks_preserve_canvas_choices_and_new_pages_after_save() {
+    for infinite in [false, true] {
+        let mut a = app();
+        a.create_notebook("School".into(), None);
+        let folder = a.notebooks[0].id;
+        a.filter = NoteFilter::Notebook(folder);
+        let properties = PageProperties {
+            width: 1056.,
+            height: 816.,
+            infinite,
+            paper: Paper::Dots,
+            color: Some(Color::from_rgb(0xfff7e6)),
+            pdf: None,
+            bookmark: None,
+        };
+        let id = a
+            .create_note_with_properties("  Calculus · ∫  ".into(), properties.clone())
+            .unwrap();
+        assert_eq!(a.session().document.metadata.title, "Calculus · ∫");
+        assert_eq!(a.session().document.metadata.notebook, Some(folder));
+        assert_eq!(a.page().properties, properties);
+        assert!(a.session().history.entries().next().is_none());
+        a.add_page();
+        assert_eq!(a.page().properties, properties);
+        a.undo();
+        assert_eq!(a.session().document.pages.len(), 1);
+        a.redo();
+        a.flush().unwrap();
+        let loaded = Store::open(&a.database).unwrap().load(id).unwrap().unwrap();
+        assert_eq!(loaded.pages.len(), 2);
+        assert!(
+            loaded
+                .pages
+                .iter()
+                .all(|page| page.properties == properties)
+        );
+        loaded.validate().unwrap();
+    }
+}
+
+#[test]
+fn invalid_notebook_setup_does_not_create_or_switch_a_document() {
+    let mut a = app();
+    let active = a.active;
+    let count = a.notes.len();
+    for name in ["", "  \n  "] {
+        assert!(
+            a.create_note_with_properties(name.into(), PageProperties::default())
+                .is_err()
+        );
+    }
+    for width in [f32::NAN, f32::INFINITY, 0., 100001.] {
+        assert!(
+            a.create_note_with_properties(
+                "Test".into(),
+                PageProperties {
+                    width,
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(a.notes.len(), count);
+    assert_eq!(a.active, active);
+}
+
+#[test]
+fn old_documents_without_paper_color_keep_the_theme_default() {
+    let mut value = serde_json::to_value(Document::new("Legacy")).unwrap();
+    value["pages"][0]["properties"]
+        .as_object_mut()
+        .unwrap()
+        .remove("color");
+    let loaded: Document = serde_json::from_value(value).unwrap();
+    assert_eq!(loaded.pages[0].properties.color, None);
+    loaded.validate().unwrap();
+}
+
+#[test]
+fn continuous_scroll_rebases_and_writing_targets_the_clicked_page() {
+    let mut a = app();
+    a.create_note_with_properties(
+        "stack".into(),
+        PageProperties {
+            width: 400.,
+            height: 600.,
+            paper: Paper::Blank,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    a.add_page();
+    a.add_page();
+    a.change_page(0);
+    a.session_mut().viewport.pan = Point::new(100., -650.);
+    let stack = PageStack::new(&a.session().document.pages, 0).unwrap();
+    let before = stack
+        .viewport(a.session().viewport, 0, 1)
+        .to_screen(Point::new(100., 100.));
+    a.synchronize_page_view(800., 700.);
+    assert_eq!(a.session().page, 1);
+    assert!(
+        a.session()
+            .viewport
+            .to_screen(Point::new(100., 100.))
+            .distance(before)
+            < 0.001
+    );
+    // Both pages are visible at this zoom. Down on a neighboring page must
+    // rebase before converting its pen sample, without moving the document.
+    a.session_mut().viewport.zoom = 0.5;
+    a.session_mut().viewport.pan = Point::new(100., 32.);
+    let stack = PageStack::new(&a.session().document.pages, 1).unwrap();
+    let position = stack
+        .viewport(a.session().viewport, 1, 2)
+        .to_screen(Point::new(100., 100.));
+    let event = |phase, position| PenEvent {
+        phase,
+        position,
+        device: folio_input::Device::Mouse,
+        tool: PenTool::Pen,
+        pressure: 0.6,
+        tilt_x: 0.,
+        tilt_y: 0.,
+        buttons: 0,
+        timestamp: 100,
+    };
+    a.pointer(event(Phase::Down, position));
+    assert_eq!(a.session().page, 2);
+    a.synchronize_page_view(800., 700.); // Must not switch during a stroke.
+    assert_eq!(a.session().page, 2);
+    a.pointer(event(Phase::Move, Point::new(position.x + 30., position.y)));
+    a.pointer(event(Phase::Up, Point::new(position.x + 30., position.y)));
+    assert!(
+        a.session().document.pages[..2]
+            .iter()
+            .all(|p| p.objects.is_empty())
+    );
+    assert_eq!(a.page().objects.len(), 1);
+    let Object::Stroke(stroke) = a.page().ordered_objects().next().unwrap().as_ref() else {
+        panic!("expected ink");
+    };
+    assert!(stroke.path[0].position.distance(Point::new(100., 100.)) < 0.01);
+    a.undo();
+    assert!(a.page().objects.is_empty());
+    a.redo();
+    assert_eq!(a.page().objects.len(), 1);
+    a.flush().unwrap();
+    let note = a.active;
+    let path = a.data_dir.clone();
+    drop(a);
+    let mut reopened = Controller::open(path).unwrap();
+    reopened.switch_note(note);
+    settle(&mut reopened);
+    assert_eq!(reopened.session().document.pages[2].objects.len(), 1);
+    assert!(
+        reopened.session().document.pages[..2]
+            .iter()
+            .all(|p| p.objects.is_empty())
+    );
+}
+
+#[test]
+fn page_navigation_jumps_to_top_and_infinite_canvas_stays_unbounded() {
+    let mut a = app();
+    a.add_page();
+    a.session_mut().viewport.pan.y = -500.;
+    a.change_page(0);
+    assert_eq!(a.session().viewport.pan.y, 36.);
+    a.session_mut().viewport.pan.y = -99999.;
+    a.synchronize_page_view(800., 700.);
+    assert_eq!(a.session().page, 1);
+    let stack = PageStack::new(&a.session().document.pages, 1).unwrap();
+    let bottom = stack
+        .viewport(a.session().viewport, 1, 1)
+        .to_screen(Point::new(0., a.page().properties.height));
+    assert!((bottom.y - 664.).abs() < 0.01);
+    a.page_size(794., 1123., true);
+    a.session_mut().viewport.pan.y = -99999.;
+    a.synchronize_page_view(800., 700.);
+    assert_eq!(a.session().viewport.pan.y, -99999.);
+}
+
+#[test]
+fn inactive_page_raster_previews_do_not_switch_or_edit_the_current_page() {
+    let mut a = app();
+    a.add_text("first page".into(), Point::new(100., 100.));
+    let first = a.page().id;
+    let id = a.page().order[0];
+    a.add_page();
+    let current = a.page().id;
+    a.request_page_previews(0, &HashSet::from([id]));
+    settle(&mut a);
+    assert_eq!(a.page().id, current);
+    assert!(a.previews.contains_key(&(a.active, first, id)));
+    assert!(a.page().objects.is_empty());
+}
+
+#[test]
+fn text_click_selects_then_edits_but_dragging_keeps_moving_the_box() {
+    let mut a = app();
+    a.add_text("editable text".into(), Point::new(100., 100.));
+    let id = a.page().order[0];
+    a.session_mut().selection.clear();
+    let event = |phase, p: Point| PenEvent {
+        phase,
+        position: p,
+        device: folio_input::Device::Mouse,
+        tool: PenTool::Pen,
+        pressure: 0.6,
+        tilt_x: 0.,
+        tilt_y: 0.,
+        buttons: 0,
+        timestamp: 100,
+    };
+    let p = a.session().viewport.to_screen(Point::new(180., 140.));
+    a.pointer(event(Phase::Down, p));
+    a.pointer(event(Phase::Up, p));
+    assert_eq!(a.session().selection, HashSet::from([id]));
+    assert!(a.pending_text_edit.is_none());
+    a.pointer(event(Phase::Down, p));
+    a.pointer(event(Phase::Up, p));
+    assert_eq!(a.pending_text_edit.take(), Some(id));
+    let end = Point::new(p.x + 30., p.y + 20.);
+    a.pointer(event(Phase::Down, p));
+    a.pointer(event(Phase::Move, end));
+    a.pointer(event(Phase::Up, end));
+    assert!(a.pending_text_edit.is_none());
+    assert_eq!(
+        a.page().objects[&id].transform(),
+        Transform::translate(30., 20.)
+    );
+    assert_eq!(a.page().objects.len(), 1); // No ink dot or accidental new box.
+    a.undo();
+    assert_eq!(a.page().objects[&id].transform(), Transform::default());
+    // A drag that returns to its origin is still a drag, not an edit click.
+    a.pointer(event(Phase::Down, p));
+    a.pointer(event(Phase::Move, end));
+    a.pointer(event(Phase::Up, p));
+    assert!(a.pending_text_edit.is_none());
+    let mut down = event(Phase::Down, p);
+    down.device = folio_input::Device::Tablet;
+    let mut up = event(Phase::Up, p);
+    up.device = folio_input::Device::Tablet;
+    a.pointer(down);
+    a.pointer(up);
+    assert_eq!(a.pending_text_edit, Some(id));
+}
+
+#[test]
+fn resizing_text_reflows_the_frame_preserves_fonts_and_is_reversible() {
+    let mut a = app();
+    a.add_text(
+        "A sentence that should wrap when its box gets narrower.".into(),
+        Point::new(100., 100.),
+    );
+    let id = a.page().order[0];
+    let original = a.page().objects[&id].clone();
+    a.scale_selection(0.5);
+    let Object::Text(text) = a.page().objects[&id].as_ref() else {
+        panic!("text");
+    };
+    assert_eq!(text.rect.width(), 180.);
+    assert_eq!(text.rect.height(), 80.);
+    assert_eq!(text.font_size, 20.);
+    assert_eq!(
+        [
+            text.transform.a,
+            text.transform.b,
+            text.transform.c,
+            text.transform.d
+        ],
+        [1., 0., 0., 1.]
+    );
+    a.undo();
+    assert_eq!(a.page().objects[&id], original);
+    a.redo();
+    a.rotate_selection(0.4);
+    a.resize_selection(
+        Transform {
+            a: 0.5,
+            d: 2.,
+            ..Default::default()
+        },
+        "Resize text",
+    );
+    let Object::Text(text) = a.page().objects[&id].as_ref() else {
+        panic!("text");
+    };
+    assert!((text.transform.a.hypot(text.transform.b) - 1.).abs() < 0.001);
+    assert!((text.transform.c.hypot(text.transform.d) - 1.).abs() < 0.001);
+    assert!(
+        (text.transform.a * text.transform.c + text.transform.b * text.transform.d).abs() < 0.001
+    );
+    assert_eq!(text.font_size, 20.);
+    assert_eq!(
+        text.text,
+        "A sentence that should wrap when its box gets narrower."
+    );
+    a.flush().unwrap();
+}

@@ -1,0 +1,3 @@
+Source: registry+https://github.com/rust-lang/crates.io-index#winapi-util@0.1.11
+License: Unlicense OR MIT
+Repository: https://github.com/BurntSushi/winapi-util

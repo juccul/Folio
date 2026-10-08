@@ -22,7 +22,7 @@ mod settings;
 mod shape_tests;
 mod shape_tools;
 mod workers;
-use folio_canvas::{SpatialIndex, Viewport};
+use folio_canvas::{PageStack, SpatialIndex, Viewport};
 use folio_document::*;
 use folio_ink::StrokeBuilder;
 use folio_input::{PenEvent, Phase, Tool as PenTool};
@@ -39,6 +39,8 @@ use std::{
 };
 pub use workers::ExportKind;
 use workers::*;
+const INK_HOLD_DELAY: Duration = Duration::from_millis(550);
+const INK_ENDPOINT_SLOP: f32 = 4.;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Pen,
@@ -194,6 +196,7 @@ pub enum Interaction {
         anchor: Point,
         fit_attempted: bool,
         preview: Option<folio_shapes::Fit>,
+        suppress_tap: bool,
     },
     Erase {
         ids: HashSet<Id>,
@@ -225,6 +228,26 @@ pub enum Interaction {
         start: Point,
         pan: Point,
     },
+}
+impl Interaction {
+    fn update_ink_endpoint(&mut self, p: Point, zoom: f32) {
+        if let Self::Ink {
+            last_move,
+            anchor,
+            fit_attempted,
+            preview,
+            suppress_tap,
+            ..
+        } = self
+            && p.distance(*anchor) > INK_ENDPOINT_SLOP / zoom
+        {
+            *last_move = Instant::now();
+            *anchor = p;
+            *preview = None;
+            *fit_attempted = false;
+            *suppress_tap = false;
+        }
+    }
 }
 pub struct RasterPreview {
     pub pixels_budget: u32,
@@ -259,7 +282,6 @@ pub struct Controller {
     pub recognition_status: String,
     pub recognition_replacing: bool,
     pub recognition_review: Option<RecognitionReview>,
-    _lock: std::fs::File,
     pub previews: HashMap<(Id, Id, Id), RasterPreview>,
     preview_pending: HashMap<(Id, Id, Id), Arc<Object>>,
     session_recency: std::collections::VecDeque<Id>,
@@ -287,6 +309,8 @@ pub struct Controller {
     pub error: Option<String>,
     pub busy: usize,
     pub pending_text: Option<Point>,
+    pub pending_text_edit: Option<Id>,
+    text_click: Option<(Id, Point)>,
     pub pending_pdf_password: Option<(Id, PathBuf)>,
     pdf_preview_pending: HashSet<String>,
     pdf_preview_failed: HashSet<String>,
@@ -305,6 +329,8 @@ pub struct Controller {
     save_notes: HashMap<u64, Id>,
     last_retry: Instant,
     search_generation: u64,
+    // Keep the writer lease until persistence and all worker owners are dropped.
+    _lock: folio_platform::DataDirLock,
 }
 impl Controller {
     pub fn open(data_dir: PathBuf) -> Result<Self, String> {
@@ -399,6 +425,8 @@ impl Controller {
             error: None,
             busy: 0,
             pending_text: None,
+            pending_text_edit: None,
+            text_click: None,
             pending_pdf_password: None,
             pdf_preview_pending: HashSet::new(),
             pdf_preview_failed: HashSet::new(),
@@ -585,12 +613,36 @@ impl Controller {
         self.busy > 0 || self.pending_search.is_some()
     }
     pub fn create_note(&mut self) {
+        let properties = PageProperties {
+            paper: self.settings.paper,
+            ..PageProperties::default()
+        };
+        self.create_note_with_properties("Untitled note".into(), properties)
+            .expect("Default page properties are valid");
+    }
+    pub fn create_note_with_properties(
+        &mut self,
+        title: String,
+        properties: PageProperties,
+    ) -> Result<Id, String> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("Give your notebook a name.".into());
+        }
+        if !properties.width.is_finite()
+            || !properties.height.is_finite()
+            || !(64.0..=100000.0).contains(&properties.width)
+            || !(64.0..=100000.0).contains(&properties.height)
+            || properties.pdf.is_some()
+        {
+            return Err("Choose a valid canvas size.".into());
+        }
         self.finish();
         self.end_temporary_selection();
         self.pending_note = None;
         self.pending_navigation = None;
-        let mut d = Document::new("Untitled note");
-        d.pages[0].properties.paper = self.settings.paper;
+        let mut d = Document::new(title);
+        d.pages[0].properties = properties;
         if let NoteFilter::Notebook(id) = self.filter {
             d.metadata.notebook = Some(id)
         }
@@ -602,6 +654,7 @@ impl Controller {
         self.filter = NoteFilter::All;
         self.search_highlights.clear();
         self.persist(delta);
+        Ok(id)
     }
     pub fn requested_note(&self) -> Id {
         self.pending_note.unwrap_or(self.active)
@@ -751,7 +804,14 @@ impl Controller {
     pub fn add_page(&mut self) {
         self.finish();
         let mut p = Page::new();
-        p.properties.paper = self.settings.paper;
+        p.properties = if self.page().properties.pdf.is_none() {
+            self.page().properties.clone()
+        } else {
+            PageProperties {
+                paper: self.settings.paper,
+                ..PageProperties::default()
+            }
+        };
         let index = self.session().document.pages.len();
         self.commit(
             "Add page",
@@ -784,7 +844,12 @@ impl Controller {
         self.finish();
         self.end_temporary_selection();
         let s = self.session_mut();
+        let old_width = s.page().properties.width;
         s.page = index.min(s.document.pages.len() - 1);
+        if !s.page().properties.infinite {
+            s.viewport.pan.x += (old_width - s.page().properties.width) * s.viewport.zoom / 2.;
+            s.viewport.pan.y = 36.;
+        }
         s.selection.clear();
         s.refresh();
         self.cursor = None;
@@ -802,6 +867,38 @@ impl Controller {
                 after,
             }],
         );
+    }
+    /// Rebase onto the page in view without changing any page's screen position.
+    pub fn synchronize_page_view(&mut self, width: f32, height: f32) {
+        if self.interaction.is_some() || self.loading_note() {
+            return;
+        }
+        let session = self.session();
+        let Some(stack) = PageStack::new(&session.document.pages, session.page) else {
+            return;
+        };
+        let active = session.page;
+        let mut viewport = session.viewport;
+        stack.clamp_vertical(&mut viewport, active, height);
+        let target = stack.nearest(viewport, active, Point::new(width / 2., height / 2.));
+        let viewport = stack.viewport(viewport, active, target);
+        if target != active {
+            self.change_page(target);
+        }
+        self.session_mut().viewport = viewport;
+    }
+    fn focus_page_at(&mut self, screen: Point) {
+        let session = self.session();
+        let Some(stack) = PageStack::new(&session.document.pages, session.page) else {
+            return;
+        };
+        if let Some(target) = stack.hit(session.viewport, session.page, screen)
+            && target != session.page
+        {
+            let viewport = stack.viewport(session.viewport, session.page, target);
+            self.change_page(target);
+            self.session_mut().viewport = viewport;
+        }
     }
     pub fn page_size(&mut self, width: f32, height: f32, infinite: bool) {
         if !(64.0..=100000.0).contains(&width) || !(64.0..=100000.0).contains(&height) {
@@ -877,6 +974,8 @@ impl Controller {
         }
         self.interaction = None;
         self.pending_text = None;
+        self.pending_text_edit = None;
+        self.text_click = None;
         self.cursor = None;
     }
     pub fn pointer(&mut self, event: PenEvent) {
@@ -886,6 +985,10 @@ impl Controller {
             return;
         }
         let screen = event.position;
+        if event.phase == Phase::Down && self.tool != Tool::Hand {
+            self.finish();
+            self.focus_page_at(screen);
+        }
         let p = self.session().viewport.to_document(screen);
         self.cursor = Some(p);
         if event.phase == Phase::Down {
@@ -954,7 +1057,37 @@ impl Controller {
                     return;
                 }
             }
-            if self.temporary_selection && tool == Tool::Lasso && !selection_hit {
+            self.text_click = None;
+            let text_hit = if !matches!(tool, Tool::Eraser | Tool::Hand | Tool::Shape)
+                && (event.device == folio_input::Device::Mouse
+                    || matches!(tool, Tool::Text | Tool::Lasso | Tool::Rectangle))
+            {
+                self.page().ordered_objects().rev().find_map(|o| {
+                    if let Object::Text(t) = o.as_ref() {
+                        t.transform
+                            .inverse()
+                            .filter(|inv| t.rect.contains(inv.apply(p)))
+                            .map(|_| t.id)
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
+            if let Some(id) = text_hit {
+                if self.session().selection.len() == 1 && self.session().selection.contains(&id) {
+                    self.text_click = Some((id, p));
+                }
+                self.session_mut().selection = HashSet::from([id]);
+                self.tool = Tool::Lasso;
+                self.temporary_selection = false;
+                self.interaction = Some(Interaction::Move { start: p, end: p });
+                return;
+            }
+            let dismiss_selection =
+                self.temporary_selection && tool == Tool::Lasso && !selection_hit;
+            if dismiss_selection {
                 self.session_mut().selection.clear();
                 self.tool = Tool::Pen;
                 self.temporary_selection = false;
@@ -970,6 +1103,7 @@ impl Controller {
                         anchor: p,
                         fit_attempted: false,
                         preview: None,
+                        suppress_tap: dismiss_selection,
                     })
                 }
                 Tool::Eraser => Some(Interaction::Erase {
@@ -997,6 +1131,13 @@ impl Controller {
         }
         match event.phase {
             Phase::Down | Phase::Move => {
+                if event.phase == Phase::Move
+                    && self.text_click.is_some_and(|(_, start)| {
+                        start.distance(p) > 4. / self.session().viewport.zoom
+                    })
+                {
+                    self.text_click = None;
+                }
                 let p = if self.page().properties.infinite {
                     p
                 } else {
@@ -1032,20 +1173,9 @@ impl Controller {
                     .collect::<Vec<_>>();
                 let viewport_zoom = self.session().viewport.zoom;
                 if let Some(active) = self.interaction.as_mut() {
+                    active.update_ink_endpoint(p, viewport_zoom);
                     match active {
-                        Interaction::Ink {
-                            builder,
-                            last_move,
-                            anchor,
-                            fit_attempted,
-                            preview,
-                        } => {
-                            if p.distance(*anchor) > 4. / viewport_zoom {
-                                *last_move = Instant::now();
-                                *anchor = p;
-                                *preview = None;
-                                *fit_attempted = false;
-                            }
+                        Interaction::Ink { builder, .. } => {
                             if event.phase == Phase::Move {
                                 builder.push(event.sample(p));
                             }
@@ -1105,7 +1235,17 @@ impl Controller {
                 }
             }
             Phase::Up => {
+                if let Some((id, start)) = self.text_click.take()
+                    && start.distance(p) <= 4. / self.session().viewport.zoom
+                    && matches!(self.interaction, Some(Interaction::Move { .. }))
+                {
+                    self.interaction = None;
+                    self.pending_text_edit = Some(id);
+                    return;
+                }
+                let viewport_zoom = self.session().viewport.zoom;
                 if let Some(interaction) = &mut self.interaction {
+                    interaction.update_ink_endpoint(p, viewport_zoom);
                     match interaction {
                         Interaction::Ink { builder, .. } => {
                             if builder
@@ -1149,8 +1289,14 @@ impl Controller {
                 builder,
                 preview,
                 last_move,
+                suppress_tap,
                 ..
             } => {
+                if suppress_tap {
+                    self.persistence
+                        .draft(self.active, self.page().id, builder.id(), None);
+                    return;
+                }
                 if let Some(stroke) = builder.finish() {
                     let points = stroke.raw.iter().map(|p| p.position()).collect::<Vec<_>>();
                     let smart_pen =
@@ -1199,21 +1345,9 @@ impl Controller {
                     }
                     if smart_pen
                         && self.settings.encircle_select
-                        && let Some(polygon) = folio_gestures::selection_loop(&points)
+                        && last_move.elapsed() >= INK_HOLD_DELAY
                     {
-                        let bounds = Rect::from_points(polygon.iter().copied()).expand(2.);
-                        let ids: HashSet<_> = self
-                            .session()
-                            .index
-                            .query(bounds)
-                            .into_iter()
-                            .filter(|id| {
-                                self.page()
-                                    .objects
-                                    .get(id)
-                                    .is_some_and(|o| folio_gestures::encloses(&polygon, o))
-                            })
-                            .collect();
+                        let ids = self.encircled_ids(&points);
                         if !ids.is_empty() {
                             self.session_mut().selection = ids;
                             self.tool = Tool::Lasso;
@@ -1227,12 +1361,12 @@ impl Controller {
                         || preview.is_some()
                         || smart_pen
                             && self.settings.hold_shapes
-                            && last_move.elapsed() >= Duration::from_millis(550);
+                            && last_move.elapsed() >= INK_HOLD_DELAY;
                     let mut fit = preview.or_else(|| {
                         if self.tool == Tool::Shape
                             || smart_pen
                                 && self.settings.hold_shapes
-                                && last_move.elapsed() >= Duration::from_millis(550)
+                                && last_move.elapsed() >= INK_HOLD_DELAY
                         {
                             folio_shapes::fit(&points)
                         } else {
@@ -1351,7 +1485,7 @@ impl Controller {
                 Transform::translate(end.x - start.x, end.y - start.y),
                 "Move selection",
             ),
-            Interaction::Resize { anchor, start, end } => self.transform_selection(
+            Interaction::Resize { anchor, start, end } => self.resize_selection(
                 Self::resize_transform(anchor, start, end),
                 "Resize selection",
             ),
@@ -1362,6 +1496,22 @@ impl Controller {
             }
             Interaction::Pan { .. } => {}
         }
+    }
+    fn encircled_ids(&self, points: &[Point]) -> HashSet<Id> {
+        let Some(polygon) = folio_gestures::selection_loop(points) else {
+            return HashSet::new();
+        };
+        self.session()
+            .index
+            .query(Rect::from_points(polygon.iter().copied()).expand(2.))
+            .into_iter()
+            .filter(|id| {
+                self.page()
+                    .objects
+                    .get(id)
+                    .is_some_and(|o| folio_gestures::encloses(&polygon, o))
+            })
+            .collect()
     }
     fn select_polygon(&mut self, polygon: &[Point]) {
         let bounds = Rect::from_points(polygon.iter().copied());
@@ -1504,9 +1654,45 @@ impl Controller {
         });
         self.commit(label, changes);
     }
+    fn resize_selection(&mut self, resize: Transform, label: &str) {
+        if resize == Transform::default() {
+            return;
+        }
+        let mut ids = self.session().selection.clone();
+        for id in ids.clone() {
+            if let Some(o) = self.page().objects.get(&id) {
+                match o.as_ref() {
+                    Object::Shape(s) => ids.extend(&s.source_strokes),
+                    Object::Equation(e) => ids.extend(&e.source_strokes),
+                    _ => {}
+                }
+            }
+        }
+        let changes = self.object_changes(&ids, |object| {
+            let mut object = object.clone();
+            if let Object::Text(text) = &mut object {
+                text.reflow(resize);
+            } else {
+                object.set_transform(resize.compose(object.transform()));
+            }
+            Some(object)
+        });
+        self.commit(label, changes);
+    }
+    pub fn preview_text(&self, text: &TextBlock) -> TextBlock {
+        let mut text = text.clone();
+        if self.session().selection.contains(&text.id) {
+            if matches!(self.interaction, Some(Interaction::Resize { .. })) {
+                text.reflow(self.interaction_transform());
+            } else {
+                text.transform = self.interaction_transform().compose(text.transform);
+            }
+        }
+        text
+    }
     pub fn scale_selection(&mut self, scale: f32) {
         if let Some(r) = self.selection_bounds() {
-            self.transform_selection(Transform::around(r.center(), scale, 0.), "Resize selection")
+            self.resize_selection(Transform::around(r.center(), scale, 0.), "Resize selection")
         }
     }
     pub fn rotate_selection(&mut self, angle: f32) {
@@ -1623,9 +1809,14 @@ impl Controller {
         self.temporary_selection = false;
     }
     pub fn add_text(&mut self, text: String, position: Point) {
-        if text.is_empty() {
-            return;
+        if !text.is_empty() {
+            self.insert_text_box(text, position);
         }
+    }
+    pub fn create_text_box(&mut self, position: Point) -> Id {
+        self.insert_text_box(String::new(), position)
+    }
+    fn insert_text_box(&mut self, text: String, position: Point) -> Id {
         let object = Object::Text(TextBlock {
             id: Id::new_v4(),
             text,
@@ -1653,6 +1844,7 @@ impl Controller {
         );
         self.session_mut().selection = HashSet::from([id]);
         self.pending_text = None;
+        id
     }
     pub fn edit_text(&mut self, id: Id, change: impl FnOnce(&mut TextBlock)) {
         let Some(before) = self.page().objects.get(&id).cloned() else {
@@ -1661,6 +1853,9 @@ impl Controller {
         let mut after = before.as_ref().clone();
         if let Object::Text(t) = &mut after {
             change(t);
+            if &after == before.as_ref() {
+                return;
+            }
             let index = self.page().order.iter().position(|v| *v == id).unwrap_or(0);
             self.commit(
                 "Edit text",
@@ -2310,7 +2505,11 @@ impl Controller {
             }
         }
         if self.settings.autosave && self.last_draft.elapsed() > Duration::from_secs(1) {
-            if let Some(Interaction::Ink { builder, .. }) = &self.interaction
+            if let Some(Interaction::Ink {
+                builder,
+                suppress_tap: false,
+                ..
+            }) = &self.interaction
                 && let Some(stroke) = builder.snapshot()
             {
                 self.persistence.draft(
@@ -2322,27 +2521,40 @@ impl Controller {
             }
             self.last_draft = Instant::now();
         }
-        if self.settings.hold_shapes
-            && (self.tool == Tool::Shape
-                || self.tool == Tool::Pen && self.style.tool != InkTool::Highlighter)
+        let smart_pen = self.tool == Tool::Pen && self.style.tool != InkTool::Highlighter;
+        if (self.settings.hold_shapes && self.tool == Tool::Shape
+            || smart_pen && (self.settings.hold_shapes || self.settings.encircle_select))
             && let Some(Interaction::Ink {
                 builder,
                 last_move,
-                preview,
                 fit_attempted,
+                suppress_tap: false,
                 ..
-            }) = &mut self.interaction
+            }) = &self.interaction
             && !*fit_attempted
-            && last_move.elapsed() > Duration::from_millis(550)
+            && last_move.elapsed() >= INK_HOLD_DELAY
         {
             let points = builder
                 .raw()
                 .iter()
                 .map(|p| p.position())
                 .collect::<Vec<_>>();
-            *fit_attempted = true;
-            *preview = folio_shapes::fit(&points);
-            changed |= preview.is_some();
+            if smart_pen && self.settings.encircle_select && !self.encircled_ids(&points).is_empty()
+            {
+                self.finish();
+                changed = true;
+            } else if let Some(Interaction::Ink {
+                preview,
+                fit_attempted,
+                ..
+            }) = &mut self.interaction
+            {
+                *fit_attempted = true;
+                if self.settings.hold_shapes {
+                    *preview = folio_shapes::fit(&points);
+                    changed |= preview.is_some();
+                }
+            }
         }
         if self.last_cache_trim.elapsed() >= Duration::from_millis(250) {
             self.trim_caches();
@@ -2433,8 +2645,14 @@ impl Controller {
         true
     }
     pub fn request_previews(&mut self, visible: &HashSet<Id>) {
-        let page = self.page().id;
-        let objects = &self.page().objects;
+        self.request_page_previews(self.session().page, visible);
+    }
+    pub fn request_page_previews(&mut self, index: usize, visible: &HashSet<Id>) {
+        let Some(page) = self.session().document.pages.get(index) else {
+            return;
+        };
+        let objects = &page.objects;
+        let page = page.id;
         let objects = visible
             .iter()
             .filter_map(|id| objects.get(id))

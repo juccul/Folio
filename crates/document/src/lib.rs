@@ -342,6 +342,66 @@ pub struct TextBlock {
     pub alignment: Alignment,
     pub list: ListStyle,
 }
+/// Word-wrap UTF-8 text without changing whitespace or paragraph boundaries.
+/// Font measurement comes from the consumer's local shaping engine.
+pub fn text_wrap_ranges(
+    text: &str,
+    width: f32,
+    measure: impl Fn(&str) -> f32,
+) -> Vec<std::ops::Range<usize>> {
+    let mut result = Vec::new();
+    let mut base = 0;
+    for paragraph in text.split('\n') {
+        let mut start = 0;
+        let mut in_word = false;
+        let mut word_start = 0;
+        for (end, c) in paragraph
+            .char_indices()
+            .chain(std::iter::once((paragraph.len(), ' ')))
+        {
+            if !c.is_whitespace() && !in_word {
+                word_start = end;
+                in_word = true;
+            }
+            if c.is_whitespace() && in_word {
+                if word_start > start && measure(&paragraph[start..end]) > width {
+                    result.push(base + start..base + word_start);
+                    start = word_start;
+                }
+                in_word = false;
+            }
+        }
+        result.push(base + start..base + paragraph.len());
+        base += paragraph.len() + 1;
+    }
+    result
+}
+
+impl TextBlock {
+    /// Resize the frame while keeping glyphs orthogonal and the font size fixed.
+    pub fn reflow(&mut self, resize: Transform) {
+        let t = resize.compose(self.transform);
+        let sx = t.a.hypot(t.b).max(0.001);
+        let sy = t.c.hypot(t.d).max(0.001);
+        let origin = t.apply(self.rect.min);
+        let angle = self.transform.b.atan2(self.transform.a);
+        let (sin, cos) = angle.sin_cos();
+        self.rect = Rect::new(
+            0.,
+            0.,
+            (self.rect.width() * sx).max(16.),
+            (self.rect.height() * sy).max(16.),
+        );
+        self.transform = Transform {
+            a: cos,
+            b: sin,
+            c: -sin,
+            d: cos,
+            tx: origin.x,
+            ty: origin.y,
+        };
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Alignment {
     Left,
@@ -524,6 +584,8 @@ pub struct PageProperties {
     pub height: f32,
     pub paper: Paper,
     pub infinite: bool,
+    #[serde(default)]
+    pub color: Option<Color>,
     pub pdf: Option<PdfBackground>,
 }
 impl Default for PageProperties {
@@ -534,6 +596,7 @@ impl Default for PageProperties {
             height: 1123.,
             paper: Paper::Ruled,
             infinite: false,
+            color: None,
             pdf: None,
         }
     }
@@ -641,7 +704,7 @@ impl Page {
         }
         page
     }
-    pub fn ordered_objects(&self) -> impl Iterator<Item = &Arc<Object>> {
+    pub fn ordered_objects(&self) -> impl DoubleEndedIterator<Item = &Arc<Object>> {
         self.order.iter().filter_map(|id| self.objects.get(id))
     }
     pub fn hidden_sources(&self) -> std::collections::HashSet<Id> {

@@ -37,6 +37,21 @@ pub(crate) fn project(p: Point, axis: Point) -> Point {
     Point::new(p.x * axis.x + p.y * axis.y, -p.x * axis.y + p.y * axis.x)
 }
 
+/// The direction of repeated travel, rather than the longest side of the
+/// scribble's footprint. Weight by arc length so report rate has no influence.
+pub(crate) fn traversal_axis(points: &[Point]) -> Point {
+    let (mut xx, mut yy, mut xy) = (0., 0., 0.);
+    for pair in points.windows(2) {
+        let (x, y) = (pair[1].x - pair[0].x, pair[1].y - pair[0].y);
+        let length = x.hypot(y).max(0.001);
+        xx += x * x / length;
+        yy += y * y / length;
+        xy += x * y / length;
+    }
+    let angle = 0.5 * (2. * xy).atan2(xx - yy);
+    Point::new(angle.cos(), angle.sin())
+}
+
 /// Geometry decisions must not depend on the tablet's report rate or dwell
 /// samples. Resample by arc length without modifying the document's raw ink.
 pub(crate) fn resample(points: &[Point], count: usize) -> Vec<Point> {

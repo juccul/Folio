@@ -1,9 +1,10 @@
 //! Explicit, offline recognition of selected ink. Suggestions never mutate a document.
 use super::*;
+use folio_platform::BackgroundCommand;
 use serde::{Deserialize, Serialize};
 use std::{
     io::{BufRead, BufReader, Read, Write},
-    process::{Child, ChildStdin, Command as ProcessCommand, Stdio},
+    process::{Child, ChildStdin, Stdio},
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
@@ -185,7 +186,7 @@ impl Service {
                             let root = task.pack.parent().unwrap();
                             let absolute =
                                 |p: PathBuf| if p.is_absolute() { p } else { root.join(p) };
-                            let mut child = ProcessCommand::new(absolute(pack.python))
+                            let mut child = folio_platform::command(absolute(pack.python))
                                 .arg("-u")
                                 .arg(absolute(pack.worker))
                                 .arg("--config")
@@ -197,7 +198,7 @@ impl Service {
                                 .stdin(Stdio::piped())
                                 .stdout(Stdio::piped())
                                 .stderr(Stdio::inherit())
-                                .spawn()
+                                .spawn_background()
                                 .map_err(|e| format!("Cannot start offline recognition: {e}"))?;
                             let input = child.stdin.take().unwrap();
                             let stdout = child.stdout.take().unwrap();

@@ -1,9 +1,9 @@
-//! AT-SPI bridge for GPUI controls. Accessibility requests are messages to the UI;
-//! the D-Bus thread never touches the document or blocks the drawing thread.
+//! AT-SPI/UI Automation bridge. Accessibility actions are queued to the UI thread.
 use super::*;
+#[cfg(not(windows))]
+use accesskit::DeactivationHandler;
 use accesskit::{
-    Action, ActionRequest, ActivationHandler, DeactivationHandler, Node, NodeId, Role, TreeId,
-    TreeInfo, TreeUpdate,
+    Action, ActionRequest, ActivationHandler, Node, NodeId, Role, TreeId, TreeInfo, TreeUpdate,
 };
 use std::{
     cell::RefCell,
@@ -25,9 +25,83 @@ impl accesskit::ActionHandler for Actions {
         let _ = self.0.send(request);
     }
 }
+#[cfg(not(windows))]
 struct Deactivation;
+#[cfg(not(windows))]
 impl DeactivationHandler for Deactivation {
     fn deactivate_accessibility(&mut self) {}
+}
+
+struct NativeAdapter {
+    #[cfg(not(windows))]
+    inner: accesskit_unix::Adapter,
+    #[cfg(windows)]
+    inner: Rc<RefCell<accesskit_windows::Adapter>>,
+}
+impl NativeAdapter {
+    fn new(snapshot: Arc<Mutex<Option<TreeUpdate>>>, actions: Actions, _window: &Window) -> Self {
+        #[cfg(not(windows))]
+        let inner = accesskit_unix::Adapter::new(Activation(snapshot), actions, Deactivation);
+        #[cfg(windows)]
+        let inner = {
+            let inner = Rc::new(RefCell::new(accesskit_windows::Adapter::new(
+                accesskit_windows::HWND(_window.win32_handle() as *mut _),
+                _window.is_window_active(),
+                actions,
+            )));
+            let adapter = inner.clone();
+            let mut activation = Activation(snapshot);
+            _window.on_accessibility_object(move |wparam, lparam| {
+                let response = adapter.borrow_mut().handle_wm_getobject(
+                    accesskit_windows::WPARAM(wparam),
+                    accesskit_windows::LPARAM(lparam),
+                    &mut activation,
+                );
+                response.map(|response| {
+                    let result: accesskit_windows::LRESULT = response.into();
+                    result.0
+                })
+            });
+            inner
+        };
+        Self { inner }
+    }
+    fn update_if_active(&mut self, update: impl FnOnce() -> TreeUpdate) {
+        #[cfg(not(windows))]
+        self.inner.update_if_active(update);
+        #[cfg(windows)]
+        {
+            let events = self.inner.borrow_mut().update_if_active(update);
+            if let Some(events) = events {
+                events.raise();
+            }
+        }
+    }
+    fn update_window(&mut self, window: &Window) {
+        #[cfg(not(windows))]
+        {
+            let bounds = window.bounds();
+            let rect = accesskit::Rect {
+                x0: f32::from(bounds.left()) as f64,
+                y0: f32::from(bounds.top()) as f64,
+                x1: f32::from(bounds.right()) as f64,
+                y1: f32::from(bounds.bottom()) as f64,
+            };
+            self.inner.set_root_window_bounds(rect, rect);
+            self.inner
+                .update_window_focus_state(window.is_window_active());
+        }
+        #[cfg(windows)]
+        {
+            let events = self
+                .inner
+                .borrow_mut()
+                .update_window_focus_state(window.is_window_active());
+            if let Some(events) = events {
+                events.raise();
+            }
+        }
+    }
 }
 struct Control {
     id: NodeId,
@@ -38,7 +112,7 @@ struct Control {
 }
 pub struct Accessibility {
     text_cache: RefCell<Option<(Id, u64, String)>>,
-    adapter: RefCell<accesskit_unix::Adapter>,
+    adapter: RefCell<NativeAdapter>,
     snapshot: Arc<Mutex<Option<TreeUpdate>>>,
     controls: RefCell<Vec<Control>>,
     focus_handles: RefCell<HashMap<NodeId, FocusHandle>>,
@@ -47,11 +121,10 @@ pub struct Accessibility {
     pending: RefCell<Vec<ActionRequest>>,
 }
 impl Accessibility {
-    pub fn new() -> Self {
+    pub fn new(window: &Window) -> Self {
         let snapshot = Arc::new(Mutex::new(None));
         let (tx, requests) = mpsc::channel();
-        let adapter =
-            accesskit_unix::Adapter::new(Activation(snapshot.clone()), Actions(tx), Deactivation);
+        let adapter = NativeAdapter::new(snapshot.clone(), Actions(tx), window);
         Self {
             text_cache: RefCell::new(None),
             adapter: RefCell::new(adapter),
@@ -170,6 +243,8 @@ impl Accessibility {
     }
     pub fn publish(&self, view: &NotesView, window: &Window, cx: &App) {
         let mut root = Node::new(Role::Window);
+        #[cfg(windows)]
+        root.set_transform(accesskit::Affine::scale(window.scale_factor() as f64));
         root.set_label(if view.library_open {
             "Library — Folio".into()
         } else {
@@ -232,6 +307,29 @@ impl Accessibility {
                 .retain(|id, _| ids.contains(id));
             self.bounds.borrow_mut().retain(|id, _| ids.contains(id));
         }
+        if let Some(editor) = &view.inline_text
+            && !view.blocking_overlay()
+        {
+            let field = editor.field.read(cx);
+            let mut node = Node::new(Role::MultilineTextInput);
+            node.set_label("Text box");
+            node.set_value(field.content.clone());
+            node.add_action(Action::Focus);
+            node.add_action(Action::SetValue);
+            if let Some(bounds) = field.bounds {
+                node.set_bounds(accesskit::Rect {
+                    x0: f32::from(bounds.left()) as f64,
+                    y0: f32::from(bounds.top()) as f64,
+                    x1: f32::from(bounds.right()) as f64,
+                    y1: f32::from(bounds.bottom()) as f64,
+                });
+            }
+            if field.focus.is_focused(window) {
+                focus = NodeId(13);
+            }
+            nodes.push((NodeId(13), node));
+            children.push(NodeId(13));
+        }
         if let Some((modal, field)) = &view.modal {
             let field = field.read(cx);
             let mut node = Node::new(if field.secret {
@@ -260,6 +358,27 @@ impl Accessibility {
             }
             nodes.push((NodeId(3), node));
             children.push(NodeId(3));
+            if let Some(setup) = &view.notebook_setup {
+                let field = setup.color.read(cx);
+                let mut color = Node::new(Role::TextInput);
+                color.set_label("Custom paper color");
+                color.set_value(field.content.clone());
+                color.add_action(Action::Focus);
+                color.add_action(Action::SetValue);
+                if let Some(bounds) = field.bounds {
+                    color.set_bounds(accesskit::Rect {
+                        x0: f32::from(bounds.left()) as f64,
+                        y0: f32::from(bounds.top()) as f64,
+                        x1: f32::from(bounds.right()) as f64,
+                        y1: f32::from(bounds.bottom()) as f64,
+                    });
+                }
+                if field.focus.is_focused(window) {
+                    focus = NodeId(12);
+                }
+                nodes.push((NodeId(12), color));
+                children.push(NodeId(12));
+            }
             if let Some(error) = &view.modal_error {
                 let mut status = Node::new(Role::Status);
                 status.set_label(error.clone());
@@ -390,16 +509,8 @@ impl Accessibility {
         if let Ok(mut current) = self.snapshot.lock() {
             *current = Some(update.clone());
         }
-        let bounds = window.bounds();
-        let rect = accesskit::Rect {
-            x0: f32::from(bounds.left()) as f64,
-            y0: f32::from(bounds.top()) as f64,
-            x1: f32::from(bounds.right()) as f64,
-            y1: f32::from(bounds.bottom()) as f64,
-        };
         let mut adapter = self.adapter.borrow_mut();
-        adapter.set_root_window_bounds(rect, rect);
-        adapter.update_window_focus_state(window.is_window_active());
+        adapter.update_window(window);
         adapter.update_if_active(|| update);
     }
 }

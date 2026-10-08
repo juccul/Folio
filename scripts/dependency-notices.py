@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the locked Linux dependency/license inventory and copy notices.
+"""Generate the locked Linux/Windows dependency/license inventory and copy notices.
 Uses only Python's standard library and cargo metadata; no license is inferred.
 Run after changing Cargo.lock, and review the missing-notice report.
 """
@@ -10,10 +10,15 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 def main():
-    result = subprocess.run(['cargo', 'metadata', '--locked', '--format-version', '1', '--filter-platform', 'x86_64-unknown-linux-gnu'], cwd=ROOT, capture_output=True, check=True)
-    metadata = json.loads(result.stdout)
-    active = {node['id'] for node in metadata['resolve']['nodes']}
-    packages = sorted((p for p in metadata['packages'] if p['id'] in active and p['id'] not in metadata['workspace_members']), key=lambda p:(p['name'], p['version']))
+    resolved = {}
+    for target in ('x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc'):
+        result = subprocess.run(['cargo', 'metadata', '--locked', '--format-version', '1', '--filter-platform', target], cwd=ROOT, capture_output=True, check=True)
+        metadata = json.loads(result.stdout)
+        active = {node['id'] for node in metadata['resolve']['nodes']}
+        resolved.update({p['id']: p for p in metadata['packages'] if p['id'] in active and p['id'] not in metadata['workspace_members']})
+    packages = sorted(resolved.values(), key=lambda p:(p['name'], p['version']))
+    existing = (ROOT / 'LICENSES.md').read_text()
+    windows_notice = '\n## Windows package\n' + existing.split('\n## Windows package\n', 1)[1] if '\n## Windows package\n' in existing else ''
     notices = ROOT / 'third_party' / 'licenses'
     notices.mkdir(parents=True, exist_ok=True)
     rows, missing = [], []
@@ -24,7 +29,7 @@ def main():
         key = f"{package['name']}-{package['version']}"
         files = []
         for path in source.rglob('*'):
-            if path.is_file() and path.name.upper().startswith(('LICENSE', 'NOTICE', 'COPYING', 'COPYRIGHT', 'UNLICENSE', 'OFL', 'FTL.TXT')):
+            if path.is_file() and path.name.upper().startswith(('LICENSE', 'LICENCE', 'NOTICE', 'COPYING', 'COPYRIGHT', 'UNLICENSE', 'OFL', 'FTL.TXT')):
                 files.append(path)
         if package.get('license_file'):
             files.append(source / package['license_file'])
@@ -42,7 +47,7 @@ def main():
         rows.append(f"| [{package['name']}]({repo}) | {package['version']} | {license_name} | {link} |")
     header = '''# Third-party licenses
 
-Folio's original source is GPL-3.0-or-later; see [LICENSE](LICENSE). Dependencies retain their own licenses. This inventory is generated from Cargo.lock's resolved Linux graph, including build dependencies. It records package-declared SPDX expressions without replacing upstream notices. Slash-separated legacy dual-license declarations mean alternatives.
+Folio's original source is GPL-3.0-or-later; see [LICENSE](LICENSE). Dependencies retain their own licenses. This inventory is generated from Cargo.lock's resolved Linux and Windows graphs, including build dependencies. It records package-declared SPDX expressions without replacing upstream notices. Slash-separated legacy dual-license declarations mean alternatives.
 
 For dual-licensed dependencies, select MIT where offered, otherwise Apache-2.0 where offered. In particular, `oo7` is used under Apache-2.0 rather than its alternative GPL-2.0-only license. MPL-2.0 `option-ext` is unmodified, and its source is available from the exact version linked below. Binary distributors must provide the matching Folio source and retained notices; the package script creates both archives.
 
@@ -68,14 +73,14 @@ The UI line icons and notebook cover artwork are original Folio vector drawings,
 
 The ink/geometric algorithms are original implementations. No perfect-freehand, Xournal++ or Rnote source was copied. [DEVELOPMENT.md](DEVELOPMENT.md) explains the design references and tradeoffs.
 
-## Locked Linux Rust dependencies
+## Locked Rust dependencies
 
 | Package / source | Version | Declared license | Retained text |
 | --- | --- | --- | --- |
 '''
-    (ROOT / 'LICENSES.md').write_text(header + '\n'.join(rows) + '\n')
+    (ROOT / 'LICENSES.md').write_text(header + '\n'.join(rows) + '\n' + windows_notice)
     (ROOT / 'third_party' / 'README.md').write_text('Retained dependency license and copyright texts. Regenerate with `python3 scripts/dependency-notices.py` after updating Cargo.lock. These files retain notices. Where packages omit standalone license files, manifest/readme/source headers are retained for attribution. Exact source packages are identified by Cargo.lock and LICENSES.md.\n')
-    print(f"Recorded {len(packages)} Linux dependencies; copied notices into {notices}")
+    print(f"Recorded {len(packages)} Linux/Windows dependencies; copied notices into {notices}")
     if missing:
         print('No standalone notice in source packages (review manifest/readme/upstream): ' + ', '.join(missing))
 

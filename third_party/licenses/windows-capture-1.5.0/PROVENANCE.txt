@@ -1,0 +1,1 @@
+Upstream notices from exact Cargo crate VCS revision: https://raw.githubusercontent.com/NiiightmareXD/windows-capture/94d0c904dcd22f01c2105f01e5d56ff2e578bc71/

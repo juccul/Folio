@@ -1,0 +1,3 @@
+Source: registry+https://github.com/rust-lang/crates.io-index#winreg@0.55.0
+License: MIT
+Repository: https://github.com/gentoo90/winreg-rs

@@ -159,8 +159,10 @@ def main():
                     click('Manage reading archive');click('Restore document');click('Documents')
                     click('Open Field notes');click('Open or create a document · Ctrl+T')
                     click('Open reading archive');assert not any(n.get_role()==Atspi.Role.ENTRY for n in walk(target))
-                    click('Open or create a document · Ctrl+T');click('＋  Create new document')
-                    assert any(n.get_name()=='Open Untitled note' for n in controls())
+                    click('Open or create a document · Ctrl+T');click('＋  Create new document');client.key('a',4)
+                    for char in 'untitled note':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
+                    click('Create notebook')
+                    assert any(n.get_name()=='Open untitled note' for n in controls())
                     click('Library ·',True)
                     with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
                         rows=[json.loads(row[0]) for row in db.execute('SELECT metadata FROM notes')]
@@ -207,6 +209,8 @@ def main():
                     click('Settings');click('Dark appearance');click('Done');capture('editor-dark-reset');click('Library ·',True)
                     print('APPEARANCE_OK: light/dark customization, alpha, validation, radius, fixed/custom/themed paper, reset, document preservation')
                 click('＋  New document')
+                for char in 'New notebook':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
+                click('Create notebook')
                 buttons=controls()
                 assert any(n.get_name()=='Undo' for n in buttons), 'Editor controls must follow notebook creation'
                 undo=next(n for n in buttons if n.get_name()=='Undo');assert undo.get_action_iface().get_n_actions()>0
@@ -215,6 +219,11 @@ def main():
                     from gi.repository import Gtk,Gdk
                     assert Gtk.init_check([])[0], 'No private GTK display for clipboard verification'
                     client.key('n',4);time.sleep(.5)
+                    with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
+                        assert db.execute('SELECT count(*) FROM notes').fetchone()[0]==initial_notes+1, 'Opening setup created a document'
+                    client.key('Escape');client.key('n',4)
+                    for char in 'Shortcut notebook':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
+                    click('Create notebook')
                     with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
                         assert db.execute('SELECT count(*) FROM notes').fetchone()[0]==initial_notes+2, 'Ctrl+N did not create exactly one document'
                         objects_before=list(db.execute('SELECT id,data FROM objects ORDER BY id'))

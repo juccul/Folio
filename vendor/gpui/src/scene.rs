@@ -66,9 +66,11 @@ impl Scene {
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
         let mut primitive = primitive.into();
-        let clipped_bounds = primitive
-            .bounds()
-            .intersect(&primitive.content_mask().bounds);
+        let paint_bounds = match &primitive {
+            Primitive::MonochromeSprite(sprite) => transformed_bounds(sprite.bounds, sprite.transformation),
+            _ => *primitive.bounds(),
+        };
+        let clipped_bounds = paint_bounds.intersect(&primitive.content_mask().bounds);
 
         if clipped_bounds.is_empty() {
             return;
@@ -847,4 +849,15 @@ impl PathVertex<Pixels> {
             content_mask: self.content_mask.scale(factor),
         }
     }
+}
+
+/// Screen bounds used for clipping and ordering affine-transformed glyphs.
+pub(crate) fn transformed_bounds(bounds: Bounds<ScaledPixels>, t: TransformationMatrix) -> Bounds<ScaledPixels> {
+    let points = [bounds.origin, point(bounds.right(), bounds.top()), point(bounds.right(), bounds.bottom()), point(bounds.left(), bounds.bottom())].map(|p| {
+        point(ScaledPixels(t.rotation_scale[0][0] * p.x.0 + t.rotation_scale[0][1] * p.y.0 + t.translation[0]),
+              ScaledPixels(t.rotation_scale[1][0] * p.x.0 + t.rotation_scale[1][1] * p.y.0 + t.translation[1]))
+    });
+    let min = point(points.iter().map(|p| p.x).min().unwrap(), points.iter().map(|p| p.y).min().unwrap());
+    let max = point(points.iter().map(|p| p.x).max().unwrap(), points.iter().map(|p| p.y).max().unwrap());
+    Bounds::from_corners(min, max)
 }

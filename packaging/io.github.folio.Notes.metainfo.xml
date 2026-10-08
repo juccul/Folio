@@ -12,6 +12,9 @@
   <launchable type="desktop-id">io.github.folio.Notes.desktop</launchable>
   <supports><control>pointing</control><control>keyboard</control></supports>
   <releases>
+    <release version="0.1.1" date="2026-10-08">
+      <description><p>Windows 11 x64 port with a per-user installer, Windows Ink input, native accessibility and portable offline PDF/math tools. Adds configurable notebooks, inline text formatting and continuous page scrolling alongside page organization, notebook sharing, backups, reusable templates and handwriting search.</p></description>
+    </release>
     <release version="0.1.0" date="2026-10-07">
       <description><p>Initial Folio release: editable vector handwriting, PDF notes, rendered LaTeX and offline step-by-step math. Includes custom window controls and fixes for saving, exports, selections, document validation and large notebooks. The Flatpak includes the CPU math solver and automatic verified OCR downloads, with Vulkan Q8 GPU acceleration and CPU fallback.</p></description>
     </release>

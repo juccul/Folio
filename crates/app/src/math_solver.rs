@@ -1,11 +1,12 @@
 //! Independent offline math process, source validation and durable calculations.
 use super::*;
+use folio_platform::BackgroundCommand;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     hash::{Hash, Hasher},
     io::{BufRead, BufReader, Read, Write},
-    process::{Child, ChildStdin, Command as ProcessCommand, Stdio},
+    process::{Child, ChildStdin, Stdio},
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
@@ -269,7 +270,7 @@ impl Service {
                                         root.join(path)
                                     }
                                 };
-                                let mut child = ProcessCommand::new(absolute(pack.python))
+                                let mut child = folio_platform::command(absolute(pack.python))
                                     .arg("-u")
                                     .arg(absolute(pack.worker))
                                     .arg("--config")
@@ -277,7 +278,7 @@ impl Service {
                                     .stdin(Stdio::piped())
                                     .stdout(Stdio::piped())
                                     .stderr(Stdio::inherit())
-                                    .spawn()
+                                    .spawn_background()
                                     .map_err(|e| format!("Cannot start offline math: {e}"))?;
                                 let input = child.stdin.take().unwrap();
                                 let stdout = child.stdout.take().unwrap();
@@ -391,14 +392,8 @@ impl Controller {
         if local.is_file() {
             return local;
         }
-        if let Some(root) = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent()?.parent().map(PathBuf::from))
-        {
-            let portable = root.join("math-solver/pack.json");
-            if portable.is_file() {
-                return portable;
-            }
+        if let Some(portable) = folio_platform::bundled_resource("math-solver/pack.json") {
+            return portable;
         }
         if cfg!(debug_assertions) {
             let development = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1611,6 +1606,12 @@ mod tests {
     fn mock_ocr(app: &Controller, root: &std::path::Path) {
         let pack: serde_json::Value =
             serde_json::from_slice(&std::fs::read(app.math_pack()).unwrap()).unwrap();
+        let python = PathBuf::from(pack["python"].as_str().unwrap());
+        let python = if python.is_absolute() {
+            python
+        } else {
+            app.math_pack().parent().unwrap().join(python)
+        };
         let dir = root.join("recognition");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -1630,8 +1631,7 @@ for line in sys.stdin:
         .unwrap();
         std::fs::write(
             dir.join("pack.json"),
-            serde_json::to_vec(&serde_json::json!({"python":pack["python"],"worker":"worker.py"}))
-                .unwrap(),
+            serde_json::to_vec(&serde_json::json!({"python":python,"worker":"worker.py"})).unwrap(),
         )
         .unwrap();
     }

@@ -1,7 +1,7 @@
 //! Original PDFs with lazy, bounded Poppler previews. Metadata and passwords are
 //! handled in Rust; only requested pages are rendered on document workers.
 use folio_document::*;
-use std::{path::Path, process::Command, time::Duration};
+use std::{path::Path, time::Duration};
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("PDF import: {0}")]
@@ -49,9 +49,7 @@ pub fn import_with_password(
         document
             .save(&temporary)
             .map_err(|e| Error::Invalid(e.to_string()))?;
-        std::fs::File::open(&temporary)?.sync_all()?;
-        std::fs::rename(temporary, &unlocked)?;
-        std::fs::File::open(assets)?.sync_all()?;
+        folio_platform::publish_file(&temporary, &unlocked)?;
         unlocked.file_name().unwrap().to_string_lossy().into_owned()
     } else {
         original.file_name().unwrap().to_string_lossy().into_owned()
@@ -97,6 +95,7 @@ pub fn import_with_password(
             height: height * 96. / 72.,
             paper: Paper::Blank,
             infinite: false,
+            color: None,
             pdf: Some(PdfBackground {
                 asset: name.clone(),
                 page: number,
@@ -121,7 +120,7 @@ pub fn render_preview(background: &PdfBackground, assets: &Path) -> Result<(), E
     let generated = stem.with_extension("png");
     let result = (|| {
         folio_platform::run(
-            Command::new("pdftoppm")
+            folio_platform::command(folio_platform::tool_path("pdftoppm"))
                 .args([
                     "-f",
                     &background.page.to_string(),
@@ -138,8 +137,7 @@ pub fn render_preview(background: &PdfBackground, assets: &Path) -> Result<(), E
             None,
             Duration::from_secs(30),
         )?;
-        std::fs::File::open(&generated)?.sync_all()?;
-        std::fs::rename(&generated, &target)?;
+        folio_platform::publish_file(&generated, &target)?;
         Ok(())
     })();
     if result.is_err() {
