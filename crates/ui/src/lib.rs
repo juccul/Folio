@@ -7,6 +7,7 @@ mod recovery;
 pub use recovery::RecoveryView;
 mod appearance;
 mod color_picker;
+mod canvas_menu;
 mod field;
 mod graph;
 mod help;
@@ -229,6 +230,7 @@ pub struct NotesView {
     tab_target: Option<(Id, usize, Pixels, f32)>,
     document_menu: Option<(Id, Point<Pixels>)>,
     document_menu_folders: bool,
+    canvas_menu: Option<canvas_menu::CanvasMenu>,
     thumbnails: workspace::Thumbnails,
     writing_style: Option<folio_document::PenStyle>,
     timestamps: TimestampExtender,
@@ -328,6 +330,7 @@ impl NotesView {
             tab_target: None,
             document_menu: None,
             document_menu_folders: false,
+            canvas_menu: None,
             thumbnails: workspace::Thumbnails::default(),
             writing_style: None,
             timestamps: TimestampExtender::default(),
@@ -369,6 +372,8 @@ impl NotesView {
             KeyBinding::new("ctrl-c", Copy, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-x", Cut, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-v", Paste, Some("Folio && !FolioField")),
+            KeyBinding::new("ctrl-v", Paste, Some("FolioCanvasMenu")),
+            KeyBinding::new("escape", Escape, Some("FolioCanvasMenu")),
             KeyBinding::new("ctrl-a", SelectAll, Some("Folio && !FolioField")),
             KeyBinding::new("delete", Delete, Some("Folio && !FolioField")),
             KeyBinding::new("escape", Escape, Some("Folio && !FolioField")),
@@ -398,6 +403,7 @@ impl NotesView {
         self.modal.is_some()
             || self.controller.recognition_setup_needed()
             || self.document_menu.is_some()
+            || self.canvas_menu.is_some()
             || self.settings_open
             || self.help_open
             || (self.controller.error.is_some() && self.controller.interaction.is_none())
@@ -417,6 +423,7 @@ impl NotesView {
         self.focus.focus(window);
     }
     fn dismiss_popovers(&mut self) {
+        self.canvas_menu = None;
         self.sort_open = false;
         self.more_open = false;
         self.pen_settings = false;
@@ -937,6 +944,20 @@ impl NotesView {
         cx.notify();
     }
     fn paste(&mut self, cx: &mut Context<Self>) {
+        if let Some(menu) = self.canvas_menu {
+            if !menu.can_paste {
+                return;
+            }
+            self.canvas_menu = None;
+            self.paste_at(Some(menu.position), cx);
+        } else {
+            self.paste_at(None, cx);
+        }
+    }
+    fn paste_at(&mut self, position: Option<DocPoint>, cx: &mut Context<Self>) {
+        if self.controller.read_only() {
+            return;
+        }
         if let Some(item) = cx.read_from_clipboard() {
             let mut pasted = false;
             for entry in item.entries() {
@@ -948,14 +969,22 @@ impl NotesView {
                         _ => None,
                     };
                     if let Some(ext) = ext {
-                        self.controller.paste_image(image.bytes(), ext);
+                        if let Some(position) = position {
+                            self.controller.paste_image_at(image.bytes(), ext, position);
+                        } else {
+                            self.controller.paste_image(image.bytes(), ext);
+                        }
                         pasted = true;
                         break;
                     }
                 }
             }
             if !pasted && let Some(text) = item.text() {
-                self.controller.paste_text_or_objects(text)
+                if let Some(position) = position {
+                    self.controller.paste_text_or_objects_at(text, position);
+                } else {
+                    self.controller.paste_text_or_objects(text);
+                }
             }
         }
         cx.notify();
@@ -1047,6 +1076,7 @@ impl NotesView {
         self.last_tablet = Some(Instant::now());
         self.pen_in_range = !matches!(event.phase, TabletPhase::Leave | TabletPhase::Cancel);
         if self.library_open
+            || self.blocking_overlay()
             || self.modal.is_some()
             || self.settings_open
             || self.help_open
@@ -1117,6 +1147,7 @@ impl NotesView {
         cx: &mut Context<Self>,
     ) {
         if self.library_open
+            || self.blocking_overlay()
             || self.modal.is_some()
             || self.settings_open
             || self.help_open
@@ -1428,6 +1459,7 @@ impl NotesView {
                 | "paper-color"
                 | "selection-cut"
                 | "delete-selection"
+                | "canvas-paste"
         );
         let enabled = (!self.controller.read_only() || self.library_open || !editing)
             && (!self.blocking_overlay() || self.building_overlay || window_control)
@@ -1436,6 +1468,7 @@ impl NotesView {
                 || self.building_overlay
                 || window_control)
             && match id.as_ref() {
+                "canvas-paste" => self.canvas_menu.is_some_and(|menu| menu.can_paste),
                 "delete-folder" => match self.controller.filter {
                     NoteFilter::Notebook(id) | NoteFilter::NotebookTrash(id) => {
                         self.controller.folder_deletion_reason(id).is_none()
@@ -2998,10 +3031,17 @@ impl Render for NotesView {
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                     if phase.bubble()
                         && hitbox.is_hovered(window)
-                        && matches!(event.button, MouseButton::Left | MouseButton::Middle)
+                        && matches!(
+                            event.button,
+                            MouseButton::Left | MouseButton::Middle | MouseButton::Right
+                        )
                     {
                         down_entity.update(cx, |v, cx| {
-                            v.mouse(event.position, Phase::Down, event.button, window, cx)
+                            if event.button == MouseButton::Right {
+                                v.open_canvas_menu(event.position, window, cx);
+                            } else {
+                                v.mouse(event.position, Phase::Down, event.button, window, cx);
+                            }
                         });
                     }
                 });
@@ -3114,7 +3154,9 @@ impl Render for NotesView {
         let mut root = div()
             .id("folio-root")
             .key_context(
-                if self.blocking_overlay() || self.controller.loading_note() {
+                if self.canvas_menu.is_some() {
+                    "FolioCanvasMenu"
+                } else if self.blocking_overlay() || self.controller.loading_note() {
                     "FolioDialog"
                 } else if self.library_open {
                     "FolioLibrary"
@@ -3192,6 +3234,7 @@ impl Render for NotesView {
                         || this.pen_settings
                         || this.export_open
                         || this.document_menu.is_some()
+                        || this.canvas_menu.is_some()
                         || this.controller.error.is_some();
                     if !dismissing_ui && this.controller.math_session.is_some() {
                         this.controller.close_math_solver();
@@ -3483,6 +3526,37 @@ impl Render for NotesView {
                     .child(footer),
             );
         }
+        let canvas_overlay = if self.canvas_menu.is_some() {
+            self.building_overlay = true;
+            self.accessibility.begin();
+            Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, _, window, cx| {
+                            this.canvas_menu = None;
+                            this.focus.focus(window);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.canvas_menu = None;
+                            this.focus.focus(window);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
+                    .child(self.canvas_menu_panel(window, cx)),
+            )
+        } else {
+            None
+        };
         if self.document_menu.is_some() {
             self.building_overlay = self.modal.is_none()
                 && !self.settings_open
@@ -3622,7 +3696,7 @@ impl Render for NotesView {
                     ),
             );
         }
-        root = root.child(body);
+        root = root.child(body).children(canvas_overlay);
         self.accessibility.publish(self, window, cx);
         titlebar::frame(root, window)
     }

@@ -58,4 +58,4 @@ The filled favorite state in `StarFilled.svg` is derived from the existing `star
 | Sliders | `adjustments-horizontal.svg` |
 | Help | `help-circle.svg` |
 
-Math.svg and Crop.svg are original Folio drawings in the same outline style, licensed under the project license.
+Math.svg, Crop.svg and Paste.svg are original Folio drawings in the same outline style, licensed under the project license.

@@ -2008,14 +2008,29 @@ impl Controller {
             .map(|o| o.as_ref().clone())
             .collect()
     }
-    pub fn paste_objects(&mut self, mut objects: Vec<Object>) {
+    pub fn paste_objects(&mut self, objects: Vec<Object>) {
+        self.paste_objects_offset(objects, Point::new(24., 24.));
+    }
+    fn paste_objects_at(&mut self, objects: Vec<Object>, position: Point) {
+        let Some(bounds) = objects.iter().map(Object::bounds).reduce(Rect::union) else {
+            return;
+        };
+        self.paste_objects_offset(
+            objects,
+            Point::new(position.x - bounds.min.x, position.y - bounds.min.y),
+        );
+    }
+    fn paste_objects_offset(&mut self, mut objects: Vec<Object>, offset: Point) {
+        if self.read_only() || objects.is_empty() {
+            return;
+        }
         let map: HashMap<Id, Id> = objects.iter().map(|o| (o.id(), Id::new_v4())).collect();
         let mut changes = vec![];
         let index = self.page().order.len();
         let mut ids = HashSet::new();
         for (i, o) in objects.iter_mut().enumerate() {
             o.set_id(map[&o.id()]);
-            o.set_transform(Transform::translate(24., 24.).compose(o.transform()));
+            o.set_transform(Transform::translate(offset.x, offset.y).compose(o.transform()));
             match o {
                 Object::Shape(s) => {
                     s.source_strokes = s
@@ -2040,7 +2055,12 @@ impl Controller {
                             None
                         } else {
                             link.ink_region.map(|r| {
-                                Rect::new(r.min.x + 24., r.min.y + 24., r.width(), r.height())
+                                Rect::new(
+                                    r.min.x + offset.x,
+                                    r.min.y + offset.y,
+                                    r.width(),
+                                    r.height(),
+                                )
                             })
                         };
                     }
@@ -3273,6 +3293,15 @@ impl Controller {
         }
     }
     pub fn paste_text_or_objects(&mut self, text: String) {
+        self.paste_clipboard_text(text, None);
+    }
+    pub fn paste_text_or_objects_at(&mut self, text: String, position: Point) {
+        self.paste_clipboard_text(text, Some(position));
+    }
+    fn paste_clipboard_text(&mut self, text: String, position: Option<Point>) {
+        if self.read_only() {
+            return;
+        }
         if let Some(data) = text
             .strip_prefix("FOLIO-OBJECTS-V2\n")
             .or_else(|| text.strip_prefix("FOLIO-OBJECTS-V1\n"))
@@ -3289,16 +3318,29 @@ impl Controller {
                     if let Err(e) = doc.validate() {
                         self.error = Some(e)
                     } else {
-                        self.paste_objects(objects)
+                        if let Some(position) = position {
+                            self.paste_objects_at(objects, position);
+                        } else {
+                            self.paste_objects(objects);
+                        }
                     }
                 }
                 Err(e) => self.error = Some(e.to_string()),
             }
         } else {
-            self.add_text(text, self.cursor.unwrap_or(Point::new(100., 100.)));
+            self.add_text(
+                text,
+                position.or(self.cursor).unwrap_or(Point::new(100., 100.)),
+            );
         }
     }
     pub fn paste_image(&mut self, data: &[u8], extension: &str) {
+        self.paste_image_at(data, extension, Point::new(80., 80.));
+    }
+    pub fn paste_image_at(&mut self, data: &[u8], extension: &str, position: Point) {
+        if self.read_only() {
+            return;
+        }
         let path =
             self.data_dir
                 .join("jobs")
@@ -3307,7 +3349,22 @@ impl Controller {
             let _ = std::fs::create_dir_all(parent);
         }
         match std::fs::write(&path, data) {
-            Ok(()) => self.import(path),
+            Ok(()) => {
+                let note = self.active;
+                let job = Job::ImportImage {
+                    note,
+                    page: self.page().id,
+                    path,
+                    assets: self.assets.clone(),
+                    position,
+                };
+                if let Err(error) = self.workers.submit(job) {
+                    self.error = Some(error);
+                } else {
+                    self.busy += 1;
+                    *self.pending_imports.entry(note).or_default() += 1;
+                }
+            }
             Err(e) => self.error = Some(e.to_string()),
         }
     }
@@ -3408,6 +3465,67 @@ mod tests {
         assert!(!a.session().selection.contains(&id));
         a.undo();
         assert_eq!(a.page().objects.len(), 1);
+    }
+    #[test]
+    fn context_paste_places_mixed_objects_at_anchor_and_undoes_once() {
+        let mut a = app();
+        draw(&mut a);
+        a.add_text("Text".into(), Point::new(120., 170.));
+        a.select_all();
+        a.transform_selection(
+            Transform::around(Point::new(0., 0.), 1.3, 0.2).compose(Transform::translate(60., 90.)),
+            "Move originals",
+        );
+        let originals = a.page().objects.clone();
+        let clipboard = a.encode_clipboard().unwrap();
+        let target = Point::new(450., 300.);
+        a.paste_text_or_objects_at(clipboard.clone(), target);
+        assert_eq!(a.page().objects.len(), 4);
+        assert_eq!(a.session().selection.len(), 2);
+        let bounds = a.selection_bounds().unwrap();
+        assert!((bounds.min.x - target.x).abs() < 0.01);
+        assert!((bounds.min.y - target.y).abs() < 0.01);
+        for (id, object) in &originals {
+            assert_eq!(a.page().objects[id], *object);
+        }
+        a.undo();
+        assert_eq!(a.page().objects, originals);
+        a.redo();
+        assert_eq!(a.page().objects.len(), 4);
+        a.undo();
+        a.paste_text_or_objects_at("Plain clipboard text".into(), target);
+        let text = a.page().ordered_objects().last().unwrap();
+        assert_eq!(text.bounds().min, target);
+        a.undo();
+        assert_eq!(a.page().objects, originals);
+        a.session_mut().document.metadata.trashed = true;
+        a.paste_text_or_objects_at(clipboard, target);
+        assert_eq!(a.page().objects, originals);
+    }
+    #[test]
+    fn context_paste_image_retains_page_target_and_anchor() {
+        let mut a = app();
+        a.create_note();
+        let note = a.active;
+        let page = a.page().id;
+        let image = image::DynamicImage::new_rgba8(4, 3);
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        a.paste_image_at(bytes.get_ref(), "png", Point::new(420., 260.));
+        a.add_page();
+        wait(&mut a);
+        let pasted = a.sessions[&note]
+            .document
+            .pages
+            .iter()
+            .find(|p| p.id == page)
+            .unwrap();
+        assert_eq!(pasted.objects.len(), 1);
+        assert_eq!(
+            pasted.ordered_objects().next().unwrap().bounds().min,
+            Point::new(420., 260.)
+        );
+        assert!(a.page().objects.is_empty());
     }
     fn wait(a: &mut Controller) {
         let start = Instant::now();

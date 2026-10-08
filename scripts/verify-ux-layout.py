@@ -181,13 +181,42 @@ def main():
                             for label in ['Cut','Copy','Delete','Solve']:inside(label)
                             assert not any(n.get_name() in ['−10% size','+10% size','Rotate 15°','Apply pen','Refine ink','Remove refinement','Duplicate'] for n in nodes()), 'Removed transforms remain in selection toolbar'
                             capture('selection-toolbar')
+                            client.click(width-20,height-65,button=3);inside('Paste')
+                            assert not find('Paste').get_state_set().contains(Atspi.StateType.ENABLED), 'Empty clipboard should disable Paste'
+                            client.key('Escape');inside('Copy')
                             click('Copy');inside('Cut')
                             click('Cut');time.sleep(.2)
                             assert not any(n.get_name()=='Copy' for n in nodes()), 'Cut did not remove the selection'
                             client.key('z',4);time.sleep(.3);client.key('a',4);time.sleep(.2);inside('Copy')
                             client.key('Escape');time.sleep(.2)
                             assert not any(n.get_name()=='Copy' for n in nodes()), 'Selection toolbar did not dismiss'
-                            reports.append({'case':case,'icon_toolbar':True,'cut_copy_undo':True,'removed_actions_absent':True});continue
+                            def object_count():
+                                client.key('s',4);time.sleep(.35)
+                                with sqlite3.connect(data/'notes.sqlite3') as db:return db.execute('SELECT COUNT(*) FROM objects WHERE page_id=?',(page,)).fetchone()[0]
+                            before=object_count()
+                            client.click(width-20,height-65,button=3);inside('Paste');capture('paste-menu')
+                            client.key('Escape');time.sleep(.2)
+                            assert not any(n.get_name()=='Paste' for n in nodes()), 'Escape did not dismiss paste menu'
+                            client.click(width-20,height-65,button=3);inside('Paste')
+                            r=find('Paste').get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                            client.click(r.x+r.width/2,r.y+r.height/2);time.sleep(.3)
+                            assert not any(n.get_name()=='Paste' for n in nodes()), 'Paste did not close menu'
+                            assert object_count()==before*2, 'Context paste did not insert clipboard objects'
+                            client.key('z',4);assert object_count()==before, 'Paste did not undo as one operation'
+                            client.click(width-20,height-65,button=3);inside('Paste');client.key('v',4)
+                            assert object_count()==before*2, 'Paste shortcut in context menu failed'
+                            client.key('z',4);assert object_count()==before
+                            client.key('Escape');client.key('a',4);inside('Copy')
+                            client.click(width-20,height-65,button=3);inside('Paste')
+                            client.key('Escape');inside('Copy') # Menu dismissal must preserve selection.
+                            client.click(width-20,height-65,button=3);inside('Paste')
+                            client.click(width-10,height-110);time.sleep(.2)
+                            assert not any(n.get_name()=='Paste' for n in nodes()), 'Outside click did not dismiss'
+                            inside('Copy');assert object_count()==before, 'Dismissal drew through the menu'
+                            click('Settings');click('Dark appearance');click('Close settings')
+                            client.key('a',4);capture('selection-toolbar-dark')
+                            client.click(width-20,height-65,button=3);inside('Paste');capture('paste-menu-dark');client.key('Escape')
+                            reports.append({'case':case,'icon_toolbar':True,'cut_copy_undo':True,'context_paste_undo':True,'menu_dismissal_preserves_selection':True});continue
                         click('Settings')
                         for label in ['Appearance','Writing','Library','Accessibility','Close settings','Light appearance','Dark appearance']:
                             inside(label)
