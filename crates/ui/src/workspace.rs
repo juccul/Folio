@@ -1342,6 +1342,50 @@ impl NotesView {
                 |this, w, _| this.open_settings(w),
             ))
     }
+    pub(super) fn eraser_controls(&self, prefix: &'static str, cx: &mut Context<Self>) -> Div {
+        let mut row = div().flex().flex_wrap().items_center().gap_1();
+        for (label, mode) in [
+            ("Whole stroke", folio_app::EraserMode::Stroke),
+            ("Ink segments", folio_app::EraserMode::Segment),
+            ("Whole object", folio_app::EraserMode::Object),
+        ] {
+            row = row.child(
+                self.button(
+                    format!("{prefix}-eraser-{mode:?}"),
+                    label,
+                    self.controller.settings.effective_eraser_mode() == mode,
+                    cx,
+                    move |this, _, _| {
+                        this.controller.finish();
+                        this.controller.settings.segment_eraser = false;
+                        this.controller.settings.eraser_mode = mode;
+                        this.controller.store_settings();
+                    },
+                )
+                .text_xs()
+                .px_2(),
+            );
+        }
+        row = row.child(div().text_xs().child("Size"));
+        for radius in [5., 10., 20.] {
+            row = row.child(
+                self.button(
+                    format!("{prefix}-eraser-size-{radius}"),
+                    format!("{} px", radius * 2.),
+                    (self.controller.settings.eraser_radius - radius).abs() < 0.1,
+                    cx,
+                    move |this, _, _| {
+                        this.controller.finish();
+                        this.controller.settings.eraser_radius = radius;
+                        this.controller.store_settings();
+                    },
+                )
+                .text_xs()
+                .px_2(),
+            );
+        }
+        row
+    }
     pub(super) fn toolbar(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
         let mut tools = div().flex().items_center().gap_1();
@@ -1531,12 +1575,19 @@ impl NotesView {
             .child(tools)
             .child(div().flex_1())
             .child(self.separator())
-            .child(widths)
-            .child(self.separator())
-            .child(colors)
+            .when(self.controller.tool == Tool::Eraser, |row| {
+                row.child(self.eraser_controls("toolbar", cx))
+            })
+            .when(self.controller.tool != Tool::Eraser, |row| {
+                row.child(widths).child(self.separator()).child(colors)
+            })
             .child(self.icon_button(
                 "pen-options",
-                "Pen settings and presets",
+                if self.controller.tool == Tool::Eraser {
+                    "Eraser modes and size"
+                } else {
+                    "Pen settings and presets"
+                },
                 Icon::Sliders,
                 self.pen_settings,
                 cx,

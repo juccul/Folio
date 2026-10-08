@@ -1824,6 +1824,10 @@ impl NotesView {
                     .justify_start(),
                 );
             }
+        } else if self.pen_settings && self.controller.tool == Tool::Eraser {
+            panel = panel.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Eraser"))
+                .child(self.eraser_controls("popover",cx))
+                .child(div().text_xs().child("Whole stroke and Ink segments erase handwriting only. Whole object also deletes text, images, equations, and shapes. Undo restores erased content."));
         } else if self.pen_settings {
             panel = panel.child(
                 div()
@@ -2005,12 +2009,6 @@ impl NotesView {
         }
         for (id, label, enabled, kind) in [
             (
-                "segment-eraser",
-                "Erase stroke segments",
-                self.controller.settings.segment_eraser,
-                7,
-            ),
-            (
                 "scratch-toggle",
                 "Scratch to erase (deliberate scribbles)",
                 self.controller.settings.scratch_erase,
@@ -2059,7 +2057,7 @@ impl NotesView {
                             1 => s.scratch_erase = !s.scratch_erase,
                             2 => s.hold_shapes = !s.hold_shapes,
                             3 => s.encircle_select = !s.encircle_select,
-                            7 => s.segment_eraser = !s.segment_eraser,
+
                             _ => s.autosave = !s.autosave,
                         }
                     })),

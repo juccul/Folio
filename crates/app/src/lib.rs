@@ -30,7 +30,7 @@ pub use folio_math::{VectorCommand, VectorFormula};
 use folio_storage::{Delta, JournalEvent, Persistence, Store};
 pub use math_solver::{MathReport, MathRequest, MathSession, MathStep};
 pub use recognition::{RecognitionKind, RecognitionReview};
-pub use settings::{PageTemplate, Settings};
+pub use settings::{EraserMode, PageTemplate, Settings};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -1220,7 +1220,8 @@ impl Controller {
                         p.y.clamp(0., self.page().properties.height),
                     )
                 };
-                let eraser_radius = (self.style.width * 2.).max(10.);
+                let eraser_radius = self.settings.eraser_radius;
+                let eraser_mode = self.settings.effective_eraser_mode();
                 let page = self.page();
                 let candidates = if let Some(Interaction::Erase { last, .. }) = &self.interaction {
                     self.session()
@@ -1240,7 +1241,10 @@ impl Controller {
                                     false
                                 }
                             }
-                            _ => o.bounds().expand(eraser_radius).contains(p),
+                            _ => {
+                                eraser_mode == EraserMode::Object
+                                    && o.bounds().expand(eraser_radius).contains(p)
+                            }
                         })
                     })
                     .copied()
@@ -1259,7 +1263,7 @@ impl Controller {
                             last,
                             fragments,
                         } => {
-                            if self.settings.segment_eraser {
+                            if self.settings.effective_eraser_mode() == EraserMode::Segment {
                                 for id in &hits {
                                     if let Some(Object::Stroke(stroke)) = self.sessions
                                         [&self.active]
@@ -1504,7 +1508,7 @@ impl Controller {
                 }
             }
             Interaction::Erase { ids, fragments, .. } => {
-                if !self.settings.segment_eraser {
+                if self.settings.effective_eraser_mode() != EraserMode::Segment {
                     self.delete_ids(&ids, "Erase strokes");
                 } else {
                     let page = self.page();
@@ -3435,5 +3439,40 @@ mod extended_tests {
             a.page().objects[&original.id].as_ref(),
             &Object::Stroke(original)
         );
+    }
+    #[test]
+    fn ink_erasers_protect_media_and_keep_their_own_radius() {
+        let mut a = app();
+        let original = ink();
+        insert(&mut a, original);
+        a.add_text("Protect me".into(), Point::new(150., 90.));
+        let text = *a.session().selection.iter().next().unwrap();
+        a.style.width = 80.;
+        assert_eq!(a.settings.eraser_radius, 10.);
+        a.set_tool(Tool::Eraser);
+        let event = |phase| PenEvent {
+            device: folio_input::Device::Tablet,
+            tool: PenTool::Eraser,
+            phase,
+            position: Point::new(231., 136.),
+            pressure: 0.8,
+            tilt_x: 0.,
+            tilt_y: 0.,
+            buttons: 0,
+            timestamp: 1000,
+        };
+        for mode in [EraserMode::Stroke, EraserMode::Segment] {
+            a.settings.eraser_mode = mode;
+            a.pointer(event(Phase::Down));
+            a.pointer(event(Phase::Up));
+            assert!(a.page().objects.contains_key(&text));
+            a.undo();
+        }
+        a.settings.eraser_mode = EraserMode::Object;
+        a.pointer(event(Phase::Down));
+        a.pointer(event(Phase::Up));
+        assert!(!a.page().objects.contains_key(&text));
+        a.undo();
+        assert!(a.page().objects.contains_key(&text));
     }
 }

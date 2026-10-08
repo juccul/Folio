@@ -748,7 +748,7 @@ impl Painter {
             if let Some(cursor) = controller.cursor {
                 let center = world.apply(cursor);
                 let r = if controller.tool == Tool::Eraser {
-                    (controller.style.width * 2.).max(10.) * viewport.zoom
+                    controller.settings.eraser_radius * viewport.zoom
                 } else {
                     controller.settings.cursor_size * 0.5
                 };

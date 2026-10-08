@@ -1,5 +1,13 @@
 use folio_document::*;
 use serde::{Deserialize, Serialize};
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EraserMode {
+    #[default]
+    Stroke,
+    Segment,
+    Object,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PageTemplate {
     pub id: Id,
@@ -20,7 +28,10 @@ pub struct Settings {
     pub presets: Vec<PenStyle>,
     pub paper: Paper,
     pub pad_buttons: Vec<String>,
+    #[serde(skip_serializing)]
     pub segment_eraser: bool,
+    pub eraser_mode: EraserMode,
+    pub eraser_radius: f32,
     pub recent_colors: Vec<Color>,
     pub scratch_erase: bool,
     pub hold_shapes: bool,
@@ -30,6 +41,13 @@ pub struct Settings {
 }
 
 impl Settings {
+    pub fn effective_eraser_mode(&self) -> EraserMode {
+        if self.segment_eraser {
+            EraserMode::Segment
+        } else {
+            self.eraser_mode
+        }
+    }
     /// Older or hand-edited preferences must not create nonfinite GPUI sizes.
     pub fn normalize(&mut self) {
         let mut seen = std::collections::HashSet::new();
@@ -50,6 +68,11 @@ impl Settings {
             }
         };
         self.ui_scale = bound(self.ui_scale, defaults.ui_scale, 0.8, 1.6);
+        self.eraser_radius = bound(self.eraser_radius, defaults.eraser_radius, 2., 80.);
+        if self.segment_eraser {
+            self.eraser_mode = EraserMode::Segment;
+            self.segment_eraser = false;
+        }
         self.cursor_size = bound(self.cursor_size, defaults.cursor_size, 4., 64.);
         let normalize_pen = |pen: &mut PenStyle| {
             pen.width = bound(pen.width, defaults.default_pen.width, 0.2, 80.);
@@ -119,6 +142,8 @@ impl Default for Settings {
                 "next-page".into(),
             ],
             segment_eraser: false,
+            eraser_mode: EraserMode::Stroke,
+            eraser_radius: 10.,
             recent_colors: vec![],
             scratch_erase: false,
             hold_shapes: true,
@@ -153,6 +178,21 @@ mod tests {
         assert!(settings.presets.iter().all(PenStyle::valid));
     }
 
+    #[test]
+    fn legacy_segment_eraser_migrates_and_new_sizes_are_bounded() {
+        let mut settings: Settings =
+            serde_json::from_value(serde_json::json!({"segment_eraser":true,"eraser_radius":1000}))
+                .unwrap();
+        settings.normalize();
+        assert_eq!(settings.effective_eraser_mode(), EraserMode::Segment);
+        assert_eq!(settings.eraser_radius, 80.);
+        assert!(
+            serde_json::to_value(&settings)
+                .unwrap()
+                .get("segment_eraser")
+                .is_none()
+        );
+    }
     #[test]
     fn legacy_recognition_preferences_are_ignored_and_not_saved_again() {
         let settings: Settings = serde_json::from_value(serde_json::json!({
