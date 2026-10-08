@@ -1,6 +1,6 @@
 //! Embedded Tabler Outline SVGs and a matching Folio marker on a 24×24 grid.
 //! Attribution and upstream mappings: third_party/licenses/tabler-icons/NOTICE.md.
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 use std::borrow::Cow;
 
 /// Assets are compiled into the binary so icons also work offline and in recovery.
@@ -91,7 +91,7 @@ pub fn icon(kind: Icon, color: u32) -> Svg {
     svg()
         .path(kind.path())
         .text_color(rgb(color))
-        .size(px(22.))
+        .size(rems(1.375))
         .flex_shrink_0()
 }
 

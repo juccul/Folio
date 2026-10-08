@@ -1477,7 +1477,7 @@ impl NotesView {
         let width = (viewport_width * 0.34)
             .clamp(320., 420.)
             .max(320. * self.controller.settings.ui_scale)
-            .min(viewport_width * 0.55);
+            .min(viewport_width * 0.5);
         let mut panel = div()
             .id("math-solver-panel")
             .occlude()
@@ -1574,7 +1574,7 @@ impl NotesView {
                 )
                 .child(self.math_result_actions(report, cx));
         }
-        let mut tabs = div().flex().px_4().gap_1().pb_2();
+        let mut tabs = div().flex().flex_wrap().px_4().gap_2().pb_2();
         for (id, label, value) in [
             ("math-solution-tab", "Solution", Mode::Solution),
             ("math-graph-tab", "Graph", Mode::Graph),
@@ -1585,6 +1585,9 @@ impl NotesView {
                     this.math_mode(value, window, cx)
                 })
                 .flex_1()
+                .min_w_0()
+                .text_xs()
+                .px_2()
                 .py_1(),
             );
         }

@@ -107,6 +107,7 @@ pub struct Field {
     pub focus: FocusHandle,
     pub multiline: bool,
     pub height: Option<f32>,
+    line_height: f32,
     pub secret: bool,
     pub theme: super::Theme,
     selection: Range<usize>,
@@ -130,6 +131,7 @@ impl Field {
             focus: cx.focus_handle(),
             multiline,
             height: None,
+            line_height: 26.,
             secret: false,
             theme: super::Theme::new(&folio_app::Settings::default()),
             selection: end..end,
@@ -293,7 +295,7 @@ impl Field {
         let Some(bounds) = self.bounds else {
             return self.content.len();
         };
-        let row = (f32::from(p.y - bounds.top() + self.scroll.y) / 26.)
+        let row = (f32::from(p.y - bounds.top() + self.scroll.y) / self.line_height)
             .floor()
             .max(0.) as usize;
         let Some((offset, line)) = self
@@ -486,9 +488,9 @@ impl EntityInputHandler for Field {
                     } else {
                         r.start - offset
                     }),
-                bounds.top() + px(row as f32 * 26.) - self.scroll.y,
+                bounds.top() + px(row as f32 * self.line_height) - self.scroll.y,
             ),
-            size(px(2.), px(26.)),
+            size(px(2.), px(self.line_height)),
         ))
     }
     fn character_index_for_point(
@@ -531,7 +533,9 @@ impl Element for FieldElement {
         style.size.width = relative(1.).into();
         style.size.height = px(self
             .height
-            .unwrap_or(if self.multiline { 208. } else { 28. }))
+            .unwrap_or(if self.multiline { 208. } else { 28. })
+            * f32::from(window.rem_size())
+            / 16.)
         .into();
         (window.request_layout(style, [], cx), ())
     }
@@ -552,6 +556,10 @@ impl Element for FieldElement {
                 .update(cx, |field, _| field.inline_layout = Some(layout));
             return vec![];
         }
+        let font_size = f32::from(window.rem_size());
+        let line_height = font_size * 26. / 16.;
+        self.field
+            .update(cx, |field, _| field.line_height = line_height);
         let field = self.field.read(cx);
         let style = window.text_style();
         let shape = |text: &str| {
@@ -565,7 +573,7 @@ impl Element for FieldElement {
             };
             window
                 .text_system()
-                .shape_line(text.to_owned().into(), px(16.), &[run], None)
+                .shape_line(text.to_owned().into(), px(font_size), &[run], None)
         };
         let ranges = if field.multiline && !field.secret {
             folio_document::text_wrap_ranges(&field.content, f32::from(bounds.size.width), |text| {
@@ -610,7 +618,7 @@ impl Element for FieldElement {
                 + 4.;
             field.scroll_max = point(
                 px((max_width - f32::from(bounds.size.width)).max(0.)),
-                px((lines.len() as f32 * 26. - f32::from(bounds.size.height)).max(0.)),
+                px((lines.len() as f32 * line_height - f32::from(bounds.size.height)).max(0.)),
             );
             if field.follow_caret {
                 field.scroll.x = px(caret_scroll(
@@ -622,8 +630,8 @@ impl Element for FieldElement {
                 ));
                 field.scroll.y = px(caret_scroll(
                     f32::from(field.scroll.y),
-                    row as f32 * 26.,
-                    26.,
+                    row as f32 * line_height,
+                    line_height,
                     f32::from(bounds.size.height),
                     f32::from(field.scroll_max.y),
                 ));
@@ -687,6 +695,7 @@ impl Element for FieldElement {
             field.selection.clone()
         };
         let theme = field.theme;
+        let line_height = field.line_height;
         let scroll = field.scroll;
         let caret_row = lines
             .iter()
@@ -701,7 +710,7 @@ impl Element for FieldElement {
         );
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for (row, (offset, line)) in lines.iter().enumerate() {
-                let y = bounds.top() + px(row as f32 * 26.) - scroll.y;
+                let y = bounds.top() + px(row as f32 * line_height) - scroll.y;
                 let end = offset + line.len();
                 if selection.start <= end && selection.end >= *offset && !selection.is_empty() {
                     let start = selection.start.saturating_sub(*offset).min(line.len());
@@ -711,13 +720,18 @@ impl Element for FieldElement {
                             point(bounds.left() - scroll.x + line.x_for_index(start), y),
                             size(
                                 (line.x_for_index(end) - line.x_for_index(start)).max(px(2.)),
-                                px(26.),
+                                px(line_height),
                             ),
                         ),
                         rgba((theme.accent << 8) | 0x30),
                     ));
                 }
-                let _ = line.paint(point(bounds.left() - scroll.x, y), px(26.), window, cx);
+                let _ = line.paint(
+                    point(bounds.left() - scroll.x, y),
+                    px(line_height),
+                    window,
+                    cx,
+                );
                 if focused
                     && selection.is_empty()
                     && row == caret_row
@@ -797,7 +811,7 @@ impl Render for Field {
                 if this.inline.is_some() {
                     return;
                 }
-                let delta = event.delta.pixel_delta(px(26.));
+                let delta = event.delta.pixel_delta(px(this.line_height));
                 this.scroll.x = (this.scroll.x - delta.x).clamp(px(0.), this.scroll_max.x);
                 this.scroll.y = (this.scroll.y - delta.y).clamp(px(0.), this.scroll_max.y);
                 this.follow_caret = false;

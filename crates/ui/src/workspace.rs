@@ -139,7 +139,7 @@ impl NotesView {
         } else {
             (None, None, default_aspect)
         };
-        let height = (width / aspect.max(0.01)).min(200.);
+        let height = (width / aspect.max(0.01)).min(200. * self.controller.settings.ui_scale);
         let mut element = div()
             .w(px((height * aspect).min(width)))
             .h(px(height))
@@ -241,7 +241,7 @@ impl NotesView {
             cx,
             action,
         )
-        .size(px(38.))
+        .size(rems(2.375))
         .p_0()
         .rounded(px(theme.radius))
         .tooltip(move |_, cx| cx.new(|_| Hint(hint.clone(), theme)).into())
@@ -360,10 +360,12 @@ impl NotesView {
                 .items_center()
                 .gap_3()
                 .child(icon(Icon::Folder, theme.muted))
-                .child(div().truncate().child(n.name.clone()));
+                .child(div().min_w_0().truncate().child(n.name.clone()));
             folders = folders.child(
                 div()
                     .flex()
+                    .flex_shrink_0()
+                    .min_h(rems(2.75))
                     .items_center()
                     .pl(px(depth as f32 * 12.))
                     .child(if branch {
@@ -408,30 +410,6 @@ impl NotesView {
                         } else {
                             theme.sidebar
                         })),
-                    )
-                    .child(
-                        self.icon_button(
-                            format!("rename-notebook-{id}"),
-                            "Rename folder",
-                            Icon::Pen,
-                            false,
-                            cx,
-                            move |this, w, cx| this.modal(Modal::RenameNotebook(id), w, cx),
-                        )
-                        .size(px(28.))
-                        .bg(rgb(theme.sidebar)),
-                    )
-                    .child(
-                        self.icon_button(
-                            format!("child-notebook-{id}"),
-                            "New subfolder",
-                            Icon::Plus,
-                            false,
-                            cx,
-                            move |this, w, cx| this.modal(Modal::Notebook(Some(id)), w, cx),
-                        )
-                        .size(px(28.))
-                        .bg(rgb(theme.sidebar)),
                     ),
             );
         }
@@ -447,6 +425,28 @@ impl NotesView {
         }
         if let NoteFilter::Notebook(id) = self.controller.filter {
             folders = folders
+                .child(
+                    self.button(
+                        format!("rename-notebook-{id}"),
+                        "Rename folder…",
+                        false,
+                        cx,
+                        move |this, w, cx| this.modal(Modal::RenameNotebook(id), w, cx),
+                    )
+                    .text_xs()
+                    .justify_start(),
+                )
+                .child(
+                    self.button(
+                        format!("child-notebook-{id}"),
+                        "New subfolder…",
+                        false,
+                        cx,
+                        move |this, w, cx| this.modal(Modal::Notebook(Some(id)), w, cx),
+                    )
+                    .text_xs()
+                    .justify_start(),
+                )
                 .child(
                     self.button(
                         "move-folder",
@@ -477,7 +477,8 @@ impl NotesView {
                 );
         }
         div()
-            .w(px(216.))
+            .w(rems(13.5))
+            .max_w(relative(0.27))
             .h_full()
             .flex_shrink_0()
             .flex()
@@ -519,7 +520,7 @@ impl NotesView {
                                 this.modal(Modal::Notebook(parent), w, cx)
                             },
                         )
-                        .size(px(30.))
+                        .size(rems(1.875))
                         .bg(rgb(theme.sidebar)),
                     ),
             )
@@ -568,13 +569,14 @@ impl NotesView {
     fn library_items(
         &mut self,
         notes: Vec<folio_document::NoteMetadata>,
+        list_view: bool,
         cx: &mut Context<Self>,
     ) -> Div {
         let theme = Theme::new(&self.controller.settings);
         let mut items = div()
             .flex()
-            .when(self.list_view, |s| s.flex_col())
-            .when(!self.list_view, |s| s.flex_wrap())
+            .when(list_view, |s| s.flex_col())
+            .when(!list_view, |s| s.flex_wrap())
             .gap_6();
         for n in notes {
             let id = n.id;
@@ -609,7 +611,11 @@ impl NotesView {
                 if let Some(pdf) = &page.properties.pdf {
                     self.controller.request_pdf_background(pdf.clone());
                 }
-                self.thumbnail(page.as_ref().clone(), 144., cx)
+                self.thumbnail(
+                    page.as_ref().clone(),
+                    144. * self.controller.settings.ui_scale,
+                    cx,
+                )
             } else {
                 div().text_xs().text_color(rgb(theme.muted)).child(
                     if self.controller.library_cover_unavailable(id) {
@@ -621,8 +627,8 @@ impl NotesView {
             };
             let cover = div()
                 .relative()
-                .w(px(148.))
-                .h(px(198.))
+                .w(rems(9.25))
+                .h(rems(12.375))
                 .overflow_hidden()
                 .rounded(px(theme.radius))
                 .border_1()
@@ -670,14 +676,14 @@ impl NotesView {
                     .text_color(rgb(theme.muted))
                     .child(edited_label(n.updated_at)),
             );
-            let content = if self.list_view {
+            let content = if list_view {
                 div()
                     .w_full()
                     .flex()
                     .items_center()
                     .gap_4()
                     .child(icon(Icon::Book, theme.muted))
-                    .child(metadata)
+                    .child(metadata.flex_1())
                     .child(div().flex_1())
                     .when(n.favorite, |s| s.child(icon(Icon::Star, theme.accent)))
                     .child(div().w(px(32.)))
@@ -688,12 +694,12 @@ impl NotesView {
                     .items_center()
                     .gap_4()
                     .child(cover)
-                    .child(metadata.w(px(148.)))
+                    .child(metadata.w(rems(9.25)))
             };
             items = items.child(
                 div()
                     .relative()
-                    .when(self.list_view, |s| s.w_full())
+                    .when(list_view, |s| s.w_full())
                     .child(
                         self.control(
                             format!("note-{id}"),
@@ -703,8 +709,8 @@ impl NotesView {
                             cx,
                             move |this, _, _| this.open_note(id),
                         )
-                        .when(!self.list_view, |s| s.w(px(184.)).p_3())
-                        .when(self.list_view, |s| {
+                        .when(!list_view, |s| s.w(rems(11.5)).p_3())
+                        .when(list_view, |s| {
                             s.w_full()
                                 .p_4()
                                 .justify_start()
@@ -736,7 +742,7 @@ impl NotesView {
                         .absolute()
                         .top(px(12.))
                         .right(px(12.))
-                        .size(px(28.))
+                        .size(rems(1.75))
                         .bg(rgb(theme.sidebar)),
                     ),
             );
@@ -745,6 +751,12 @@ impl NotesView {
     }
     pub(super) fn library(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
+        let compact =
+            f32::from(window.viewport_size().width) / self.controller.settings.ui_scale < 900.;
+        let list_view = self.list_view
+            || (compact
+                && f32::from(window.viewport_size().height) / self.controller.settings.ui_scale
+                    < 450.);
         let title = match self.controller.filter {
             NoteFilter::All => "Documents".to_string(),
             NoteFilter::Favorites => "Favorites".into(),
@@ -777,7 +789,7 @@ impl NotesView {
             .flex_1()
             .min_h_0()
             .p_7();
-        let columns = if self.list_view {
+        let columns = if list_view {
             1
         } else {
             ((f32::from(window.viewport_size().width) / self.controller.settings.ui_scale - 272.)
@@ -795,8 +807,9 @@ impl NotesView {
                     let start = row * columns;
                     let end = (start + columns).min(total);
                     rows.push(
-                        this.library_items(notes[start..end].to_vec(), cx)
-                            .h(px(if this.list_view { 92. } else { 320. }))
+                        this.library_items(notes[start..end].to_vec(), list_view, cx)
+                            .h(px(if list_view { 92. } else { 320. }
+                                * this.controller.settings.ui_scale))
                             .items_start(),
                     );
                 }
@@ -897,7 +910,9 @@ impl NotesView {
             .bg(rgb(theme.bg))
             .child(
                 div()
-                    .h(px(72.))
+                    .min_h(rems(4.5))
+                    .py_2()
+                    .flex_wrap()
                     .px_8()
                     .flex_shrink_0()
                     .flex()
@@ -908,13 +923,14 @@ impl NotesView {
                     .child(
                         div()
                             .flex_1()
+                            .when(compact, |title| title.flex_initial().w_full())
                             .min_w_0()
                             .flex()
                             .flex_col()
                             .gap_1()
                             .child(
                                 div()
-                                    .text_size(px(25.))
+                                    .text_size(rems(1.5625))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .truncate()
                                     .child(title),
@@ -1015,7 +1031,7 @@ impl NotesView {
                         "grid-view",
                         "Grid view",
                         Icon::Grid,
-                        !self.list_view,
+                        !list_view,
                         cx,
                         |this, _, _| this.list_view = false,
                     ))
@@ -1023,7 +1039,7 @@ impl NotesView {
                         "list-view",
                         "List view",
                         Icon::List,
-                        self.list_view,
+                        list_view,
                         cx,
                         |this, _, _| this.list_view = true,
                     )),
@@ -1079,7 +1095,7 @@ impl NotesView {
                 cx,
                 |this, _, _| this.show_library(),
             )
-            .h(px(34.)),
+            .h(rems(2.125)),
         );
         for id in self.open_tabs.clone() {
             let Some(n) = self.controller.notes.iter().find(|n| n.id == id) else {
@@ -1107,7 +1123,7 @@ impl NotesView {
                 );
             tabs = tabs.child(
                 div()
-                    .h(px(34.))
+                    .h(rems(2.125))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
@@ -1166,7 +1182,7 @@ impl NotesView {
                             cx,
                             move |this, w, cx| this.close_document_tab(id, w, cx),
                         )
-                        .size(px(28.))
+                        .size(rems(1.75))
                         .p_1()
                         .mr_2()
                         .bg(rgb(if selected {
@@ -1179,7 +1195,7 @@ impl NotesView {
             );
         }
         div()
-            .h(px(40.))
+            .h(rems(2.5))
             .flex_shrink_0()
             .flex()
             .items_end()
@@ -1213,7 +1229,7 @@ impl NotesView {
                             cx,
                             |this, w, cx| this.modal(Modal::OpenDocument, w, cx),
                         )
-                        .size(px(30.)),
+                        .size(rems(1.875)),
                     ),
             )
             .child(div().flex_1().h_full())
@@ -1230,7 +1246,7 @@ impl NotesView {
         let favorite = self.controller.session().document.metadata.favorite;
         let title = self.controller.session().document.metadata.title.clone();
         div()
-            .h(px(48.))
+            .h(rems(3.0))
             .flex_shrink_0()
             .px_3()
             .flex()
@@ -1375,9 +1391,9 @@ impl NotesView {
         }
         row
     }
-    pub(super) fn toolbar(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn toolbar(&mut self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
-        let mut tools = div().flex().items_center().gap_1();
+        let mut tools = div().flex().flex_wrap().min_w_0().items_center().gap_1();
         let pen_icon = match self.controller.style.tool {
             InkTool::Pencil => Icon::Pencil,
             InkTool::Marker => Icon::Marker,
@@ -1468,7 +1484,7 @@ impl NotesView {
                         cx,
                         move |this, _, _| this.controller.set_color(Color::from_rgb(c)),
                     )
-                    .size(px(30.))
+                    .size(rems(1.875))
                     .p_0()
                     .rounded_full()
                     .border_2()
@@ -1489,7 +1505,7 @@ impl NotesView {
                     cx,
                     |this, w, cx| this.modal(Modal::Color, w, cx),
                 )
-                .size(px(30.)),
+                .size(rems(1.875)),
             );
         }
         let mut widths = div().flex().items_center().gap_1();
@@ -1522,74 +1538,75 @@ impl NotesView {
                             this.controller.set_style(style);
                         },
                     )
-                    .size(px(32.))
+                    .size(rems(2.0))
                     .p_0(),
                 );
             }
         }
+        let compact =
+            f32::from(window.viewport_size().width) / self.controller.settings.ui_scale < 1100.;
+        let primary = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1()
+            .when(compact, |row| row.w_full())
+            .child(self.icon_button(
+                "undo",
+                "Undo · Ctrl+Z",
+                Icon::Undo,
+                false,
+                cx,
+                |this, _, _| this.controller.undo(),
+            ))
+            .child(self.icon_button(
+                "redo",
+                "Redo · Ctrl+Shift+Z",
+                Icon::Redo,
+                false,
+                cx,
+                |this, _, _| this.controller.redo(),
+            ))
+            .child(self.separator())
+            .child(tools);
+        let mut options = div().flex().flex_wrap().items_center().gap_1();
+        if self.controller.tool == Tool::Eraser {
+            options = options.child(self.eraser_controls("toolbar", cx));
+        } else {
+            options = options.child(widths).child(self.separator()).child(colors);
+        }
+        options = options.child(self.icon_button(
+            "pen-options",
+            if self.controller.tool == Tool::Eraser {
+                "Eraser modes and size"
+            } else {
+                "Pen settings and presets"
+            },
+            Icon::Sliders,
+            self.pen_settings,
+            cx,
+            |this, _, _| {
+                this.pen_settings = !this.pen_settings;
+                this.more_open = false;
+                this.export_open = false;
+            },
+        ));
         div()
             .id("writing-toolbar")
-            .h(px(52.))
+            .min_h(rems(3.25))
+            .py_1()
             .flex_shrink_0()
             .px_4()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_1()
             .bg(rgb(theme.surface))
             .border_b_1()
             .border_color(theme.border)
-            .child(
-                self.icon_button(
-                    "undo",
-                    "Undo · Ctrl+Z",
-                    Icon::Undo,
-                    false,
-                    cx,
-                    |this, _, _| this.controller.undo(),
-                )
-                .when(!self.controller.session().history.can_undo(), |s| {
-                    s.opacity(0.35)
-                }),
-            )
-            .child(
-                self.icon_button(
-                    "redo",
-                    "Redo · Ctrl+Shift+Z",
-                    Icon::Redo,
-                    false,
-                    cx,
-                    |this, _, _| this.controller.redo(),
-                )
-                .when(!self.controller.session().history.can_redo(), |s| {
-                    s.opacity(0.35)
-                }),
-            )
-            .child(self.separator())
-            .child(tools)
+            .child(primary)
             .child(div().flex_1())
-            .child(self.separator())
-            .when(self.controller.tool == Tool::Eraser, |row| {
-                row.child(self.eraser_controls("toolbar", cx))
-            })
-            .when(self.controller.tool != Tool::Eraser, |row| {
-                row.child(widths).child(self.separator()).child(colors)
-            })
-            .child(self.icon_button(
-                "pen-options",
-                if self.controller.tool == Tool::Eraser {
-                    "Eraser modes and size"
-                } else {
-                    "Pen settings and presets"
-                },
-                Icon::Sliders,
-                self.pen_settings,
-                cx,
-                |this, _, _| {
-                    this.pen_settings = !this.pen_settings;
-                    this.more_open = false;
-                    this.export_open = false;
-                },
-            ))
+            .child(options)
     }
     pub(super) fn pages_panel(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
@@ -1667,7 +1684,7 @@ impl NotesView {
         .flex_1()
         .min_h_0();
         div()
-            .w(px(184.))
+            .w(rems(11.5))
             .h_full()
             .flex_shrink_0()
             .bg(rgb(theme.sidebar))
@@ -1691,6 +1708,22 @@ impl NotesView {
                     )
                     .child(
                         self.icon_button(
+                            "page-options-panel",
+                            "More page options…",
+                            Icon::More,
+                            false,
+                            cx,
+                            |this, _, _| {
+                                this.more_section = MoreSection::Page;
+                                this.more_open = true;
+                                this.export_open = false;
+                                this.pen_settings = false;
+                            },
+                        )
+                        .size(rems(1.75)),
+                    )
+                    .child(
+                        self.icon_button(
                             "close-pages",
                             "Hide pages",
                             Icon::Close,
@@ -1698,71 +1731,17 @@ impl NotesView {
                             cx,
                             |this, _, _| this.pages_open = false,
                         )
-                        .size(px(28.))
+                        .size(rems(1.75))
                         .bg(rgb(theme.sidebar)),
                     ),
-            )
-            .child(
-                self.button(
-                    "duplicate-page-panel",
-                    "Duplicate page",
-                    false,
-                    cx,
-                    |this, _, _| this.controller.duplicate_page(),
-                )
-                .m_2(),
-            )
-            .child(
-                self.button(
-                    "bookmark-page-panel",
-                    "Name bookmark…",
-                    false,
-                    cx,
-                    |this, w, cx| this.modal(Modal::PageBookmark, w, cx),
-                )
-                .m_2(),
-            )
-            .child(
-                self.button(
-                    "move-page-panel",
-                    "Move to document…",
-                    false,
-                    cx,
-                    |this, w, cx| this.modal(Modal::MovePage, w, cx),
-                )
-                .m_2(),
-            )
-            .child(
-                self.button(
-                    "page-from-template",
-                    "Add from template…",
-                    false,
-                    cx,
-                    |this, w, cx| this.modal(Modal::Templates, w, cx),
-                )
-                .m_2(),
-            )
-            .child(
-                self.button(
-                    "page-options-panel",
-                    "More page options…",
-                    false,
-                    cx,
-                    |this, _, _| {
-                        this.more_section = MoreSection::Page;
-                        this.more_open = true;
-                        this.export_open = false;
-                        this.pen_settings = false;
-                    },
-                )
-                .m_2(),
             )
             .child(rows)
             .child(
                 self.button("add-page", "＋  Add page", true, cx, |this, _, _| {
                     this.controller.add_page()
                 })
-                .m_3(),
+                .text_xs()
+                .m_2(),
             )
     }
     pub(super) fn footer(&mut self, cx: &mut Context<Self>) -> Div {
@@ -1771,7 +1750,7 @@ impl NotesView {
         let total = self.controller.session().document.pages.len();
         let zoom = self.controller.session().viewport.zoom;
         div()
-            .h(px(34.))
+            .h(rems(2.125))
             .flex_shrink_0()
             .px_4()
             .flex()
@@ -1792,7 +1771,7 @@ impl NotesView {
                         this.controller.change_page(p.saturating_sub(1));
                     },
                 )
-                .size(px(28.))
+                .size(rems(1.75))
                 .when(page == 0, |s| s.opacity(0.35)),
             )
             .child(
@@ -1818,7 +1797,7 @@ impl NotesView {
                         this.controller.change_page(p + 1);
                     },
                 )
-                .size(px(28.))
+                .size(rems(1.75))
                 .when(page + 1 == total, |s| s.opacity(0.35)),
             )
             .child(div().flex_1())
@@ -1870,7 +1849,7 @@ impl NotesView {
                     cx,
                     |this, w, _| this.open_help(w),
                 )
-                .size(px(28.)),
+                .size(rems(1.75)),
             )
     }
 }

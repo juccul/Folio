@@ -1286,7 +1286,7 @@ impl NotesView {
         self.control(
             id,
             label.clone(),
-            div().child(label).into_any_element(),
+            div().min_w_0().truncate().child(label).into_any_element(),
             active,
             cx,
             action,
@@ -1520,6 +1520,7 @@ impl NotesView {
             .id(id)
             .relative()
             .track_focus(&focus)
+            .min_h(rems(2.))
             .tab_stop(enabled)
             .key_context("FolioControl")
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
@@ -2065,6 +2066,18 @@ impl NotesView {
                     })
                     .justify_start()
                     .text_sm(),
+                );
+            }
+            if self.more_section == MoreSection::Page {
+                panel = panel.child(
+                    self.button(
+                        "page-from-template",
+                        "Add from template…",
+                        false,
+                        cx,
+                        |this, w, cx| this.modal(Modal::Templates, w, cx),
+                    )
+                    .justify_start(),
                 );
             }
             if self.more_section == MoreSection::Paper {
@@ -3739,7 +3752,7 @@ impl Render for NotesView {
             );
         } else {
             let header = self.header(cx);
-            let toolbar = (!self.controller.read_only()).then(|| self.toolbar(cx));
+            let toolbar = (!self.controller.read_only()).then(|| self.toolbar(window, cx));
             let formatting = if self.controller.read_only() {
                 None
             } else {
@@ -3854,7 +3867,7 @@ impl Render for NotesView {
                                 |this, _, _| this.controller.retry_previews(),
                             ))
                     });
-            let mut workspace = div().flex().flex_1().min_h_0();
+            let mut workspace = div().relative().flex().flex_1().min_h_0().min_w_0();
             if self.pages_open {
                 workspace = workspace.child(
                     div()
@@ -3866,7 +3879,12 @@ impl Render for NotesView {
             }
             workspace = workspace.child(center);
             if self.controller.math_session.is_some() {
-                workspace = workspace.child(self.math_panel(window, cx));
+                let floating = f32::from(window.viewport_size().width)
+                    / self.controller.settings.ui_scale
+                    < 1100.;
+                workspace = workspace.child(self.math_panel(window, cx).when(floating, |panel| {
+                    panel.absolute().right_0().top_0().bottom_0().shadow_lg()
+                }));
             }
             body = body.child(
                 div()
