@@ -218,6 +218,9 @@ fn semantics(key: &str) -> Semantics {
     if key.starts_with("sort-name-") || key.starts_with("sort-time-") {
         return radio(47, "Document sort order");
     }
+    if key.starts_with("page-unit-") {
+        return radio(48, "Page dimension unit");
+    }
     if key.starts_with("preset-") {
         return radio(43, "Pen presets");
     }

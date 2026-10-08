@@ -20,6 +20,7 @@ mod motion;
 mod navigation;
 mod notebook_setup;
 mod ocr_setup;
+mod page_size;
 mod painting;
 mod portable;
 mod region;
@@ -191,6 +192,7 @@ pub struct NotesView {
     modal: Option<(Modal, Entity<Field>)>,
     equation_draft: Option<String>,
     folder_destination: Option<Id>,
+    page_size_unit: page_size::Unit,
     notebook_setup: Option<notebook_setup::Setup>,
     color_drag: Option<(EntityId, usize)>,
     inline_text: Option<inline_text::Editor>,
@@ -288,6 +290,7 @@ impl NotesView {
             modal: None,
             equation_draft: None,
             folder_destination: None,
+            page_size_unit: page_size::Unit::default(),
             notebook_setup: None,
             color_drag: None,
             inline_text: None,
@@ -435,6 +438,7 @@ impl NotesView {
         cx.notify();
     }
     fn modal(&mut self, modal: Modal, window: &mut Window, cx: &mut Context<Self>) {
+        self.sort_open = false;
         self.folder_destination = match modal {
             Modal::MoveNotebook(id) => self
                 .controller
@@ -526,10 +530,9 @@ impl NotesView {
                 "#{:06x}",
                 Theme::new(&self.controller.settings).canvas.paper
             ),
-            Modal::PageSize => format!(
-                "{} × {}",
+            Modal::PageSize => self.page_size_unit.format(
                 self.controller.page().properties.width,
-                self.controller.page().properties.height
+                self.controller.page().properties.height,
             ),
             Modal::Font | Modal::FontSize | Modal::TextColor => self
                 .controller
@@ -810,7 +813,7 @@ impl NotesView {
                 }
             },
             Modal::PageSize => {
-                let (width, height) = match validation::page_size(&content) {
+                let (width, height) = match self.page_size_unit.parse(&content) {
                     Ok(size) => size,
                     Err(message) => {
                         self.modal_error = Some(message.into());
@@ -2604,10 +2607,9 @@ impl NotesView {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(modal.title()),
             )
-            .when(matches!(modal, Modal::PageSize | Modal::FontSize | Modal::Color | Modal::MoveNotebook(_) | Modal::MoveDocument(_) | Modal::Crop), |panel| {
+            .when(matches!(modal, Modal::FontSize | Modal::Color | Modal::MoveNotebook(_) | Modal::MoveDocument(_) | Modal::Crop), |panel| {
                 panel.child(div().text_sm().text_color(rgb(theme.muted)).child(match modal {
-                    Modal::PageSize => "Width × height in points. For A4, use 794 × 1123.",
-                    Modal::FontSize => "Choose a size from 6 to 180 points.",
+                    Modal::FontSize => "Font size: 6–180 canvas pixels at 96 dpi. A 24px font exports as 18pt in PDF.",
                     Modal::Color => "Choose a color below, or enter a hex value.",
                     Modal::MoveNotebook(_) | Modal::MoveDocument(_) => "Filter folders by path, choose a destination below, then press Move.",
                     _ => "Left, top, width and height as fractions from 0 to 1.",
@@ -2615,6 +2617,9 @@ impl NotesView {
             })
             .when(matches!(modal, Modal::NewDocument), |panel| panel.child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Name (optional)")))
             .when(!matches!(modal, Modal::MovePage | Modal::Templates), |panel| panel.child(field.clone()));
+        if matches!(modal, Modal::PageSize) {
+            panel = panel.child(self.page_size_options(cx));
+        }
         if matches!(modal, Modal::MoveNotebook(_) | Modal::MoveDocument(_)) {
             let query = field.read(cx).content.to_lowercase();
             let mut destinations = div()

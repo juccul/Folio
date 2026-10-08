@@ -11,7 +11,7 @@ pub(super) fn page_size(content: &str) -> Result<(f32, f32), &'static str> {
             .iter()
             .any(|v| !v.is_finite() || !(32.0..=20000.0).contains(v))
     {
-        return Err("Width and height must be between 32 and 20,000 points.");
+        return Err("Width and height must be between 32 and 20,000 canvas pixels.");
     }
     Ok((values[0], values[1]))
 }
@@ -21,7 +21,7 @@ pub(super) fn font_size(content: &str) -> Result<f32, &'static str> {
         .parse::<f32>()
         .ok()
         .filter(|v| v.is_finite() && (6.0..=180.0).contains(v))
-        .ok_or("Enter a font size between 6 and 180 points.")
+        .ok_or("Enter a font size between 6 and 180 canvas pixels.")
 }
 pub(super) fn crop(content: &str) -> Result<[f32; 4], &'static str> {
     let message = "Use four fractions inside 0–1, e.g. 0.1, 0.1, 0.8, 0.8.";

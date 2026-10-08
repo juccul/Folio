@@ -150,17 +150,27 @@ impl NotesView {
                 properties.width.min(properties.height),
                 properties.width.max(properties.height),
             );
-            let mut sizes = div().flex().gap_2();
+            let mut sizes = div().flex().flex_wrap().gap_2();
             for (id, title, width, height) in [
-                ("size-a4", "A4", 794., 1123.),
-                ("size-a5", "A5", 559., 794.),
-                ("size-letter", "Letter", 816., 1056.),
+                (
+                    "size-a4",
+                    "A4 · 210 × 297 mm",
+                    210. / 25.4 * 96.,
+                    297. / 25.4 * 96.,
+                ),
+                (
+                    "size-a5",
+                    "A5 · 148 × 210 mm",
+                    148. / 25.4 * 96.,
+                    210. / 25.4 * 96.,
+                ),
+                ("size-letter", "Letter · 8.5 × 11 in", 816., 1056.),
             ] {
                 sizes = sizes.child(
                     self.button(
                         id,
                         title,
-                        dimensions == (width, height),
+                        (dimensions.0 - width).abs() < 1. && (dimensions.1 - height).abs() < 1.,
                         cx,
                         move |this, _, _| {
                             if let Some(setup) = &mut this.notebook_setup {
