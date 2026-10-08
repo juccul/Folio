@@ -215,6 +215,9 @@ fn semantics(key: &str) -> Semantics {
     if key.starts_with("folder-destination-") {
         return radio(42, "Destination folder");
     }
+    if key.starts_with("sort-name-") || key.starts_with("sort-time-") {
+        return radio(47, "Document sort order");
+    }
     if key.starts_with("preset-") {
         return radio(43, "Pen presets");
     }

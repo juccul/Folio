@@ -14,6 +14,7 @@ mod icons;
 pub use icons::IconAssets;
 mod export_options;
 mod inline_text;
+mod library_sort;
 mod math_panel;
 mod motion;
 mod navigation;
@@ -212,6 +213,8 @@ pub struct NotesView {
     pages_open: bool,
     list_view: bool,
     sort_by_name: bool,
+    sort_reverse: bool,
+    sort_open: bool,
     open_tabs: Vec<Id>,
     tab_scroll: ScrollHandle,
     tab_target: Option<(Id, usize, Pixels, f32)>,
@@ -307,6 +310,8 @@ impl NotesView {
             pages_open: workspace.pages_open,
             list_view: workspace.list_view,
             sort_by_name: workspace.sort_by_name,
+            sort_reverse: workspace.sort_reverse,
+            sort_open: false,
             open_tabs: workspace.open_tabs,
             tab_scroll: ScrollHandle::new(),
             tab_target: None,
@@ -401,6 +406,7 @@ impl NotesView {
         self.focus.focus(window);
     }
     fn dismiss_popovers(&mut self) {
+        self.sort_open = false;
         self.more_open = false;
         self.pen_settings = false;
         self.export_open = false;

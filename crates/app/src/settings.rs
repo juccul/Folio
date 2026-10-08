@@ -21,6 +21,7 @@ pub struct PageTemplate {
 pub struct WorkspacePreferences {
     pub list_view: bool,
     pub sort_by_name: bool,
+    pub sort_reverse: bool,
     pub pages_open: bool,
     pub library_open: bool,
     pub open_tabs: Vec<Id>,
@@ -32,6 +33,7 @@ impl Default for WorkspacePreferences {
         Self {
             list_view: false,
             sort_by_name: false,
+            sort_reverse: false,
             pages_open: false,
             library_open: true,
             open_tabs: vec![],

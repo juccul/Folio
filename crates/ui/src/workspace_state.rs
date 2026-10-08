@@ -4,6 +4,7 @@ impl NotesView {
         let mut state = self.controller.settings.workspace.clone();
         state.list_view = self.list_view;
         state.sort_by_name = self.sort_by_name;
+        state.sort_reverse = self.sort_reverse;
         state.pages_open = self.pages_open;
         state.library_open = self.library_open;
         state.open_tabs = self.open_tabs.iter().rev().take(128).copied().collect();

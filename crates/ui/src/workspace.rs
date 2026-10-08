@@ -776,11 +776,12 @@ impl NotesView {
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();
-        if self.sort_by_name {
-            notes.sort_by_key(|n| n.title.to_lowercase());
-        } else if self.controller.filter != NoteFilter::Recent {
-            notes.sort_by_key(|n| std::cmp::Reverse(n.updated_at));
-        }
+        library_sort::sort_notes(
+            &mut notes,
+            self.sort_by_name,
+            self.sort_reverse,
+            self.controller.filter == NoteFilter::Recent,
+        );
         let count = notes.len();
         let mut shelf = div()
             .id("library-shelf")
@@ -1005,23 +1006,7 @@ impl NotesView {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        self.button(
-                            "sort-notes",
-                            if self.sort_by_name {
-                                "Name  ↓"
-                            } else if self.controller.filter == NoteFilter::Recent {
-                                "Last opened  ↓"
-                            } else {
-                                "Last edited  ↓"
-                            },
-                            false,
-                            cx,
-                            |this, _, _| this.sort_by_name = !this.sort_by_name,
-                        )
-                        .text_xs()
-                        .text_color(rgb(theme.muted)),
-                    )
+                    .child(self.sort_control(cx))
                     .child(div().text_xs().text_color(rgb(theme.muted)).child(format!(
                         "{count} document{}",
                         if count == 1 { "" } else { "s" }

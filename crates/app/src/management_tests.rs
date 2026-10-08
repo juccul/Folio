@@ -885,12 +885,13 @@ fn workspace_preferences_restore_documents_and_page_ids_and_allow_opt_out() {
     let root = a.data_dir.clone();
     let first = a.active;
     a.create_note();
-    let second=a.active;
+    let second = a.active;
     a.add_page();
     let page = a.page().id;
     a.settings.workspace = WorkspacePreferences {
         list_view: true,
         sort_by_name: true,
+        sort_reverse: false,
         pages_open: true,
         library_open: false,
         open_tabs: vec![first, second, second],
