@@ -507,6 +507,13 @@ impl Accessibility {
                 control.active,
                 control.enabled,
             );
+            if control.key == "delete-folder"
+                && let NoteFilter::Notebook(id) | NoteFilter::NotebookTrash(id) =
+                    view.controller.filter
+                && let Some(reason) = view.controller.folder_deletion_reason(id)
+            {
+                node.set_description(reason);
+            }
             if let Some(id) = control
                 .key
                 .strip_prefix("folder-")
