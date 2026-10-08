@@ -133,7 +133,7 @@ def main():
                     return item.get_state_set().contains(Atspi.StateType.ENABLED)
                 client.key('a',4);click('Size');fill('Font size','nan');click('Save')
                 time.sleep(.8)
-                assert any(n.get_name()=='Enter a font size between 6 and 180 points.' for n in nodes()),'Layout updates cleared the validation error'
+                assert any(n.get_name()=='Enter a font size between 6 and 180 canvas pixels.' for n in nodes()),'Layout updates cleared the validation error'
                 assert any(n.get_name()=='Font size' and n.get_role()==Atspi.Role.ENTRY for n in nodes()),'Invalid input closed the dialog'
                 subprocess.run([sys.executable,'scripts/capture-x11.py',str(args.output/'validation.png'),'--pid',str(app.pid),'--virtual-display-root'],check=True)
                 fill('Font size','20');click('Save');click('Solve')
