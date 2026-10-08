@@ -305,7 +305,7 @@ impl NotesView {
                 .h(px(18.))
                 .into_any_element()
             },
-            false,
+            on,
             cx,
             move |this, _, _| {
                 action(this);

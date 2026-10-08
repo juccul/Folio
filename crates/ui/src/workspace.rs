@@ -467,7 +467,7 @@ impl NotesView {
                             div()
                                 .child(if collapsed { "▸" } else { "▾" })
                                 .into_any_element(),
-                            false,
+                            !collapsed,
                             cx,
                             move |this, _, _| {
                                 let folders = &mut this.controller.settings.collapsed_folders;
@@ -1570,76 +1570,80 @@ impl NotesView {
             |this, _, cx| this.import(cx),
         ));
         let mut colors = div().flex().items_center().gap_2();
-        for c in [0x273448, 0x3265a8, 0xc6605c, 0x55917e] {
-            let selected = self.controller.style.color.rgb() == c;
+        if self.controller.tool != Tool::Eraser {
+            for c in [0x273448, 0x3265a8, 0xc6605c, 0x55917e] {
+                let selected = self.controller.style.color.rgb() == c;
+                colors = colors.child(
+                    self.control(
+                        format!("color-{c}"),
+                        format!("Ink color #{c:06X}"),
+                        div()
+                            .size(px(18.))
+                            .rounded_full()
+                            .bg(rgb(c))
+                            .into_any_element(),
+                        selected,
+                        cx,
+                        move |this, _, _| this.controller.set_color(Color::from_rgb(c)),
+                    )
+                    .size(px(30.))
+                    .p_0()
+                    .rounded_full()
+                    .border_2()
+                    .border_color(rgb(if selected {
+                        theme.accent
+                    } else {
+                        theme.surface
+                    }))
+                    .bg(rgb(theme.surface)),
+                );
+            }
             colors = colors.child(
-                self.control(
-                    format!("color-{c}"),
-                    format!("Ink color #{c:06X}"),
-                    div()
-                        .size(px(18.))
-                        .rounded_full()
-                        .bg(rgb(c))
-                        .into_any_element(),
-                    selected,
+                self.icon_button(
+                    "custom-color",
+                    "Custom ink color",
+                    Icon::Plus,
+                    false,
                     cx,
-                    move |this, _, _| this.controller.set_color(Color::from_rgb(c)),
+                    |this, w, cx| this.modal(Modal::Color, w, cx),
                 )
-                .size(px(30.))
-                .p_0()
-                .rounded_full()
-                .border_2()
-                .border_color(rgb(if selected {
-                    theme.accent
-                } else {
-                    theme.surface
-                }))
-                .bg(rgb(theme.surface)),
+                .size(px(30.)),
             );
         }
-        colors = colors.child(
-            self.icon_button(
-                "custom-color",
-                "Custom ink color",
-                Icon::Plus,
-                false,
-                cx,
-                |this, w, cx| this.modal(Modal::Color, w, cx),
-            )
-            .size(px(30.)),
-        );
         let mut widths = div().flex().items_center().gap_1();
-        let highlighter = self.controller.style.tool == InkTool::Highlighter;
-        for (i, width) in if highlighter {
-            [10., 20., 30.]
-        } else {
-            [1.5, 3., 6.]
-        }
-        .into_iter()
-        .enumerate()
-        {
-            let selected = (self.controller.style.width - width).abs() < 0.1;
-            widths = widths.child(
-                self.control(
-                    format!("width-{i}"),
-                    format!("Stroke width {:.2} mm", width * 0.2646),
-                    div()
-                        .w(px(17.))
-                        .h(px(1.5 + i as f32 * 1.8))
-                        .rounded_full()
-                        .bg(rgb(theme.ink))
-                        .into_any_element(),
-                    selected,
-                    cx,
-                    move |this, _, _| {
-                        let mut style = this.controller.style.clone();
-                        style.width = width;
-                        this.controller.set_style(style);
-                    },
-                )
-                .size(px(32.))
-                .p_0(),
-            );
+        if self.controller.tool != Tool::Eraser {
+            let highlighter = self.controller.style.tool == InkTool::Highlighter;
+            for (i, width) in if highlighter {
+                [10., 20., 30.]
+            } else {
+                [1.5, 3., 6.]
+            }
+            .into_iter()
+            .enumerate()
+            {
+                let selected = (self.controller.style.width - width).abs() < 0.1;
+                widths = widths.child(
+                    self.control(
+                        format!("width-{i}"),
+                        format!("Stroke width {:.2} mm", width * 0.2646),
+                        div()
+                            .w(px(17.))
+                            .h(px(1.5 + i as f32 * 1.8))
+                            .rounded_full()
+                            .bg(rgb(theme.ink))
+                            .into_any_element(),
+                        selected,
+                        cx,
+                        move |this, _, _| {
+                            let mut style = this.controller.style.clone();
+                            style.width = width;
+                            this.controller.set_style(style);
+                        },
+                    )
+                    .size(px(32.))
+                    .p_0(),
+                );
+            }
         }
         div()
             .id("writing-toolbar")

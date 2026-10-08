@@ -152,6 +152,9 @@ impl Field {
         self.history = EditHistory::default();
         cx.notify();
     }
+    pub fn set_accessible_content(&mut self, content: String, cx: &mut Context<Self>) {
+        self.replace(0..self.content.len(), &content, cx);
+    }
     pub fn bindings(cx: &mut App) {
         cx.bind_keys([
             KeyBinding::new("ctrl-z", FieldUndo, Some("FolioField")),

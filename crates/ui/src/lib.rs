@@ -193,6 +193,7 @@ pub struct NotesView {
     settings_open: bool,
     theme_colors_open: bool,
     modal_error: Option<String>,
+    attention_error: Option<String>,
     pen_settings: bool,
     more_open: bool,
     more_section: MoreSection,
@@ -274,6 +275,7 @@ impl NotesView {
             settings_open: false,
             theme_colors_open: false,
             modal_error: None,
+            attention_error: None,
             pen_settings: false,
             more_open: false,
             more_section: MoreSection::Document,
@@ -1284,6 +1286,29 @@ impl NotesView {
         let theme = Theme::new(&self.controller.settings);
         let id = id.into();
         let label = label.into();
+        let label = if let Some(kind) = id
+            .as_ref()
+            .strip_prefix("minus-")
+            .or_else(|| id.as_ref().strip_prefix("plus-"))
+        {
+            let setting = match kind {
+                "0" => "stroke width",
+                "1" => "opacity",
+                "2" => "stabilization",
+                "3" => "pressure response",
+                _ => "value",
+            };
+            SharedString::from(format!(
+                "{} {setting}",
+                if id.as_ref().starts_with("minus-") {
+                    "Decrease"
+                } else {
+                    "Increase"
+                }
+            ))
+        } else {
+            label
+        };
         let window_control = id.as_ref().starts_with("window-");
         let navigation = self.library_open
             || id.as_ref().starts_with("tab-")
@@ -1451,6 +1476,7 @@ impl NotesView {
             &label,
             action.clone(),
             enabled,
+            active,
             !self.blocking_overlay() || self.building_overlay || window_control,
             cx,
         );
@@ -1464,6 +1490,7 @@ impl NotesView {
         .absolute()
         .inset_0();
         let keyboard_action = action.clone();
+        let control_key = id.clone();
         div()
             .id(id)
             .relative()
@@ -1471,6 +1498,47 @@ impl NotesView {
             .tab_stop(enabled)
             .key_context("FolioControl")
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                if enabled
+                    && matches!(
+                        event.keystroke.key.as_str(),
+                        "left" | "right" | "up" | "down"
+                    )
+                {
+                    let forward = matches!(event.keystroke.key.as_str(), "right" | "down");
+                    if matches!(event.keystroke.key.as_str(), "left" | "right")
+                        && let Some(id) = control_key
+                            .as_ref()
+                            .strip_prefix("folder-")
+                            .and_then(|id| Id::parse_str(id).ok())
+                    {
+                        let branch = this
+                            .controller
+                            .notebooks
+                            .iter()
+                            .any(|n| n.parent == Some(id));
+                        if branch {
+                            let collapsed = &mut this.controller.settings.collapsed_folders;
+                            collapsed.retain(|f| *f != id);
+                            if !forward {
+                                collapsed.push(id);
+                            }
+                            this.controller.store_settings();
+                            cx.stop_propagation();
+                            cx.notify();
+                            return;
+                        }
+                    }
+                    if let Some((callback, focus)) = this
+                        .accessibility
+                        .group_neighbor(control_key.as_ref(), forward)
+                    {
+                        focus.focus(window);
+                        callback(this, window, cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
+                }
                 if enabled && (event.keystroke.key == "enter" || event.keystroke.key == "space") {
                     keyboard_action(this, window, cx);
                     cx.stop_propagation();
@@ -2048,7 +2116,7 @@ impl NotesView {
             ] {
                 tools = tools.child(
                     self.button(
-                        id,
+                        format!("pen-type-{id}"),
                         label,
                         self.controller.style.tool == tool,
                         cx,
@@ -3065,6 +3133,9 @@ impl Render for NotesView {
                 Err(error) => {
                     self.equation_draft = None;
                     self.modal_error = Some(error);
+                    if let Some((_, field)) = &self.modal {
+                        field.read(cx).focus.focus(window);
+                    }
                 }
             }
         }
@@ -3078,7 +3149,9 @@ impl Render for NotesView {
                         field.read(cx).focus.focus(window);
                     }
                     if let Some(accesskit::ActionData::Value(value)) = request.data {
-                        field.update(cx, |field, cx| field.set_content(value.into(), cx));
+                        field.update(cx, |field, cx| {
+                            field.set_accessible_content(value.into(), cx)
+                        });
                     }
                 }
             } else if request.target_node == accesskit::NodeId(13) {
@@ -3087,9 +3160,9 @@ impl Render for NotesView {
                         editor.field.read(cx).focus.focus(window);
                     }
                     if let Some(accesskit::ActionData::Value(value)) = request.data {
-                        editor
-                            .field
-                            .update(cx, |field, cx| field.set_content(value.into(), cx));
+                        editor.field.update(cx, |field, cx| {
+                            field.set_accessible_content(value.into(), cx)
+                        });
                     }
                 }
             } else if request.target_node == accesskit::NodeId(12) {
@@ -3098,9 +3171,9 @@ impl Render for NotesView {
                         setup.color.read(cx).focus.focus(window);
                     }
                     if let Some(accesskit::ActionData::Value(value)) = request.data {
-                        setup
-                            .color
-                            .update(cx, |field, cx| field.set_content(value.into(), cx));
+                        setup.color.update(cx, |field, cx| {
+                            field.set_accessible_content(value.into(), cx)
+                        });
                     }
                 }
             } else if ((5..=8).contains(&request.target_node.0) || request.target_node.0 == 11)
@@ -3123,7 +3196,9 @@ impl Render for NotesView {
                         field.read(cx).focus.focus(window);
                     }
                     if let Some(accesskit::ActionData::Value(value)) = request.data {
-                        field.update(cx, |field, cx| field.set_content(value.into(), cx));
+                        field.update(cx, |field, cx| {
+                            field.set_accessible_content(value.into(), cx)
+                        });
                     }
                 }
             } else if let Some((callback, focus)) = accessibility.action(request.target_node) {
@@ -3879,6 +3954,12 @@ impl Render for NotesView {
                             )),
                     ),
             );
+        }
+        if self.controller.error != self.attention_error {
+            self.attention_error = self.controller.error.clone();
+            if self.attention_error.is_some() {
+                self.accessibility.focus_control("dismiss-error", window);
+            }
         }
         self.building_overlay = false;
         root = root.child(self.document_tabs(window, cx));
