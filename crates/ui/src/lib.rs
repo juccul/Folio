@@ -88,6 +88,7 @@ enum Modal {
     Notebook(Option<Id>),
     RenameNotebook(Id),
     MoveNotebook(Id),
+    MoveDocument(Id),
     PdfPassword(Id, std::path::PathBuf),
     Crop,
     Tags,
@@ -122,6 +123,7 @@ impl Modal {
             Self::NewDocument => "New notebook",
             Self::PdfPassword(..) => "Unlock PDF",
             Self::MoveNotebook(_) => "Move folder",
+            Self::MoveDocument(_) => "Move document to folder",
             Self::RenameNotebook(_) => "Rename folder",
             Self::Crop => "Crop image",
             Self::Notebook(_) => "New folder",
@@ -151,6 +153,7 @@ pub struct NotesView {
     focus: FocusHandle,
     modal: Option<(Modal, Entity<Field>)>,
     equation_draft: Option<String>,
+    folder_destination: Option<Id>,
     notebook_setup: Option<notebook_setup::Setup>,
     color_drag: Option<(EntityId, usize)>,
     inline_text: Option<inline_text::Editor>,
@@ -229,6 +232,7 @@ impl NotesView {
             focus,
             modal: None,
             equation_draft: None,
+            folder_destination: None,
             notebook_setup: None,
             color_drag: None,
             inline_text: None,
@@ -360,6 +364,21 @@ impl NotesView {
         cx.notify();
     }
     fn modal(&mut self, modal: Modal, window: &mut Window, cx: &mut Context<Self>) {
+        self.folder_destination = match modal {
+            Modal::MoveNotebook(id) => self
+                .controller
+                .notebooks
+                .iter()
+                .find(|n| n.id == id)
+                .and_then(|n| n.parent),
+            Modal::MoveDocument(id) => self
+                .controller
+                .notes
+                .iter()
+                .find(|n| n.id == id)
+                .and_then(|n| n.notebook),
+            _ => None,
+        };
         self.controller.finish();
         self.document_menu = None;
         self.more_open = false;
@@ -611,26 +630,11 @@ impl NotesView {
                 }
             }
             Modal::Notebook(parent) => self.controller.create_notebook(content, parent),
+            Modal::MoveDocument(id) => self
+                .controller
+                .manage_note(id, folio_app::NoteAction::Move(self.folder_destination)),
             Modal::MoveNotebook(id) => {
-                let name = content.trim();
-                let parent = if name.is_empty() {
-                    None
-                } else {
-                    let matches = self
-                        .controller
-                        .notebooks
-                        .iter()
-                        .filter(|n| n.name == name)
-                        .collect::<Vec<_>>();
-                    if matches.len() != 1 {
-                        self.modal_error =
-                            Some("Enter the name of one existing destination folder".into());
-                        field.read(cx).focus.focus(window);
-                        cx.notify();
-                        return;
-                    }
-                    Some(matches[0].id)
-                };
+                let parent = self.folder_destination;
                 if let Err(e) = self.controller.move_notebook(id, parent) {
                     self.modal_error = Some(e);
                     field.read(cx).focus.focus(window);
@@ -1272,6 +1276,29 @@ impl NotesView {
                 || self.building_overlay
                 || window_control)
             && match id.as_ref() {
+                key if key.starts_with("folder-destination-") => {
+                    let destination = key
+                        .strip_prefix("folder-destination-")
+                        .and_then(|id| Id::parse_str(id).ok());
+                    if let Some((Modal::MoveNotebook(source), _)) = self.modal.as_ref() {
+                        self.controller
+                            .validate_folder_move(*source, destination)
+                            .is_ok()
+                    } else {
+                        true
+                    }
+                }
+                "submit-modal"
+                    if matches!(self.modal.as_ref(), Some((Modal::MoveNotebook(_), _))) =>
+                {
+                    if let Some((Modal::MoveNotebook(source), _)) = self.modal.as_ref() {
+                        self.controller
+                            .validate_folder_move(*source, self.folder_destination)
+                            .is_ok()
+                    } else {
+                        true
+                    }
+                }
                 "open-restored-library" => !self.controller.has_background_work(),
                 "submit-modal"
                     if matches!(self.modal.as_ref(), Some((Modal::Recognition, _)))
@@ -1818,20 +1845,18 @@ impl NotesView {
             }
             panel = panel.child(paper);
             panel = panel.child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(theme.muted))
-                    .child("MOVE TO NOTEBOOK"),
+                self.button(
+                    "move-document-folder",
+                    "Move to folder…",
+                    false,
+                    cx,
+                    |this, w, cx| {
+                        this.more_open = false;
+                        this.modal(Modal::MoveDocument(this.controller.active), w, cx);
+                    },
+                )
+                .justify_start(),
             );
-            for n in self.controller.notebooks.clone() {
-                let id = n.id;
-                panel = panel.child(
-                    self.button(id.to_string(), n.name, false, cx, move |this, _, _| {
-                        this.controller.metadata(|m| m.notebook = Some(id))
-                    })
-                    .justify_start(),
-                );
-            }
         } else if self.pen_settings && self.controller.tool == Tool::Eraser {
             panel = panel.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Eraser"))
                 .child(self.eraser_controls("popover",cx))
@@ -2234,17 +2259,65 @@ impl NotesView {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(modal.title()),
             )
-            .when(matches!(modal, Modal::PageSize | Modal::FontSize | Modal::Color | Modal::MoveNotebook(_) | Modal::Crop), |panel| {
+            .when(matches!(modal, Modal::PageSize | Modal::FontSize | Modal::Color | Modal::MoveNotebook(_) | Modal::MoveDocument(_) | Modal::Crop), |panel| {
                 panel.child(div().text_sm().text_color(rgb(theme.muted)).child(match modal {
                     Modal::PageSize => "Width × height in points. For A4, use 794 × 1123.",
                     Modal::FontSize => "Choose a size from 6 to 180 points.",
                     Modal::Color => "Choose a color below, or enter a hex value.",
-                    Modal::MoveNotebook(_) => "Enter the destination folder name, or leave blank for the top level.",
+                    Modal::MoveNotebook(_) | Modal::MoveDocument(_) => "Filter folders by path, choose a destination below, then press Move.",
                     _ => "Left, top, width and height as fractions from 0 to 1.",
                 }))
             })
             .when(matches!(modal, Modal::NewDocument), |panel| panel.child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Name")))
             .when(!matches!(modal, Modal::MovePage | Modal::Templates), |panel| panel.child(field.clone()));
+        if matches!(modal, Modal::MoveNotebook(_) | Modal::MoveDocument(_)) {
+            let query = field.read(cx).content.to_lowercase();
+            let mut destinations = div()
+                .id("folder-picker")
+                .max_h(px(280.))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap_1();
+            destinations = destinations.child(
+                self.button(
+                    "folder-destination-root",
+                    "Documents (no folder)",
+                    self.folder_destination.is_none(),
+                    cx,
+                    |this, _, _| this.folder_destination = None,
+                )
+                .justify_start(),
+            );
+            for (folder, _) in self.controller.folder_tree() {
+                let destination = folder.id;
+                let path = self.controller.folder_path(destination);
+                if !path.to_lowercase().contains(&query) {
+                    continue;
+                }
+                let reason = if let Modal::MoveNotebook(source) = modal {
+                    self.controller
+                        .validate_folder_move(source, Some(destination))
+                        .err()
+                } else {
+                    None
+                };
+                let label =
+                    reason.map_or_else(|| path.clone(), |reason| format!("{path} · {reason}"));
+                destinations = destinations.child(
+                    self.button(
+                        format!("folder-destination-{destination}"),
+                        label,
+                        self.folder_destination == Some(destination),
+                        cx,
+                        move |this, _, _| this.folder_destination = Some(destination),
+                    )
+                    .justify_start()
+                    .w_full(),
+                );
+            }
+            panel = panel.child(destinations);
+        }
         if matches!(
             modal,
             Modal::Color | Modal::TextColor | Modal::CanvasColor | Modal::ThemeColor { .. }
@@ -2593,6 +2666,11 @@ impl NotesView {
                                 }
                             } else if matches!(modal, Modal::OpenDocument) {
                                 "Open"
+                            } else if matches!(
+                                modal,
+                                Modal::MoveNotebook(_) | Modal::MoveDocument(_)
+                            ) {
+                                "Move"
                             } else if matches!(modal, Modal::NewDocument) {
                                 "Create notebook"
                             } else {

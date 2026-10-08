@@ -845,7 +845,10 @@ impl Controller {
             self.persistence.notebook(n.clone());
         }
     }
-    pub fn move_notebook(&mut self, id: Id, parent: Option<Id>) -> Result<(), String> {
+    pub fn validate_folder_move(&self, id: Id, parent: Option<Id>) -> Result<(), String> {
+        if !self.notebooks.iter().any(|n| n.id == id) {
+            return Err("Folder no longer exists".into());
+        }
         let mut cursor = parent;
         let mut visited = HashSet::new();
         while let Some(next) = cursor {
@@ -859,6 +862,10 @@ impl Controller {
                 .ok_or("Destination folder no longer exists")?
                 .parent;
         }
+        Ok(())
+    }
+    pub fn move_notebook(&mut self, id: Id, parent: Option<Id>) -> Result<(), String> {
+        self.validate_folder_move(id, parent)?;
         let n = self
             .notebooks
             .iter_mut()

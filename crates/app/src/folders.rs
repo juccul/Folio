@@ -109,4 +109,52 @@ mod tests {
             tree.iter().map(|(n, d)| (n.id, *d)).collect::<Vec<_>>()
         );
     }
+    #[test]
+    fn folder_move_uses_identity_and_rejects_descendants_before_mutation() {
+        let mut a = Controller::open(
+            std::env::temp_dir().join(format!("folio-folder-move-{}", Id::new_v4())),
+        )
+        .unwrap();
+        let root = Id::new_v4();
+        let other = Id::new_v4();
+        let first = Id::new_v4();
+        let second = Id::new_v4();
+        a.notebooks = vec![
+            Notebook {
+                id: root,
+                name: "A".into(),
+                parent: None,
+            },
+            Notebook {
+                id: other,
+                name: "B".into(),
+                parent: None,
+            },
+            Notebook {
+                id: first,
+                name: "Same".into(),
+                parent: Some(root),
+            },
+            Notebook {
+                id: second,
+                name: "Same".into(),
+                parent: Some(other),
+            },
+        ];
+        assert!(a.validate_folder_move(root, Some(first)).is_err());
+        assert!(a.validate_folder_move(root, Some(root)).is_err());
+        assert!(a.move_notebook(root, Some(first)).is_err());
+        assert!(
+            a.notebooks
+                .iter()
+                .find(|n| n.id == root)
+                .unwrap()
+                .parent
+                .is_none()
+        );
+        a.move_notebook(first, Some(second)).unwrap();
+        assert_eq!(a.folder_path(first), "B / Same / Same");
+        a.move_notebook(first, None).unwrap();
+        assert_eq!(a.folder_path(first), "Same");
+    }
 }

@@ -124,7 +124,7 @@ impl NotesView {
                 self.controller
                     .notebooks
                     .iter()
-                    .map(|n| (Some(n.id), n.name.clone())),
+                    .map(|n| (Some(n.id), self.controller.folder_path(n.id))),
             );
             for (folder, name) in destinations {
                 folders = folders.child(
@@ -178,7 +178,8 @@ impl NotesView {
                     cx,
                     move |this, w, cx| {
                         if action == 4 {
-                            this.document_menu_folders = true;
+                            this.document_menu = None;
+                            this.modal(Modal::MoveDocument(id), w, cx);
                             return;
                         }
                         this.document_menu = None;
