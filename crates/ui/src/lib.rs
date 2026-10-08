@@ -629,7 +629,14 @@ impl NotesView {
                     return;
                 }
             }
-            Modal::Notebook(parent) => self.controller.create_notebook(content, parent),
+            Modal::Notebook(parent) => {
+                if let Err(error) = self.controller.create_notebook(content, parent) {
+                    self.modal_error = Some(error);
+                    field.read(cx).focus.focus(window);
+                    cx.notify();
+                    return;
+                }
+            }
             Modal::MoveDocument(id) => self
                 .controller
                 .manage_note(id, folio_app::NoteAction::Move(self.folder_destination)),
@@ -642,7 +649,14 @@ impl NotesView {
                     return;
                 }
             }
-            Modal::RenameNotebook(id) => self.controller.rename_notebook(id, content),
+            Modal::RenameNotebook(id) => {
+                if let Err(error) = self.controller.rename_notebook(id, content) {
+                    self.modal_error = Some(error);
+                    field.read(cx).focus.focus(window);
+                    cx.notify();
+                    return;
+                }
+            }
             Modal::Crop => {
                 let parts = match validation::crop(&content) {
                     Ok(parts) => parts,

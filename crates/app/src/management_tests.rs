@@ -285,7 +285,7 @@ fn editable_notebook_import_is_one_undoable_command_and_reopens_with_assets() {
 fn configured_notebooks_preserve_canvas_choices_and_new_pages_after_save() {
     for infinite in [false, true] {
         let mut a = app();
-        a.create_notebook("School".into(), None);
+        a.create_notebook("School".into(), None).unwrap();
         let folder = a.notebooks[0].id;
         a.filter = NoteFilter::Notebook(folder);
         let properties = PageProperties {

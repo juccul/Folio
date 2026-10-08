@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let single = std::env::args().any(|argument| argument == "--single-note");
     let mut app = Controller::open(root)?;
     for folder in ["Personal", "Projects", "Reading"] {
-        app.create_notebook(folder.into(), None);
+        app.create_notebook(folder.into(), None).unwrap();
     }
     for (i, title) in [
         "Field notes",
