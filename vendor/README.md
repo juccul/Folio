@@ -1,4 +1,4 @@
-# Local compatibility and native Linux patches
+# Local compatibility and native platform patches
 
 These directories retain full upstream sources and notices.
 
@@ -13,6 +13,10 @@ These directories retain full upstream sources and notices.
 - `window.rs`/`platform/blade/shaders.wgsl`: GPU affine image painting and transformed clipping. PDF/images/text stay aligned with ink during rotation and drag transforms. This renderer extension targets Linux's Blade backend.
 - `elements/img.rs`: expose cached asynchronous raster loading to the canvas.
 - `taffy.rs`: f32 casts for the resolved Taffy layout version.
+- `platform/windows/pen.rs`/`events.rs`/`window.rs`: Windows Ink pointer history with pressure, tilt, eraser/barrel identity, cancellation, DPI conversion, duplicate mouse filtering, and compatible control events; deferred native title-bar movement and edge resizing.
+- `platform/windows/shaders.hlsl`: affine polychrome image transforms and local rounded clipping, matching the shared scene layout.
+- `platform/windows/window.rs`: an application-owned `WM_GETOBJECT` handler for the AccessKit Windows accessibility adapter.
+- `platform/windows/destination_list.rs`: bounded UTF-16 length discovery without an ICU import dependency. The application owns its Windows manifest and resources.
 
 Tablet child-event registration uses generated Wayland opcode constants. The isolated protocol regression in `scripts/verify-tablet-protocol.py` checks the actual registration macros against protocol metadata; it catches the 0.1.0 pad-group opcode error without touching the desktop.
 

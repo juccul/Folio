@@ -87,6 +87,51 @@ fn handwriting_hooks_strikes_and_tremor_are_not_scratch() {
 }
 
 #[test]
+fn short_vertical_scrubs_across_a_wide_word_use_travel_direction() {
+    let path = [
+        Point::new(0., 0.),
+        Point::new(20., 40.),
+        Point::new(40., 0.),
+        Point::new(60., 40.),
+        Point::new(80., 0.),
+        Point::new(60., 40.),
+        Point::new(40., 0.),
+        Point::new(20., 40.),
+        Point::new(0., 0.),
+    ];
+    for angle in [0., PI * 0.25, PI * 0.5, PI * 0.75] {
+        for subdivisions in [1, 8, 40] {
+            let transform = Transform::around(Point::new(40., 20.), 1., angle);
+            let points = path
+                .windows(2)
+                .flat_map(|pair| {
+                    (0..subdivisions).map(move |i| {
+                        transform.apply(pair[0].lerp(pair[1], i as f32 / subdivisions as f32))
+                    })
+                })
+                .chain(std::iter::once(transform.apply(*path.last().unwrap())))
+                .collect::<Vec<_>>();
+            let gesture = scratch(&samples(&points))
+                .unwrap_or_else(|| panic!("angle={angle} subdivisions={subdivisions}"));
+            let target = [Point::new(0., 20.), Point::new(80., 20.)].map(|p| transform.apply(p));
+            assert!(gesture.erases(&stroke(&target)));
+            let neighbor = [Point::new(0., 65.), Point::new(80., 65.)].map(|p| transform.apply(p));
+            assert!(!gesture.erases(&stroke(&neighbor)));
+            // One advancing W has no return passes through the same corridors.
+            assert!(
+                scratch(&samples(
+                    &path[..5]
+                        .iter()
+                        .map(|&p| transform.apply(p))
+                        .collect::<Vec<_>>()
+                ))
+                .is_none()
+            );
+        }
+    }
+}
+
+#[test]
 fn validated_scratch_targets_every_real_crossing_without_box_only_hits() {
     let gesture = scratch(&samples(&zigzag(4, 24, 0.))).unwrap();
     assert!(gesture.erases(&stroke(&[Point::new(40., -10.), Point::new(40., 30.)])));

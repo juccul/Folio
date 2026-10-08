@@ -801,7 +801,7 @@ impl NotesView {
     }
     fn graph_preview(&mut self, svg: &str, cx: &mut Context<Self>) -> Div {
         let palette = Theme::new(&self.controller.settings)
-            .graph(self.controller.page().properties.pdf.is_some());
+            .graph_for_page(&self.controller.page().properties);
         let key = GraphKey {
             svg: svg.into(),
             palette,

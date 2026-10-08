@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 folio-document = { path = "../document" }
 folio-ink = { path = "../ink" }
+folio-platform = { path = "../platform" }
 image.workspace = true
 resvg.workspace = true
 thiserror.workspace = true

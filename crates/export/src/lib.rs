@@ -169,34 +169,17 @@ fn text_lines(o: &TextBlock) -> Vec<String> {
             .map(|t| t.root().abs_bounding_box().width())
             .unwrap_or(text.chars().count() as f32 * o.font_size * 0.6)
     };
-    let mut lines = Vec::new();
-    for paragraph in o.text.split('\n') {
-        if paragraph.is_empty() {
-            lines.push(String::new());
-            continue;
-        }
-        let mut line = String::new();
-        let reserve = if o.list == ListStyle::None {
-            0.
-        } else {
-            o.font_size * 2.
-        };
-        for word in paragraph.split_whitespace() {
-            let candidate = if line.is_empty() {
-                word.to_string()
-            } else {
-                format!("{line} {word}")
-            };
-            if !line.is_empty() && measure(&candidate) + reserve > width {
-                lines.push(std::mem::take(&mut line));
-                line.push_str(word);
-            } else {
-                line = candidate;
-            }
-        }
-        lines.push(line);
-    }
-    lines
+    let reserve = if o.list == ListStyle::None {
+        0.
+    } else {
+        o.font_size * 2.
+    };
+    text_wrap_ranges(&o.text, (width - reserve).max(o.font_size), |text| {
+        measure(text.trim_end())
+    })
+    .into_iter()
+    .map(|range| o.text[range].to_string())
+    .collect()
 }
 fn image_svg(name: &str, r: Rect, assets: &Path) -> Result<String> {
     let data = std::fs::read(asset_path(assets, name)?)?;
@@ -249,8 +232,13 @@ fn wrap_svg(r: Rect, w: f32, h: f32, body: &str) -> String {
     )
 }
 fn paper_svg(p: &PageProperties, r: Rect, assets: &Path) -> Result<String> {
+    let color = if p.pdf.is_some() {
+        "#ffffff".into()
+    } else {
+        p.color.map(|c| c.hex()).unwrap_or_else(|| "#fffefa".into())
+    };
     let mut body = format!(
-        "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#fffefa\"/>",
+        "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{color}\"/>",
         r.min.x,
         r.min.y,
         r.width(),
@@ -266,11 +254,19 @@ fn paper_svg(p: &PageProperties, r: Rect, assets: &Path) -> Result<String> {
         }
         return Ok(body);
     }
+    let dark = p
+        .color
+        .is_some_and(|c| 0.2126 * c.r as f32 + 0.7152 * c.g as f32 + 0.0722 * (c.b as f32) < 128.);
+    let line = if dark { "#ffffff" } else { "#000000" };
     let pattern = match p.paper {
-        Paper::Blank => "",
-        Paper::Ruled => "<path d='M0 31.5H32' stroke='#dfe5e1' stroke-width='0.7'/>",
-        Paper::Grid => "<path d='M0 31.5H32 M31.5 0V32' stroke='#e1e6e2' stroke-width='0.6'/>",
-        Paper::Dots => "<circle cx='16' cy='16' r='1' fill='#cdd7d0'/>",
+        Paper::Blank => String::new(),
+        Paper::Ruled => format!(
+            "<path d='M0 31.5H32' stroke='{line}' stroke-opacity='0.12' stroke-width='0.7'/>"
+        ),
+        Paper::Grid => format!(
+            "<path d='M0 31.5H32 M31.5 0V32' stroke='{line}' stroke-opacity='0.12' stroke-width='0.6'/>"
+        ),
+        Paper::Dots => format!("<circle cx='16' cy='16' r='1' fill='{line}' fill-opacity='0.22'/>"),
     };
     if !pattern.is_empty() {
         let _ = write!(
@@ -399,8 +395,8 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
             .open(&temporary)?;
         file.write_all(data)?;
         file.sync_all()?;
-        std::fs::rename(&temporary, path)?;
-        std::fs::File::open(parent)?.sync_all()?;
+        drop(file);
+        folio_platform::publish_file(&temporary, path)?;
         Ok(())
     })();
     if result.is_err() {
@@ -417,6 +413,23 @@ pub fn pdf(doc: &Document, assets: &Path, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn custom_paper_color_and_pattern_are_present_in_svg_and_png_exports() {
+        let mut page = Page::new();
+        page.properties.color = Some(Color::from_rgb(0xfff7e6));
+        page.properties.paper = Paper::Dots;
+        let svg = page_svg(&page, Path::new("."), true).unwrap();
+        assert!(svg.contains("fill=\"#fff7e6\""));
+        assert!(svg.contains("<circle"));
+        let tree = resvg::usvg::Tree::from_str(&svg, &svg_options()).unwrap();
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(794, 1123).unwrap();
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::identity(),
+            &mut pixmap.as_mut(),
+        );
+        assert_eq!(&pixmap.data()[..4], &[255, 247, 230, 255]);
+    }
     #[test]
     fn svg_escapes_text_and_png_has_pixels() {
         let mut p = Page::new();

@@ -60,6 +60,84 @@ impl Viewport {
         )
     }
 }
+/// A centered, continuous stack of finite pages. Infinite canvases remain
+/// independent; mixed documents stack each contiguous run of finite pages.
+pub struct PageStack {
+    pub pages: Vec<(usize, Rect)>,
+    pub height: f32,
+}
+impl PageStack {
+    pub const GAP: f32 = 28.;
+    pub fn new(pages: &[Page], active: usize) -> Option<Self> {
+        if pages.get(active)?.properties.infinite {
+            return None;
+        }
+        let start = (0..active)
+            .rev()
+            .find(|&i| pages[i].properties.infinite)
+            .map_or(0, |i| i + 1);
+        let end = (active + 1..pages.len())
+            .find(|&i| pages[i].properties.infinite)
+            .unwrap_or(pages.len());
+        let width = pages[start..end]
+            .iter()
+            .map(|p| p.properties.width)
+            .fold(0., f32::max);
+        let mut y = 0.;
+        let frames = (start..end)
+            .map(|i| {
+                let p = &pages[i].properties;
+                let frame = Rect::new((width - p.width) / 2., y, p.width, p.height);
+                y += p.height + Self::GAP;
+                (i, frame)
+            })
+            .collect();
+        Some(Self {
+            pages: frames,
+            height: y - Self::GAP,
+        })
+    }
+    pub fn frame(&self, index: usize) -> Rect {
+        self.pages[index - self.pages[0].0].1
+    }
+    /// Express the same screen transform in a different page's local coordinates.
+    pub fn viewport(&self, viewport: Viewport, active: usize, target: usize) -> Viewport {
+        let from = self.frame(active).min;
+        let to = self.frame(target).min;
+        Viewport {
+            pan: viewport.to_screen(Point::new(to.x - from.x, to.y - from.y)),
+            ..viewport
+        }
+    }
+    pub fn hit(&self, viewport: Viewport, active: usize, screen: Point) -> Option<usize> {
+        let p = viewport.to_document(screen);
+        let origin = self.frame(active).min;
+        let global = Point::new(p.x + origin.x, p.y + origin.y);
+        self.pages
+            .iter()
+            .find(|(_, r)| r.contains(global))
+            .map(|(i, _)| *i)
+    }
+    pub fn nearest(&self, viewport: Viewport, active: usize, screen: Point) -> usize {
+        let y = viewport.to_document(screen).y + self.frame(active).min.y;
+        self.pages
+            .iter()
+            .min_by(|(_, a), (_, b)| {
+                let distance = |r: &Rect| (r.min.y - y).max(y - r.max.y).max(0.);
+                distance(a).total_cmp(&distance(b))
+            })
+            .unwrap()
+            .0
+    }
+    pub fn clamp_vertical(&self, viewport: &mut Viewport, active: usize, height: f32) {
+        if viewport.rotation.abs() > 0.0001 {
+            return;
+        }
+        let offset = self.frame(active).min.y * viewport.zoom;
+        let minimum = (height - self.height * viewport.zoom - 36.).min(36.);
+        viewport.pan.y = (viewport.pan.y - offset).clamp(minimum, 36.) + offset;
+    }
+}
 /// Uniform-grid broad phase. Oversize objects have a separate bucket so malformed
 /// or enormous imported geometry cannot create an unbounded allocation.
 #[derive(Default)]
@@ -416,5 +494,90 @@ mod robustness_tests {
             command.apply(&mut doc, true);
             index.update(&doc.pages[0], &command);
         }
+    }
+}
+
+#[cfg(test)]
+mod page_stack_tests {
+    use super::*;
+    fn pages() -> Vec<Page> {
+        [(800., 1100.), (400., 600.), (1000., 500.)]
+            .map(|(width, height)| {
+                let mut p = Page::new();
+                p.properties.width = width;
+                p.properties.height = height;
+                p
+            })
+            .into()
+    }
+    #[test]
+    fn different_sizes_center_and_hit_test_without_drawing_in_gaps() {
+        let stack = PageStack::new(&pages(), 0).unwrap();
+        assert_eq!(stack.frame(0), Rect::new(100., 0., 800., 1100.));
+        assert_eq!(stack.frame(1), Rect::new(300., 1128., 400., 600.));
+        assert_eq!(stack.height, 2256.);
+        let viewport = Viewport::default();
+        assert_eq!(
+            stack.hit(viewport, 0, viewport.to_screen(Point::new(220., 1148.))),
+            Some(1)
+        );
+        assert_eq!(
+            stack.hit(viewport, 0, viewport.to_screen(Point::new(0., 1148.))),
+            None
+        );
+        assert_eq!(
+            stack.hit(viewport, 0, viewport.to_screen(Point::new(220., 1114.))),
+            None
+        );
+    }
+    #[test]
+    fn switching_local_coordinates_preserves_screen_positions_even_when_rotated() {
+        let stack = PageStack::new(&pages(), 0).unwrap();
+        let viewport = Viewport {
+            zoom: 1.7,
+            rotation: 0.6,
+            pan: Point::new(-270., -700.),
+        };
+        let local = stack.viewport(viewport, 0, 2);
+        let p = Point::new(120., 80.);
+        let offset = stack.frame(2).min;
+        let origin = stack.frame(0).min;
+        let screen = viewport.to_screen(Point::new(
+            p.x + offset.x - origin.x,
+            p.y + offset.y - origin.y,
+        ));
+        assert!(screen.distance(local.to_screen(p)) < 0.001);
+        assert_eq!(stack.hit(local, 2, screen), Some(2));
+        assert!(stack.viewport(local, 2, 0).pan.distance(viewport.pan) < 0.001);
+    }
+    #[test]
+    fn vertical_scroll_limits_use_whole_stack_and_survive_rebasing() {
+        let stack = PageStack::new(&pages(), 0).unwrap();
+        let mut viewport = Viewport {
+            pan: Point::new(80., -99999.),
+            ..Default::default()
+        };
+        stack.clamp_vertical(&mut viewport, 0, 700.);
+        assert_eq!(viewport.pan.y, 700. - 2256. - 36.);
+        let mut last = stack.viewport(viewport, 0, 2);
+        stack.clamp_vertical(&mut last, 2, 700.);
+        assert_eq!(stack.viewport(last, 2, 0).pan.y, viewport.pan.y);
+        viewport.pan.y = 99999.;
+        stack.clamp_vertical(&mut viewport, 0, 700.);
+        assert_eq!(viewport.pan.y, 36.);
+        viewport.zoom = 0.1;
+        viewport.pan.y = -99999.;
+        stack.clamp_vertical(&mut viewport, 0, 700.);
+        assert_eq!(viewport.pan.y, 36.);
+    }
+    #[test]
+    fn infinite_pages_separate_finite_runs() {
+        let mut pages = pages();
+        pages[1].properties.infinite = true;
+        assert!(PageStack::new(&pages, 1).is_none());
+        assert_eq!(PageStack::new(&pages, 0).unwrap().pages.len(), 1);
+        let last = PageStack::new(&pages, 2).unwrap();
+        assert_eq!(last.pages.len(), 1);
+        assert_eq!(last.frame(2), Rect::new(0., 0., 1000., 500.));
     }
 }

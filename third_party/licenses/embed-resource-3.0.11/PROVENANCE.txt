@@ -1,0 +1,3 @@
+Source: registry+https://github.com/rust-lang/crates.io-index#embed-resource@3.0.11
+License: MIT
+Repository: https://github.com/nabijaczleweli/rust-embed-resource

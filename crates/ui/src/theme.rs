@@ -76,6 +76,29 @@ fn native(color: ThemeColor) -> Rgba {
     rgba(color.0)
 }
 impl Theme {
+    pub fn canvas_for_page(self, properties: &folio_document::PageProperties) -> CanvasTheme {
+        let mut canvas = self.page_canvas(properties.pdf.is_some());
+        if properties.pdf.is_none()
+            && let Some(color) = properties.color
+        {
+            canvas.paper = color.rgb();
+            canvas.foreground =
+                if contrast(0xffffff, canvas.paper) > contrast(0x000000, canvas.paper) {
+                    0xffffff
+                } else {
+                    0x000000
+                };
+            canvas.grid = mix(canvas.paper, canvas.foreground, 0.12);
+            canvas.dots = mix(canvas.paper, canvas.foreground, 0.22);
+        }
+        canvas
+    }
+    pub fn graph_for_page(
+        self,
+        properties: &folio_document::PageProperties,
+    ) -> super::graph::Palette {
+        self.graph_for_canvas(self.canvas_for_page(properties))
+    }
     pub fn page_canvas(self, pdf: bool) -> CanvasTheme {
         if pdf {
             CanvasTheme {
@@ -89,8 +112,11 @@ impl Theme {
             self.canvas
         }
     }
+    #[cfg(test)]
     pub fn graph(self, pdf: bool) -> super::graph::Palette {
-        let page = self.page_canvas(pdf);
+        self.graph_for_canvas(self.page_canvas(pdf))
+    }
+    fn graph_for_canvas(self, page: CanvasTheme) -> super::graph::Palette {
         // Generated graphs always need readable labels and curves, including
         // when the user preserves original handwriting colors.
         let readable = CanvasTheme {
@@ -182,6 +208,30 @@ fn contrast(a: u32, b: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn document_paper_colors_apply_to_canvas_and_graphs_without_affecting_other_notes() {
+        let theme = Theme::new(&Settings::default());
+        let mut properties = folio_document::PageProperties::default();
+        for paper in [0xffffff, 0xfff7e6, 0x202124, 0x0e0e0e] {
+            properties.color = Some(folio_document::Color::from_rgb(paper));
+            let canvas = theme.canvas_for_page(&properties);
+            let graph = theme.graph_for_page(&properties);
+            assert_eq!(canvas.paper, paper);
+            assert_eq!(graph.paper, paper);
+            assert!(contrast(canvas.ink(0x2b3934), paper) >= 3.);
+            assert!(contrast(graph.labels, paper) >= 4.5);
+        }
+        assert_eq!(
+            theme.canvas_for_page(&folio_document::PageProperties::default()),
+            theme.canvas
+        );
+        properties.pdf = Some(folio_document::PdfBackground {
+            asset: "test.pdf".into(),
+            page: 1,
+            preview_asset: None,
+        });
+        assert_eq!(theme.canvas_for_page(&properties).paper, 0xffffff);
+    }
     #[test]
     fn graphs_follow_custom_paper_and_accent_with_readable_colors() {
         let mut settings = Settings::default();

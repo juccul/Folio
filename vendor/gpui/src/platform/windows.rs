@@ -8,6 +8,7 @@ mod dispatcher;
 mod display;
 mod events;
 mod keyboard;
+mod pen;
 mod platform;
 mod system_settings;
 mod util;

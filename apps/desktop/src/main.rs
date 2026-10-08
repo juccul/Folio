@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use folio_app::Controller;
 use folio_ui::NotesView;
 use gpui::*;
@@ -10,7 +12,7 @@ fn main() -> anyhow::Result<()> {
     }
     if args.iter().any(|s| s == "--help" || s == "-h") {
         println!(
-            "Folio — offline vector handwriting for Linux\n\nUsage: folio [--data-dir PATH] [--new-note] [--open-note UUID] [--recover] [--smoke-test] [PDF/IMAGE…]\n\nData: $FOLIO_DATA_DIR or $XDG_DATA_HOME/folio\nP/E/L/H/T/S: tools · Ctrl+S: save · Ctrl+F: search · Ctrl+0: fit"
+            "Folio — offline vector handwriting\n\nUsage: folio [--data-dir PATH] [--new-note] [--open-note UUID] [--recover] [--smoke-test] [PDF/IMAGE…]\n\nData: FOLIO_DATA_DIR or the platform's local application-data directory\nP/E/L/H/T/S: tools · Ctrl+S: save · Ctrl+F: search · Ctrl+0: fit"
         );
         return Ok(());
     }
@@ -55,7 +57,7 @@ fn main() -> anyhow::Result<()> {
     let mut controller = match Controller::open(data_dir.clone()) {
         Ok(controller) => controller,
         Err(error) => {
-            Application::new().run(move |cx| {
+            Application::new().with_assets(folio_ui::IconAssets).run(move |cx| {
                 cx.open_window(
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -87,7 +89,7 @@ fn main() -> anyhow::Result<()> {
     for file in files {
         controller.import_as_note(file);
     }
-    Application::new().run(move |cx| {
+    Application::new().with_assets(folio_ui::IconAssets).run(move |cx| {
         NotesView::bindings(cx);
         let bounds = Bounds::centered(None, size(px(1320.), px(860.)), cx);
         let window = cx.open_window(WindowOptions {

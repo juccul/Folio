@@ -13,6 +13,10 @@ actions!(
         End,
         SelectLeft,
         SelectRight,
+        Up,
+        Down,
+        SelectUp,
+        SelectDown,
         SelectAll,
         Copy,
         Cut,
@@ -25,8 +29,18 @@ pub struct Submitted;
 impl EventEmitter<Submitted> for Field {}
 pub struct FieldBoundsChanged;
 impl EventEmitter<FieldBoundsChanged> for Field {}
+#[derive(Clone)]
+pub struct InlineStyle {
+    pub text: folio_document::TextBlock,
+    pub transform: folio_document::Transform,
+    pub mask: Bounds<Pixels>,
+    pub color: u32,
+    pub handles: Vec<folio_document::Point>,
+}
 pub struct Field {
     pub content: String,
+    pub inline: Option<InlineStyle>,
+    inline_layout: Option<super::text_render::Layout>,
     pub focus: FocusHandle,
     pub multiline: bool,
     pub height: Option<f32>,
@@ -44,6 +58,8 @@ impl Field {
         let end = content.len();
         Self {
             content,
+            inline: None,
+            inline_layout: None,
             focus: cx.focus_handle(),
             multiline,
             height: None,
@@ -74,6 +90,10 @@ impl Field {
             KeyBinding::new("end", End, Some("FolioField")),
             KeyBinding::new("shift-left", SelectLeft, Some("FolioField")),
             KeyBinding::new("shift-right", SelectRight, Some("FolioField")),
+            KeyBinding::new("up", Up, Some("FolioField")),
+            KeyBinding::new("down", Down, Some("FolioField")),
+            KeyBinding::new("shift-up", SelectUp, Some("FolioField")),
+            KeyBinding::new("shift-down", SelectDown, Some("FolioField")),
             KeyBinding::new("ctrl-a", SelectAll, Some("FolioField")),
             KeyBinding::new("ctrl-c", Copy, Some("FolioField")),
             KeyBinding::new("ctrl-x", Cut, Some("FolioField")),
@@ -98,6 +118,46 @@ impl Field {
             forward,
             extend,
         );
+    }
+    fn move_vertical(&mut self, down: bool, extend: bool) {
+        let head = if self.selection_anchor == self.selection.start {
+            self.selection.end
+        } else {
+            self.selection.start
+        };
+        let next = if let Some(layout) = &self.inline_layout {
+            let caret = layout.caret(head);
+            layout.index_at(folio_document::Point::new(
+                caret.min.x,
+                (caret.min.y
+                    + if down {
+                        layout.line_height
+                    } else {
+                        -layout.line_height
+                    })
+                .max(0.),
+            ))
+        } else {
+            let row = self
+                .layouts
+                .iter()
+                .rposition(|(offset, _)| *offset <= head)
+                .unwrap_or(0);
+            let target = if down {
+                (row + 1).min(self.layouts.len().saturating_sub(1))
+            } else {
+                row.saturating_sub(1)
+            };
+            match (self.layouts.get(row), self.layouts.get(target)) {
+                (Some((offset, line)), Some((next, target))) => {
+                    next + target.closest_index_for_x(
+                        line.x_for_index(head.saturating_sub(*offset).min(line.len())),
+                    )
+                }
+                _ => head,
+            }
+        };
+        self.select(if extend { self.selection_anchor } else { next }, next);
     }
     fn previous(&self) -> usize {
         self.content[..self.selection.start]
@@ -134,6 +194,16 @@ impl Field {
         start.min(end)..start.max(end)
     }
     fn index_at(&self, p: Point<Pixels>) -> usize {
+        if let Some(style) = &self.inline
+            && let Some(layout) = &self.inline_layout
+        {
+            let p = style
+                .transform
+                .inverse()
+                .unwrap_or_default()
+                .apply(folio_document::Point::new(f32::from(p.x), f32::from(p.y)));
+            return layout.index_at(p).min(self.content.len());
+        }
         let Some(bounds) = self.bounds else {
             return self.content.len();
         };
@@ -257,6 +327,24 @@ impl EntityInputHandler for Field {
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let r = self.range(r);
+        if let Some(style) = &self.inline
+            && let Some(layout) = &self.inline_layout
+        {
+            let rect = layout.caret(r.start);
+            let rect = folio_document::Rect::from_points(
+                [
+                    rect.min,
+                    folio_document::Point::new(rect.max.x, rect.min.y),
+                    rect.max,
+                    folio_document::Point::new(rect.min.x, rect.max.y),
+                ]
+                .map(|p| style.transform.apply(p)),
+            );
+            return Some(Bounds::new(
+                point(px(rect.min.x), px(rect.min.y)),
+                size(px(rect.width()), px(rect.height())),
+            ));
+        }
         let (row, (offset, line)) = self
             .layouts
             .iter()
@@ -329,6 +417,14 @@ impl Element for FieldElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        if let Some(style) = self.field.read(cx).inline.clone() {
+            let mut text = style.text;
+            text.text = self.field.read(cx).content.clone();
+            let layout = super::text_render::layout(&text, style.color, window);
+            self.field
+                .update(cx, |field, _| field.inline_layout = Some(layout));
+            return vec![];
+        }
         let field = self.field.read(cx);
         let mut offset = 0;
         let style = window.text_style();
@@ -372,6 +468,40 @@ impl Element for FieldElement {
         cx: &mut App,
     ) {
         let field = self.field.read(cx);
+        if let Some(style) = &field.inline
+            && let Some(layout) = &field.inline_layout
+        {
+            let focus = field.focus.clone();
+            window.handle_input(
+                &focus,
+                ElementInputHandler::new(bounds, self.field.clone()),
+                cx,
+            );
+            window.with_content_mask(Some(ContentMask { bounds: style.mask }), |window| {
+                layout.paint_selection(
+                    field.selection.clone(),
+                    style.transform,
+                    rgba((field.theme.accent << 8) | 0x35),
+                    window,
+                );
+                layout.paint(style.transform, style.color, style.text.underline, window);
+                if focus.is_focused(window) && field.selection.is_empty() {
+                    super::text_render::fill_rect(
+                        layout.caret(field.selection.start),
+                        style.transform,
+                        rgb(field.theme.accent),
+                        window,
+                    );
+                }
+            });
+            self.field.update(cx, |field, cx| {
+                if field.bounds != Some(bounds) {
+                    field.bounds = Some(bounds);
+                    cx.emit(FieldBoundsChanged);
+                }
+            });
+            return;
+        }
         let selection = if field.secret {
             field.content[..field.selection.start].chars().count()
                 ..field.content[..field.selection.end].chars().count()
@@ -449,14 +579,32 @@ impl Render for Field {
             .rounded(px(theme.radius))
             .focus(move |s| s.border_color(rgb(theme.ring)))
             .p_3()
-            .overflow_hidden()
+            .when(self.inline.is_none(), |s| s.overflow_hidden())
+            .when(self.inline.is_some(), |s| {
+                s.bg(transparent_black())
+                    .border_0()
+                    .rounded(px(0.))
+                    .p_0()
+                    .occlude()
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    if this.inline.as_ref().is_some_and(|style| {
+                        style.handles.iter().any(|p| {
+                            p.distance(folio_document::Point::new(
+                                f32::from(event.position.x),
+                                f32::from(event.position.y),
+                            )) < 10.
+                        })
+                    }) {
+                        return;
+                    }
                     this.focus.focus(window);
                     let i = this.index_at(event.position);
                     this.select(i, i);
                     this.selecting = true;
+                    cx.stop_propagation();
                     cx.notify();
                 }),
             )
@@ -495,12 +643,50 @@ impl Render for Field {
                 this.move_cursor(true, false);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &Up, _, cx| {
+                this.move_vertical(false, false);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &Down, _, cx| {
+                this.move_vertical(true, false);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectUp, _, cx| {
+                this.move_vertical(false, true);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectDown, _, cx| {
+                this.move_vertical(true, true);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &Home, _, cx| {
-                this.select(0, 0);
+                let start = this
+                    .inline_layout
+                    .as_ref()
+                    .and_then(|layout| {
+                        layout
+                            .lines
+                            .iter()
+                            .rev()
+                            .find(|line| line.offset <= this.selection.end)
+                    })
+                    .map_or(0, |line| line.offset);
+                this.select(start, start);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &End, _, cx| {
-                this.select(this.content.len(), this.content.len());
+                let end = this
+                    .inline_layout
+                    .as_ref()
+                    .and_then(|layout| {
+                        layout
+                            .lines
+                            .iter()
+                            .rev()
+                            .find(|line| line.offset <= this.selection.end)
+                    })
+                    .map_or(this.content.len(), |line| line.offset + line.shaped.len());
+                this.select(end, end);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &SelectLeft, _, cx| {

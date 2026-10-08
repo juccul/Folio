@@ -527,6 +527,9 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     #[cfg(target_os = "windows")]
     fn get_raw_handle(&self) -> windows::HWND;
 
+    #[cfg(target_os = "windows")]
+    fn on_accessibility_object(&self, _callback: Box<dyn FnMut(usize, isize) -> Option<isize>>) {}
+
     // Linux specific methods
     fn inner_window_bounds(&self) -> WindowBounds {
         self.window_bounds()

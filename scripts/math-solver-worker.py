@@ -10,11 +10,20 @@ import math
 import os
 from pathlib import Path
 import re
-import resource
+try:
+    import resource
+except ImportError:  # Windows: the Rust parent owns the worker timeout.
+    resource = None
 import signal
 import socket
 import sys
 from functools import lru_cache
+
+# The embedded Windows runtime ignores Python environment settings. Specify
+# UTF-8 on the JSON protocol streams even when the system locale is legacy.
+for stream in (sys.stdin, sys.stdout, sys.stderr):
+    if hasattr(stream, 'reconfigure'):
+        stream.reconfigure(encoding='utf-8')
 
 from math_parser import Compiler, MathInputError, Node, parse
 
@@ -701,23 +710,28 @@ def main():
     config=json.loads(args.config.read_text())
     seconds=max(1,min(20,int(config.get('timeout_seconds',8))))
     # This service is launched independently of Torch; bound process memory too.
-    resource.setrlimit(resource.RLIMIT_AS,(768*1024*1024,768*1024*1024))
+    if resource is not None:
+        resource.setrlimit(resource.RLIMIT_AS,(768*1024*1024,768*1024*1024))
     if sys.platform=='linux':
         import ctypes
         parent=os.getppid();ctypes.CDLL(None).prctl(1,signal.SIGTERM,0,0,0)
         if os.getppid()!=parent: return
-    signal.signal(signal.SIGALRM,timeout)
+    use_alarm = hasattr(signal, 'SIGALRM') and hasattr(signal, 'setitimer')
+    if use_alarm:
+        signal.signal(signal.SIGALRM,timeout)
     for line in sys.stdin:
         try:
             if len(line)>65536: raise MathInputError('Solver request is too large.')
             request=json.loads(line)
             if not isinstance(request,dict): raise MathInputError('Invalid solver request.')
-            signal.setitimer(signal.ITIMER_REAL,seconds)
+            if use_alarm:
+                signal.setitimer(signal.ITIMER_REAL,seconds)
             response=cached_solve(json.dumps(request,sort_keys=True))
         except (Exception,MemoryError) as error:
             response={'error':str(error) or type(error).__name__}
         finally:
-            signal.setitimer(signal.ITIMER_REAL,0)
+            if use_alarm:
+                signal.setitimer(signal.ITIMER_REAL,0)
         print(json.dumps(response,ensure_ascii=False,allow_nan=False),flush=True)
 
 if __name__=='__main__': main()

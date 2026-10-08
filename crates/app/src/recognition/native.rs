@@ -2,9 +2,9 @@
 //! Only asset downloads use the Internet. Document images go to authenticated loopback.
 use super::*;
 use base64::Engine;
+use folio_platform::BackgroundCommand;
 use reqwest::blocking::Client as Http;
 use sha2::{Digest, Sha256};
-use std::process::Command;
 use std::{
     fs::{self, File, OpenOptions},
     net::TcpListener,
@@ -14,10 +14,25 @@ use std::{
 
 type Result<T> = std::result::Result<T, String>;
 const REVISION: &str = "65a42de1148dbed2297e922b5dbc7d9b70c36578";
+#[cfg(not(windows))]
 const RUNTIME: &str = "llama-b11457-bin-ubuntu-vulkan-x64.tar.gz";
+#[cfg(windows)]
+const RUNTIME: &str = "llama-b11457-bin-win-vulkan-x64.zip";
+#[cfg(not(windows))]
+const RUNTIME_BYTES: u64 = 31_679_935;
+#[cfg(windows)]
+const RUNTIME_BYTES: u64 = 33_377_746;
+#[cfg(not(windows))]
+const RUNTIME_SHA: &str = "cb528b7f75e466f5113685d8aca7a9966a5dac3192f2e12bd4f96d7505fbea39";
+#[cfg(windows)]
+const RUNTIME_SHA: &str = "d01301582c711a69b9747b5984710d6ca99e57d95f680d3d33753cec570b4cb6";
+#[cfg(not(windows))]
+const SERVER_PATH: &str = "llama-b11457/llama-server";
+#[cfg(windows)]
+const SERVER_PATH: &str = "llama-server.exe";
 const MODEL: &str = "GLM-OCR-Q8_0.gguf";
 const VISION: &str = "mmproj-GLM-OCR-Q8_0.gguf";
-const TOTAL: u64 = 950_433_408 + 484_403_648 + 31_679_935;
+const TOTAL: u64 = 950_433_408 + 484_403_648 + RUNTIME_BYTES;
 const ASSETS: [(&str, u64, &str); 3] = [
     (
         MODEL,
@@ -29,11 +44,7 @@ const ASSETS: [(&str, u64, &str); 3] = [
         484_403_648,
         "9c4b58e33e316ed142eb5dcb41abec3844d3e6e5dc361ffb782c3fa9d175141f",
     ),
-    (
-        RUNTIME,
-        31_679_935,
-        "cb528b7f75e466f5113685d8aca7a9966a5dac3192f2e12bd4f96d7505fbea39",
-    ),
+    (RUNTIME, RUNTIME_BYTES, RUNTIME_SHA),
 ];
 
 pub(super) struct Context<'a> {
@@ -56,6 +67,62 @@ impl Context<'_> {
 }
 fn io(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(any(windows, test))]
+fn extract_zip(path: &Path, destination: &Path, context: &Context<'_>) -> Result<()> {
+    let mut archive = zip::ZipArchive::new(File::open(path).map_err(io)?).map_err(io)?;
+    if archive.len() > 256 {
+        return Err("OCR runtime archive has too many files".into());
+    }
+    let mut total = 0u64;
+    for index in 0..archive.len() {
+        context.check()?;
+        let mut item = archive.by_index(index).map_err(io)?;
+        let name = item
+            .enclosed_name()
+            .ok_or("Invalid OCR runtime archive path")?;
+        // The Windows pack contains ordinary files, never links or drive paths.
+        if name
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+            || item.name().contains('\\')
+            || item.name().contains(':')
+            || item
+                .unix_mode()
+                .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err("Invalid OCR runtime archive path".into());
+        }
+        total = total
+            .checked_add(item.size())
+            .ok_or("OCR archive is too large")?;
+        if total > 512 * 1024 * 1024 {
+            return Err("OCR archive is too large".into());
+        }
+        let target = destination.join(name);
+        if item.is_dir() {
+            fs::create_dir_all(target).map_err(io)?;
+        } else {
+            fs::create_dir_all(target.parent().ok_or("Invalid runtime path")?).map_err(io)?;
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(target)
+                .map_err(io)?;
+            let mut buffer = [0; 64 * 1024];
+            loop {
+                context.check()?;
+                let count = item.read(&mut buffer).map_err(io)?;
+                if count == 0 {
+                    break;
+                }
+                output.write_all(&buffer[..count]).map_err(io)?;
+            }
+            output.sync_all().map_err(io)?;
+        }
+    }
+    Ok(())
 }
 fn hash(path: &Path, context: &Context<'_>) -> Result<String> {
     let mut file = File::open(path).map_err(io)?;
@@ -95,8 +162,9 @@ fn download(
     context: &Context<'_>,
 ) -> Result<()> {
     context.stage(format!(
-        "Checking OCR files… ({:.0} / 1467 MB)",
-        completed as f64 / 1e6
+        "Checking OCR files… ({:.0} / {:.0} MB)",
+        completed as f64 / 1e6,
+        TOTAL as f64 / 1e6
     ));
     if verified(path, size, sha, context)? {
         return Ok(());
@@ -119,8 +187,9 @@ fn download(
     while offset < size {
         context.check()?;
         context.stage(format!(
-            "Downloading OCR · {:.0} / 1467 MB",
-            (completed + offset) as f64 / 1e6
+            "Downloading OCR · {:.0} / {:.0} MB",
+            (completed + offset) as f64 / 1e6,
+            TOTAL as f64 / 1e6
         ));
         let end = (offset + 4 * 1024 * 1024 - 1).min(size - 1);
         let attempt: Result<()> = (|| {
@@ -158,8 +227,9 @@ fn download(
                 remaining -= n as u64;
                 if last_update.elapsed() > Duration::from_millis(250) {
                     context.stage(format!(
-                        "Downloading OCR · {:.0} / 1467 MB",
-                        (completed + offset) as f64 / 1e6
+                        "Downloading OCR · {:.0} / {:.0} MB",
+                        (completed + offset) as f64 / 1e6,
+                        TOTAL as f64 / 1e6
                     ));
                     last_update = Instant::now();
                 }
@@ -186,12 +256,15 @@ fn download(
         return Err("OCR checksum mismatch. Request OCR again to download a fresh copy.".into());
     }
     context.check()?;
-    fs::rename(&partial, path).map_err(io)
+    folio_platform::publish_file(&partial, path).map_err(io)
 }
 
 fn install(pack: &Path, context: &Context<'_>) -> Result<PathBuf> {
-    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        return Err("Automatic OCR setup supports x86_64 Linux. Configure a local recognition pack on this platform.".into());
+    if !cfg!(all(
+        any(target_os = "linux", target_os = "windows"),
+        target_arch = "x86_64"
+    )) {
+        return Err("Automatic OCR setup supports x86_64 Linux and Windows. Configure a local recognition pack on this platform.".into());
     }
     let parent = pack.parent().ok_or("Invalid recognition directory")?;
     fs::create_dir_all(parent).map_err(io)?;
@@ -205,7 +278,7 @@ fn install(pack: &Path, context: &Context<'_>) -> Result<PathBuf> {
     context.stage(if pack.is_file() {
         "Checking installed OCR…"
     } else {
-        "Preparing OCR · first download is 1.47 GB…"
+        "Preparing OCR · first download is about 1.47 GB…"
     });
     loop {
         context.check()?;
@@ -251,16 +324,22 @@ fn install(pack: &Path, context: &Context<'_>) -> Result<PathBuf> {
     let staging = root.join(format!("runtime-{}", Id::new_v4()));
     fs::create_dir(&staging).map_err(io)?;
     let extraction: Result<()> = (|| {
-        let compressed = flate2::read::GzDecoder::new(File::open(root.join(RUNTIME)).map_err(io)?);
-        let mut archive = tar::Archive::new(compressed);
-        for item in archive.entries().map_err(io)? {
-            context.check()?;
-            let mut item = item.map_err(io)?;
-            if !item.unpack_in(&staging).map_err(io)? {
-                return Err("Invalid OCR runtime archive path".into());
+        #[cfg(not(windows))]
+        {
+            let compressed =
+                flate2::read::GzDecoder::new(File::open(root.join(RUNTIME)).map_err(io)?);
+            let mut archive = tar::Archive::new(compressed);
+            for item in archive.entries().map_err(io)? {
+                context.check()?;
+                let mut item = item.map_err(io)?;
+                if !item.unpack_in(&staging).map_err(io)? {
+                    return Err("Invalid OCR runtime archive path".into());
+                }
             }
         }
-        if !staging.join("llama-b11457/llama-server").is_file() {
+        #[cfg(windows)]
+        extract_zip(&root.join(RUNTIME), &staging, context)?;
+        if !staging.join(SERVER_PATH).is_file() {
             return Err("OCR runtime archive is incomplete".into());
         }
         let runtime = root.join("runtime");
@@ -396,14 +475,14 @@ impl Native {
             return Err("OCR device must be auto, cpu or a Vulkan device ID".into());
         }
         let root = install(pack, context)?;
-        let binary = root.join("runtime/llama-b11457/llama-server");
+        let binary = root.join("runtime").join(SERVER_PATH);
         context.stage("Checking Vulkan GPUs…");
-        let mut probe = Command::new(&binary)
+        let mut probe = folio_platform::command(&binary)
             .arg("--list-devices")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
+            .spawn_background()
             .map_err(io)?;
         let stdout = probe.stdout.take().unwrap();
         // Put even discovery under cancellation ownership; no detached GPU processes.
@@ -458,7 +537,7 @@ impl Native {
                 .local_addr()
                 .map_err(io)?
                 .port();
-            let mut command = Command::new(&binary);
+            let mut command = folio_platform::command(&binary);
             command
                 .args(["--model"])
                 .arg(root.join(MODEL))
@@ -521,7 +600,7 @@ impl Native {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(log)
-                .spawn()
+                .spawn_background()
                 .map_err(io)?;
             {
                 let mut shared = context.process.lock().unwrap();
@@ -777,6 +856,42 @@ fn render_ink(strokes: &[Vec<[f32; 2]>], kind: RecognitionKind) -> Result<Vec<u8
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_runtime_zip_extracts_files_and_rejects_traversal() {
+        let root = root();
+        let archive = root.join("runtime.zip");
+        let generation = AtomicU64::new(1);
+        let process = Mutex::new(None);
+        let stage = |_: String| {};
+        let context = Context {
+            generation: 1,
+            current: &generation,
+            process: &process,
+            progress: &stage,
+        };
+        for (name, valid) in [
+            ("llama-server.exe", true),
+            ("../escape.exe", false),
+            ("C:/escape.exe", false),
+            ("folder\\escape.exe", false),
+        ] {
+            let mut writer = zip::ZipWriter::new(File::create(&archive).unwrap());
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"fixture").unwrap();
+            writer.finish().unwrap();
+            let destination = root.join(Id::new_v4().to_string());
+            fs::create_dir(&destination).unwrap();
+            let result = extract_zip(&archive, &destination, &context);
+            assert_eq!(result.is_ok(), valid, "{name}: {result:?}");
+            if valid {
+                assert_eq!(fs::read(destination.join(name)).unwrap(), b"fixture");
+            }
+            assert!(!root.join("escape.exe").exists());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
     fn root() -> PathBuf {
         let root = std::env::temp_dir().join(format!("folio-ocr-native-{}", Id::new_v4()));
         fs::create_dir(&root).unwrap();

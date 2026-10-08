@@ -1,0 +1,3 @@
+Source: registry+https://github.com/rust-lang/crates.io-index#schannel@0.1.29
+License: MIT
+Repository: https://github.com/steffengy/schannel-rs

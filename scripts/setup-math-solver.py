@@ -32,7 +32,8 @@ def main():
     temporary=output/'pack.json.tmp';temporary.write_text(json.dumps(config,indent=2)+'\n')
     temporary.replace(output/'pack.json')
     link=ROOT/'target/math-solver'
-    if not link.exists() and not link.is_symlink(): link.symlink_to(output,target_is_directory=True)
+    if sys.platform != 'win32' and not link.exists() and not link.is_symlink():
+        link.symlink_to(output,target_is_directory=True)
     print(f'Offline math solver ready: {output / "pack.json"}')
 
 if __name__=='__main__': main()

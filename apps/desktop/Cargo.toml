@@ -12,3 +12,9 @@ folio-app = { path = "../../crates/app" }
 anyhow.workspace = true
 folio-platform = { path = "../../crates/platform" }
 folio-storage = { path = "../../crates/storage" }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui = { workspace = true, features = ["wayland", "x11"] }
+
+[build-dependencies]
+embed-resource = "3"

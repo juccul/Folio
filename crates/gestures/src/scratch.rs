@@ -17,12 +17,21 @@ pub fn scratch(points: &[StrokePoint]) -> Option<Scratch> {
     let positions = geometry::clean(&points.iter().map(|p| p.position()).collect::<Vec<_>>())?;
     let bounds = Rect::from_points(positions.iter().copied());
     let path = geometry::resample(&positions, 192);
-    let axis = geometry::principal_axis(&path);
+    let length = geometry::length(&positions);
+    scratch_on_axis(&path, bounds, length, geometry::principal_axis(&path)).or_else(|| {
+        // Up/down scrubbing across a word can have a wide footprint whose
+        // principal axis is horizontal. Inspect the actual travel direction
+        // too, retaining the same pass/revisit checks that reject handwriting.
+        scratch_on_axis(&path, bounds, length, geometry::traversal_axis(&positions))
+    })
+}
+
+fn scratch_on_axis(path: &[Point], bounds: Rect, length: f32, axis: Point) -> Option<Scratch> {
     let projection: Vec<f32> = path.iter().map(|p| p.x * axis.x + p.y * axis.y).collect();
     let perpendicular: Vec<f32> = path.iter().map(|p| -p.x * axis.y + p.y * axis.x).collect();
     let span = projection.iter().copied().fold(f32::NEG_INFINITY, f32::max)
         - projection.iter().copied().fold(f32::INFINITY, f32::min);
-    if span < 14. || geometry::length(&positions) < span * 2.3 {
+    if span < 14. || length < span * 2.3 {
         return None;
     }
     let threshold = span * 0.18;

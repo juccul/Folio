@@ -15,6 +15,30 @@ fn draw(app: &mut Controller, points: &[Point], start: u64) {
     }
 }
 
+fn begin_loop(app: &mut Controller, points: &[Point], start: u64) {
+    for (i, &p) in points.iter().enumerate() {
+        app.pointer(frame(
+            app,
+            p,
+            if i == 0 { Phase::Down } else { Phase::Move },
+            start + i as u64 * 12,
+        ));
+    }
+}
+
+fn hold(app: &mut Controller) {
+    let Some(Interaction::Ink { last_move, .. }) = &mut app.interaction else {
+        panic!("Expected active ink")
+    };
+    *last_move = Instant::now() - Duration::from_millis(650);
+}
+
+fn draw_held(app: &mut Controller, points: &[Point], start: u64) {
+    begin_loop(app, points, start);
+    hold(app);
+    app.pointer(frame(app, *points.last().unwrap(), Phase::Up, start + 2000));
+}
+
 fn frame(app: &Controller, position: Point, phase: Phase, timestamp: u64) -> PenEvent {
     PenEvent {
         device: Device::Tablet,
@@ -110,7 +134,7 @@ fn gapped_encircle_selects_and_can_immediately_move_ink_without_drawing_the_loop
         app.settings.encircle_select = true;
         draw(app, &[Point::new(110., 155.), Point::new(170., 165.)], 0);
         let original = app.page().ordered_objects().next().unwrap().clone();
-        draw(app, &oval(0.88), 1000);
+        draw_held(app, &oval(0.88), 1000);
         assert_eq!(
             app.page().objects.len(),
             1,
@@ -143,14 +167,14 @@ fn encircle_selects_enclosed_ink_and_leaves_crossing_ink_unselected() {
         let enclosed = app.page().order[0];
         draw(app, &[Point::new(30., 160.), Point::new(260., 160.)], 1000);
         app.settings.encircle_select = true;
-        draw(app, &oval(1.1), 2000);
+        draw_held(app, &oval(1.1), 2000);
         assert_eq!(app.session().selection, HashSet::from([enclosed]));
         assert_eq!(app.page().objects.len(), 2);
     });
 }
 
 #[test]
-fn pausing_at_the_end_of_an_encircle_does_not_steal_selection() {
+fn holding_an_encircle_selects_before_lift_and_takes_priority_over_shape_snapping() {
     with_app(|app| {
         app.settings.encircle_select = true;
         draw(app, &[Point::new(110., 155.), Point::new(170., 165.)], 0);
@@ -168,16 +192,8 @@ fn pausing_at_the_end_of_an_encircle_does_not_steal_selection() {
             *last_move = Instant::now() - Duration::from_secs(1);
         }
         app.tick();
-        assert!(
-            matches!(
-                &app.interaction,
-                Some(Interaction::Ink {
-                    preview: Some(_),
-                    ..
-                })
-            ),
-            "Hold-to-shape must have offered a preview"
-        );
+        assert!(app.interaction.is_none());
+        assert_eq!(app.session().selection, HashSet::from([enclosed]));
         app.pointer(frame(app, *points.last().unwrap(), Phase::Up, 3000));
         assert_eq!(app.session().selection, HashSet::from([enclosed]));
         assert_eq!(app.page().objects.len(), 1);
@@ -194,7 +210,7 @@ fn disabled_gestures_highlighter_and_shape_tools_keep_their_ink() {
         app.settings.encircle_select = true;
         app.settings.scratch_erase = true;
         app.style.tool = InkTool::Highlighter;
-        draw(app, &oval(1.), 2000);
+        draw_held(app, &oval(1.), 2000);
         assert_eq!(app.page().objects.len(), 3);
         assert!(app.session().selection.is_empty());
         app.style.tool = InkTool::Ballpoint;
@@ -214,7 +230,7 @@ fn encircle_returns_to_pen_on_first_outside_contact_but_explicit_lasso_stays() {
     with_app(|app| {
         app.settings.encircle_select = true;
         draw(app, &[Point::new(110., 155.), Point::new(170., 165.)], 0);
-        draw(app, &oval(1.), 1000);
+        draw_held(app, &oval(1.), 1000);
         let outside = Point::new(300., 300.);
         app.pointer(frame(app, outside, Phase::Down, 3000));
         assert_eq!(app.tool, Tool::Pen);
@@ -224,7 +240,7 @@ fn encircle_returns_to_pen_on_first_outside_contact_but_explicit_lasso_stays() {
         );
         app.pointer(frame(app, Point::new(350., 320.), Phase::Up, 3100));
         assert_eq!(app.page().objects.len(), 2);
-        draw(app, &oval(1.), 4000);
+        draw_held(app, &oval(1.), 4000);
         app.set_tool(Tool::Lasso);
         app.pointer(frame(app, outside, Phase::Down, 6000));
         assert_eq!(app.tool, Tool::Lasso);
@@ -276,7 +292,7 @@ fn circle_resize_handles_and_page_changes_keep_temporary_tool_state_consistent()
     with_app(|app| {
         app.settings.encircle_select = true;
         draw(app, &[Point::new(110., 150.), Point::new(170., 170.)], 0);
-        draw(app, &oval(1.), 1000);
+        draw_held(app, &oval(1.), 1000);
         let bounds = app.selection_bounds().unwrap();
         app.pointer(frame(app, bounds.max, Phase::Down, 3000));
         assert!(matches!(app.interaction, Some(Interaction::Resize { .. })));
@@ -290,5 +306,159 @@ fn circle_resize_handles_and_page_changes_keep_temporary_tool_state_consistent()
         app.change_page(0);
         assert_eq!(app.tool, Tool::Pen);
         assert!(app.session().selection.is_empty());
+    });
+}
+
+#[test]
+fn unheld_circles_stay_ink_and_resuming_movement_restarts_the_hold() {
+    for device in [Device::Mouse, Device::Tablet] {
+        for resume_phase in [Phase::Move, Phase::Up] {
+            with_app(|app| {
+                app.settings.encircle_select = true;
+                draw(app, &[Point::new(110., 155.), Point::new(170., 165.)], 0);
+                let points = oval(1.);
+                for (i, &p) in points.iter().enumerate() {
+                    let mut event = frame(
+                        app,
+                        p,
+                        if i == 0 { Phase::Down } else { Phase::Move },
+                        1000 + i as u64 * 12,
+                    );
+                    event.device = device;
+                    app.pointer(event);
+                }
+                app.tick();
+                assert!(app.session().selection.is_empty());
+                app.pointer(frame(app, points[80], Phase::Up, 2500));
+                assert!(app.session().selection.is_empty());
+                assert_eq!(app.page().objects.len(), 2);
+                assert_eq!(app.tool, Tool::Pen);
+                app.undo();
+                begin_loop(app, &points, 3000);
+                hold(app);
+                // A new segment even on the final Up cannot reuse an old hold.
+                app.pointer(frame(app, Point::new(210., 170.), resume_phase, 4500));
+                if resume_phase == Phase::Move {
+                    app.tick();
+                    app.pointer(frame(app, Point::new(210., 170.), Phase::Up, 4600));
+                }
+                assert!(app.session().selection.is_empty());
+                assert_eq!(app.page().objects.len(), 2);
+                assert!(matches!(
+                    app.page().ordered_objects().last().unwrap().as_ref(),
+                    Object::Stroke(_)
+                ));
+            });
+        }
+    }
+}
+
+#[test]
+fn held_circle_works_without_shape_snapping_and_tolerates_screen_pixel_tremor() {
+    for zoom in [0.5, 1., 4.] {
+        with_app(|app| {
+            app.settings.encircle_select = true;
+            app.settings.hold_shapes = false;
+            app.session_mut().viewport.zoom = zoom;
+            draw(app, &[Point::new(110., 155.), Point::new(170., 165.)], 0);
+            let enclosed = app.page().order[0];
+            let points = oval(1.);
+            begin_loop(app, &points, 1000);
+            hold(app);
+            app.pointer(frame(
+                app,
+                Point::new(210. + 1.5 / zoom, 160.),
+                Phase::Move,
+                2500,
+            ));
+            app.tick();
+            assert_eq!(app.session().selection, HashSet::from([enclosed]));
+            assert_eq!(app.tool, Tool::Lasso);
+            assert!(app.interaction.is_none());
+            app.pointer(frame(app, points[80], Phase::Up, 2700));
+            assert_eq!(app.page().objects.len(), 1);
+        });
+    }
+}
+
+#[test]
+fn outside_tap_clears_temporary_selection_without_ink_or_an_undo_entry() {
+    for zoom in [0.5, 1., 4.] {
+        with_app(|app| {
+            app.settings.encircle_select = true;
+            app.session_mut().viewport.zoom = zoom;
+            draw(app, &[Point::new(110., 155.), Point::new(170., 165.)], 0);
+            let original = app.page().ordered_objects().next().unwrap().clone();
+            draw_held(app, &oval(1.), 1000);
+            let outside = Point::new(300., 300.);
+            app.pointer(frame(app, outside, Phase::Down, 4000));
+            assert!(app.session().selection.is_empty());
+            assert_eq!(app.tool, Tool::Pen);
+            hold(app);
+            app.last_draft = Instant::now() - Duration::from_secs(2);
+            app.tick();
+            app.pointer(frame(
+                app,
+                Point::new(300. + 1.5 / zoom, 300.),
+                Phase::Up,
+                5000,
+            ));
+            assert_eq!(app.page().objects.len(), 1);
+            assert_eq!(app.page().objects[&original.id()], original);
+            app.undo();
+            assert!(
+                app.page().objects.is_empty(),
+                "A dismissal must not add an undo entry"
+            );
+            app.redo();
+            // Subsequent pen taps remain valid dots.
+            draw(app, &[outside, outside], 6000);
+            assert_eq!(app.page().objects.len(), 2);
+            app.undo();
+            app.flush().unwrap();
+            let store = Store::open(app.data_dir.join("notes.sqlite3")).unwrap();
+            let reloaded = store.load(app.active).unwrap().unwrap();
+            assert_eq!(
+                reloaded.pages[0].objects.len(),
+                1,
+                "Dismissal must not persist a recovery dot"
+            );
+        });
+    }
+}
+
+#[test]
+fn vertical_scrubbing_across_a_word_erases_as_one_undoable_operation() {
+    with_app(|app| {
+        app.settings.scratch_erase = true;
+        for x in [100., 120., 140., 160., 180.] {
+            draw(app, &[Point::new(x, 95.), Point::new(x, 125.)], 0);
+        }
+        let letters = app.page().objects.clone();
+        draw(app, &[Point::new(100., 160.), Point::new(180., 160.)], 0);
+        let neighbor = *app.page().order.last().unwrap();
+        draw(
+            app,
+            &[
+                Point::new(100., 90.),
+                Point::new(120., 130.),
+                Point::new(140., 90.),
+                Point::new(160., 130.),
+                Point::new(180., 90.),
+                Point::new(160., 130.),
+                Point::new(140., 90.),
+                Point::new(120., 130.),
+                Point::new(100., 90.),
+            ],
+            1000,
+        );
+        assert_eq!(app.page().objects.len(), 1);
+        assert!(app.page().objects.contains_key(&neighbor));
+        app.undo();
+        for (id, object) in letters {
+            assert_eq!(app.page().objects[&id], object);
+        }
+        app.redo();
+        assert_eq!(app.page().objects.len(), 1);
     });
 }
