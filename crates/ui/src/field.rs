@@ -1,6 +1,9 @@
 //! Reusable GPUI text input with UTF-16 IME ranges and grapheme-safe editing.
 use gpui::{prelude::*, *};
-use std::ops::Range;
+use std::{
+    ops::Range,
+    time::{Duration, Instant},
+};
 use unicode_segmentation::UnicodeSegmentation;
 actions!(
     field,
@@ -22,13 +25,73 @@ actions!(
         Cut,
         Paste,
         Enter,
-        Submit
+        Submit,
+        FieldUndo,
+        FieldRedo,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight
     ]
 );
 pub struct Submitted;
 impl EventEmitter<Submitted> for Field {}
 pub struct FieldBoundsChanged;
 impl EventEmitter<FieldBoundsChanged> for Field {}
+#[derive(Clone, Debug, PartialEq)]
+struct Draft {
+    content: String,
+    selection: Range<usize>,
+    anchor: usize,
+}
+#[derive(Default)]
+struct EditHistory {
+    undo: Vec<Draft>,
+    redo: Vec<Draft>,
+    group: Option<(u8, usize, Instant)>,
+}
+impl EditHistory {
+    fn record(&mut self, before: Draft, kind: u8, head: usize, now: Instant) {
+        let grouped = kind != 0
+            && before.selection.is_empty()
+            && self.group.is_some_and(|(previous, cursor, time)| {
+                previous == kind
+                    && cursor == before.selection.end
+                    && now.duration_since(time) < Duration::from_millis(750)
+            });
+        if !grouped {
+            self.undo.push(before);
+            if self.undo.len() > 64 {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.group = Some((kind, head, now));
+    }
+    fn travel(&mut self, current: Draft, redo: bool) -> Option<Draft> {
+        self.group = None;
+        let (from, to) = if redo {
+            (&mut self.redo, &mut self.undo)
+        } else {
+            (&mut self.undo, &mut self.redo)
+        };
+        let draft = from.pop()?;
+        to.push(current);
+        Some(draft)
+    }
+}
+fn word_boundary(text: &str, head: usize, forward: bool) -> usize {
+    if forward {
+        text.unicode_word_indices()
+            .find(|(start, word)| start + word.len() > head)
+            .map_or(text.len(), |(start, word)| start + word.len())
+    } else {
+        text.unicode_word_indices()
+            .take_while(|(start, _)| *start < head)
+            .last()
+            .map_or(0, |(start, _)| start)
+    }
+}
 #[derive(Clone)]
 pub struct InlineStyle {
     pub text: folio_document::TextBlock,
@@ -52,6 +115,7 @@ pub struct Field {
     layouts: Vec<(usize, ShapedLine)>,
     pub(super) bounds: Option<Bounds<Pixels>>,
     selecting: bool,
+    history: EditHistory,
 }
 impl Field {
     pub fn new(content: String, multiline: bool, cx: &mut Context<Self>) -> Self {
@@ -71,6 +135,7 @@ impl Field {
             layouts: vec![],
             bounds: None,
             selecting: false,
+            history: EditHistory::default(),
         }
     }
     pub fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
@@ -78,10 +143,18 @@ impl Field {
         let end = self.content.len();
         self.select(end, end);
         self.marked = None;
+        self.history = EditHistory::default();
         cx.notify();
     }
     pub fn bindings(cx: &mut App) {
         cx.bind_keys([
+            KeyBinding::new("ctrl-z", FieldUndo, Some("FolioField")),
+            KeyBinding::new("ctrl-shift-z", FieldRedo, Some("FolioField")),
+            KeyBinding::new("ctrl-y", FieldRedo, Some("FolioField")),
+            KeyBinding::new("ctrl-left", WordLeft, Some("FolioField")),
+            KeyBinding::new("ctrl-right", WordRight, Some("FolioField")),
+            KeyBinding::new("ctrl-shift-left", SelectWordLeft, Some("FolioField")),
+            KeyBinding::new("ctrl-shift-right", SelectWordRight, Some("FolioField")),
             KeyBinding::new("backspace", Backspace, Some("FolioField")),
             KeyBinding::new("delete", Delete, Some("FolioField")),
             KeyBinding::new("left", Left, Some("FolioField")),
@@ -103,6 +176,7 @@ impl Field {
         ]);
     }
     fn select(&mut self, anchor: usize, head: usize) {
+        self.history.group = None;
         select_range(
             &mut self.selection,
             &mut self.selection_anchor,
@@ -231,10 +305,47 @@ impl Field {
         } else {
             text.replace(['\n', '\r'], " ")
         };
+        let before = self.draft();
+        let kind = if self.marked.is_some() {
+            3
+        } else if r.is_empty() && !text.contains(char::is_whitespace) && text.chars().count() == 1 {
+            1
+        } else if text.is_empty() && !r.is_empty() && self.selection.is_empty() {
+            2
+        } else {
+            0
+        };
         self.content.replace_range(r.clone(), &text);
         let end = r.start + text.len();
-        self.select(end, end);
+        select_range(&mut self.selection, &mut self.selection_anchor, end, end);
+        self.history.record(before, kind, end, Instant::now());
         self.marked = None;
+        cx.notify();
+    }
+    fn draft(&self) -> Draft {
+        Draft {
+            content: self.content.clone(),
+            selection: self.selection.clone(),
+            anchor: self.selection_anchor,
+        }
+    }
+    fn travel(&mut self, redo: bool, cx: &mut Context<Self>) {
+        if let Some(draft) = self.history.travel(self.draft(), redo) {
+            self.content = draft.content;
+            self.selection = draft.selection;
+            self.selection_anchor = draft.anchor;
+            self.marked = None;
+            cx.notify();
+        }
+    }
+    fn move_word(&mut self, forward: bool, extend: bool, cx: &mut Context<Self>) {
+        let head = if self.selection_anchor == self.selection.start {
+            self.selection.end
+        } else {
+            self.selection.start
+        };
+        let next = word_boundary(&self.content, head, forward);
+        self.select(if extend { self.selection_anchor } else { next }, next);
         cx.notify();
     }
 }
@@ -627,6 +738,16 @@ impl Render for Field {
                 };
                 this.replace(r, "", cx)
             }))
+            .on_action(cx.listener(|this, _: &FieldUndo, _, cx| this.travel(false, cx)))
+            .on_action(cx.listener(|this, _: &FieldRedo, _, cx| this.travel(true, cx)))
+            .on_action(cx.listener(|this, _: &WordLeft, _, cx| this.move_word(false, false, cx)))
+            .on_action(cx.listener(|this, _: &WordRight, _, cx| this.move_word(true, false, cx)))
+            .on_action(
+                cx.listener(|this, _: &SelectWordLeft, _, cx| this.move_word(false, true, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectWordRight, _, cx| this.move_word(true, true, cx)),
+            )
             .on_action(cx.listener(|this, _: &Delete, _, cx| {
                 let r = if this.selection.is_empty() {
                     this.selection.start..this.next()
@@ -778,6 +899,34 @@ fn move_selection(
 
 #[cfg(test)]
 mod tests {
+    use super::{Draft, EditHistory, word_boundary};
+    use std::time::{Duration, Instant};
+    fn draft(text: &str) -> Draft {
+        Draft {
+            content: text.into(),
+            selection: text.len()..text.len(),
+            anchor: text.len(),
+        }
+    }
+    #[test]
+    fn draft_history_groups_typing_and_preserves_replacements_and_redo() {
+        let mut history = EditHistory::default();
+        let now = Instant::now();
+        history.record(draft(""), 1, 1, now);
+        history.record(draft("a"), 1, 2, now + Duration::from_millis(50));
+        assert_eq!(history.travel(draft("ab"), false), Some(draft("")));
+        assert_eq!(history.travel(draft(""), true), Some(draft("ab")));
+        history.record(draft("ab"), 0, 7, now + Duration::from_secs(1));
+        assert_eq!(history.travel(draft("pasted!"), false), Some(draft("ab")));
+        history.record(draft("ab"), 1, 3, now + Duration::from_secs(2));
+        assert!(history.redo.is_empty());
+    }
+    #[test]
+    fn word_navigation_handles_unicode_and_punctuation() {
+        assert_eq!(word_boundary("one café, two", 4, true), 9);
+        assert_eq!(word_boundary("one café, two", 11, false), 4);
+        assert_eq!(word_boundary("one café, two", 0, false), 0);
+    }
     use super::{move_selection, select_range};
     #[::core::prelude::v1::test]
     fn reversing_shift_selection_shrinks_then_crosses_its_anchor() {
