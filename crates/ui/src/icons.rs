@@ -85,7 +85,7 @@ define_icons! {
     Help => "Help.svg",
 }
 
-pub fn icon(kind: Icon, color: u32) -> impl IntoElement {
+pub fn icon(kind: Icon, color: u32) -> Svg {
     // GPUI caches an alpha mask at the actual device size, then applies the
     // current theme color. SVG retains rounded strokes at fractional scales.
     svg()

@@ -208,7 +208,7 @@ def main():
                     assert snapshot_objects()==objects_before,'Appearance controls changed document objects'
                     click('Settings');click('Dark appearance');click('Done');capture('editor-dark-reset');click('Library ·',True)
                     print('APPEARANCE_OK: light/dark customization, alpha, validation, radius, fixed/custom/themed paper, reset, document preservation')
-                click('＋  New document')
+                click('New document')
                 for char in 'New notebook':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
                 click('Create notebook')
                 buttons=controls()

@@ -612,7 +612,6 @@ impl NotesView {
     fn library_items(
         &mut self,
         notes: Vec<folio_document::NoteMetadata>,
-        include_new: bool,
         cx: &mut Context<Self>,
     ) -> Div {
         let theme = Theme::new(&self.controller.settings);
@@ -621,85 +620,6 @@ impl NotesView {
             .when(self.list_view, |s| s.flex_col())
             .when(!self.list_view, |s| s.flex_wrap())
             .gap_6();
-        if include_new {
-            let cover = div()
-                .w(px(148.))
-                .h(px(198.))
-                .rounded(px(theme.radius))
-                .border_1()
-                .border_color(theme.border)
-                .bg(rgb(theme.sidebar))
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_3()
-                .child(
-                    div()
-                        .size(px(44.))
-                        .rounded_full()
-                        .bg(rgb(theme.selected))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(icon(Icon::Plus, theme.accent)),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(theme.accent))
-                        .child("New document"),
-                );
-            let content = if self.list_view {
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap_4()
-                    .child(icon(Icon::Plus, theme.accent))
-                    .child("New document")
-            } else {
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_4()
-                    .child(cover)
-                    .child(
-                        div()
-                            .w(px(148.))
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("New document"),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(theme.muted))
-                                    .child("Start a fresh page"),
-                            ),
-                    )
-            };
-            items = items.child(
-                self.control(
-                    "new-note",
-                    "New document",
-                    content.into_any_element(),
-                    false,
-                    cx,
-                    |this, w, cx| this.new_notebook(w, cx),
-                )
-                .when(!self.list_view, |s| s.w(px(184.)).p_3())
-                .when(self.list_view, |s| s.w_full().justify_start().p_4())
-                .bg(rgb(theme.bg))
-                .hover(move |s| s.bg(rgb(theme.sidebar))),
-            );
-        }
         for n in notes {
             let id = n.id;
             let session = self.controller.sessions.get(&id);
@@ -897,8 +817,7 @@ impl NotesView {
                 .floor()
                 .max(1.) as usize
         };
-        let include_new = self.controller.filter != NoteFilter::Trash;
-        let total = notes.len() + usize::from(include_new);
+        let total = notes.len();
         let list = uniform_list(
             "library-rows",
             total.div_ceil(columns),
@@ -907,16 +826,10 @@ impl NotesView {
                 for row in range {
                     let start = row * columns;
                     let end = (start + columns).min(total);
-                    let first = start.saturating_sub(usize::from(include_new));
-                    let last = end.saturating_sub(usize::from(include_new));
                     rows.push(
-                        this.library_items(
-                            notes[first..last].to_vec(),
-                            include_new && start == 0,
-                            cx,
-                        )
-                        .h(px(if this.list_view { 92. } else { 320. }))
-                        .items_start(),
+                        this.library_items(notes[start..end].to_vec(), cx)
+                            .h(px(if this.list_view { 92. } else { 320. }))
+                            .items_start(),
                     );
                 }
                 this.accessibility.publish(this, window, cx);
@@ -1024,9 +937,18 @@ impl NotesView {
                                 ),
                             )
                             .child(
-                                self.button(
+                                self.control(
                                     "library-new",
-                                    "＋  New document",
+                                    "New document",
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            icon(Icon::Plus, theme.primary_foreground).size(px(24.)),
+                                        )
+                                        .child("New document")
+                                        .into_any_element(),
                                     true,
                                     cx,
                                     |this, w, cx| this.new_notebook(w, cx),
