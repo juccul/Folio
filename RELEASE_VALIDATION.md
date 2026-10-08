@@ -23,7 +23,6 @@ Build/test logs and disposable fixtures are retained locally under `artifacts/re
 | --- | ---: | --- |
 | `folio-0.1.1-windows-x64-setup.exe` | 49,463,152 | `1ec6f44ee65027ab0c2bc76f6b31a4303c3a672610958fa52c547b891061e0b1` |
 | `folio-0.1.1-windows-x64.zip` | 79,357,948 | `ab386f1e7027f4e228d1607758c5097698841827177430d58289c546cece3c79` |
-
 | `folio-0.1.1-x86_64.flatpak` | 17,236,128 | `a93ac6992df62104c8ca49d3be13152ff1e5ff30049fa4c31222b9330026f5e5` |
 
 The same checksums accompany the downloads in `SHA256SUMS`.
