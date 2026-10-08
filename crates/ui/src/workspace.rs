@@ -1143,10 +1143,7 @@ impl NotesView {
         }
         self.open_tabs
             .retain(|id| self.controller.notes.iter().any(|n| n.id == *id));
-        if self.library_open {
-            self.tab_target = None;
-            self.tab_scroll.set_offset(Point::default());
-        } else if let Some(index) = self.open_tabs.iter().position(|id| *id == active) {
+        if let Some(index) = self.open_tabs.iter().position(|id| *id == active) {
             let target = (
                 active,
                 index,
@@ -1167,34 +1164,22 @@ impl NotesView {
             .flex()
             .items_center()
             .gap_1();
-        if self.library_open {
-            tabs = tabs.child(
-                div()
-                    .px_3()
-                    .h(px(34.))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(icon(Icon::Book, theme.muted))
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Folio"),
-                    ),
-            );
-        }
-        for id in self
-            .open_tabs
-            .clone()
-            .into_iter()
-            .filter(|_| !self.library_open)
-        {
+        tabs = tabs.child(
+            self.icon_button(
+                "tab-library",
+                "Documents · Ctrl+Shift+L",
+                Icon::Library,
+                self.library_open,
+                cx,
+                |this, _, _| this.show_library(),
+            )
+            .h(px(34.)),
+        );
+        for id in self.open_tabs.clone() {
             let Some(n) = self.controller.notes.iter().find(|n| n.id == id) else {
                 continue;
             };
-            let selected = id == active;
+            let selected = !self.library_open && id == active;
             let drag = super::navigation::TabDrag {
                 id,
                 title: n.title.clone(),
@@ -1237,7 +1222,7 @@ impl NotesView {
                             format!("tab-{id}"),
                             format!("Open {}", n.title),
                             content.into_any_element(),
-                            false,
+                            selected,
                             cx,
                             move |this, _, _| this.open_note(id),
                         )
@@ -1273,16 +1258,7 @@ impl NotesView {
                             icon(Icon::Close, theme.muted).into_any_element(),
                             false,
                             cx,
-                            move |this, _, _| {
-                                this.open_tabs.retain(|v| *v != id);
-                                if this.controller.requested_note() == id {
-                                    if let Some(next) = this.open_tabs.last().copied() {
-                                        this.controller.switch_note(next);
-                                    } else {
-                                        this.show_library();
-                                    }
-                                }
-                            },
+                            move |this, w, cx| this.close_document_tab(id, w, cx),
                         )
                         .size(px(28.))
                         .p_1()

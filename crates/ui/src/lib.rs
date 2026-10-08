@@ -69,6 +69,9 @@ actions!(
         Settings,
         Import,
         OpenTab,
+        CloseTab,
+        NextTab,
+        PreviousTab,
         Export,
         FocusNext,
         FocusPrevious
@@ -311,6 +314,10 @@ impl NotesView {
         cx.bind_keys([
             KeyBinding::new("tab", FocusNext, None),
             KeyBinding::new("shift-tab", FocusPrevious, None),
+            KeyBinding::new("ctrl-t", OpenTab, Some("FolioLibrary")),
+            KeyBinding::new("ctrl-w", CloseTab, Some("FolioLibrary")),
+            KeyBinding::new("ctrl-tab", NextTab, Some("FolioLibrary")),
+            KeyBinding::new("ctrl-shift-tab", PreviousTab, Some("FolioLibrary")),
             KeyBinding::new("ctrl-n", NewNote, Some("FolioLibrary")),
             KeyBinding::new("ctrl-o", Import, Some("FolioLibrary")),
             KeyBinding::new("ctrl-f", Search, Some("FolioLibrary")),
@@ -349,7 +356,10 @@ impl NotesView {
             KeyBinding::new("ctrl-pagedown", NextPage, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-,", Settings, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-o", Import, Some("Folio && !FolioField")),
-            KeyBinding::new("ctrl-t", OpenTab, Some("Folio && !FolioField")),
+            KeyBinding::new("ctrl-t", OpenTab, Some("Folio && !FolioDialog")),
+            KeyBinding::new("ctrl-w", CloseTab, Some("Folio && !FolioDialog")),
+            KeyBinding::new("ctrl-tab", NextTab, Some("Folio && !FolioDialog")),
+            KeyBinding::new("ctrl-shift-tab", PreviousTab, Some("Folio && !FolioDialog")),
             KeyBinding::new("ctrl-shift-e", Export, Some("Folio && !FolioField")),
         ]);
     }
@@ -3695,6 +3705,15 @@ impl Render for NotesView {
                 this.open_settings(w);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &CloseTab, w, cx| {
+                if !this.library_open {
+                    this.close_document_tab(this.controller.requested_note(), w, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &NextTab, w, cx| this.cycle_document_tab(true, w, cx)))
+            .on_action(
+                cx.listener(|this, _: &PreviousTab, w, cx| this.cycle_document_tab(false, w, cx)),
+            )
             .on_action(
                 cx.listener(|this, _: &OpenTab, w, cx| this.modal(Modal::OpenDocument, w, cx)),
             )

@@ -120,9 +120,10 @@ fn semantics(key: &str) -> Semantics {
         group: None,
         toggle: false,
     };
-    if key
-        .strip_prefix("tab-")
-        .is_some_and(|id| Id::parse_str(id).is_ok())
+    if key == "tab-library"
+        || key
+            .strip_prefix("tab-")
+            .is_some_and(|id| Id::parse_str(id).is_ok())
     {
         return Semantics {
             role: Role::Tab,

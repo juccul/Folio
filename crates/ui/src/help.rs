@@ -13,6 +13,10 @@ impl NotesView {
             ("Search / Save", "Ctrl F / Ctrl S"),
             ("New document / New page", "Ctrl N / Ctrl Shift N"),
             ("Open a tab / Library", "Ctrl T / Ctrl Shift L"),
+            (
+                "Close tab / Next / Previous",
+                "Ctrl W / Ctrl Tab / Ctrl Shift Tab",
+            ),
             ("Pages / Settings", "Ctrl Shift P / Ctrl ,"),
             ("Fit page / Zoom", "Ctrl 0 / Ctrl scroll"),
         ] {

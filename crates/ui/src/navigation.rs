@@ -37,7 +37,58 @@ pub(super) fn reorder_tabs(tabs: &mut Vec<Id>, source: Id, target: Id) {
         tabs.insert(to, id);
     }
 }
+pub(super) fn close_tab(tabs: &mut Vec<Id>, id: Id) -> Option<Id> {
+    let index = tabs.iter().position(|t| *t == id)?;
+    tabs.remove(index);
+    tabs.get(index).or_else(|| tabs.last()).copied()
+}
 impl NotesView {
+    pub(super) fn close_document_tab(
+        &mut self,
+        id: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_inline_text(window, cx);
+        self.controller.finish();
+        let next = close_tab(&mut self.open_tabs, id);
+        if self.controller.requested_note() == id {
+            if let Some(next) = next {
+                self.controller.switch_note(next);
+            } else {
+                self.show_library();
+            }
+        }
+        self.focus.focus(window);
+        cx.notify();
+    }
+    pub(super) fn cycle_document_tab(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open_tabs.is_empty() {
+            return;
+        }
+        self.finish_inline_text(window, cx);
+        let index = self
+            .open_tabs
+            .iter()
+            .position(|id| *id == self.controller.requested_note())
+            .unwrap_or(0);
+        let next = if self.library_open {
+            if forward { 0 } else { self.open_tabs.len() - 1 }
+        } else if forward {
+            (index + 1) % self.open_tabs.len()
+        } else {
+            (index + self.open_tabs.len() - 1) % self.open_tabs.len()
+        };
+        self.open_note(self.open_tabs[next]);
+        self.focus.focus(window);
+        cx.notify();
+    }
+
     pub(super) fn open_document_menu(
         &mut self,
         id: Id,
@@ -343,9 +394,18 @@ impl NotesView {
 
 #[cfg(test)]
 mod tests {
-    use super::reorder_tabs;
+    use super::{close_tab, reorder_tabs};
     use core::prelude::v1::test;
     use folio_document::Id;
+    #[test]
+    fn closing_tabs_chooses_the_right_then_left_neighbor() {
+        let [a, b, c] = [Id::new_v4(), Id::new_v4(), Id::new_v4()];
+        let mut tabs = vec![a, b, c];
+        assert_eq!(close_tab(&mut tabs, b), Some(c));
+        assert_eq!(close_tab(&mut tabs, c), Some(a));
+        assert_eq!(close_tab(&mut tabs, a), None);
+        assert!(tabs.is_empty());
+    }
     #[test]
     fn tabs_reorder_in_both_directions_without_adding_or_losing_documents() {
         let [a, b, c] = [Id::new_v4(), Id::new_v4(), Id::new_v4()];
