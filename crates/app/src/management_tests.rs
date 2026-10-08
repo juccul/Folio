@@ -691,3 +691,25 @@ fn equation_failures_remain_retryable_and_cancellation_does_not_insert() {
     assert!(matches!(a.equation_result, Some(Ok(()))));
     assert_eq!(a.page().objects.len(), 1);
 }
+
+#[test]
+fn trash_is_read_only_for_all_content_and_metadata_until_restored() {
+    let mut a = app();
+    a.add_text("Keep this".into(), Point::new(20., 20.));
+    let text = *a.page().order.first().unwrap();
+    a.manage_note(a.active, NoteAction::Trash);
+    let before = a.session().document.clone();
+    a.add_text("Blocked".into(), Point::new(30., 30.));
+    a.edit_text(text, |t| t.text = "Blocked edit".into());
+    a.add_page();
+    a.rename("Blocked rename".into());
+    a.manage_note(a.active, NoteAction::Favorite);
+    a.undo();
+    a.redo();
+    a.insert_equation("x^2".into());
+    assert_eq!(a.session().document, before);
+    a.manage_note(a.active, NoteAction::Trash);
+    assert!(!a.read_only());
+    a.add_text("Allowed".into(), Point::new(30., 30.));
+    assert_eq!(a.page().objects.len(), 2);
+}

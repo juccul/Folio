@@ -17,6 +17,12 @@ impl Controller {
             self.error = Some("This document no longer exists".into());
             return;
         }
+        if self.notes.iter().any(|n| n.id == id && n.trashed)
+            && !matches!(action, NoteAction::Trash | NoteAction::Duplicate)
+        {
+            self.status = "In Trash · restore this document to edit".into();
+            return;
+        }
         if !self.sessions.contains_key(&id) {
             if !self.queue_load(id) {
                 return;

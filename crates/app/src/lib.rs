@@ -531,7 +531,24 @@ impl Controller {
     pub fn commit(&mut self, label: &str, changes: Vec<Change>) {
         self.commit_to(self.active, label, changes)
     }
+    pub fn read_only(&self) -> bool {
+        self.session().document.metadata.trashed
+    }
     fn commit_to(&mut self, note: Id, label: &str, mut changes: Vec<Change>) {
+        if self
+            .sessions
+            .get(&note)
+            .is_some_and(|s| s.document.metadata.trashed)
+        {
+            let restoring = changes.len() == 1
+                && matches!(&changes[0], Change::Metadata {before,after} if {
+                    let mut restored = before.clone(); restored.trashed = false; before.trashed && *after == restored
+                });
+            if !restoring {
+                self.status = "In Trash · restore this document to edit".into();
+                return;
+            }
+        }
         if changes.is_empty() {
             return;
         }
@@ -550,9 +567,15 @@ impl Controller {
         let mut delta = Delta::command(&s.document, &cmd);
         delta.journal.push(JournalEvent::Execute(cmd));
         self.refresh_metadata(note);
+        if note == self.active && self.read_only() {
+            self.tool = Tool::Hand;
+        }
         self.persist(delta);
     }
     pub fn undo(&mut self) {
+        if self.read_only() {
+            return;
+        }
         self.cancel();
         let s = self.session_mut();
         let current_page = s.page().id;
@@ -573,6 +596,9 @@ impl Controller {
         }
     }
     pub fn redo(&mut self) {
+        if self.read_only() {
+            return;
+        }
         self.cancel();
         let s = self.session_mut();
         let current_page = s.page().id;
@@ -683,6 +709,9 @@ impl Controller {
         self.pending_note = None;
         if self.sessions.contains_key(&id) {
             self.active = id;
+            if self.read_only() {
+                self.tool = Tool::Hand;
+            }
             self.cursor = None;
         } else {
             if self.queue_load(id) {
@@ -939,6 +968,9 @@ impl Controller {
         }
     }
     pub fn set_tool(&mut self, tool: Tool) {
+        if self.read_only() && !matches!(tool, Tool::Hand | Tool::Lasso | Tool::Rectangle) {
+            return;
+        }
         self.finish();
         self.tool = tool;
         self.temporary_selection = false;
@@ -1007,8 +1039,10 @@ impl Controller {
         if event.phase == Phase::Down {
             self.finish();
             if self.session().document.metadata.trashed {
-                self.error = Some("Restore this note before editing".into());
-                return;
+                if self.tool != Tool::Hand {
+                    self.status = "In Trash · restore this document to edit".into();
+                    return;
+                }
             }
             if self.tool == Tool::Hand {
                 self.interaction = Some(Interaction::Pan {
@@ -1827,6 +1861,9 @@ impl Controller {
         }
     }
     pub fn create_text_box(&mut self, position: Point) -> Id {
+        if self.read_only() {
+            return Id::nil();
+        }
         self.insert_text_box(String::new(), position)
     }
     fn insert_text_box(&mut self, text: String, position: Point) -> Id {
@@ -1933,6 +1970,10 @@ impl Controller {
         }
     }
     pub fn edit_equation(&mut self, id: Id, latex: String) {
+        if self.read_only() {
+            self.equation_result = Some(Err("Restore this document before editing".into()));
+            return;
+        }
         self.begin_equation_render();
         if self
             .page()
@@ -1964,6 +2005,10 @@ impl Controller {
         }
     }
     pub fn insert_equation(&mut self, latex: String) {
+        if self.read_only() {
+            self.equation_result = Some(Err("Restore this document before editing".into()));
+            return;
+        }
         self.begin_equation_render();
         let position = self.cursor.unwrap_or(Point::new(100., 100.));
         self.submit_equation(Job::Equation {
@@ -2471,6 +2516,9 @@ impl Controller {
                     if self.pending_note == Some(id) {
                         self.finish();
                         self.active = id;
+                        if self.read_only() {
+                            self.tool = Tool::Hand;
+                        }
                         self.pending_note = None;
                         if let Some((note, page)) = self.pending_navigation.take() {
                             self.navigate_search(note, page);

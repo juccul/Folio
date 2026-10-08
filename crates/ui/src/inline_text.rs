@@ -20,6 +20,9 @@ impl NotesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.controller.read_only() {
+            return;
+        }
         let Some(Object::Text(text)) = self.controller.page().objects.get(&id).map(|o| o.as_ref())
         else {
             return;
@@ -71,6 +74,10 @@ impl NotesView {
         cx.notify();
     }
     pub(super) fn inline_element(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.controller.read_only() {
+            self.inline_text = None;
+            return None;
+        }
         let editor = self.inline_text.as_ref()?;
         let selected = self.controller.session().selection.len() == 1
             && self.controller.session().selection.contains(&editor.id);

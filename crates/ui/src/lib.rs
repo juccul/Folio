@@ -1237,7 +1237,36 @@ impl NotesView {
             || id.as_ref().starts_with("tab-")
             || id.as_ref().starts_with("close-tab-")
             || matches!(id.as_ref(), "library" | "new-tab" | "settings" | "search");
-        let enabled = (!self.blocking_overlay() || self.building_overlay || window_control)
+        let editing = matches!(
+            id.as_ref(),
+            "undo"
+                | "redo"
+                | "rename-note"
+                | "tags"
+                | "favorite"
+                | "add-page"
+                | "delete-page"
+                | "duplicate-page"
+                | "bookmark-page"
+                | "move-page"
+                | "page-size"
+                | "infinite"
+                | "insert-space"
+                | "remove-space"
+                | "insert-equation"
+                | "cover-page"
+                | "page-templates"
+                | "index-page-handwriting"
+                | "clear-page-index"
+                | "blank"
+                | "ruled"
+                | "grid"
+                | "dots"
+                | "toolbar-image"
+                | "import"
+        );
+        let enabled = (!self.controller.read_only() || self.library_open || !editing)
+            && (!self.blocking_overlay() || self.building_overlay || window_control)
             && (!self.controller.loading_note()
                 || navigation
                 || self.building_overlay
@@ -3051,6 +3080,7 @@ impl Render for NotesView {
             );
         }
         if !self.library_open
+            && !self.controller.read_only()
             && !self.controller.session().selection.is_empty()
             && self.controller.math_session.is_none()
             && self.controller.session().selection.iter().any(|id| {
@@ -3254,8 +3284,43 @@ impl Render for NotesView {
             );
         } else {
             let header = self.header(cx);
-            let toolbar = self.toolbar(cx);
-            let formatting = self.text_formatting_bar(cx);
+            let toolbar = (!self.controller.read_only()).then(|| self.toolbar(cx));
+            let formatting = if self.controller.read_only() {
+                None
+            } else {
+                self.text_formatting_bar(cx)
+            };
+            let trash_notice = self.controller.read_only().then(|| {
+                div()
+                    .px_4()
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .child("In Trash · This document is read only"),
+                    )
+                    .child(self.button(
+                        "restore-document",
+                        "Restore document",
+                        false,
+                        cx,
+                        |this, _, _| {
+                            this.controller
+                                .manage_note(this.controller.active, folio_app::NoteAction::Trash);
+                            this.controller.set_tool(Tool::Pen);
+                        },
+                    ))
+                    .child(
+                        self.button("view-trash", "View Trash", false, cx, |this, _, _| {
+                            this.controller.filter = NoteFilter::Trash;
+                            this.show_library();
+                        }),
+                    )
+            });
             let footer = self.footer(cx);
             let preview_notice =
                 self.controller
@@ -3304,7 +3369,8 @@ impl Render for NotesView {
                     .flex()
                     .flex_col()
                     .child(header)
-                    .child(toolbar)
+                    .children(toolbar)
+                    .children(trash_notice)
                     .when(self.region_selection.is_some(), |body| {
                         body.child(
                             div()
