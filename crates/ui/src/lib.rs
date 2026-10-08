@@ -29,6 +29,7 @@ mod theme;
 mod titlebar;
 mod validation;
 mod workspace;
+mod workspace_state;
 use field::{Field, FieldBoundsChanged, Submitted};
 use folio_app::{Controller, ExportKind, Interaction, NoteFilter, RecognitionKind, Tool};
 use folio_document::{Color, Id, InkTool, Paper, Point as DocPoint};
@@ -234,12 +235,15 @@ impl NotesView {
         let entity = cx.entity().downgrade();
         window.on_window_should_close(cx, move |_, cx| {
             entity
-                .update(cx, |view, cx| match view.controller.flush() {
-                    Ok(()) => true,
-                    Err(e) => {
-                        view.controller.error = Some(e);
-                        cx.notify();
-                        false
+                .update(cx, |view, cx| {
+                    view.store_workspace();
+                    match view.controller.flush() {
+                        Ok(()) => true,
+                        Err(e) => {
+                            view.controller.error = Some(e);
+                            cx.notify();
+                            false
+                        }
                     }
                 })
                 .unwrap_or(true)
@@ -262,6 +266,14 @@ impl NotesView {
             }
         })
         .detach();
+        let mut workspace = controller.settings.workspace.clone();
+        workspace
+            .open_tabs
+            .retain(|id| controller.notes.iter().any(|n| n.id == *id));
+        if !controller.settings.reopen_documents {
+            workspace.open_tabs.clear();
+            workspace.library_open = true;
+        }
         Self {
             region_selection: None,
             controller,
@@ -291,11 +303,11 @@ impl NotesView {
             export_open: false,
             export_options: export_options::Options::default(),
             help_open: false,
-            library_open: true,
-            pages_open: false,
-            list_view: false,
-            sort_by_name: false,
-            open_tabs: vec![],
+            library_open: workspace.library_open,
+            pages_open: workspace.pages_open,
+            list_view: workspace.list_view,
+            sort_by_name: workspace.sort_by_name,
+            open_tabs: workspace.open_tabs,
             tab_scroll: ScrollHandle::new(),
             tab_target: None,
             document_menu: None,
@@ -2316,6 +2328,24 @@ impl NotesView {
             .child(self.button("cleanup-assets-settings","Quarantine unused assets",false,cx,|this,_,_| this.controller.cleanup_assets()).justify_start())
             .child(div().text_xs().text_color(rgb(theme.muted)).child("Asset cleanup becomes available when autosave is on and all work has finished saving."));
         body=body.child(div().text_xs().child(if self.controller.recognition_ready() {"Handwriting recognition: ready offline"} else {"Handwriting recognition: not installed. Request recognition to review the download size and set it up."}));
+        body = body.child(
+            self.button(
+                "reopen-documents",
+                if self.controller.settings.reopen_documents {
+                    "Reopen previous documents: On"
+                } else {
+                    "Reopen previous documents: Off"
+                },
+                self.controller.settings.reopen_documents,
+                cx,
+                |this, _, _| {
+                    this.controller.settings.reopen_documents =
+                        !this.controller.settings.reopen_documents;
+                    this.controller.store_settings();
+                },
+            )
+            .justify_start(),
+        );
         body = body.child(div().text_xs().child(self.controller.activity_status()));
         for task in self.controller.tasks.iter().rev().take(8) {
             let state = match &task.state {
@@ -4047,6 +4077,7 @@ impl Render for NotesView {
         }
         self.building_overlay = false;
         root = root.child(self.document_tabs(window, cx));
+        self.store_workspace();
         if self.controller.recognition_pending && !self.controller.recognition_setup_needed() {
             root = root.child(self.recognition_notice(cx));
         }

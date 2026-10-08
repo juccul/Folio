@@ -230,6 +230,7 @@ fn semantics(key: &str) -> Semantics {
             | "encircle-toggle"
             | "autosave-toggle"
             | "motion-toggle"
+            | "reopen-documents"
             | "reduce-motion"
     ) {
         return Semantics {

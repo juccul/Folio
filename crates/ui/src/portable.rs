@@ -125,12 +125,14 @@ impl NotesView {
             Ok(controller) => {
                 self.controller = controller;
                 self.controller.status = "Library opened for this session. Choose Use this library by default in Settings to keep it on restart.".into();
-                self.open_tabs.clear();
+                self.open_tabs = self.controller.settings.workspace.open_tabs.clone();
+                self.list_view = self.controller.settings.workspace.list_view;
+                self.sort_by_name = self.controller.settings.workspace.sort_by_name;
                 self.math_inputs = None;
                 self.region_selection = None;
                 self.modal = None;
                 self.settings_open = false;
-                self.pages_open = false;
+                self.pages_open = self.controller.settings.workspace.pages_open;
                 self.library_open = true;
                 self.canvas_bounds = None;
                 self.controller.filter = NoteFilter::All;

@@ -16,10 +16,36 @@ pub struct PageTemplate {
     #[serde(default)]
     pub preview: Option<String>,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkspacePreferences {
+    pub list_view: bool,
+    pub sort_by_name: bool,
+    pub pages_open: bool,
+    pub library_open: bool,
+    pub open_tabs: Vec<Id>,
+    pub active_document: Option<Id>,
+    pub current_pages: Vec<(Id, Id)>,
+}
+impl Default for WorkspacePreferences {
+    fn default() -> Self {
+        Self {
+            list_view: false,
+            sort_by_name: false,
+            pages_open: false,
+            library_open: true,
+            open_tabs: vec![],
+            active_document: None,
+            current_pages: vec![],
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub templates: Vec<PageTemplate>,
+    pub workspace: WorkspacePreferences,
+    pub reopen_documents: bool,
     pub collapsed_folders: Vec<Id>,
     pub recent_documents: Vec<Id>,
     pub dark: bool,
@@ -66,6 +92,14 @@ impl Settings {
         let mut seen_recent = std::collections::HashSet::new();
         self.recent_documents.retain(|id| seen_recent.insert(*id));
         self.recent_documents.truncate(20);
+        let mut tabs = std::collections::HashSet::new();
+        self.workspace.open_tabs.retain(|id| tabs.insert(*id));
+        self.workspace.open_tabs.truncate(128);
+        let mut pages = std::collections::HashSet::new();
+        self.workspace
+            .current_pages
+            .retain(|(id, _)| pages.insert(*id));
+        self.workspace.current_pages.truncate(128);
         let defaults = Self::default();
         let bound = |value: f32, fallback: f32, min: f32, max: f32| {
             if value.is_finite() {
@@ -108,6 +142,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             templates: vec![],
+            workspace: WorkspacePreferences::default(),
+            reopen_documents: true,
             collapsed_folders: vec![],
             recent_documents: vec![],
             dark: false,

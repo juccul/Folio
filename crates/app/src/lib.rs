@@ -31,7 +31,7 @@ pub use folio_math::{VectorCommand, VectorFormula};
 use folio_storage::{Delta, JournalEvent, Persistence, Store};
 pub use math_solver::{MathReport, MathRequest, MathSession, MathStep};
 pub use recognition::{RecognitionKind, RecognitionReview};
-pub use settings::{EraserMode, PageTemplate, Settings};
+pub use settings::{EraserMode, PageTemplate, Settings, WorkspacePreferences};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -399,7 +399,15 @@ impl Controller {
         settings.normalize();
         let mut notes = store.list_notes().map_err(|e| e.to_string())?;
         let notebooks = store.notebooks().map_err(|e| e.to_string())?;
-        let document = if let Some(n) = notes.iter().find(|n| !n.trashed) {
+        let preferred = settings
+            .reopen_documents
+            .then_some(settings.workspace.active_document)
+            .flatten();
+        let document = if let Some(n) = notes
+            .iter()
+            .find(|n| Some(n.id) == preferred)
+            .or_else(|| notes.iter().find(|n| !n.trashed))
+        {
             store
                 .load(n.id)
                 .map_err(|e| e.to_string())?
@@ -416,6 +424,26 @@ impl Controller {
         let history = store.history(active).map_err(|e| e.to_string())?;
         let mut session = Session::new(document);
         session.history = history;
+        if settings.reopen_documents
+            && let Some((_, page)) = settings
+                .workspace
+                .current_pages
+                .iter()
+                .find(|(note, _)| *note == active)
+        {
+            session.page = session
+                .document
+                .pages
+                .iter()
+                .position(|p| p.id == *page)
+                .unwrap_or(0);
+            session.refresh();
+        }
+        let initial_tool = if session.document.metadata.trashed {
+            Tool::Hand
+        } else {
+            Tool::Pen
+        };
         sessions.insert(active, session);
         let style = settings.default_pen.clone();
         let controller = Self {
@@ -462,7 +490,7 @@ impl Controller {
             notebooks,
             sessions,
             active,
-            tool: Tool::Pen,
+            tool: initial_tool,
             temporary_selection: false,
             style,
             settings,
@@ -2838,6 +2866,22 @@ impl Controller {
                     self.sessions.entry(id).or_insert_with(|| {
                         let mut s = Session::new(d);
                         s.history = history;
+                        if self.settings.reopen_documents
+                            && let Some((_, page)) = self
+                                .settings
+                                .workspace
+                                .current_pages
+                                .iter()
+                                .find(|(note, _)| *note == id)
+                        {
+                            s.page = s
+                                .document
+                                .pages
+                                .iter()
+                                .position(|p| p.id == *page)
+                                .unwrap_or(0);
+                            s.refresh();
+                        }
                         s
                     });
                     if let Some(actions) = self.pending_actions.remove(&id) {

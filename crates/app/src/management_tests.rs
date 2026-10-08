@@ -878,3 +878,46 @@ fn background_operations_report_identity_completion_failure_and_reject_duplicate
     ));
     assert!(!a.task_running("restore"));
 }
+
+#[test]
+fn workspace_preferences_restore_documents_and_page_ids_and_allow_opt_out() {
+    let mut a = app();
+    let root = a.data_dir.clone();
+    let first = a.active;
+    a.create_note();
+    let second=a.active;
+    a.add_page();
+    let page = a.page().id;
+    a.settings.workspace = WorkspacePreferences {
+        list_view: true,
+        sort_by_name: true,
+        pages_open: true,
+        library_open: false,
+        open_tabs: vec![first, second, second],
+        active_document: Some(second),
+        current_pages: vec![(second, page)],
+    };
+    a.store_settings();
+    a.flush().unwrap();
+    drop(a);
+    let mut a = Controller::open(root.clone()).unwrap();
+    assert_eq!(a.active, second);
+    assert_eq!(a.page().id, page);
+    assert_eq!(a.settings.workspace.open_tabs, vec![first, second]);
+    assert!(a.settings.workspace.list_view && a.settings.workspace.pages_open);
+    a.settings.reopen_documents = false;
+    a.store_settings();
+    a.flush().unwrap();
+    drop(a);
+    let mut a = Controller::open(root.clone()).unwrap();
+    assert_eq!(a.session().page, 0);
+    a.settings.reopen_documents = true;
+    a.settings.workspace.active_document = Some(Id::new_v4());
+    a.settings.workspace.current_pages = vec![(a.active, Id::new_v4())];
+    a.store_settings();
+    a.flush().unwrap();
+    drop(a);
+    let a = Controller::open(root).unwrap();
+    assert_eq!(a.session().page, 0);
+    assert!(a.notes.iter().any(|n| n.id == a.active));
+}
