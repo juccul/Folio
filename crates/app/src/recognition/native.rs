@@ -259,6 +259,21 @@ fn download(
     folio_platform::publish_file(&partial, path).map_err(io)
 }
 
+pub(super) fn installed(pack: &Path) -> bool {
+    let native = fs::read(pack)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|v| v["backend"] == "llama-vulkan");
+    let Some(parent) = pack.parent() else {
+        return false;
+    };
+    let root = parent.join("glm-ocr-q8-b11457");
+    native
+        && root.join("runtime").join(SERVER_PATH).is_file()
+        && ASSETS
+            .iter()
+            .all(|(name, size, _)| fs::metadata(root.join(name)).is_ok_and(|m| m.len() == *size))
+}
 fn install(pack: &Path, context: &Context<'_>) -> Result<PathBuf> {
     if !cfg!(all(
         any(target_os = "linux", target_os = "windows"),

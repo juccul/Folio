@@ -55,6 +55,7 @@ impl Drop for TemporaryImage {
         }
     }
 }
+#[derive(Clone)]
 struct Task {
     generation: u64,
     pack: PathBuf,
@@ -62,6 +63,7 @@ struct Task {
     image: Option<ImageSource>,
     auto_setup: bool,
 }
+#[derive(Clone)]
 enum ImageSource {
     Object(Arc<Object>, PathBuf),
     Pdf(PdfBackground, PathBuf, Rect),
@@ -78,6 +80,8 @@ struct StatusMessage {
 }
 pub(super) struct Service {
     sender: Option<mpsc::SyncSender<Task>>,
+    deferred: Option<Task>,
+    last_task: Option<Task>,
     results: mpsc::Receiver<ResultMessage>,
     status: mpsc::Receiver<StatusMessage>,
     process: Arc<Mutex<Option<Child>>>,
@@ -289,11 +293,33 @@ impl Service {
             .expect("recognition worker thread");
         Self {
             sender: Some(sender),
+            deferred: None,
+            last_task: None,
             results,
             status,
             process,
             generation,
         }
+    }
+    fn submit(&mut self, task: Task, download_allowed: bool) -> Result<(), String> {
+        let native = std::fs::read(&task.pack)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .is_some_and(|v| v["backend"] == "llama-vulkan");
+        if (task.auto_setup || native)
+            && !download_allowed
+            && !legacy_pack_available(&task.pack)
+            && !native::installed(&task.pack)
+        {
+            self.deferred = Some(task);
+            return Ok(());
+        }
+        self.last_task = Some(task.clone());
+        self.sender
+            .as_ref()
+            .ok_or("Recognition worker stopped")?
+            .try_send(task)
+            .map_err(|_| "Recognition worker is busy; try again".into())
     }
     fn cancel(&self, generation: u64) {
         self.generation.store(generation, Ordering::Release);
@@ -392,6 +418,41 @@ impl Drop for Service {
     }
 }
 impl Controller {
+    pub fn recognition_ready(&self) -> bool {
+        let pack = self.recognition_pack();
+        legacy_pack_available(&pack) || native::installed(&pack)
+    }
+    pub fn recognition_setup_needed(&self) -> bool {
+        self.recognition_service.deferred.is_some()
+    }
+    pub fn accept_recognition_setup(&mut self) -> Result<(), String> {
+        let Some(mut task) = self.recognition_service.deferred.take() else {
+            return Ok(());
+        };
+        if !self.recognition_is_current(&task.review) {
+            self.cancel_recognition();
+            return Err("The source changed. Select it and request recognition again.".into());
+        }
+        self.settings.ocr_download_allowed = true;
+        self.store_settings();
+        self.recognition_generation = self.recognition_generation.wrapping_add(1);
+        task.generation = self.recognition_generation;
+        self.recognition_service
+            .generation
+            .store(self.recognition_generation, Ordering::Release);
+        self.recognition_service.submit(task, true)?;
+        self.recognition_pending = true;
+        self.recognition_status = "Preparing OCR download…".into();
+        Ok(())
+    }
+    pub fn pause_recognition_setup(&mut self) {
+        let task = self.recognition_service.last_task.take();
+        let for_index = self.recognition_for_index;
+        self.cancel_recognition();
+        self.recognition_for_index = for_index;
+        self.recognition_service.deferred = task;
+        self.recognition_status = "OCR download paused. Partial downloads are retained.".into();
+    }
     fn recognition_pack(&self) -> PathBuf {
         if let Some(path) = std::env::var_os("FOLIO_RECOGNITION_CONFIG") {
             return path.into();
@@ -477,24 +538,29 @@ impl Controller {
         self.recognition_service
             .generation
             .store(self.recognition_generation, Ordering::Release);
-        self.recognition_service
-            .sender
-            .as_ref()
-            .unwrap()
-            .try_send(Task {
+        self.recognition_service.submit(
+            Task {
                 generation: self.recognition_generation,
                 auto_setup: std::env::var_os("FOLIO_RECOGNITION_CONFIG").is_none(),
                 pack,
                 review,
                 image: None,
-            })
-            .map_err(|_| "Recognition worker is busy; try again".to_string())?;
+            },
+            self.settings.ocr_download_allowed,
+        )?;
         self.recognition_review = None;
         self.recognition_pending = true;
-        self.recognition_status = "Preparing recognition…".into();
+        self.recognition_status = if self.recognition_setup_needed() {
+            "OCR setup needs your download choice"
+        } else {
+            "Preparing recognition…"
+        }
+        .into();
         Ok(())
     }
     pub fn cancel_recognition(&mut self) {
+        self.recognition_service.deferred = None;
+        self.recognition_service.last_task = None;
         self.recognition_for_index = false;
         self.recognition_generation = self.recognition_generation.wrapping_add(1);
         self.recognition_service.cancel(self.recognition_generation);
@@ -529,21 +595,24 @@ impl Controller {
         self.recognition_service
             .generation
             .store(self.recognition_generation, Ordering::Release);
-        self.recognition_service
-            .sender
-            .as_ref()
-            .unwrap()
-            .try_send(Task {
+        self.recognition_service.submit(
+            Task {
                 generation: self.recognition_generation,
                 auto_setup: std::env::var_os("FOLIO_RECOGNITION_CONFIG").is_none(),
                 pack: self.recognition_pack(),
                 review,
                 image: Some(ImageSource::Object(sources[0].clone(), self.assets.clone())),
-            })
-            .map_err(|_| "Recognition worker is busy")?;
+            },
+            self.settings.ocr_download_allowed,
+        )?;
         self.recognition_review = None;
         self.recognition_pending = true;
-        self.recognition_status = "Preparing recognition…".into();
+        self.recognition_status = if self.recognition_setup_needed() {
+            "OCR setup needs your download choice"
+        } else {
+            "Preparing recognition…"
+        }
+        .into();
         Ok(())
     }
     pub fn recognize_pdf_math_region(
@@ -600,21 +669,24 @@ impl Controller {
         self.recognition_service
             .generation
             .store(self.recognition_generation, Ordering::Release);
-        self.recognition_service
-            .sender
-            .as_ref()
-            .unwrap()
-            .try_send(Task {
+        self.recognition_service.submit(
+            Task {
                 generation: self.recognition_generation,
                 auto_setup: std::env::var_os("FOLIO_RECOGNITION_CONFIG").is_none(),
                 pack: self.recognition_pack(),
                 review,
                 image: Some(ImageSource::Pdf(background, self.assets.clone(), fractions)),
-            })
-            .map_err(|_| "Recognition worker is busy")?;
+            },
+            self.settings.ocr_download_allowed,
+        )?;
         self.recognition_review = None;
         self.recognition_pending = true;
-        self.recognition_status = "Preparing recognition…".into();
+        self.recognition_status = if self.recognition_setup_needed() {
+            "OCR setup needs your download choice"
+        } else {
+            "Preparing recognition…"
+        }
+        .into();
         Ok(())
     }
     pub(super) fn recognize_math_sources(
@@ -650,20 +722,23 @@ impl Controller {
         self.recognition_service
             .generation
             .store(self.recognition_generation, Ordering::Release);
-        self.recognition_service
-            .sender
-            .as_ref()
-            .unwrap()
-            .try_send(Task {
+        self.recognition_service.submit(
+            Task {
                 generation: self.recognition_generation,
                 auto_setup: std::env::var_os("FOLIO_RECOGNITION_CONFIG").is_none(),
                 pack: self.recognition_pack(),
                 review,
                 image: None,
-            })
-            .map_err(|_| "Recognition is busy")?;
+            },
+            self.settings.ocr_download_allowed,
+        )?;
         self.recognition_pending = true;
-        self.recognition_status = "Preparing recognition…".into();
+        self.recognition_status = if self.recognition_setup_needed() {
+            "OCR setup needs your download choice"
+        } else {
+            "Preparing recognition…"
+        }
+        .into();
         self.recognition_review = None;
         Ok(())
     }
@@ -698,6 +773,7 @@ impl Controller {
             }
             changed = true;
             self.recognition_pending = false;
+            self.recognition_service.last_task = None;
             if !self.recognition_is_current(&message.review) {
                 self.error = Some("Writing changed or another page opened; select the writing and recognize again".into());
                 continue;
@@ -752,7 +828,12 @@ impl Controller {
             })?;
             self.busy += 1;
             self.recognition_pending = true;
-            self.recognition_status = "Preparing recognition…".into();
+            self.recognition_status = if self.recognition_setup_needed() {
+                "OCR setup needs your download choice"
+            } else {
+                "Preparing recognition…"
+            }
+            .into();
             self.recognition_replacing = true;
             self.recognition_review = None;
             return Ok(());

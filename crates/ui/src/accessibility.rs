@@ -770,6 +770,10 @@ impl Accessibility {
         }
         let dialog_label = if view.controller.error.is_some() {
             Some("Folio needs your attention")
+        } else if view.controller.recognition_setup_needed() {
+            Some(
+                "Set up handwriting recognition: download about 1.47 GB for local offline recognition. Downloads can be paused and resumed.",
+            )
         } else if let Some((modal, _)) = &view.modal {
             Some(modal.title())
         } else if view.settings_open {

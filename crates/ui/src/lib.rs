@@ -18,6 +18,7 @@ mod math_panel;
 mod motion;
 mod navigation;
 mod notebook_setup;
+mod ocr_setup;
 mod painting;
 mod portable;
 mod region;
@@ -198,6 +199,7 @@ pub struct NotesView {
     theme_colors_open: bool,
     modal_error: Option<String>,
     attention_error: Option<String>,
+    attention_setup: bool,
     pen_settings: bool,
     more_open: bool,
     more_section: MoreSection,
@@ -281,6 +283,7 @@ impl NotesView {
             theme_colors_open: false,
             modal_error: None,
             attention_error: None,
+            attention_setup: false,
             pen_settings: false,
             more_open: false,
             more_section: MoreSection::Document,
@@ -365,6 +368,7 @@ impl NotesView {
     }
     fn blocking_overlay(&self) -> bool {
         self.modal.is_some()
+            || self.controller.recognition_setup_needed()
             || self.document_menu.is_some()
             || self.settings_open
             || self.help_open
@@ -2311,6 +2315,7 @@ impl NotesView {
             .child(self.button("checkpoint-settings","Create recovery snapshot",false,cx,|this,_,_| this.controller.recovery_checkpoint()).justify_start())
             .child(self.button("cleanup-assets-settings","Quarantine unused assets",false,cx,|this,_,_| this.controller.cleanup_assets()).justify_start())
             .child(div().text_xs().text_color(rgb(theme.muted)).child("Asset cleanup becomes available when autosave is on and all work has finished saving."));
+        body=body.child(div().text_xs().child(if self.controller.recognition_ready() {"Handwriting recognition: ready offline"} else {"Handwriting recognition: not installed. Request recognition to review the download size and set it up."}));
         body = body.child(div().text_xs().child(self.controller.activity_status()));
         for task in self.controller.tasks.iter().rev().take(8) {
             let state = match &task.state {
@@ -3985,6 +3990,15 @@ impl Render for NotesView {
                     .opacity(help_alpha),
             );
         }
+        if self.controller.recognition_setup_needed() && self.controller.error.is_none() {
+            self.building_overlay = true;
+            self.accessibility.begin();
+            body = body.child(self.ocr_setup_panel(cx));
+            if !self.attention_setup {
+                self.accessibility.focus_control("ocr-download", window);
+            }
+        }
+        self.attention_setup = self.controller.recognition_setup_needed();
         if let Some(error) = self.controller.error.clone()
             && self.controller.interaction.is_none()
         {
@@ -4033,6 +4047,9 @@ impl Render for NotesView {
         }
         self.building_overlay = false;
         root = root.child(self.document_tabs(window, cx));
+        if self.controller.recognition_pending && !self.controller.recognition_setup_needed() {
+            root = root.child(self.recognition_notice(cx));
+        }
         if let Some(error) = self.controller.save_error.clone() {
             root = root.child(
                 div()

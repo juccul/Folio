@@ -40,6 +40,7 @@ pub struct Settings {
     pub hold_shapes: bool,
     pub encircle_select: bool,
     pub autosave: bool,
+    pub ocr_download_allowed: bool,
     pub cursor_size: f32,
 }
 
@@ -158,6 +159,7 @@ impl Default for Settings {
             hold_shapes: true,
             encircle_select: false,
             autosave: true,
+            ocr_download_allowed: false,
             cursor_size: 12.,
         }
     }

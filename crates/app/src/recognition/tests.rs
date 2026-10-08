@@ -447,3 +447,33 @@ fn salvage_keeps_valid_reviewed_ink_and_skips_annotations_with_missing_sources()
     clean(recovered, report.destination);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn first_ocr_request_waits_for_setup_choice_without_dispatching_downloads() {
+    let (mut app, root) = fixture();
+    let id = draw(&mut app, 20.);
+    app.session_mut().selection = HashSet::from([id]);
+    let review = app.recognition_snapshot(RecognitionKind::Text).unwrap();
+    let pack = root.join("recognition/pack.json");
+    app.recognition_service
+        .submit(
+            Task {
+                generation: 1,
+                pack: pack.clone(),
+                review,
+                image: None,
+                auto_setup: true,
+            },
+            false,
+        )
+        .unwrap();
+    assert!(app.recognition_setup_needed());
+    assert!(app.recognition_service.last_task.is_none());
+    std::thread::sleep(Duration::from_millis(30));
+    assert!(!pack.exists());
+    assert!(app.recognition_service.results.try_recv().is_err());
+    app.cancel_recognition();
+    assert!(!app.recognition_setup_needed());
+    assert!(!app.settings.ocr_download_allowed);
+    clean(app, root);
+}
