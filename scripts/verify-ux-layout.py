@@ -12,6 +12,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('binary','fixture','output'):parser.add_argument('--'+name,type=Path,required=True)
     parser.add_argument('--library-only',action='store_true')
+    parser.add_argument('--selection-only',action='store_true')
     args=parser.parse_args()
     assert os.environ.get('FOLIO_VIRTUAL_DISPLAY')=='1' and not os.environ.get('WAYLAND_DISPLAY')
     args.output.mkdir(parents=True,exist_ok=True)
@@ -26,7 +27,7 @@ def main():
         bus.call_sync('org.a11y.Bus','/org/a11y/bus','org.freedesktop.DBus.Properties','Set',GLib.Variant('(ssv)',('org.a11y.Status','IsEnabled',GLib.Variant('b',True))),None,Gio.DBusCallFlags.NONE,5000,None)
         reports=[]
         for width,height,scale,fresh in [(1000,620,.8,False),(1000,620,1.,False),(1366,768,1.,False),(1000,620,1.6,False),(1000,620,1.,True),(1000,620,1.6,True)]:
-            if args.library_only and fresh:continue
+            if (args.library_only or args.selection_only) and fresh:continue
             with tempfile.TemporaryDirectory(prefix='folio-ux-layout-') as temporary:
                 data=Path(temporary)/'data';shutil.copytree(args.fixture,data,ignore=shutil.ignore_patterns('session.lock','*.sqlite3-wal','*.sqlite3-shm'))
                 with sqlite3.connect(data/'notes.sqlite3') as db:
@@ -172,10 +173,18 @@ def main():
                             r=find(label).get_component_iface().get_extents(Atspi.CoordType.WINDOW)
                             assert r.width>0 and 0<=r.x and r.x+r.width<=width+2,(case,label,r.x,r.width)
                         capture('editor')
-                        click('Settings')
                         def inside(label):
                             r=find(label).get_component_iface().get_extents(Atspi.CoordType.WINDOW)
                             assert r.width>0 and r.height>0 and 0<=r.x and r.x+r.width<=width+2 and 0<=r.y and r.y+r.height<=height+2,(case,label,r.x,r.y,r.width,r.height)
+                        if args.selection_only:
+                            client.key('a',4);time.sleep(.3)
+                            for label in ['Duplicate','Delete','Solve']:inside(label)
+                            assert not any(n.get_name() in ['−10% size','+10% size','Rotate 15°'] for n in nodes()), 'Removed transforms remain in selection toolbar'
+                            capture('selection-toolbar')
+                            client.key('Escape');time.sleep(.2)
+                            assert not any(n.get_name()=='Duplicate' for n in nodes()), 'Selection toolbar did not dismiss'
+                            reports.append({'case':case,'selection_toolbar_restored':True,'size_and_rotation_removed':True});continue
+                        click('Settings')
                         for label in ['Appearance','Writing','Library','Accessibility','Close settings','Light appearance','Dark appearance']:
                             inside(label)
                         capture('settings-appearance')

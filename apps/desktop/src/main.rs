@@ -131,7 +131,7 @@ fn main() -> anyhow::Result<()> {
                         cx.background_executor().timer(Duration::from_millis(8)).await;
                     }
                     window.update(cx,|view,_,cx|view.smoke_toolbar_setup(cx))?;
-                    let mut toolbar_events=Err("Editor toolbar did not settle".to_owned());
+                    let mut toolbar_events=Err("Contextual selection toolbar did not settle".to_owned());
                     for _ in 0..200 {
                         cx.background_executor().timer(Duration::from_millis(50)).await;
                         toolbar_events=window.update(cx,|view,_,_|view.smoke_toolbar_events())?;

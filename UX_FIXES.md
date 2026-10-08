@@ -57,8 +57,10 @@ Final validation on 2026-10-09:
 
 ## Screenshot review follow-up
 
-- Removed the floating selection toolbar. Selection operations are available on demand under Document actions → Selection, keeping the canvas clear. Native replay now exercises the editor Redo button with a stylus.
+- Restored the floating selection toolbar after clarifying the screenshot request. Removed only “−10% size”, “+10% size”, and “Rotate 15°”; other selection actions remain on the toolbar. The temporary Selection submenu is removed. Native replay exercises Refine ink with a stylus.
 - Rebuilt Settings as a sectioned workspace with a fixed navigation area, aligned setting rows, compact switches, and separate Writing, Library and Accessibility pages. Larger interface scales use compact horizontal navigation. Native light/dark screenshots and all six layout cases passed; 41 UI tests passed.
 - Rebuilt library rows with explicit full-width sizing, a fixed row height, single-line metadata, and separate trailing actions. Grid actions sit below the preview. Virtualized rows remove offscreen measurement probes from the accessibility tree. Native three-document layout, overlap and scrolling checks passed at all four window/scale combinations.
 - Favorites now have a small outline/filled icon, a dedicated hit target, and no thumbnail overlay. Removed duplicate Enter/Space handling that activated controls twice. Favorite commands preserve edit time through save, undo and redo, preventing unexpected shelf reordering and preview invalidation. Native grid/list mouse clicks, Space/Enter activation, correct-target persistence, and removal from Favorites passed across all four window/scale cases.
 - Final screenshot-review validation: 254 workspace tests passed, one external OCR benchmark remained skipped, the native pen-input smoke passed, and all six expanded layout cases passed with light/dark Settings, list scrolling and favorite interaction checks. The updated development executable is `target/debug/folio`.
+
+- Selection-toolbar correction verified: 42 UI tests, four native window/scale checks confirming retained actions and absent size/rotation options, and native stylus refinement/overlay smoke all passed. Rebuilt `target/debug/folio`.

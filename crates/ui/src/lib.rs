@@ -25,6 +25,7 @@ mod painting;
 mod pen_presets;
 mod portable;
 mod region;
+mod selection;
 mod settings;
 mod templates;
 mod text_render;
@@ -165,7 +166,6 @@ enum MoreSection {
     Paper,
     Math,
     Layout,
-    Selection,
 }
 impl MoreSection {
     fn title(self) -> &'static str {
@@ -175,7 +175,6 @@ impl MoreSection {
             Self::Paper => "Paper and canvas",
             Self::Math => "Math and handwriting",
             Self::Layout => "Page layout",
-            Self::Selection => "Selection",
         }
     }
     fn contains(self, action: u8) -> bool {
@@ -185,7 +184,6 @@ impl MoreSection {
             Self::Paper => matches!(action, 6 | 7 | 25),
             Self::Math => matches!(action, 12 | 15 | 22 | 23),
             Self::Layout => matches!(action, 8 | 9),
-            Self::Selection => false,
         }
     }
 }
@@ -216,6 +214,7 @@ pub struct NotesView {
     pen_settings: bool,
     more_open: bool,
     more_section: MoreSection,
+    selection_toolbar_size: Size<Pixels>,
     export_open: bool,
     export_options: export_options::Options,
     help_open: bool,
@@ -314,6 +313,7 @@ impl NotesView {
             pen_settings: false,
             more_open: false,
             more_section: MoreSection::Document,
+            selection_toolbar_size: size(px(600.), px(80.)),
             export_open: false,
             export_options: export_options::Options::default(),
             help_open: false,
@@ -1687,7 +1687,28 @@ impl NotesView {
                 }
             }))
     }
-    fn selection_actions(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn selection_toolbar_origin(&self) -> DocPoint {
+        let canvas_size = self
+            .canvas_bounds
+            .map(|b| (f32::from(b.size.width), f32::from(b.size.height)))
+            .unwrap_or((1000., 700.));
+        let bounds = self.controller.selection_bounds().unwrap_or_default();
+        let viewport = self.controller.session().viewport;
+        let bounds = folio_document::Rect::from_points([
+            viewport.to_screen(bounds.min),
+            viewport.to_screen(bounds.max),
+        ]);
+        selection::toolbar_origin(
+            bounds,
+            canvas_size,
+            (
+                f32::from(self.selection_toolbar_size.width),
+                f32::from(self.selection_toolbar_size.height),
+            ),
+        )
+    }
+    fn selection_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = Theme::new(&self.controller.settings);
         let objects: Vec<_> = self
             .controller
             .session()
@@ -1720,11 +1741,45 @@ impl NotesView {
                     | folio_document::Object::Image(_)
             )
         });
-        let mut row = div().flex().flex_col().gap_1().w_full();
+        let canvas_size = self
+            .canvas_bounds
+            .map(|b| (f32::from(b.size.width), f32::from(b.size.height)))
+            .unwrap_or((1000., 700.));
+        let origin = self.selection_toolbar_origin();
+        let entity = cx.entity().downgrade();
+        let dimensions = canvas(
+            move |bounds, _, cx| {
+                let _ = entity.update(cx, |view, cx| {
+                    if view.selection_toolbar_size != bounds.size {
+                        view.selection_toolbar_size = bounds.size;
+                        cx.notify();
+                    }
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
+        let mut row = div()
+            .occlude()
+            .absolute()
+            .left(px(origin.x))
+            .top(px(origin.y))
+            .max_w(px(self
+                .canvas_bounds
+                .map(|b| f32::from(b.size.width) - 32.)
+                .unwrap_or(960.)))
+            .flex_wrap()
+            .flex()
+            .items_center()
+            .gap_1()
+            .p_2()
+            .rounded(px(theme.radius))
+            .bg(rgb(theme.surface))
+            .border_1()
+            .border_color(theme.border)
+            .shadow_sm();
         for (id, label, action) in [
-            ("scale-down", "−10% size", 1),
-            ("scale-up", "+10% size", 2),
-            ("rotate", "Rotate 15°", 3),
             ("restyle", "Apply pen", 4),
             ("duplicate-selection", "Duplicate", 5),
             (
@@ -1745,9 +1800,6 @@ impl NotesView {
                 row.child(
                     self.button(id, label, action == 6 && refined, cx, move |this, _, _| {
                         match action {
-                            1 => this.controller.scale_selection(0.9),
-                            2 => this.controller.scale_selection(1.1),
-                            3 => this.controller.rotate_selection(15f32.to_radians()),
                             4 => this.controller.restyle_selection(),
                             5 => {
                                 let objects = this.controller.copy_objects();
@@ -1758,8 +1810,8 @@ impl NotesView {
                             _ => unreachable!("Unknown selection action"),
                         }
                     })
-                    .text_sm()
-                    .justify_start(),
+                    .text_xs()
+                    .px_2(),
                 );
         }
         for id in self.controller.session().selection.clone() {
@@ -1795,8 +1847,8 @@ impl NotesView {
                 self.button("solve-selection", "Solve", false, cx, |this, window, cx| {
                     this.start_math(window, cx)
                 })
-                .text_sm()
-                .justify_start(),
+                .text_xs()
+                .px_2(),
             );
         }
         if self.controller.recognition_pending {
@@ -1828,8 +1880,8 @@ impl NotesView {
                         }
                     },
                 )
-                .text_sm()
-                .justify_start(),
+                .text_xs()
+                .px_2(),
             );
             for (id, label, kind) in [
                 ("recognize-text", "Recognize text", RecognitionKind::Text),
@@ -1841,8 +1893,8 @@ impl NotesView {
                             this.controller.error = Some(error);
                         }
                     })
-                    .text_sm()
-                    .justify_start(),
+                    .text_xs()
+                    .px_2(),
                 );
             }
         }
@@ -1877,8 +1929,8 @@ impl NotesView {
                     cx,
                     move |this, window, cx| this.modal(Modal::EditEquation(id), window, cx),
                 )
-                .text_sm()
-                .justify_start(),
+                .text_xs()
+                .px_2(),
             );
         }
         if objects.len() == 1 && matches!(objects[0].as_ref(), folio_document::Object::Image(_)) {
@@ -1887,8 +1939,8 @@ impl NotesView {
                     self.button("crop-image", "Crop…", false, cx, |this, w, cx| {
                         this.start_image_crop(w, cx)
                     })
-                    .text_sm()
-                    .justify_start(),
+                    .text_xs()
+                    .px_2(),
                 )
                 .child(
                     self.button(
@@ -1898,18 +1950,22 @@ impl NotesView {
                         cx,
                         |this, w, cx| this.modal(Modal::Crop, w, cx),
                     )
-                    .text_sm()
-                    .justify_start(),
+                    .text_xs()
+                    .px_2(),
                 )
                 .child(
                     self.button("uncrop-image", "Reset crop", false, cx, |this, _, _| {
                         this.controller.crop_selection(None)
                     })
-                    .text_sm()
-                    .justify_start(),
+                    .text_xs()
+                    .px_2(),
                 );
         }
-        row
+        row.child(dimensions)
+            .id("selection-actions")
+            .flex_wrap()
+            .max_h(px((canvas_size.1 - 24.).max(28.)))
+            .overflow_y_scroll()
     }
     fn popover(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = Theme::new(&self.controller.settings);
@@ -2083,9 +2139,6 @@ impl NotesView {
                     .text_sm(),
                 );
             }
-            if self.more_section == MoreSection::Selection {
-                panel = panel.child(self.selection_actions(cx));
-            }
             if self.more_section == MoreSection::Page {
                 panel = panel.child(
                     self.button(
@@ -2139,14 +2192,7 @@ impl NotesView {
                     ("paper", MoreSection::Paper),
                     ("math", MoreSection::Math),
                     ("layout", MoreSection::Layout),
-                    ("selection", MoreSection::Selection),
                 ] {
-                    if section == MoreSection::Selection
-                        && (self.controller.session().selection.is_empty()
-                            || self.controller.read_only())
-                    {
-                        continue;
-                    }
                     panel = panel.child(
                         self.button(
                             format!("more-section-{key}"),
@@ -2791,15 +2837,28 @@ impl NotesView {
         Ok(events)
     }
     pub fn smoke_toolbar_setup(&mut self, cx: &mut Context<Self>) {
-        self.controller.undo();
+        self.controller.select_all();
         cx.notify();
     }
     pub fn smoke_toolbar_events(&self) -> Result<Vec<PlatformInput>, String> {
         let b = self.canvas_bounds.ok_or("Canvas not laid out")?;
         let button = self
             .accessibility
-            .control_bounds("Redo")
-            .ok_or("Editor toolbar not laid out")?;
+            .control_bounds("Refine ink")
+            .ok_or("Contextual selection toolbar not laid out")?;
+        let origin = self.selection_toolbar_origin();
+        let left = f32::from(b.origin.x) + origin.x;
+        let top = f32::from(b.origin.y) + origin.y;
+        if button.x0 < (left - 1.) as f64
+            || button.y0 < (top - 1.) as f64
+            || button.x1 > (left + f32::from(self.selection_toolbar_size.width) + 1.) as f64
+            || button.y1 > (top + f32::from(self.selection_toolbar_size.height) + 1.) as f64
+        {
+            return Err(format!(
+                "Contextual selection toolbar is still laying out: button {button:?}; origin {left},{top}; size {:?}",
+                self.selection_toolbar_size
+            ));
+        }
         let position = point(
             px(((button.x0 + button.x1) * 0.5) as f32),
             px(((button.y0 + button.y1) * 0.5) as f32),
@@ -2896,13 +2955,15 @@ impl NotesView {
             return Err("Rich tablet samples were lost".into());
         }
         if self.controller.page().objects.len() != 1
+            || self.controller.session().selection.len() != 1
+            || !stroke.refinement_enabled
             || (stroke.transform.a - 1.).abs() > 0.001
             || (stroke.transform.d - 1.).abs() > 0.001
             || stroke.transform.b.abs() > 0.001
             || stroke.transform.c.abs() > 0.001
         {
             return Err(format!(
-                "Stylus toolbar click must redo the stroke without drawing through the toolbar: {} objects, {} selected, transform {:?}",
+                "Stylus selection-toolbar click must refine ink without drawing through the overlay: {} objects, {} selected, transform {:?}",
                 self.controller.page().objects.len(),
                 self.controller.session().selection.len(),
                 stroke.transform
@@ -3304,6 +3365,19 @@ impl Render for NotesView {
                             .child("Opening document…"),
                     ),
             );
+        }
+        if !self.library_open
+            && !self.controller.read_only()
+            && !self.controller.session().selection.is_empty()
+            && self.controller.math_session.is_none()
+            && self.controller.session().selection.iter().any(|id| {
+                !matches!(
+                    self.controller.page().objects.get(id).map(|o| o.as_ref()),
+                    Some(folio_document::Object::Text(_))
+                )
+            })
+        {
+            center = center.child(self.selection_toolbar(cx));
         }
         if !self.library_open && (self.more_open || self.pen_settings || self.export_open) {
             center = center.child(
