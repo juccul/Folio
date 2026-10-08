@@ -1755,6 +1755,9 @@ impl Controller {
             .filter_map(|(index, id)| {
                 let before = page.objects.get(id)?.clone();
                 let after = change(&before).map(Arc::new);
+                if after.as_deref() == Some(before.as_ref()) {
+                    return None;
+                }
                 Some(Change::Object {
                     page: page.id,
                     id: *id,
@@ -1866,13 +1869,27 @@ impl Controller {
         self.commit("Change ink style", changes);
     }
     pub fn refine_selection(&mut self) {
+        let strokes: Vec<_> = self
+            .session()
+            .selection
+            .iter()
+            .filter_map(|id| self.page().objects.get(id))
+            .filter_map(|o| match o.as_ref() {
+                Object::Stroke(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        if strokes.is_empty() {
+            return;
+        }
+        let enable = !strokes.iter().all(|s| s.refinement_enabled);
         let changes = self.object_changes(&self.session().selection, |o| {
             let mut o = o.clone();
             if let Object::Stroke(s) = &mut o {
-                if s.refinement_enabled {
-                    s.refinement_enabled = false
-                } else {
+                if enable {
                     folio_ink::refine(s)
+                } else {
+                    s.refinement_enabled = false
                 }
             }
             Some(o)
@@ -3578,5 +3595,39 @@ mod extended_tests {
         assert!(!a.page().objects.contains_key(&text));
         a.undo();
         assert!(a.page().objects.contains_key(&text));
+    }
+    #[test]
+    fn refinement_applies_a_consistent_toggle_to_mixed_strokes_and_skips_media() {
+        let mut a = app();
+        let first = insert(&mut a, ink());
+        let second = insert(&mut a, ink());
+        a.session_mut().selection = HashSet::from([first]);
+        a.refine_selection();
+        a.session_mut().selection = HashSet::from([first, second]);
+        a.refine_selection();
+        assert!(
+            a.page()
+                .objects
+                .values()
+                .all(|o| matches!(o.as_ref(),Object::Stroke(s) if s.refinement_enabled))
+        );
+        a.refine_selection();
+        assert!(
+            a.page()
+                .objects
+                .values()
+                .all(|o| matches!(o.as_ref(),Object::Stroke(s) if !s.refinement_enabled))
+        );
+        a.undo();
+        assert!(
+            a.page()
+                .objects
+                .values()
+                .all(|o| matches!(o.as_ref(),Object::Stroke(s) if s.refinement_enabled))
+        );
+        a.add_text("Media".into(), Point::new(30., 30.));
+        let before = a.session().document.clone();
+        a.refine_selection();
+        assert_eq!(a.session().document, before);
     }
 }
