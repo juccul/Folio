@@ -1,5 +1,6 @@
 //! Application controller. Commands, input routing and worker scheduling live here;
 //! the GPUI layer only displays state and forwards user actions.
+mod folders;
 #[cfg(test)]
 mod gesture_tests;
 mod handwriting_search;

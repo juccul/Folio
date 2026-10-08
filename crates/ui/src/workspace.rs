@@ -420,25 +420,65 @@ impl NotesView {
             .flex_col()
             .gap_1()
             .px_3();
-        for n in self.controller.notebooks.clone() {
+        let mut collapsed_depth = None;
+        for (n, depth) in self.controller.folder_tree() {
+            if collapsed_depth.is_some_and(|hidden| depth > hidden) {
+                continue;
+            }
+            collapsed_depth = None;
             let id = n.id;
+            let path = self.controller.folder_path(id);
+            let branch = self
+                .controller
+                .notebooks
+                .iter()
+                .any(|child| child.parent == Some(id));
+            let collapsed = self.controller.settings.collapsed_folders.contains(&id);
+            if branch && collapsed {
+                collapsed_depth = Some(depth);
+            }
             let active = self.controller.filter == NoteFilter::Notebook(id);
             let content = div()
                 .flex()
                 .min_w_0()
                 .items_center()
                 .gap_3()
-                .when(n.parent.is_some(), |s| s.pl_3())
                 .child(icon(Icon::Folder, theme.muted))
                 .child(div().truncate().child(n.name.clone()));
             folders = folders.child(
                 div()
                     .flex()
                     .items_center()
+                    .pl(px(depth as f32 * 12.))
+                    .child(if branch {
+                        self.control(
+                            format!("toggle-folder-{id}"),
+                            format!("{} {path}", if collapsed { "Expand" } else { "Collapse" }),
+                            div()
+                                .child(if collapsed { "▸" } else { "▾" })
+                                .into_any_element(),
+                            false,
+                            cx,
+                            move |this, _, _| {
+                                let folders = &mut this.controller.settings.collapsed_folders;
+                                if folders.contains(&id) {
+                                    folders.retain(|f| *f != id);
+                                } else {
+                                    folders.push(id);
+                                }
+                                this.controller.store_settings();
+                            },
+                        )
+                        .size(px(24.))
+                        .p_0()
+                        .into_any_element()
+                    } else {
+                        div().w(px(24.)).into_any_element()
+                    })
                     .child(
                         self.control(
-                            id.to_string(),
-                            n.name,
+                            format!("folder-{id}"),
+                            path,
                             content.into_any_element(),
                             active,
                             cx,
@@ -896,6 +936,42 @@ impl NotesView {
             );
         }
         shelf = shelf.child(list);
+        let breadcrumb = if let NoteFilter::Notebook(id) = self.controller.filter {
+            let mut row = div()
+                .id("folder-breadcrumb")
+                .flex()
+                .items_center()
+                .gap_1()
+                .overflow_x_scroll();
+            row = row.child(
+                self.button("breadcrumb-root", "Documents", false, cx, |this, _, _| {
+                    this.controller.filter = NoteFilter::All
+                })
+                .text_xs()
+                .py_0()
+                .px_1(),
+            );
+            for folder in self.controller.folder_ancestors(id) {
+                let target = folder.id;
+                row = row.child(div().text_xs().child("/")).child(
+                    self.button(
+                        format!("breadcrumb-{target}"),
+                        folder.name,
+                        target == id,
+                        cx,
+                        move |this, _, _| this.controller.filter = NoteFilter::Notebook(target),
+                    )
+                    .text_xs()
+                    .py_0()
+                    .px_1()
+                    .max_w(px(150.))
+                    .truncate(),
+                );
+            }
+            Some(row)
+        } else {
+            None
+        };
         div()
             .flex_1()
             .min_w_0()
@@ -915,9 +991,19 @@ impl NotesView {
                     .border_color(theme.border)
                     .child(
                         div()
-                            .text_size(px(25.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(title),
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(25.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .truncate()
+                                    .child(title),
+                            )
+                            .children(breadcrumb),
                     )
                     .child(
                         div()

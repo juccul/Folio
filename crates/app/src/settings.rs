@@ -20,6 +20,7 @@ pub struct PageTemplate {
 #[serde(default)]
 pub struct Settings {
     pub templates: Vec<PageTemplate>,
+    pub collapsed_folders: Vec<Id>,
     pub dark: bool,
     pub reduce_motion: bool,
     pub appearance: crate::appearance::Appearance,
@@ -101,6 +102,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             templates: vec![],
+            collapsed_folders: vec![],
             dark: false,
             reduce_motion: false,
             appearance: Default::default(),
