@@ -280,6 +280,19 @@ pub struct LibraryImport {
     pub pending: bool,
     pub error: Option<String>,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaskState {
+    Running,
+    Complete,
+    Failed(String),
+}
+#[derive(Clone, Debug)]
+pub struct BackgroundTask {
+    pub id: Id,
+    pub kind: &'static str,
+    pub label: String,
+    pub state: TaskState,
+}
 pub struct Controller {
     pub recognition_for_index: bool,
     pub restored_library: Option<PathBuf>,
@@ -339,6 +352,7 @@ pub struct Controller {
     equation_live_wait: Option<(Id, String)>,
     preview_errors: HashMap<(Id, Id), String>,
     pub busy: usize,
+    pub tasks: Vec<BackgroundTask>,
     pub pending_text: Option<Point>,
     pub pending_text_edit: Option<Id>,
     text_click: Option<(Id, Point)>,
@@ -464,6 +478,7 @@ impl Controller {
             equation_live_wait: None,
             preview_errors: HashMap::new(),
             busy: 0,
+            tasks: Vec::new(),
             pending_text: None,
             pending_text_edit: None,
             text_click: None,
@@ -2073,9 +2088,86 @@ impl Controller {
         });
         self.commit("Insert handwriting space", changes);
     }
+    pub fn task_running(&self, kind: &str) -> bool {
+        self.tasks
+            .iter()
+            .any(|t| t.kind == kind && t.state == TaskState::Running)
+    }
+    pub fn activity_status(&self) -> String {
+        if self.recognition_pending {
+            return self.recognition_status.clone();
+        }
+        let pending: Vec<_> = self
+            .tasks
+            .iter()
+            .filter(|t| t.state == TaskState::Running)
+            .map(|t| t.label.as_str())
+            .collect();
+        if !pending.is_empty() {
+            return format!(
+                "{}{}",
+                pending[0],
+                if pending.len() > 1 {
+                    format!(" · {} more operations", pending.len() - 1)
+                } else {
+                    String::new()
+                }
+            );
+        }
+        if let Some(import) = self.library_imports.values().find(|i| i.pending) {
+            return format!(
+                "Importing {}",
+                import
+                    .path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            );
+        }
+        if self.busy > 0 {
+            return "Preparing documents…".into();
+        }
+        self.status.clone()
+    }
     fn submit(&mut self, job: Job) {
+        let identity = match &job {
+            Job::Backup { path, .. } => Some(("backup", format!("Backing up {}", path.display()))),
+            Job::Restore { path, .. } => Some(("restore", format!("Restoring {}", path.display()))),
+            Job::Export { path, .. } => Some(("export", format!("Exporting {}", path.display()))),
+            Job::Cleanup { .. } => Some(("cleanup", "Checking unused assets".into())),
+            Job::SaveTemplate { name, .. } => Some(("template", format!("Saving template {name}"))),
+            _ => None,
+        };
+        let id = Id::new_v4();
+        let job = if identity.is_some() {
+            Job::Tracked {
+                id,
+                job: Box::new(job),
+            }
+        } else {
+            job
+        };
         match self.workers.submit(job) {
-            Ok(()) => self.busy += 1,
+            Ok(()) => {
+                self.busy += 1;
+                if let Some((kind, label)) = identity {
+                    if self.tasks.len() >= 32 {
+                        if let Some(index) = self
+                            .tasks
+                            .iter()
+                            .position(|t| t.state != TaskState::Running)
+                        {
+                            self.tasks.remove(index);
+                        }
+                    }
+                    self.tasks.push(BackgroundTask {
+                        id,
+                        kind,
+                        label,
+                        state: TaskState::Running,
+                    });
+                }
+            }
             Err(e) => self.error = Some(e),
         }
     }
@@ -2232,6 +2324,10 @@ impl Controller {
         };
         if let Err(error) = self.validate_export_destination(&path, extension) {
             self.error = Some(error);
+            return;
+        }
+        if self.task_running("export") {
+            self.status = "Finish the current export before starting another.".into();
             return;
         }
         self.submit(Job::Export {
@@ -2549,7 +2645,20 @@ impl Controller {
         while let Ok(result) = self.workers.results.try_recv() {
             changed = true;
             self.busy = self.busy.saturating_sub(1);
+            let result = if let Finished::Tracked { id, result } = result {
+                if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
+                    task.state = if let Finished::Error(error) = result.as_ref() {
+                        TaskState::Failed(error.clone())
+                    } else {
+                        TaskState::Complete
+                    };
+                }
+                *result
+            } else {
+                result
+            };
             match result {
+                Finished::Tracked { .. } => unreachable!("tracked results are unwrapped above"),
                 Finished::RecognizedEquation {
                     generation,
                     review,

@@ -1389,6 +1389,11 @@ impl NotesView {
                     }
                 }
                 "cleanup-assets-settings" => self.controller.can_cleanup_assets(),
+                "backup-library" => !self.controller.task_running("backup"),
+                "restore-library" => !self.controller.task_running("restore"),
+                "export-pdf" | "export-png" | "export-svg" | "export-text" | "export-notebook" => {
+                    !self.controller.task_running("export")
+                }
                 "open-restored-library" | "switch-library" => {
                     !self.controller.has_background_work()
                 }
@@ -2283,6 +2288,15 @@ impl NotesView {
             .child(self.button("checkpoint-settings","Create recovery snapshot",false,cx,|this,_,_| this.controller.recovery_checkpoint()).justify_start())
             .child(self.button("cleanup-assets-settings","Quarantine unused assets",false,cx,|this,_,_| this.controller.cleanup_assets()).justify_start())
             .child(div().text_xs().text_color(rgb(theme.muted)).child("Asset cleanup becomes available when autosave is on and all work has finished saving."));
+        body = body.child(div().text_xs().child(self.controller.activity_status()));
+        for task in self.controller.tasks.iter().rev().take(8) {
+            let state = match &task.state {
+                folio_app::TaskState::Running => "Running…".into(),
+                folio_app::TaskState::Complete => "Completed".into(),
+                folio_app::TaskState::Failed(e) => format!("Failed: {e}"),
+            };
+            body = body.child(div().text_xs().child(format!("{} · {state}", task.label)));
+        }
         if let Some(path) = &self.controller.restored_library {
             body = body
                 .child(

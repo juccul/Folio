@@ -737,7 +737,7 @@ impl Accessibility {
         } else if view.controller.recognition_pending {
             view.controller.recognition_status.clone()
         } else {
-            view.controller.status.clone()
+            view.controller.activity_status()
         });
         nodes.push((NodeId(4), status));
         children.push(NodeId(4));

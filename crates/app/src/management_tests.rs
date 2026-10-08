@@ -851,3 +851,30 @@ fn quick_documents_open_with_remembered_custom_paper_and_safe_defaults() {
     a.create_note();
     assert!(a.page().properties.width.is_finite());
 }
+
+#[test]
+fn background_operations_report_identity_completion_failure_and_reject_duplicates() {
+    let mut a = app();
+    let root = a.data_dir.clone();
+    let path = root.join("safe.foliobackup");
+    a.backup_library(path.clone()).unwrap();
+    assert!(a.task_running("backup"));
+    assert!(a.activity_status().contains("safe.foliobackup"));
+    assert!(a.backup_library(path.clone()).is_err());
+    settle(&mut a);
+    assert_eq!(a.tasks.last().unwrap().state, TaskState::Complete);
+    a.restore_library(root.join("absent.foliobackup"), root.clone())
+        .unwrap();
+    assert!(a.task_running("restore"));
+    let start = Instant::now();
+    while a.has_background_work() {
+        a.tick();
+        assert!(start.elapsed() < Duration::from_secs(15));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(matches!(
+        a.tasks.last().unwrap().state,
+        TaskState::Failed(_)
+    ));
+    assert!(!a.task_running("restore"));
+}

@@ -487,6 +487,9 @@ impl Controller {
         Ok(())
     }
     pub fn backup_library(&mut self, path: PathBuf) -> Result<(), String> {
+        if self.task_running("backup") {
+            return Err("A backup is already running".into());
+        }
         self.validate_export_destination(&path, "foliobackup")?;
         self.flush()?;
         self.submit(Job::Backup {
@@ -496,6 +499,9 @@ impl Controller {
         Ok(())
     }
     pub fn restore_library(&mut self, path: PathBuf, parent: PathBuf) -> Result<(), String> {
+        if self.task_running("restore") {
+            return Err("A restore is already running".into());
+        }
         self.flush()?;
         let destination = parent.join(format!("folio-restored-{}", Id::new_v4()));
         self.submit(Job::Restore { path, destination });

@@ -17,6 +17,10 @@ pub enum ExportKind {
     Text,
 }
 pub enum Job {
+    Tracked {
+        id: Id,
+        job: Box<Job>,
+    },
     SaveTemplate {
         document: Document,
         assets: PathBuf,
@@ -104,6 +108,10 @@ pub enum Job {
     },
 }
 pub enum Finished {
+    Tracked {
+        id: Id,
+        result: Box<Finished>,
+    },
     TemplateSaved(crate::PageTemplate),
     TemplatePage {
         note: Id,
@@ -351,6 +359,10 @@ impl Drop for Workers {
 fn process(job: Job) -> Result<Finished, String> {
     (|| -> Result<Finished, Box<dyn std::error::Error>> {
         Ok(match job {
+            Job::Tracked { id, job } => Finished::Tracked {
+                id,
+                result: Box::new(process(*job).unwrap_or_else(Finished::Error)),
+            },
             Job::SaveTemplate {
                 document,
                 assets,

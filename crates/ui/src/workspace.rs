@@ -1132,7 +1132,7 @@ impl NotesView {
                     .items_center()
                     .text_xs()
                     .text_color(rgb(theme.muted))
-                    .child("Stored on this device"),
+                    .child(self.controller.activity_status()),
             )
     }
     pub(super) fn document_tabs(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -1951,19 +1951,12 @@ impl NotesView {
                 },
                 theme.muted,
             ))
-            .child(div().text_xs().text_color(rgb(theme.muted)).child(
-                if self.controller.recognition_pending {
-                    format!("{} (Esc to cancel)", self.controller.recognition_status)
-                } else if self.controller.busy > 0 {
-                    format!(
-                        "{} background task{}",
-                        self.controller.busy,
-                        if self.controller.busy == 1 { "" } else { "s" }
-                    )
-                } else {
-                    self.controller.status.clone()
-                },
-            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme.muted))
+                    .child(self.controller.activity_status()),
+            )
             .child(div().flex_1())
             .child(
                 self.button("zoom-out", "−", false, cx, |this, _, _| {
