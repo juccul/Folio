@@ -54,3 +54,7 @@ Final validation on 2026-10-09:
 - Native synthetic pen replay: passed pressure/tilt preservation, contextual-toolbar occlusion and resizing, undo/redo, pages, card menus, duplication, tab picking/dragging, crop edits and durable saving.
 - Six private X11/AT-SPI layout cases passed at 1000×620 (80%, 100%, 160%) and 1366×768 (100%), including first launch at 100%/160%. Checks cover role/state, field focus, toolbar bounds, physical page units, preset samples, OCR consent without downloading, explicit sorting, favorites and folder-specific Trash recovery.
 - The reusable native layout driver is `scripts/verify-ux-layout.py`. Local test logs, results and screenshots are under `artifacts/ux-fixes/`.
+
+## Screenshot review follow-up
+
+- Removed the floating selection toolbar. Selection operations are available on demand under Document actions → Selection, keeping the canvas clear. Native replay now exercises the editor Redo button with a stylus.
