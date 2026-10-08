@@ -17,6 +17,7 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let mut data_dir = folio_platform::data_dir();
+    let mut explicit_path = std::env::var_os("FOLIO_DATA_DIR").is_some();
     let mut files = vec![];
     let mut smoke = false;
     let mut new_note = false;
@@ -26,6 +27,7 @@ fn main() -> anyhow::Result<()> {
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--data-dir" => {
+                explicit_path = true;
                 data_dir = PathBuf::from(
                     args.next()
                         .ok_or_else(|| anyhow::anyhow!("--data-dir requires a path"))?,
@@ -54,25 +56,38 @@ fn main() -> anyhow::Result<()> {
         );
         data_dir = report.destination;
     }
-    let mut controller = match Controller::open(data_dir.clone()) {
+    let result = if !explicit_path
+        && data_dir != folio_platform::default_data_dir()
+        && !data_dir.join("notes.sqlite3").is_file()
+    {
+        Err(format!(
+            "The chosen startup library is unavailable: {}. Reconnect its drive or open an existing library with --data-dir.",
+            data_dir.display()
+        ))
+    } else {
+        Controller::open(data_dir.clone())
+    };
+    let mut controller = match result {
         Ok(controller) => controller,
         Err(error) => {
-            Application::new().with_assets(folio_ui::IconAssets).run(move |cx| {
-                cx.open_window(
-                    WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                            None,
-                            size(px(900.), px(600.)),
-                            cx,
-                        ))),
-                        ..Default::default()
-                    },
-                    |window, cx| {
-                        cx.new(|cx| folio_ui::RecoveryView::new(data_dir, error, window, cx))
-                    },
-                )
-                .expect("open recovery window");
-            });
+            Application::new()
+                .with_assets(folio_ui::IconAssets)
+                .run(move |cx| {
+                    cx.open_window(
+                        WindowOptions {
+                            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                                None,
+                                size(px(900.), px(600.)),
+                                cx,
+                            ))),
+                            ..Default::default()
+                        },
+                        |window, cx| {
+                            cx.new(|cx| folio_ui::RecoveryView::new(data_dir, error, window, cx))
+                        },
+                    )
+                    .expect("open recovery window");
+                });
             return Ok(());
         }
     };

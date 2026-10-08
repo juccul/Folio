@@ -481,6 +481,11 @@ impl Controller {
     pub fn validate_export_destination(&self, path: &Path, extension: &str) -> Result<(), String> {
         protect_library_destination(&self.data_dir, path, extension)
     }
+    pub fn use_library_by_default(&mut self) -> Result<(), String> {
+        folio_platform::use_library_by_default(&self.data_dir).map_err(|e| e.to_string())?;
+        self.status = format!("Startup library: {}", self.data_dir.display());
+        Ok(())
+    }
     pub fn backup_library(&mut self, path: PathBuf) -> Result<(), String> {
         self.validate_export_destination(&path, "foliobackup")?;
         self.flush()?;

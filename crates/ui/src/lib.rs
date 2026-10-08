@@ -1389,7 +1389,9 @@ impl NotesView {
                     }
                 }
                 "cleanup-assets-settings" => self.controller.can_cleanup_assets(),
-                "open-restored-library" => !self.controller.has_background_work(),
+                "open-restored-library" | "switch-library" => {
+                    !self.controller.has_background_work()
+                }
                 "submit-modal"
                     if matches!(self.modal.as_ref(), Some((Modal::Recognition, _)))
                         && self.controller.recognition_for_index =>
@@ -2268,6 +2270,11 @@ impl NotesView {
             .min_h_0()
             .overflow_y_scroll()
             .child(self.appearance_panel(cx));
+        body = body.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Current library"))
+            .child(div().text_xs().child(self.controller.data_dir.display().to_string()))
+            .child(self.button("default-library","Use this library by default",false,cx,|this,_,_| { if let Err(e) = this.controller.use_library_by_default() { this.controller.error = Some(e); }}).justify_start())
+            .child(self.button("switch-library","Open another library…",false,cx,|this,w,cx| this.switch_library_dialog(w,cx)).justify_start())
+            .child(div().text_xs().child("Applies on normal restart. --data-dir and FOLIO_DATA_DIR override this preference."));
         body = body.child(div().mt_3().text_sm().font_weight(FontWeight::SEMIBOLD).child("Backup and restore"))
             .child(self.button("backup-library", "Back up library…", false, cx, |this, _, cx| this.backup_dialog(cx)).justify_start())
             .child(self.button("restore-library", "Restore backup to a new library…", false, cx, |this, _, cx| this.restore_dialog(cx)).justify_start())
@@ -2285,7 +2292,7 @@ impl NotesView {
                 )
                 .child(self.button(
                     "open-restored-library",
-                    "Open restored library",
+                    "Open restored library for this session",
                     true,
                     cx,
                     |this, w, cx| this.open_restored_library(w, cx),

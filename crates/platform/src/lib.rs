@@ -10,6 +10,10 @@ pub fn data_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("FOLIO_DATA_DIR") {
         return PathBuf::from(p);
     }
+    remembered_library(&default_data_dir().join("startup-library.json"))
+        .unwrap_or_else(default_data_dir)
+}
+pub fn default_data_dir() -> PathBuf {
     #[cfg(windows)]
     {
         return windows_data_dir().join("Folio");
@@ -20,6 +24,34 @@ pub fn data_dir() -> PathBuf {
     } else {
         PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share/folio")
     }
+}
+
+fn remembered_library(config: &Path) -> Option<PathBuf> {
+    serde_json::from_slice::<PathBuf>(&std::fs::read(config).ok()?)
+        .ok()
+        .filter(|p| p.is_absolute())
+}
+fn remember_library(config: &Path, library: &Path) -> std::io::Result<()> {
+    let library = std::fs::canonicalize(library)?;
+    if !library.join("notes.sqlite3").is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Choose an existing Folio library",
+        ));
+    }
+    let parent = config
+        .parent()
+        .ok_or_else(|| std::io::Error::other("Invalid preference path"))?;
+    std::fs::create_dir_all(parent)?;
+    let temporary = config.with_extension(format!("{}.tmp", std::process::id()));
+    std::fs::write(
+        &temporary,
+        serde_json::to_vec(&library).map_err(std::io::Error::other)?,
+    )?;
+    publish_file(&temporary, config)
+}
+pub fn use_library_by_default(library: &Path) -> std::io::Result<()> {
+    remember_library(&default_data_dir().join("startup-library.json"), library)
 }
 
 #[cfg(windows)]
@@ -371,6 +403,25 @@ mod tests {
         ));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+    #[test]
+    fn remembered_library_survives_restart_and_failed_replacement() {
+        let root = directory("startup");
+        let library = root.join("recovered");
+        std::fs::create_dir(&library).unwrap();
+        std::fs::write(library.join("notes.sqlite3"), b"test").unwrap();
+        let config = root.join("startup-library.json");
+        remember_library(&config, &library).unwrap();
+        assert_eq!(
+            remembered_library(&config),
+            Some(std::fs::canonicalize(&library).unwrap())
+        );
+        assert!(remember_library(&config, &root.join("missing")).is_err());
+        assert_eq!(
+            remembered_library(&config),
+            Some(std::fs::canonicalize(&library).unwrap())
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn importing_read_only_assets_preserves_source_and_publishes_owned_copy() {
