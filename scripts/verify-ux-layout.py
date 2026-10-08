@@ -11,6 +11,7 @@ from ui_x11 import Client
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('binary','fixture','output'):parser.add_argument('--'+name,type=Path,required=True)
+    parser.add_argument('--library-only',action='store_true')
     args=parser.parse_args()
     assert os.environ.get('FOLIO_VIRTUAL_DISPLAY')=='1' and not os.environ.get('WAYLAND_DISPLAY')
     args.output.mkdir(parents=True,exist_ok=True)
@@ -25,10 +26,12 @@ def main():
         bus.call_sync('org.a11y.Bus','/org/a11y/bus','org.freedesktop.DBus.Properties','Set',GLib.Variant('(ssv)',('org.a11y.Status','IsEnabled',GLib.Variant('b',True))),None,Gio.DBusCallFlags.NONE,5000,None)
         reports=[]
         for width,height,scale,fresh in [(1000,620,.8,False),(1000,620,1.,False),(1366,768,1.,False),(1000,620,1.6,False),(1000,620,1.,True),(1000,620,1.6,True)]:
+            if args.library_only and fresh:continue
             with tempfile.TemporaryDirectory(prefix='folio-ux-layout-') as temporary:
                 data=Path(temporary)/'data';shutil.copytree(args.fixture,data,ignore=shutil.ignore_patterns('session.lock','*.sqlite3-wal','*.sqlite3-shm'))
                 with sqlite3.connect(data/'notes.sqlite3') as db:
                     row=db.execute("SELECT data FROM settings WHERE key='preferences'").fetchone();prefs=json.loads(row[0]) if row else {};prefs.update(ui_scale=scale,reduce_motion=True)
+                    if args.library_only:prefs['workspace']={'library_open':True}
                     db.execute("INSERT OR REPLACE INTO settings(key,data) VALUES('preferences',?)",(json.dumps(prefs),))
                     note,metadata=db.execute('SELECT id,metadata FROM notes LIMIT 1').fetchone()
                     metadata=json.loads(metadata);metadata['title']='A long document title for equations and lecture preparation';db.execute('UPDATE notes SET metadata=? WHERE id=?',(json.dumps(metadata),note))
@@ -41,6 +44,11 @@ def main():
                         hidden=dict(metadata,id=str(uuid.uuid4()),title='Trashed course note',notebook=folder['id'],trashed=True,favorite=False)
                         db.execute('INSERT INTO notes(id,metadata) VALUES(?,?)',(hidden['id'],json.dumps(hidden)))
                         page,header=db.execute('SELECT id,header FROM pages WHERE note_id=? ORDER BY position LIMIT 1',(note,)).fetchone();header=json.loads(header)
+                        for title in ['Untitled note','Lecture_2_homework']:
+                            extra=dict(metadata,id=str(uuid.uuid4()),title=title,favorite=False,notebook=None,trashed=False)
+                            db.execute('INSERT INTO notes(id,metadata) VALUES(?,?)',(extra['id'],json.dumps(extra)))
+                            extra_page=dict(header,id=str(uuid.uuid4()),order=[],groups=[],text='',revision=0)
+                            db.execute('INSERT INTO pages(id,note_id,position,header) VALUES(?,?,0,?)',(extra_page['id'],extra['id'],json.dumps(extra_page)))
                         hidden_page=dict(header,id=str(uuid.uuid4()),order=[],groups=[],text='',revision=0)
                         db.execute('INSERT INTO pages(id,note_id,position,header) VALUES(?,?,0,?)',(hidden_page['id'],hidden['id'],json.dumps(hidden_page)))
                         ink=str(uuid.uuid4())
@@ -50,7 +58,7 @@ def main():
                 pack.write_text(json.dumps({'backend':'llama-vulkan'})) # Explicit uninstalled native pack; ignore adjacent development-only legacy packs.
                 case=f'{width}x{height}-{scale}'+('-fresh' if fresh else '')
                 with (args.output/(case+'.log')).open('w') as log:
-                    app=subprocess.Popen([str(args.binary.resolve()),'--data-dir',str(data)]+(['--open-note',note] if note else []),env=dict(os.environ,FOLIO_RECOGNITION_CONFIG=str(pack)),stdout=log,stderr=log)
+                    app=subprocess.Popen([str(args.binary.resolve()),'--data-dir',str(data)]+(['--open-note',note] if note and not args.library_only else []),env=dict(os.environ,FOLIO_RECOGNITION_CONFIG=str(pack)),stdout=log,stderr=log)
                     client=None
                     try:
                         client=Client(app.pid)
@@ -84,6 +92,29 @@ def main():
                                 client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0,delay=.02)
                             time.sleep(.15)
                         def capture(name):subprocess.run([sys.executable,'scripts/capture-x11.py',str(args.output/(case+'-'+name+'.png')),'--pid',str(app.pid),'--virtual-display-root'],check=True)
+                        def check_library_rows():
+                            click('List view')
+                            labels={'Open '+title for title in [metadata['title'],'Untitled note','Lecture_2_homework']}
+                            seen=set()
+                            for _ in range(5):
+                                rows=[]
+                                for node in nodes():
+                                    if node.get_name() not in labels:continue
+                                    r=node.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                                    assert r.width>width*.4 and r.height>=40*scale and 0<=r.x and r.x+r.width<=width+2,(case,node.get_name(),r.x,r.width,r.height)
+                                    rows.append(r);seen.add(node.get_name())
+                                rows.sort(key=lambda r:r.y)
+                                if any(a.y+a.height>b.y+1 for a,b in zip(rows,rows[1:])):capture('list-overlap-failure')
+                                assert all(a.y+a.height<=b.y+1 for a,b in zip(rows,rows[1:])),[(r.y,r.height) for r in rows]
+                                if seen==labels:break
+                                client.click(width-100,height-90,button=5)
+                            assert seen==labels,(case,'Rows unreachable by scrolling',seen,labels)
+                            capture('library-list')
+                            for _ in range(5):client.click(width-100,height-90,button=4,delay=.04)
+                            click('Grid view');capture('library-grid')
+                        if args.library_only:
+                            check_library_rows()
+                            reports.append({'case':case,'full_width_rows':True,'no_overlap':True});continue
                         if fresh:
                             for label in ['Start writing','Try the sample notebook']:
                                 r=find(label).get_component_iface().get_extents(Atspi.CoordType.WINDOW)
@@ -137,6 +168,7 @@ def main():
                         assert find("Math expression").get_state_set().contains(Atspi.StateType.FOCUSED)
                         capture('panels')
                         client.key('Escape');client.key('l',5);time.sleep(.3);capture('library')
+                        check_library_rows()
                         if scale==1. and width==1366:
                             click('Last edited: newest first ▾');click('Name: A–Z');capture('explicit-sort')
                             star=next(n for n in nodes() if n.get_name().startswith('Add ') and n.get_name().endswith(' to favorites'))

@@ -601,27 +601,19 @@ impl NotesView {
     ) -> Div {
         let theme = Theme::new(&self.controller.settings);
         let mut items = div()
+            .w_full()
             .flex()
             .when(list_view, |s| s.flex_col())
-            .when(!list_view, |s| s.flex_wrap())
-            .gap_6();
+            .when(!list_view, |s| s.flex_wrap().gap_6());
         for n in notes {
             let id = n.id;
-            let session = self.controller.sessions.get(&id);
-            let details = session
-                .map(|s| {
-                    format!(
-                        "{} page{}",
-                        s.document.pages.len(),
-                        if s.document.pages.len() == 1 { "" } else { "s" }
-                    )
-                })
-                .unwrap_or_else(|| "Document".into());
+            let session_pages = self
+                .controller
+                .sessions
+                .get(&id)
+                .map(|s| s.document.pages.len());
             let preview = self.controller.library_preview(id);
-            let details = preview
-                .as_ref()
-                .map(|(_, count)| format!("{count} page{}", if *count == 1 { "" } else { "s" }))
-                .unwrap_or(details);
+            let pages = preview.as_ref().map(|(_, count)| *count).or(session_pages);
             let details = self
                 .controller
                 .library_imports
@@ -630,163 +622,225 @@ impl NotesView {
                     if import.pending {
                         "Importing…".to_owned()
                     } else {
-                        "Import failed · open to retry or remove".to_owned()
+                        "Import failed · open to retry".to_owned()
                     }
                 })
-                .unwrap_or(details);
-            let cover_content = if let Some((page, _)) = &preview {
-                if let Some(pdf) = &page.properties.pdf {
-                    self.controller.request_pdf_background(pdf.clone());
-                }
-                self.thumbnail(
-                    page.as_ref().clone(),
-                    144. * self.controller.settings.ui_scale,
-                    cx,
-                )
+                .unwrap_or_else(|| {
+                    pages
+                        .map(|count| format!("{count} page{}", if count == 1 { "" } else { "s" }))
+                        .unwrap_or_else(|| "Document".into())
+                });
+            let details = if n.tags.is_empty() {
+                details
             } else {
-                div().text_xs().text_color(rgb(theme.muted)).child(
-                    if self.controller.library_cover_unavailable(id) {
-                        "Preview unavailable"
-                    } else {
-                        "Loading preview…"
+                format!("{details} · {}", n.tags.join(" · "))
+            };
+            let favorite = self
+                .control(
+                    format!("favorite-card-{id}"),
+                    format!(
+                        "{} {} {} favorites",
+                        if n.favorite { "Remove" } else { "Add" },
+                        n.title,
+                        if n.favorite { "from" } else { "to" }
+                    ),
+                    icon(Icon::Star, if n.favorite { theme.ink } else { theme.muted })
+                        .size(rems(1.))
+                        .into_any_element(),
+                    n.favorite,
+                    cx,
+                    move |this, _, cx| {
+                        this.controller
+                            .manage_note(id, folio_app::NoteAction::Favorite);
+                        cx.stop_propagation();
                     },
                 )
-            };
-            let cover = div()
-                .relative()
-                .w(rems(9.25))
-                .h(rems(12.375))
-                .overflow_hidden()
-                .rounded(px(theme.radius))
-                .border_1()
-                .border_color(theme.border)
-                .bg(rgb(theme.sidebar))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(cover_content);
-            let metadata = div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .min_w_0()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .truncate()
-                        .child(n.title.clone()),
+                .size(rems(2.))
+                .p_0()
+                .min_h(rems(2.))
+                .flex_shrink_0()
+                .bg(transparent_black())
+                .hover(move |s| s.bg(rgb(theme.selected)))
+                .tooltip({
+                    let label: SharedString = if n.favorite {
+                        "Remove from favorites"
+                    } else {
+                        "Add to favorites"
+                    }
+                    .into();
+                    move |_, cx| cx.new(|_| Hint(label.clone(), theme)).into()
+                });
+            let menu = self
+                .icon_button(
+                    format!("manage-note-{id}"),
+                    format!("Manage {}", n.title),
+                    Icon::More,
+                    false,
+                    cx,
+                    move |this, w, cx| {
+                        this.open_document_menu(id, w.mouse_position(), w, cx);
+                        cx.stop_propagation();
+                    },
                 )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(theme.muted))
-                        .truncate()
-                        .child(if n.tags.is_empty() {
-                            details
-                        } else {
-                            n.tags.join(" · ")
-                        }),
-                );
-            let metadata = metadata.child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(theme.muted))
-                    .child(edited_label(n.updated_at)),
-            );
-            let content = if list_view {
-                div()
+                .size(rems(2.))
+                .min_h(rems(2.))
+                .flex_shrink_0()
+                .bg(transparent_black())
+                .hover(move |s| s.bg(rgb(theme.selected)));
+            let open =
+                move |this: &mut Self, _: &mut Window, _: &mut Context<Self>| this.open_note(id);
+            let context_menu = cx.listener(move |this, event: &MouseDownEvent, w, cx| {
+                this.open_document_menu(id, event.position, w, cx);
+                cx.stop_propagation();
+            });
+            let title = div()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .truncate()
+                .child(n.title.clone());
+            if list_view {
+                let content = div()
                     .w_full()
+                    .min_w_0()
                     .flex()
                     .items_center()
                     .gap_4()
-                    .child(icon(Icon::Book, theme.muted))
-                    .child(metadata.flex_1())
-                    .child(div().flex_1())
-                    .child(div().w(px(32.)))
+                    .child(icon(Icon::Book, theme.muted).size(rems(1.25)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(title)
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(theme.muted))
+                                    .truncate()
+                                    .child(format!("{details} · {}", edited_label(n.updated_at))),
+                            ),
+                    );
+                items = items.child(
+                    div()
+                        .w_full()
+                        .h(rems(4.5))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .pr_2()
+                        .child(
+                            self.control(
+                                format!("note-{id}"),
+                                format!("Open {}", n.title),
+                                content.into_any_element(),
+                                false,
+                                cx,
+                                open,
+                            )
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .px_3()
+                            .py_0()
+                            .justify_start()
+                            .rounded_none()
+                            .bg(transparent_black())
+                            .hover(move |s| s.bg(rgb(theme.sidebar)))
+                            .on_mouse_down(MouseButton::Right, context_menu),
+                        )
+                        .child(favorite)
+                        .child(menu),
+                );
             } else {
-                div()
+                let cover_content = if let Some((page, _)) = &preview {
+                    if let Some(pdf) = &page.properties.pdf {
+                        self.controller.request_pdf_background(pdf.clone());
+                    }
+                    self.thumbnail(
+                        page.as_ref().clone(),
+                        144. * self.controller.settings.ui_scale,
+                        cx,
+                    )
+                } else {
+                    div().text_xs().text_color(rgb(theme.muted)).child(
+                        if self.controller.library_cover_unavailable(id) {
+                            "Preview unavailable"
+                        } else {
+                            "Loading preview…"
+                        },
+                    )
+                };
+                let cover = div()
+                    .w(rems(9.25))
+                    .h(rems(12.375))
+                    .overflow_hidden()
+                    .rounded(px(theme.radius))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(rgb(theme.sidebar))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(cover_content);
+                let content = div()
+                    .w_full()
+                    .min_w_0()
                     .flex()
                     .flex_col()
+                    .gap_3()
                     .items_center()
-                    .gap_4()
                     .child(cover)
-                    .child(metadata.w(rems(9.25)))
-            };
-            items = items.child(
-                div()
-                    .relative()
-                    .when(list_view, |s| s.w_full())
-                    .child(
-                        self.control(
-                            format!("note-{id}"),
-                            format!("Open {}", n.title),
-                            content.into_any_element(),
-                            false,
-                            cx,
-                            move |this, _, _| this.open_note(id),
+                    .child(title.w_full());
+                items = items.child(
+                    div()
+                        .w(rems(11.5))
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            self.control(
+                                format!("note-{id}"),
+                                format!("Open {}", n.title),
+                                content.into_any_element(),
+                                false,
+                                cx,
+                                open,
+                            )
+                            .w_full()
+                            .min_w_0()
+                            .p_3()
+                            .bg(transparent_black())
+                            .hover(move |s| s.bg(rgb(theme.sidebar)))
+                            .on_mouse_down(MouseButton::Right, context_menu),
                         )
-                        .when(!list_view, |s| s.w(rems(11.5)).p_3())
-                        .when(list_view, |s| {
-                            s.w_full()
-                                .p_4()
-                                .justify_start()
-                                .border_b_1()
-                                .border_color(theme.border)
-                        })
-                        .bg(rgb(theme.bg))
-                        .hover(move |s| s.bg(rgb(theme.sidebar)))
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(move |this, event: &MouseDownEvent, w, cx| {
-                                this.open_document_menu(id, event.position, w, cx);
-                                cx.stop_propagation();
-                            }),
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .px_3()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .text_xs()
+                                        .text_color(rgb(theme.muted))
+                                        .child(div().truncate().child(details))
+                                        .child(div().truncate().child(edited_label(n.updated_at))),
+                                )
+                                .child(favorite)
+                                .child(menu),
                         ),
-                    )
-                    .child(
-                        self.icon_button(
-                            format!("favorite-card-{id}"),
-                            format!(
-                                "{} {} {} favorites",
-                                if n.favorite { "Remove" } else { "Add" },
-                                n.title,
-                                if n.favorite { "from" } else { "to" }
-                            ),
-                            Icon::Star,
-                            n.favorite,
-                            cx,
-                            move |this, _, cx| {
-                                this.controller
-                                    .manage_note(id, folio_app::NoteAction::Favorite);
-                                cx.stop_propagation();
-                            },
-                        )
-                        .absolute()
-                        .top(px(12.))
-                        .right(rems(3.5))
-                        .size(rems(1.75))
-                        .bg(rgb(theme.sidebar)),
-                    )
-                    .child(
-                        self.icon_button(
-                            format!("manage-note-{id}"),
-                            format!("Manage {}", n.title),
-                            Icon::More,
-                            false,
-                            cx,
-                            move |this, w, cx| {
-                                this.open_document_menu(id, w.mouse_position(), w, cx);
-                                cx.stop_propagation();
-                            },
-                        )
-                        .absolute()
-                        .top(px(12.))
-                        .right(px(12.))
-                        .size(rems(1.75))
-                        .bg(rgb(theme.sidebar)),
-                    ),
-            );
+                );
+            }
         }
         items
     }
@@ -848,16 +902,19 @@ impl NotesView {
             total.div_ceil(columns),
             cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
                 let mut rows = Vec::new();
+                let visible_start = range.start * columns;
+                let visible_end = (range.end * columns).min(total);
                 for row in range {
                     let start = row * columns;
                     let end = (start + columns).min(total);
                     rows.push(
                         this.library_items(notes[start..end].to_vec(), list_view, cx)
-                            .h(px(if list_view { 92. } else { 320. }
-                                * this.controller.settings.ui_scale))
+                            .h(rems(if list_view { 4.5 } else { 20. }))
                             .items_start(),
                     );
                 }
+                this.accessibility
+                    .retain_library_items(&notes[visible_start..visible_end]);
                 this.accessibility.publish(this, window, cx);
                 rows
             }),

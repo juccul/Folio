@@ -1,6 +1,7 @@
 """Native UI verification helpers, scoped to one Folio process on a virtual display.
 
-No global focus, XTest injection, tablet access, or other application interaction.
+Pointer replay is restricted to a caller-owned private X11 display; no physical
+desktop, tablet access, or other application interaction is used.
 """
 import ctypes as C
 import os
@@ -72,6 +73,26 @@ class Client:
             event = Event(); event.key = Key(kind, 0, 1, self.display, self.window, self.root, 0, 0, 20, 20, 20, 20, modifiers, code, 1)
             assert self.x.XSendEvent(self.display, self.window, 0, mask, C.byref(event))
         self.x.XFlush(self.display); time.sleep(delay)
+
+    def click(self, x, y, button=1, delay=.2):
+        if os.environ.get('FOLIO_VIRTUAL_DISPLAY') != '1' or os.environ.get('WAYLAND_DISPLAY'):
+            raise RuntimeError('Pointer replay requires a private X11 test display')
+        # GPUI consumes XI2 pointer events. Generate them only on the caller's
+        # isolated server, translating the validated child window's coordinates.
+        self.x.XTranslateCoordinates.argtypes = [C.c_void_p, C.c_ulong, C.c_ulong, C.c_int, C.c_int,
+            C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_ulong)]
+        root_x, root_y, child = C.c_int(), C.c_int(), C.c_ulong()
+        assert self.x.XTranslateCoordinates(self.display, self.window, self.root, round(x), round(y),
+            C.byref(root_x), C.byref(root_y), C.byref(child))
+        xtst = C.CDLL('libXtst.so.6')
+        xtst.XTestFakeMotionEvent.argtypes = [C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_ulong]
+        xtst.XTestFakeButtonEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
+        assert xtst.XTestFakeMotionEvent(self.display, -1, root_x.value, root_y.value, 0)
+        self.x.XFlush(self.display); time.sleep(.04)
+        for pressed in [1, 0]:
+            assert xtst.XTestFakeButtonEvent(self.display, button, pressed, 0)
+            self.x.XFlush(self.display); time.sleep(.04)
+        time.sleep(delay)
 
     def resize(self, width, height):
         self.x.XResizeWindow(self.display, self.window, width, height)

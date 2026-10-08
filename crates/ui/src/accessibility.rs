@@ -439,6 +439,21 @@ impl Accessibility {
         };
         Some((members[next].callback.clone(), members[next].focus.clone()))
     }
+    /// Uniform-list measurement registers a probe row before the visible rows.
+    /// Keep only the rendered documents so stale, offscreen bounds cannot remain
+    /// clickable in the native accessibility tree after scrolling.
+    pub fn retain_library_items(&self, notes: &[folio_document::NoteMetadata]) {
+        let visible: std::collections::HashSet<_> = notes.iter().map(|n| n.id).collect();
+        self.controls.borrow_mut().retain(|control| {
+            let id = control
+                .key
+                .strip_prefix("note-")
+                .or_else(|| control.key.strip_prefix("favorite-card-"))
+                .or_else(|| control.key.strip_prefix("manage-note-"))
+                .and_then(|id| Id::parse_str(id).ok());
+            id.is_none_or(|id| visible.contains(&id))
+        });
+    }
     pub fn control_bounds(&self, label: &str) -> Option<accesskit::Rect> {
         let id = self.controls.borrow().iter().find(|c| c.label == label)?.id;
         self.bounds.borrow().get(&id).copied()
