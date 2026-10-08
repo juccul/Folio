@@ -6,6 +6,7 @@ mod input_check;
 mod recovery;
 pub use recovery::RecoveryView;
 mod appearance;
+mod color_picker;
 mod field;
 mod graph;
 mod help;
@@ -150,6 +151,7 @@ pub struct NotesView {
     focus: FocusHandle,
     modal: Option<(Modal, Entity<Field>)>,
     notebook_setup: Option<notebook_setup::Setup>,
+    color_drag: Option<(EntityId, usize)>,
     inline_text: Option<inline_text::Editor>,
     subscriptions: Vec<Subscription>,
     motion: std::cell::RefCell<motion::Motion>,
@@ -226,6 +228,7 @@ impl NotesView {
             focus,
             modal: None,
             notebook_setup: None,
+            color_drag: None,
             inline_text: None,
             subscriptions: vec![],
             motion: Default::default(),
@@ -477,6 +480,7 @@ impl NotesView {
             |this, _, _: &Submitted, window, cx| this.submit_modal(window, cx),
         ));
         self.modal_error = None;
+        self.color_drag = None;
         self.modal = Some((modal, field));
         cx.notify();
     }
@@ -2140,13 +2144,27 @@ impl NotesView {
                 panel.child(div().text_sm().text_color(rgb(theme.muted)).child(match modal {
                     Modal::PageSize => "Width × height in points. For A4, use 794 × 1123.",
                     Modal::FontSize => "Choose a size from 6 to 180 points.",
-                    Modal::Color => "Enter a six-digit hex color, such as #426b52.",
+                    Modal::Color => "Choose a color below, or enter a hex value.",
                     Modal::MoveNotebook(_) => "Enter the destination folder name, or leave blank for the top level.",
                     _ => "Left, top, width and height as fractions from 0 to 1.",
                 }))
             })
             .when(matches!(modal, Modal::NewDocument), |panel| panel.child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Name")))
-            .when(!matches!(modal, Modal::MovePage | Modal::Templates), |panel| panel.child(field));
+            .when(!matches!(modal, Modal::MovePage | Modal::Templates), |panel| panel.child(field.clone()));
+        if matches!(
+            modal,
+            Modal::Color | Modal::TextColor | Modal::CanvasColor | Modal::ThemeColor { .. }
+        ) {
+            let opacity = matches!(
+                modal,
+                Modal::ThemeColor {
+                    token: folio_app::appearance::ThemeToken::Border
+                        | folio_app::appearance::ThemeToken::Input,
+                    ..
+                }
+            );
+            panel = panel.child(self.color_selector(field, opacity, cx));
+        }
         if matches!(modal, Modal::Templates) {
             panel = panel.child(self.template_picker(cx)).child(self.button(
                 "cancel-modal",

@@ -241,7 +241,7 @@ impl NotesView {
             }
             body = body
                 .child(div().text_xs().text_color(rgb(theme.muted)).child(
-                    "Edit a color using #RRGGBB or #RRGGBBAA. Reset restores the supplied palette.",
+                    "Mix a color interactively or enter a hex value. Reset restores the supplied palette.",
                 ))
                 .child(colors);
         }

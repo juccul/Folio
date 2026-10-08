@@ -5,6 +5,7 @@ use gpui::{prelude::*, *};
 pub(super) struct Setup {
     pub properties: PageProperties,
     pub color: Entity<Field>,
+    pub custom_color_open: bool,
 }
 
 impl NotesView {
@@ -16,6 +17,7 @@ impl NotesView {
                 ..Default::default()
             },
             color,
+            custom_color_open: false,
         });
     }
 
@@ -60,6 +62,7 @@ impl NotesView {
         let mut properties = setup.properties.clone();
         let color = setup.color.clone();
         let color_value = color.read(cx).content.clone();
+        let custom_color_open = setup.custom_color_open;
         if let Ok(value) = paper_color(&color_value) {
             properties.color = value;
         }
@@ -243,6 +246,17 @@ impl NotesView {
                 }),
             );
         }
+        colors = colors.child(self.button(
+            "paper-custom-picker",
+            "Custom…",
+            custom_color_open,
+            cx,
+            |this, _, _| {
+                if let Some(setup) = &mut this.notebook_setup {
+                    setup.custom_color_open = !setup.custom_color_open;
+                }
+            },
+        ));
         options = options
             .child(label("Paper color"))
             .child(colors)
@@ -250,9 +264,12 @@ impl NotesView {
                 div()
                     .text_xs()
                     .text_color(rgb(theme.muted))
-                    .child("Custom hex color · leave empty to follow the theme"),
+                    .child("Custom color · leave the hex value empty to follow the theme"),
             )
-            .child(color);
+            .child(color.clone());
+        if custom_color_open {
+            options = options.child(self.color_selector(color, false, cx));
+        }
         let preview_theme = theme.canvas_for_page(&properties);
         let preview = paper_preview(&properties, preview_theme);
         div()
