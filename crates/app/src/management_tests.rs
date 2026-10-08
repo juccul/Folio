@@ -672,3 +672,22 @@ fn retry_saving_preserves_warning_until_all_documents_are_saved() {
     assert!(a.dirty_notes.is_empty());
     assert!(a.error.is_none());
 }
+
+#[test]
+fn equation_failures_remain_retryable_and_cancellation_does_not_insert() {
+    let mut a = app();
+    let before = a.page().clone();
+    a.insert_equation("\\input{private}".into());
+    settle(&mut a);
+    assert!(matches!(a.equation_result, Some(Err(_))));
+    assert!(!a.equation_pending);
+    assert_eq!(a.page(), &before);
+    a.insert_equation("x^2".into());
+    a.cancel_equation_render();
+    settle(&mut a);
+    assert_eq!(a.page(), &before);
+    a.insert_equation("x^2".into());
+    settle(&mut a);
+    assert!(matches!(a.equation_result, Some(Ok(()))));
+    assert_eq!(a.page().objects.len(), 1);
+}

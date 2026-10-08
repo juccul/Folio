@@ -7,3 +7,4 @@ Each numbered audit finding receives its own commit and push. Validation is reco
 | 1 | Shared draft undo/redo with grouped typing, Unicode word navigation, and bounded history. Inline text changes continue to use durable document history after the field closes. | Field history and Unicode editing regressions. |
 | 2 | Wrapped multiline drafts, wheel scrolling, horizontal overflow scrolling, and caret/IME positioning that follows the edited text. | Six field regressions passed, including scroll clamping after deletion. |
 | 3 | Nonblocking page preview errors with retry; persistent library/editor save warning with Retry saving across affected documents. | Missing-image and save-retry regressions passed; UI build checked. |
+| 4 | Equation dialogs retain drafts and inline errors while rendering; Apply waits for completion; cancelled or superseded renders cannot insert later. | Invalid LaTeX, cancellation, and successful retry regression passed; UI build checked. |

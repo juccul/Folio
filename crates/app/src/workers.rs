@@ -91,6 +91,7 @@ pub enum Job {
         position: Point,
     },
     Equation {
+        generation: u64,
         existing: Option<Arc<Object>>,
         note: Id,
         page: Id,
@@ -120,6 +121,7 @@ pub enum Finished {
     },
     Cleaned(usize),
     Equation {
+        generation: u64,
         note: Id,
         page: Id,
         before: Option<Arc<Object>>,
@@ -176,6 +178,10 @@ pub enum Finished {
         asset: String,
         message: String,
     },
+    EquationError {
+        generation: u64,
+        message: String,
+    },
     Error(String),
 }
 struct Task {
@@ -216,6 +222,10 @@ impl Workers {
                                 | Job::TemplatePage { note, .. } => Some(*note),
                                 _ => None,
                             };
+                            let equation_generation = match &task.job {
+                                Job::Equation { generation, .. } => Some(*generation),
+                                _ => None,
+                            };
                             let failure = match &task.job {
                                 Job::Preview {
                                     note, page, object, ..
@@ -242,7 +252,13 @@ impl Workers {
                                         Some(note) => Finished::ImportError { note, message },
                                         None => match load_note {
                                             Some(id) => Finished::LoadError { id, message },
-                                            None => Finished::Error(message),
+                                            None => match equation_generation {
+                                                Some(generation) => Finished::EquationError {
+                                                    generation,
+                                                    message,
+                                                },
+                                                None => Finished::Error(message),
+                                            },
                                         },
                                     },
                                 });
@@ -379,7 +395,11 @@ fn process(job: Job) -> Result<Finished, String> {
             Job::Cleanup { root } => {
                 Finished::Cleaned(folio_storage::recovery::quarantine_orphans(&root)?)
             }
-            Job::PdfPreview { background, assets, size } => {
+            Job::PdfPreview {
+                background,
+                assets,
+                size,
+            } => {
                 folio_pdf::render_preview_scaled(&background, &assets, size)?;
                 Finished::PdfPreview(background.preview_asset.unwrap_or_default())
             }
@@ -514,6 +534,7 @@ fn process(job: Job) -> Result<Finished, String> {
                 }
             }
             Job::Equation {
+                generation,
                 existing,
                 note,
                 page,
@@ -537,6 +558,7 @@ fn process(job: Job) -> Result<Finished, String> {
                     equation.transform = source.transform;
                 }
                 Finished::Equation {
+                    generation,
                     note,
                     page,
                     before: existing,

@@ -150,6 +150,7 @@ pub struct NotesView {
     canvas_document: Option<(Id, Id)>,
     focus: FocusHandle,
     modal: Option<(Modal, Entity<Field>)>,
+    equation_draft: Option<String>,
     notebook_setup: Option<notebook_setup::Setup>,
     color_drag: Option<(EntityId, usize)>,
     inline_text: Option<inline_text::Editor>,
@@ -227,6 +228,7 @@ impl NotesView {
             canvas_document: None,
             focus,
             modal: None,
+            equation_draft: None,
             notebook_setup: None,
             color_drag: None,
             inline_text: None,
@@ -344,6 +346,9 @@ impl NotesView {
         self.close_modal(window, cx);
     }
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.equation_draft.take().is_some() {
+            self.controller.cancel_equation_render();
+        }
         self.modal = None;
         self.notebook_setup = None;
         self.subscriptions.clear();
@@ -491,6 +496,11 @@ impl NotesView {
         let modal = modal.clone();
         let field = field.clone();
         let content = field.read(cx).content.clone();
+        if self.controller.equation_pending
+            && matches!(modal, Modal::Equation | Modal::EditEquation(_))
+        {
+            return;
+        }
         match modal {
             Modal::SaveTemplate | Modal::RenameTemplate(_) => {
                 let result = if let Modal::RenameTemplate(id) = modal {
@@ -552,9 +562,21 @@ impl NotesView {
                 self.controller.settings.pad_buttons =
                     content.split(',').map(|s| s.trim().to_string()).collect()
             }
-            Modal::EditEquation(id) => self.controller.edit_equation(id, content),
+            Modal::EditEquation(id) => {
+                self.equation_draft = Some(content.clone());
+                self.modal_error = None;
+                self.controller.edit_equation(id, content);
+                cx.notify();
+                return;
+            }
             Modal::PdfPassword(note, path) => self.controller.unlock_pdf(note, path, content),
-            Modal::Equation => self.controller.insert_equation(content),
+            Modal::Equation => {
+                self.equation_draft = Some(content.clone());
+                self.modal_error = None;
+                self.controller.insert_equation(content);
+                cx.notify();
+                return;
+            }
             Modal::Rename => self.controller.rename(content),
             Modal::RenameDocument(id) => self
                 .controller
@@ -1222,6 +1244,9 @@ impl NotesView {
                 || window_control)
             && match id.as_ref() {
                 "open-restored-library" => !self.controller.has_background_work(),
+                "submit-modal" if self.equation_draft.is_some() => {
+                    !self.controller.equation_pending
+                }
                 "undo" => self.controller.session().history.can_undo(),
                 "redo" => self.controller.session().history.can_redo(),
                 "math-apply-latex" => {
@@ -2451,7 +2476,9 @@ impl NotesView {
                         )
                         .child(self.button(
                             "submit-modal",
-                            if search {
+                            if self.equation_draft.is_some() && self.controller.equation_pending {
+                                "Rendering…"
+                            } else if search {
                                 "Search"
                             } else if matches!(modal, Modal::Recognition) {
                                 if self.controller.recognition_for_index {
@@ -2659,6 +2686,31 @@ fn this_region(controller: &mut Controller, values: &[f32]) -> Result<(), String
 }
 impl Render for NotesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.equation_draft.is_some()
+            && let Some(result) = self.controller.equation_result.take()
+        {
+            match result {
+                Ok(()) => {
+                    let submitted = self.equation_draft.take().unwrap();
+                    if self
+                        .modal
+                        .as_ref()
+                        .is_some_and(|(_, field)| field.read(cx).content == submitted)
+                    {
+                        self.close_modal(window, cx);
+                    } else {
+                        self.modal_error = Some(
+                            "The submitted equation was saved. Your newer draft is still here."
+                                .into(),
+                        );
+                    }
+                }
+                Err(error) => {
+                    self.equation_draft = None;
+                    self.modal_error = Some(error);
+                }
+            }
+        }
         self.cancel_region_after_navigation();
         self.building_overlay = false;
         let accessibility = self.accessibility.clone();

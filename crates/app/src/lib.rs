@@ -308,6 +308,10 @@ pub struct Controller {
     pub status: String,
     pub error: Option<String>,
     pub save_error: Option<String>,
+    equation_generation: u64,
+    pub equation_pending: bool,
+    pub equation_result: Option<Result<(), String>>,
+    equation_live_wait: Option<(Id, String)>,
     preview_errors: HashMap<(Id, Id), String>,
     pub busy: usize,
     pub pending_text: Option<Point>,
@@ -426,6 +430,10 @@ impl Controller {
             status: "All changes saved".into(),
             error: None,
             save_error: None,
+            equation_generation: 0,
+            equation_pending: false,
+            equation_result: None,
+            equation_live_wait: None,
             preview_errors: HashMap::new(),
             busy: 0,
             pending_text: None,
@@ -1905,33 +1913,61 @@ impl Controller {
             Err(e) => self.error = Some(e),
         }
     }
+    pub fn cancel_equation_render(&mut self) {
+        self.equation_generation += 1;
+        self.equation_pending = false;
+        self.equation_result = None;
+        self.equation_live_wait = None;
+    }
+    fn begin_equation_render(&mut self) {
+        self.cancel_equation_render();
+        self.equation_pending = true;
+    }
+    fn submit_equation(&mut self, job: Job) {
+        match self.workers.submit(job) {
+            Ok(()) => self.busy += 1,
+            Err(error) => {
+                self.equation_pending = false;
+                self.equation_result = Some(Err(error));
+            }
+        }
+    }
     pub fn edit_equation(&mut self, id: Id, latex: String) {
+        self.begin_equation_render();
         if self
             .page()
             .objects
             .get(&id)
             .is_some_and(|o| matches!(o.as_ref(), Object::Equation(e) if e.math_link.is_some()))
         {
+            self.equation_live_wait = Some((id, latex.clone()));
             if let Err(error) = self.update_math_expression(id, latex) {
-                self.error = Some(error);
+                self.equation_pending = false;
+                self.equation_result = Some(Err(error));
             }
             return;
         }
         if let Some(object) = self.page().objects.get(&id).cloned()
             && let Object::Equation(e) = object.as_ref()
         {
-            self.submit(Job::Equation {
+            self.submit_equation(Job::Equation {
+                generation: self.equation_generation,
                 note: self.active,
                 page: self.page().id,
                 existing: Some(object.clone()),
                 latex,
                 rect: e.rect,
             });
+        } else {
+            self.equation_pending = false;
+            self.equation_result = Some(Err("This equation is no longer available".into()));
         }
     }
     pub fn insert_equation(&mut self, latex: String) {
+        self.begin_equation_render();
         let position = self.cursor.unwrap_or(Point::new(100., 100.));
-        self.submit(Job::Equation {
+        self.submit_equation(Job::Equation {
+            generation: self.equation_generation,
             existing: None,
             note: self.active,
             page: self.page().id,
@@ -2290,12 +2326,28 @@ impl Controller {
                         "Quarantined {count} unused assets; originals can be restored from orphaned-assets"
                     )
                 }
+                Finished::EquationError {
+                    generation,
+                    message,
+                } => {
+                    if generation == self.equation_generation {
+                        self.equation_pending = false;
+                        self.equation_result = Some(Err(message));
+                    }
+                }
                 Finished::Equation {
+                    generation,
                     note,
                     page,
                     before,
                     after,
                 } => {
+                    if generation != self.equation_generation {
+                        continue;
+                    }
+                    self.equation_pending = false;
+                    self.equation_result =
+                        Some(Err("The destination page is no longer available".into()));
                     if let Some(p) = self.sessions.get(&note).and_then(|s| s.document.page(page)) {
                         let id = after.id();
                         let current = p.objects.get(&id).cloned();
@@ -2316,9 +2368,10 @@ impl Controller {
                                     index,
                                 }],
                             );
+                            self.equation_result = Some(Ok(()));
                         } else {
-                            self.error =
-                                Some("Equation changed while rendering; edit it again".into());
+                            self.equation_result =
+                                Some(Err("Equation changed while rendering; edit it again".into()));
                         }
                     }
                 }

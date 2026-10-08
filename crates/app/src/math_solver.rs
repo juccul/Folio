@@ -134,6 +134,7 @@ enum Purpose {
         latex: String,
     },
     Live {
+        render_generation: Option<u64>,
         note: Id,
         page: Id,
         before: Arc<Object>,
@@ -964,6 +965,11 @@ impl Controller {
             pack: self.math_pack(),
             request,
             purpose: Purpose::Live {
+                render_generation: self
+                    .equation_live_wait
+                    .as_ref()
+                    .filter(|(waiting, _)| *waiting == id)
+                    .map(|_| self.equation_generation),
                 note: self.active,
                 page: self.page().id,
                 before: object,
@@ -1075,6 +1081,7 @@ impl Controller {
                     }
                 }
                 Purpose::Live {
+                    render_generation,
                     note,
                     page,
                     before,
@@ -1084,6 +1091,11 @@ impl Controller {
                     ink_version,
                 } => {
                     self.math_live_pending.remove(&before.id());
+                    if render_generation
+                        .is_some_and(|generation| generation != self.equation_generation)
+                    {
+                        continue;
+                    }
                     let current = self
                         .sessions
                         .get(&note)
@@ -1121,6 +1133,18 @@ impl Controller {
                         }
                     }
                     let completed_id = before.id();
+                    if self
+                        .equation_live_wait
+                        .as_ref()
+                        .is_some_and(|(id, expression)| {
+                            *id == completed_id && expression == &completion.request.expression
+                        })
+                    {
+                        self.equation_pending = false;
+                        self.equation_result =
+                            Some(completion.result.as_ref().map(|_| ()).map_err(Clone::clone));
+                        self.equation_live_wait = None;
+                    }
                     match completion.result {
                         Ok(report) => {
                             let Object::Equation(old) = before.as_ref() else {
@@ -1253,6 +1277,7 @@ impl Controller {
                 }
                 let id = before.id();
                 let purpose = Purpose::Live {
+                    render_generation: None,
                     note: self.active,
                     page: self.page().id,
                     before,
