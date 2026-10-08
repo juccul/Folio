@@ -831,7 +831,9 @@ impl NotesView {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .p_7();
+            .p_7()
+            .when(count == 0 && compact, |shelf| shelf.p_4())
+            .when(count == 0, |shelf| shelf.overflow_y_scroll());
         let columns = if list_view {
             1
         } else {
@@ -893,6 +895,7 @@ impl NotesView {
             let mut empty = div()
                 .py_6()
                 .mb_4()
+                .when(compact, |empty| empty.py_2().mb_0())
                 .flex()
                 .flex_col()
                 .gap_2()
