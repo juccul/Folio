@@ -74,7 +74,7 @@ def main():
                     while GLib.MainContext.default().iteration(False):pass
                     return list(walk(target))
                 def click(label):
-                    matches=[node for node in nodes() if node.get_role()==Atspi.Role.PUSH_BUTTON and node.get_name()==label]
+                    matches=[node for node in nodes() if node.get_role() in (Atspi.Role.PUSH_BUTTON,Atspi.Role.RADIO_BUTTON,Atspi.Role.CHECK_BOX,Atspi.Role.TOGGLE_BUTTON) and node.get_name()==label]
                     item=matches[-1] if matches else None
                     assert item is not None,f'Missing {label}: {[n.get_name() for n in nodes()]}'
                     assert item.get_action_iface().do_action(0);time.sleep(.25)
