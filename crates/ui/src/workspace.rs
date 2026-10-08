@@ -1,6 +1,6 @@
 //! Library, document chrome and page navigation. All mutations go through Controller.
 use super::*;
-use folio_document::{Object, Page};
+use folio_document::Page;
 use std::{collections::HashMap, sync::Arc};
 
 fn edited_label(updated: u64) -> String {
@@ -30,234 +30,140 @@ impl Render for Hint {
 
 #[derive(Default)]
 pub(super) struct Thumbnails {
-    pages: HashMap<
-        Id,
-        (
-            u64,
-            folio_document::PageProperties,
-            super::theme::CanvasTheme,
-            Arc<Preview>,
-        ),
-    >,
+    entries: HashMap<Id, Thumbnail>,
+    pending: HashMap<Id, u64>,
+    clock: u64,
 }
-struct Preview {
-    paths: Vec<(Path<Pixels>, Rgba)>,
-    labels: Vec<(String, folio_document::Rect, f32, u32)>,
-    images: Vec<(std::path::PathBuf, folio_document::Rect)>,
+#[derive(Clone, PartialEq)]
+struct ThumbnailKey {
+    revision: u64,
     properties: folio_document::PageProperties,
+    theme: super::theme::CanvasTheme,
+    pdf_ready: bool,
 }
-impl Thumbnails {
-    fn element(&mut self, page: &Page, controller: &Controller, width: f32) -> Div {
-        let theme = Theme::new(&controller.settings);
-        let canvas_theme = theme.canvas_for_page(&page.properties);
-        let valid =
-            self.pages
-                .get(&page.id)
-                .is_some_and(|(revision, properties, appearance, _)| {
-                    *revision == page.revision
-                        && *properties == page.properties
-                        && *appearance == canvas_theme
-                });
-        if !valid {
-            let mut preview = Preview {
-                paths: vec![],
-                labels: vec![],
-                images: vec![],
-                properties: page.properties.clone(),
-            };
-            let hidden = page.hidden_sources();
-            for object in page
-                .ordered_objects()
-                .filter(|object| !hidden.contains(&object.id()))
-            {
-                let mut b;
-                let color = match object.as_ref() {
-                    Object::Stroke(s) => {
-                        let points = s.display_path();
-                        let Some(first) = points.first() else {
-                            continue;
-                        };
-                        b = PathBuilder::stroke(px(s.style.width.max(0.5)));
-                        b.move_to(point(px(first.position.x), px(first.position.y)));
-                        for p in points.iter().skip(1) {
-                            b.line_to(point(px(p.position.x), px(p.position.y)));
-                        }
-                        s.style.color
-                    }
-                    Object::Shape(s) => {
-                        if let Some(path) =
-                            super::painting::shape_path(&s.vertices, s.style.width.max(0.5))
-                        {
-                            let t = s.transform;
-                            let mut color = rgb(canvas_theme.ink(s.style.color.rgb()));
-                            color.a = s.style.opacity;
-                            preview
-                                .paths
-                                .push((path.transformed([t.a, t.b, t.c, t.d, t.tx, t.ty]), color));
-                        }
-                        continue;
-                    }
-                    Object::Text(t) => {
-                        preview.labels.push((
-                            t.text.clone(),
-                            object.bounds(),
-                            t.font_size,
-                            t.color.rgb(),
-                        ));
-                        continue;
-                    }
-                    Object::Equation(e) => {
-                        preview
-                            .labels
-                            .push((e.latex.clone(), object.bounds(), 20., 0x273448));
-                        continue;
-                    }
-                    Object::Image(i) => {
-                        if let Some(path) = controller.asset_path(&i.asset) {
-                            preview.images.push((path, object.bounds()));
-                        }
-                        continue;
-                    }
-                };
-                if let Ok(path) = b.build() {
-                    let t = object.transform();
-                    let mut c = rgb(canvas_theme.ink(color.rgb()));
-                    c.a = match object.as_ref() {
-                        Object::Stroke(s) => s.style.opacity,
-                        Object::Shape(s) => s.style.opacity,
-                        _ => 1.,
-                    };
-                    preview
-                        .paths
-                        .push((path.transformed([t.a, t.b, t.c, t.d, t.tx, t.ty]), c));
-                }
-            }
-            // Bounded cache, independent of the full-resolution canvas cache.
-            if self.pages.len() >= 128 {
-                self.pages.clear();
-            }
-            self.pages.insert(
-                page.id,
-                (
-                    page.revision,
-                    page.properties.clone(),
-                    canvas_theme,
-                    Arc::new(preview),
-                ),
-            );
-        }
-        let preview = self.pages[&page.id].3.clone();
-        let scale = (width / preview.properties.width.max(1.))
-            .min(200. / preview.properties.height.max(1.));
-        let width = (preview.properties.width * scale).max(1.);
-        let height = (preview.properties.height * scale).max(1.);
-        let background = preview
+struct Thumbnail {
+    key: ThumbnailKey,
+    generation: u64,
+    image: Option<Arc<RenderImage>>,
+    error: Option<String>,
+    aspect: f32,
+    touched: u64,
+}
+impl NotesView {
+    fn thumbnail(&mut self, mut page: Page, width: f32, cx: &mut Context<Self>) -> Div {
+        let theme = Theme::new(&self.controller.settings);
+        let palette = theme.canvas_for_page(&page.properties);
+        let pdf_ready = page
             .properties
             .pdf
             .as_ref()
-            .and_then(|pdf| pdf.preview_asset.as_ref())
-            .and_then(|asset| controller.asset_path(asset));
-        let drawing = preview.clone();
-        let mut paper = div()
-            .relative()
-            .w(px(width))
+            .and_then(|p| p.preview_asset.as_ref())
+            .is_none_or(|a| self.controller.assets.join(a).is_file());
+        let key = ThumbnailKey {
+            revision: page.revision,
+            properties: page.properties.clone(),
+            theme: palette,
+            pdf_ready,
+        };
+        self.thumbnails.clock += 1;
+        let touched = self.thumbnails.clock;
+        let id = page.id;
+        let default_aspect = page.properties.width / page.properties.height.max(1.);
+        let valid = self
+            .thumbnails
+            .entries
+            .get(&id)
+            .is_some_and(|e| e.key == key);
+        if !valid && self.thumbnails.pending.len() < 2 && !self.thumbnails.pending.contains_key(&id)
+        {
+            if self.thumbnails.entries.len() >= 48 {
+                if let Some(oldest) = self
+                    .thumbnails
+                    .entries
+                    .iter()
+                    .filter(|(id, _)| !self.thumbnails.pending.contains_key(id))
+                    .min_by_key(|(_, e)| e.touched)
+                    .map(|(id, _)| *id)
+                {
+                    self.thumbnails.entries.remove(&oldest);
+                }
+            }
+            let generation = touched;
+            let aspect = page.properties.width / page.properties.height.max(1.);
+            self.thumbnails.entries.insert(
+                id,
+                Thumbnail {
+                    key,
+                    generation,
+                    image: None,
+                    error: None,
+                    aspect,
+                    touched,
+                },
+            );
+            self.thumbnails.pending.insert(id, generation);
+            export_options::apply(&mut page, theme, export_options::Appearance::Visible);
+            let assets = self.controller.assets.clone();
+            let task = cx.background_executor().spawn(async move {
+                folio_export::raster_page_limited(&page, &assets, 384)
+                    .map(|p| {
+                        let aspect = p.width() as f32 / p.height() as f32;
+                        (graph::image(p.width(), p.height(), p.take()), aspect)
+                    })
+                    .map_err(|e| e.to_string())
+            });
+            cx.spawn(async move |view, cx| {
+                let result = task.await;
+                let _ = view.update(cx, |view, cx| {
+                    view.thumbnails.pending.remove(&id);
+                    if let Some(entry) = view.thumbnails.entries.get_mut(&id)
+                        && entry.generation == generation
+                    {
+                        match result {
+                            Ok((image, aspect)) => {
+                                entry.image = Some(image);
+                                entry.aspect = aspect;
+                            }
+                            Err(error) => entry.error = Some(error),
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        let entry = self.thumbnails.entries.get_mut(&id);
+        let (image, error, aspect) = if let Some(entry) = entry {
+            entry.touched = touched;
+            (entry.image.clone(), entry.error.clone(), entry.aspect)
+        } else {
+            (None, None, default_aspect)
+        };
+        let height = (width / aspect.max(0.01)).min(200.);
+        let mut element = div()
+            .w(px((height * aspect).min(width)))
             .h(px(height))
             .overflow_hidden()
-            .bg(rgb(if preview.properties.pdf.is_some() {
-                0xffffff
-            } else {
-                canvas_theme.paper
-            }))
-            .rounded_sm()
-            .shadow_sm()
-            .when_some(background, |s, path| {
-                s.child(
-                    img(path)
-                        .absolute()
-                        .inset_0()
-                        .size_full()
-                        .object_fit(ObjectFit::Contain),
-                )
-            })
-            .child(
-                canvas(
-                    |_, _, _| (),
-                    move |bounds, _, window, _| {
-                        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                            let x = f32::from(bounds.origin.x);
-                            let y = f32::from(bounds.origin.y);
-                            if drawing.properties.pdf.is_none() {
-                                let mut b = PathBuilder::stroke(px(0.55));
-                                match drawing.properties.paper {
-                                    Paper::Ruled | Paper::Grid => {
-                                        for i in 1..=(height / (32. * scale)) as i32 {
-                                            let offset = i as f32 * 32. * scale;
-                                            b.move_to(point(px(x), px(y + offset)));
-                                            b.line_to(point(px(x + width), px(y + offset)));
-                                        }
-                                        if drawing.properties.paper == Paper::Grid {
-                                            for i in 1..=(width / (32. * scale)) as i32 {
-                                                let offset = i as f32 * 32. * scale;
-                                                b.move_to(point(px(x + offset), px(y)));
-                                                b.line_to(point(px(x + offset), px(y + height)));
-                                            }
-                                        }
-                                    }
-                                    Paper::Dots => {
-                                        for row in 1..=(height / (32. * scale)) as i32 {
-                                            for col in 1..=(width / (32. * scale)) as i32 {
-                                                let (dx, dy) = (
-                                                    x + col as f32 * 32. * scale,
-                                                    y + row as f32 * 32. * scale,
-                                                );
-                                                b.move_to(point(px(dx), px(dy)));
-                                                b.line_to(point(px(dx + 0.65), px(dy)));
-                                            }
-                                        }
-                                    }
-                                    Paper::Blank => {}
-                                }
-                                if let Ok(path) = b.build() {
-                                    window.paint_path(path, rgb(canvas_theme.grid));
-                                }
-                            }
-                            for (path, color) in &drawing.paths {
-                                window.paint_path(
-                                    path.clone().transformed([scale, 0., 0., scale, x, y]),
-                                    *color,
-                                );
-                            }
-                        });
-                    },
-                )
-                .size_full(),
-            );
-        for (path, rect) in &preview.images {
-            paper = paper.child(
-                img(path.clone())
-                    .absolute()
-                    .left(px(rect.min.x * scale))
-                    .top(px(rect.min.y * scale))
-                    .w(px(rect.width() * scale))
-                    .h(px(rect.height() * scale))
-                    .object_fit(ObjectFit::Contain),
-            );
-        }
-        for (text, rect, font, color) in &preview.labels {
-            paper = paper.child(
+            .bg(rgb(palette.paper))
+            .flex()
+            .items_center()
+            .justify_center();
+        if valid && let Some(image) = image {
+            element = element.child(img(image).size_full().object_fit(ObjectFit::Contain));
+        } else {
+            element = element.child(
                 div()
-                    .absolute()
-                    .overflow_hidden()
-                    .left(px(rect.min.x * scale))
-                    .top(px(rect.min.y * scale))
-                    .w(px(rect.width() * scale))
-                    .h(px(rect.height() * scale))
-                    .text_size(px((font * scale).max(3.)))
-                    .text_color(rgb(canvas_theme.ink(*color)))
-                    .child(text.clone()),
+                    .p_2()
+                    .text_xs()
+                    .text_color(rgb(palette.foreground))
+                    .child(if error.is_some() {
+                        "Preview unavailable"
+                    } else {
+                        "Rendering preview…"
+                    }),
             );
         }
-        paper
+        element
     }
 }
 
@@ -703,7 +609,7 @@ impl NotesView {
                 if let Some(pdf) = &page.properties.pdf {
                     self.controller.request_pdf_background(pdf.clone());
                 }
-                self.thumbnails.element(page, &self.controller, 144.)
+                self.thumbnail(page.as_ref().clone(), 144., cx)
             } else {
                 div().text_xs().text_color(rgb(theme.muted)).child(
                     if self.controller.library_cover_unavailable(id) {
@@ -1702,8 +1608,8 @@ impl NotesView {
                     if let Some(background) = background {
                         this.controller.request_pdf_background(background);
                     }
-                    let page = &this.controller.session().document.pages[index];
-                    let thumbnail = this.thumbnails.element(page, &this.controller, 122.);
+                    let page = this.controller.session().document.pages[index].clone();
+                    let thumbnail = this.thumbnail(page.clone(), 122., cx);
                     let page_id = page.id;
                     let label = page.properties.bookmark.as_ref().map_or_else(
                         || format!("Go to page {}", index + 1),

@@ -482,6 +482,47 @@ mod tests {
         );
     }
     #[test]
+    fn bounded_page_preview_renders_equations_crops_and_transforms() {
+        let root = std::env::temp_dir().join(format!("folio-thumbnail-{}", Id::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let image = image::RgbaImage::from_fn(20, 10, |x, _| {
+            if x < 10 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 0, 255, 255])
+            }
+        });
+        image.save(root.join("source.png")).unwrap();
+        let mut page = Page::new();
+        page.properties.width = 100.;
+        page.properties.height = 100.;
+        page.properties.paper = Paper::Blank;
+        page.properties.color = Some(Color::from_rgb(0xffffff));
+        let object = Object::Image(ImageObject {
+            id: Id::new_v4(),
+            asset: "source.png".into(),
+            rect: Rect::new(10., 10., 40., 40.),
+            transform: Transform::translate(10., 0.),
+            crop: Some(Rect::new(0.5, 0., 0.5, 1.)),
+        });
+        page.order.push(object.id());
+        page.objects
+            .insert(object.id(), std::sync::Arc::new(object));
+        let equation = Object::Equation(Equation {id:Id::new_v4(),latex:"should not appear".into(),rendered_svg:Some(r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#00ff00"/></svg>"##.into()),rect:Rect::new(60.,60.,20.,20.),source_strokes:vec![],transform:Transform::default(),math_link:None});
+        page.order.push(equation.id());
+        page.objects
+            .insert(equation.id(), std::sync::Arc::new(equation));
+        let preview = raster_page_limited(&page, &root, 100).unwrap();
+        assert_eq!((preview.width(), preview.height()), (100, 100));
+        let blue = preview.pixel(30, 30).unwrap();
+        assert_eq!((blue.red(), blue.green(), blue.blue()), (0, 0, 255));
+        let green = preview.pixel(70, 70).unwrap();
+        assert_eq!((green.red(), green.green(), green.blue()), (0, 255, 0));
+        let smaller = raster_page_limited(&page, &root, 24).unwrap();
+        assert!(smaller.width() <= 24 && smaller.height() <= 24);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn assets_cannot_escape_root() {
         assert!(asset_path(Path::new("/tmp"), "../secret").is_err());
         assert!(asset_path(Path::new("/tmp"), "/secret").is_err());
