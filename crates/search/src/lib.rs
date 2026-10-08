@@ -8,6 +8,7 @@ pub struct SearchResult {
     pub page: Id,
     pub title: String,
     pub snippet: String,
+    pub page_number: Option<usize>,
 }
 pub fn search(conn: &Connection, query: &str) -> rusqlite::Result<Vec<SearchResult>> {
     let tokens: Vec<_> = query
@@ -36,6 +37,7 @@ pub fn search(conn: &Connection, query: &str) -> rusqlite::Result<Vec<SearchResu
                 page,
                 title,
                 snippet,
+                page_number: None,
             })
         }
     }

@@ -2466,14 +2466,56 @@ impl NotesView {
                 .flex()
                 .flex_col()
                 .gap_1();
+            let message = match &self.controller.search_state {
+                folio_app::SearchState::Idle => {
+                    "Enter a query and press Enter to search documents and indexed handwriting."
+                        .to_owned()
+                }
+                folio_app::SearchState::Searching => {
+                    format!("Searching for “{}”…", self.controller.search_query)
+                }
+                folio_app::SearchState::Failed(error) => {
+                    format!("Search failed: {error}. Press Search to retry.")
+                }
+                folio_app::SearchState::Complete => {
+                    let count = self.controller.search_results.len();
+                    if count == 0 {
+                        format!(
+                            "No matches for “{}”. Search covers titles, tags, typed text, equations, and indexed handwriting.",
+                            self.controller.search_query
+                        )
+                    } else if count >= 100 {
+                        format!(
+                            "Showing the first 100 matching pages for “{}”. Refine your query for more specific results.",
+                            self.controller.search_query
+                        )
+                    } else {
+                        format!(
+                            "{count} matching page{} for “{}”",
+                            if count == 1 { "" } else { "s" },
+                            self.controller.search_query
+                        )
+                    }
+                }
+            };
+            results = results.child(
+                div()
+                    .p_3()
+                    .text_sm()
+                    .text_color(rgb(theme.muted))
+                    .child(message),
+            );
             for r in self.controller.search_results.clone() {
                 let note = r.note;
                 let page = r.page;
-                let title = r.title.clone();
+                let title = r.page_number.map_or_else(
+                    || r.title.clone(),
+                    |page| format!("{} · Page {page}", r.title),
+                );
                 results = results.child(
                     self.control(
                         format!("result-{note}-{page}"),
-                        format!("Open result: {} · {}", r.title, r.snippet),
+                        format!("Open result: {title} · {}", r.snippet),
                         div()
                             .flex()
                             .flex_col()
@@ -2499,12 +2541,6 @@ impl NotesView {
                     .w_full()
                     .justify_start(),
                 );
-            }
-            if !self.controller.search_query.is_empty() && self.controller.search_results.is_empty()
-            {
-                results = results.child(div().p_3().text_sm().text_color(rgb(theme.muted)).child(
-                    "No matches. Search covers titles, tags, typed text, equations and handwriting you have indexed.",
-                ));
             }
             panel = panel.child(results);
         }

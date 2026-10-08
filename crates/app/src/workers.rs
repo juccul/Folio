@@ -178,6 +178,10 @@ pub enum Finished {
         asset: String,
         message: String,
     },
+    SearchError {
+        generation: u64,
+        message: String,
+    },
     EquationError {
         generation: u64,
         message: String,
@@ -222,6 +226,10 @@ impl Workers {
                                 | Job::TemplatePage { note, .. } => Some(*note),
                                 _ => None,
                             };
+                            let search_generation = match &task.job {
+                                Job::Search { generation, .. } => Some(*generation),
+                                _ => None,
+                            };
                             let equation_generation = match &task.job {
                                 Job::Equation { generation, .. } => Some(*generation),
                                 _ => None,
@@ -257,7 +265,13 @@ impl Workers {
                                                     generation,
                                                     message,
                                                 },
-                                                None => Finished::Error(message),
+                                                None => match search_generation {
+                                                    Some(generation) => Finished::SearchError {
+                                                        generation,
+                                                        message,
+                                                    },
+                                                    None => Finished::Error(message),
+                                                },
                                             },
                                         },
                                     },
@@ -442,9 +456,22 @@ fn process(job: Job) -> Result<Finished, String> {
                 generation,
             } => {
                 let store = folio_storage::Store::open_reader(database)?;
+                let mut results = folio_search::search(&store.connection, &query)?;
+                let mut position = store
+                    .connection
+                    .prepare("SELECT position FROM pages WHERE id=?1 AND note_id=?2")?;
+                for result in &mut results {
+                    result.page_number = position
+                        .query_row([result.page.to_string(), result.note.to_string()], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .ok()
+                        .and_then(|index| usize::try_from(index).ok())
+                        .map(|index| index + 1);
+                }
                 Finished::Search {
                     generation,
-                    results: folio_search::search(&store.connection, &query)?,
+                    results,
                 }
             }
             Job::Load { id, database } => {

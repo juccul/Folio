@@ -257,6 +257,14 @@ pub struct RasterPreview {
     pub height: u32,
     pub bgra: Arc<Vec<u8>>,
 }
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SearchState {
+    #[default]
+    Idle,
+    Searching,
+    Complete,
+    Failed(String),
+}
 #[derive(Clone, Debug)]
 pub struct LibraryImport {
     pub path: PathBuf,
@@ -331,6 +339,7 @@ pub struct Controller {
     preview_failed: HashMap<(Id, Id, Id), Arc<Object>>,
     pub search_results: Vec<folio_search::SearchResult>,
     pub search_query: String,
+    pub search_state: SearchState,
     pub search_highlights: Vec<Rect>,
     pub data_dir: PathBuf,
     pub assets: PathBuf,
@@ -455,6 +464,7 @@ impl Controller {
             preview_failed: HashMap::new(),
             search_results: vec![],
             search_query: String::new(),
+            search_state: SearchState::Idle,
             search_highlights: vec![],
             data_dir,
             assets,
@@ -2051,15 +2061,29 @@ impl Controller {
             rect: Rect::new(position.x, position.y, 240., 70.),
         });
     }
+    fn submit_search(&mut self, query: String, generation: u64) {
+        match self.workers.submit(Job::Search {
+            query,
+            database: self.database.clone(),
+            generation,
+        }) {
+            Ok(()) => self.busy += 1,
+            Err(error) => self.search_state = SearchState::Failed(error),
+        }
+    }
     pub fn search(&mut self, query: String) {
+        let query = query.trim().to_owned();
         self.search_query = query.clone();
         self.search_generation += 1;
+        self.search_results.clear();
+        self.pending_search = None;
+        if query.is_empty() {
+            self.search_state = SearchState::Idle;
+            return;
+        }
+        self.search_state = SearchState::Searching;
         if self.saved >= self.queued && self.dirty_notes.is_empty() {
-            self.submit(Job::Search {
-                query,
-                database: self.database.clone(),
-                generation: self.search_generation,
-            });
+            self.submit_search(query, self.search_generation);
         } else {
             self.pending_search = Some((query, self.search_generation));
         }
@@ -2583,12 +2607,21 @@ impl Controller {
                     );
                 }
 
+                Finished::SearchError {
+                    generation,
+                    message,
+                } => {
+                    if generation == self.search_generation {
+                        self.search_state = SearchState::Failed(message);
+                    }
+                }
                 Finished::Search {
                     generation,
                     results,
                 } => {
                     if generation == self.search_generation {
-                        self.search_results = results
+                        self.search_results = results;
+                        self.search_state = SearchState::Complete;
                     }
                 }
                 Finished::Loaded(d, history) => {
@@ -2707,11 +2740,7 @@ impl Controller {
         }
         if let Some((query, generation)) = self.pending_search.take() {
             if self.saved >= self.queued || !self.settings.autosave {
-                self.submit(Job::Search {
-                    query,
-                    database: self.database.clone(),
-                    generation,
-                });
+                self.submit_search(query, generation);
                 changed = true;
             } else {
                 self.pending_search = Some((query, generation));

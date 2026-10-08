@@ -750,3 +750,32 @@ fn failed_home_import_is_provisional_and_can_retry_without_losing_annotations() 
             .any(|o| matches!(o.as_ref(), Object::Image(_)))
     );
 }
+
+#[test]
+fn search_states_clear_stale_results_and_associate_latest_query_and_page() {
+    let mut a = app();
+    a.add_text("alpha".into(), Point::new(10., 10.));
+    a.add_page();
+    a.add_text("beta".into(), Point::new(10., 10.));
+    a.flush().unwrap();
+    a.search("alpha".into());
+    assert_eq!(a.search_state, SearchState::Searching);
+    settle(&mut a);
+    assert_eq!(a.search_state, SearchState::Complete);
+    assert_eq!(a.search_results[0].page_number, Some(1));
+    a.search("beta".into());
+    assert!(a.search_results.is_empty());
+    assert_eq!(a.search_state, SearchState::Searching);
+    a.search("alpha".into());
+    settle(&mut a);
+    assert_eq!(a.search_results.len(), 1);
+    assert_eq!(a.search_results[0].page_number, Some(1));
+    a.search(" ".into());
+    assert_eq!(a.search_state, SearchState::Idle);
+    assert!(a.search_results.is_empty());
+    a.database = a.data_dir.join("missing-folder").join("broken.sqlite");
+    a.search("alpha".into());
+    settle(&mut a);
+    assert!(matches!(a.search_state, SearchState::Failed(_)));
+    assert!(a.error.is_none());
+}
