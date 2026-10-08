@@ -130,8 +130,14 @@ fn main() -> anyhow::Result<()> {
                         cx.update_window(window.into(),|_,window,cx|{window.dispatch_tablet_event(event,cx);})?;
                         cx.background_executor().timer(Duration::from_millis(8)).await;
                     }
-                    let events=window.update(cx,|view,_,cx|view.smoke_toolbar_events(cx))?.map_err(anyhow::Error::msg)?;
-                    cx.background_executor().timer(Duration::from_millis(100)).await;
+                    window.update(cx,|view,_,cx|view.smoke_toolbar_setup(cx))?;
+                    let mut toolbar_events=Err("Contextual selection toolbar did not settle".to_owned());
+                    for _ in 0..200 {
+                        cx.background_executor().timer(Duration::from_millis(50)).await;
+                        toolbar_events=window.update(cx,|view,_,_|view.smoke_toolbar_events())?;
+                        if toolbar_events.is_ok() { break; }
+                    }
+                    let events=toolbar_events.map_err(anyhow::Error::msg)?;
                     for event in events {
                         cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;
                         cx.background_executor().timer(Duration::from_millis(12)).await;

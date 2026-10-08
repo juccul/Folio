@@ -1688,6 +1688,26 @@ impl NotesView {
                 }
             }))
     }
+    fn selection_toolbar_origin(&self) -> DocPoint {
+        let canvas_size = self
+            .canvas_bounds
+            .map(|b| (f32::from(b.size.width), f32::from(b.size.height)))
+            .unwrap_or((1000., 700.));
+        let bounds = self.controller.selection_bounds().unwrap_or_default();
+        let viewport = self.controller.session().viewport;
+        let bounds = folio_document::Rect::from_points([
+            viewport.to_screen(bounds.min),
+            viewport.to_screen(bounds.max),
+        ]);
+        selection::toolbar_origin(
+            bounds,
+            canvas_size,
+            (
+                f32::from(self.selection_toolbar_size.width),
+                f32::from(self.selection_toolbar_size.height),
+            ),
+        )
+    }
     fn selection_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = Theme::new(&self.controller.settings);
         let objects: Vec<_> = self
@@ -1726,20 +1746,7 @@ impl NotesView {
             .canvas_bounds
             .map(|b| (f32::from(b.size.width), f32::from(b.size.height)))
             .unwrap_or((1000., 700.));
-        let bounds = self.controller.selection_bounds().unwrap_or_default();
-        let viewport = self.controller.session().viewport;
-        let bounds = folio_document::Rect::from_points([
-            viewport.to_screen(bounds.min),
-            viewport.to_screen(bounds.max),
-        ]);
-        let origin = selection::toolbar_origin(
-            bounds,
-            canvas_size,
-            (
-                f32::from(self.selection_toolbar_size.width),
-                f32::from(self.selection_toolbar_size.height),
-            ),
-        );
+        let origin = self.selection_toolbar_origin();
         let entity = cx.entity().downgrade();
         let dimensions = canvas(
             move |bounds, _, cx| {
@@ -3097,14 +3104,33 @@ impl NotesView {
         });
         Ok(events)
     }
-    pub fn smoke_toolbar_events(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> Result<Vec<PlatformInput>, String> {
+    pub fn smoke_toolbar_setup(&mut self, cx: &mut Context<Self>) {
         self.controller.select_all();
         cx.notify();
+    }
+    pub fn smoke_toolbar_events(&self) -> Result<Vec<PlatformInput>, String> {
         let b = self.canvas_bounds.ok_or("Canvas not laid out")?;
-        let position = point(b.origin.x + px(40.), b.origin.y + px(40.));
+        let button = self
+            .accessibility
+            .control_bounds("+10% size")
+            .ok_or("Contextual selection toolbar not laid out")?;
+        let origin = self.selection_toolbar_origin();
+        let left = f32::from(b.origin.x) + origin.x;
+        let top = f32::from(b.origin.y) + origin.y;
+        if button.x0 < (left - 1.) as f64
+            || button.y0 < (top - 1.) as f64
+            || button.x1 > (left + f32::from(self.selection_toolbar_size.width) + 1.) as f64
+            || button.y1 > (top + f32::from(self.selection_toolbar_size.height) + 1.) as f64
+        {
+            return Err(format!(
+                "Contextual selection toolbar is still laying out: button {button:?}; origin {left},{top}; size {:?}",
+                self.selection_toolbar_size
+            ));
+        }
+        let position = point(
+            px(((button.x0 + button.x1) * 0.5) as f32),
+            px(((button.y0 + button.y1) * 0.5) as f32),
+        );
         let tablet = |phase| TabletEvent {
             position,
             pressure: 0.7,
@@ -3198,10 +3224,17 @@ impl NotesView {
         }
         if self.controller.page().objects.len() != 1
             || self.controller.session().selection.len() != 1
-            || stroke.transform.tx != 12.
-            || stroke.transform.ty != -12.
+            || (stroke.transform.a - 1.1).abs() > 0.001
+            || (stroke.transform.d - 1.1).abs() > 0.001
+            || stroke.transform.b.abs() > 0.001
+            || stroke.transform.c.abs() > 0.001
         {
-            return Err("Stylus toolbar click must move the selected stroke without drawing through the overlay".into());
+            return Err(format!(
+                "Stylus toolbar click must resize the selected stroke without drawing through the overlay: {} objects, {} selected, transform {:?}",
+                self.controller.page().objects.len(),
+                self.controller.session().selection.len(),
+                stroke.transform
+            ));
         }
         self.controller.select_all();
         self.controller.scale_selection(1.2);
