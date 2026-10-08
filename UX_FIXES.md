@@ -46,3 +46,11 @@ Each numbered audit finding receives its own commit and push. Validation is reco
 | 17 (verification) | Native smoke replay selects first, waits for the contextual toolbar to finish layout, clicks the actual size action, and checks its transform instead of the removed fixed-position nudge. | Native pen/toolbar/menu/tab/crop/save replay passed without drawing through the overlay. |
 | 18 (verification) | The existing math UI driver accepts semantic radio buttons, checkboxes and toggles as well as ordinary buttons. | Driver syntax checked; native layout checks verified radio role/state and field focus. |
 | 29 (verification) | The existing native math-driver font-validation assertion uses the corrected canvas-pixel unit. | Driver syntax checked against the shared validation message. |
+
+Final validation on 2026-10-09:
+
+- `cargo test --workspace -- --test-threads=2`: 254 passed, 0 failed. The real OCR benchmark remains ignored because it requires externally supplied benchmark assets.
+- `cargo build -p folio`: passed.
+- Native synthetic pen replay: passed pressure/tilt preservation, contextual-toolbar occlusion and resizing, undo/redo, pages, card menus, duplication, tab picking/dragging, crop edits and durable saving.
+- Six private X11/AT-SPI layout cases passed at 1000×620 (80%, 100%, 160%) and 1366×768 (100%), including first launch at 100%/160%. Checks cover role/state, field focus, toolbar bounds, physical page units, preset samples, OCR consent without downloading, explicit sorting, favorites and folder-specific Trash recovery.
+- The reusable native layout driver is `scripts/verify-ux-layout.py`. Local test logs, results and screenshots are under `artifacts/ux-fixes/`.
