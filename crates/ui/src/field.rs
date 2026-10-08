@@ -116,6 +116,9 @@ pub struct Field {
     pub(super) bounds: Option<Bounds<Pixels>>,
     selecting: bool,
     history: EditHistory,
+    scroll: Point<Pixels>,
+    follow_caret: bool,
+    scroll_max: Point<Pixels>,
 }
 impl Field {
     pub fn new(content: String, multiline: bool, cx: &mut Context<Self>) -> Self {
@@ -136,6 +139,9 @@ impl Field {
             bounds: None,
             selecting: false,
             history: EditHistory::default(),
+            scroll: point(px(0.), px(0.)),
+            scroll_max: point(px(0.), px(0.)),
+            follow_caret: true,
         }
     }
     pub fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
@@ -177,6 +183,7 @@ impl Field {
     }
     fn select(&mut self, anchor: usize, head: usize) {
         self.history.group = None;
+        self.follow_caret = true;
         select_range(
             &mut self.selection,
             &mut self.selection_anchor,
@@ -185,6 +192,8 @@ impl Field {
         );
     }
     fn move_cursor(&mut self, forward: bool, extend: bool) {
+        self.history.group = None;
+        self.follow_caret = true;
         move_selection(
             &self.content,
             &mut self.selection,
@@ -281,14 +290,16 @@ impl Field {
         let Some(bounds) = self.bounds else {
             return self.content.len();
         };
-        let row = (f32::from(p.y - bounds.top()) / 26.).floor().max(0.) as usize;
+        let row = (f32::from(p.y - bounds.top() + self.scroll.y) / 26.)
+            .floor()
+            .max(0.) as usize;
         let Some((offset, line)) = self
             .layouts
             .get(row.min(self.layouts.len().saturating_sub(1)))
         else {
             return 0;
         };
-        let index = line.closest_index_for_x(p.x - bounds.left());
+        let index = line.closest_index_for_x(p.x - bounds.left() + self.scroll.x);
         if self.secret {
             self.content[*offset..]
                 .char_indices()
@@ -320,6 +331,7 @@ impl Field {
         select_range(&mut self.selection, &mut self.selection_anchor, end, end);
         self.history.record(before, kind, end, Instant::now());
         self.marked = None;
+        self.follow_caret = true;
         cx.notify();
     }
     fn draft(&self) -> Draft {
@@ -335,6 +347,7 @@ impl Field {
             self.selection = draft.selection;
             self.selection_anchor = draft.anchor;
             self.marked = None;
+            self.follow_caret = true;
             cx.notify();
         }
     }
@@ -464,13 +477,13 @@ impl EntityInputHandler for Field {
             .find(|(_, (offset, _))| *offset <= r.start)?;
         Some(Bounds::new(
             point(
-                bounds.left()
+                bounds.left() - self.scroll.x
                     + line.x_for_index(if self.secret {
                         self.content[*offset..r.start].chars().count()
                     } else {
                         r.start - offset
                     }),
-                bounds.top() + px(row as f32 * 26.),
+                bounds.top() + px(row as f32 * 26.) - self.scroll.y,
             ),
             size(px(2.), px(26.)),
         ))
@@ -523,7 +536,7 @@ impl Element for FieldElement {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
@@ -537,36 +550,87 @@ impl Element for FieldElement {
             return vec![];
         }
         let field = self.field.read(cx);
-        let mut offset = 0;
         let style = window.text_style();
-        field
-            .content
-            .split('\n')
-            .map(|text| {
-                let raw_len = text.len();
+        let shape = |text: &str| {
+            let run = TextRun {
+                len: text.len(),
+                font: style.font(),
+                color: style.color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            window
+                .text_system()
+                .shape_line(text.to_owned().into(), px(16.), &[run], None)
+        };
+        let ranges = if field.multiline && !field.secret {
+            folio_document::text_wrap_ranges(&field.content, f32::from(bounds.size.width), |text| {
+                f32::from(shape(text).width)
+            })
+        } else {
+            vec![0..field.content.len()]
+        };
+        let lines: Vec<_> = ranges
+            .into_iter()
+            .map(|range| {
+                let text = &field.content[range.clone()];
                 let displayed = if field.secret {
                     "*".repeat(text.chars().count())
                 } else {
-                    text.to_string()
+                    text.to_owned()
                 };
-                let text = displayed.as_str();
-                let run = TextRun {
-                    len: text.len(),
-                    font: style.font(),
-                    color: style.color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let line =
-                    window
-                        .text_system()
-                        .shape_line(text.to_string().into(), px(16.), &[run], None);
-                let item = (offset, line);
-                offset += raw_len + 1;
-                item
+                (range.start, shape(&displayed))
             })
-            .collect()
+            .collect();
+        self.field.update(cx, |field, _| {
+            let head = if field.selection_anchor == field.selection.start {
+                field.selection.end
+            } else {
+                field.selection.start
+            };
+            let row = lines
+                .iter()
+                .rposition(|(offset, _)| *offset <= head)
+                .unwrap_or(0);
+            let x = lines.get(row).map_or(0., |(offset, line)| {
+                f32::from(line.x_for_index(if field.secret {
+                    field.content[*offset..head].chars().count()
+                } else {
+                    head.saturating_sub(*offset).min(line.len())
+                }))
+            });
+            let max_width = lines
+                .iter()
+                .map(|(_, line)| f32::from(line.width))
+                .fold(0., f32::max)
+                + 4.;
+            field.scroll_max = point(
+                px((max_width - f32::from(bounds.size.width)).max(0.)),
+                px((lines.len() as f32 * 26. - f32::from(bounds.size.height)).max(0.)),
+            );
+            if field.follow_caret {
+                field.scroll.x = px(caret_scroll(
+                    f32::from(field.scroll.x),
+                    x,
+                    4.,
+                    f32::from(bounds.size.width),
+                    f32::from(field.scroll_max.x),
+                ));
+                field.scroll.y = px(caret_scroll(
+                    f32::from(field.scroll.y),
+                    row as f32 * 26.,
+                    26.,
+                    f32::from(bounds.size.height),
+                    f32::from(field.scroll_max.y),
+                ));
+                field.follow_caret = false;
+            } else {
+                field.scroll.x = field.scroll.x.clamp(px(0.), field.scroll_max.x);
+                field.scroll.y = field.scroll.y.clamp(px(0.), field.scroll_max.y);
+            }
+        });
+        lines
     }
     fn paint(
         &mut self,
@@ -620,6 +684,11 @@ impl Element for FieldElement {
             field.selection.clone()
         };
         let theme = field.theme;
+        let scroll = field.scroll;
+        let caret_row = lines
+            .iter()
+            .rposition(|(offset, _)| *offset <= selection.start)
+            .unwrap_or(0);
         let focused = field.focus.is_focused(window);
         let focus = field.focus.clone();
         window.handle_input(
@@ -629,14 +698,14 @@ impl Element for FieldElement {
         );
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for (row, (offset, line)) in lines.iter().enumerate() {
-                let y = bounds.top() + px(row as f32 * 26.);
+                let y = bounds.top() + px(row as f32 * 26.) - scroll.y;
                 let end = offset + line.len();
                 if selection.start <= end && selection.end >= *offset && !selection.is_empty() {
                     let start = selection.start.saturating_sub(*offset).min(line.len());
                     let end = selection.end.saturating_sub(*offset).min(line.len());
                     window.paint_quad(fill(
                         Bounds::new(
-                            point(bounds.left() + line.x_for_index(start), y),
+                            point(bounds.left() - scroll.x + line.x_for_index(start), y),
                             size(
                                 (line.x_for_index(end) - line.x_for_index(start)).max(px(2.)),
                                 px(26.),
@@ -645,16 +714,18 @@ impl Element for FieldElement {
                         rgba((theme.accent << 8) | 0x30),
                     ));
                 }
-                let _ = line.paint(point(bounds.left(), y), px(26.), window, cx);
+                let _ = line.paint(point(bounds.left() - scroll.x, y), px(26.), window, cx);
                 if focused
                     && selection.is_empty()
+                    && row == caret_row
                     && selection.start >= *offset
                     && selection.start <= end
                 {
                     window.paint_quad(fill(
                         Bounds::new(
                             point(
-                                bounds.left() + line.x_for_index(selection.start - offset),
+                                bounds.left() - scroll.x
+                                    + line.x_for_index(selection.start - offset),
                                 y,
                             ),
                             size(px(1.5), px(22.)),
@@ -719,6 +790,17 @@ impl Render for Field {
                     cx.notify();
                 }),
             )
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                if this.inline.is_some() {
+                    return;
+                }
+                let delta = event.delta.pixel_delta(px(26.));
+                this.scroll.x = (this.scroll.x - delta.x).clamp(px(0.), this.scroll_max.x);
+                this.scroll.y = (this.scroll.y - delta.y).clamp(px(0.), this.scroll_max.y);
+                this.follow_caret = false;
+                cx.stop_propagation();
+                cx.notify();
+            }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.selecting = false),
@@ -865,6 +947,16 @@ impl Render for Field {
             })
     }
 }
+fn caret_scroll(current: f32, caret: f32, extent: f32, viewport: f32, maximum: f32) -> f32 {
+    let next = if caret < current {
+        caret
+    } else if caret + extent > current + viewport {
+        caret + extent - viewport
+    } else {
+        current
+    };
+    next.clamp(0., maximum)
+}
 fn select_range(range: &mut Range<usize>, anchor: &mut usize, start: usize, head: usize) {
     *anchor = start;
     *range = start.min(head)..start.max(head);
@@ -899,7 +991,14 @@ fn move_selection(
 
 #[cfg(test)]
 mod tests {
-    use super::{Draft, EditHistory, word_boundary};
+    use super::{Draft, EditHistory, caret_scroll, word_boundary};
+    #[test]
+    fn scrolling_keeps_caret_visible_and_clamps_after_deletion() {
+        assert_eq!(caret_scroll(0., 260., 26., 208., 78.), 78.);
+        assert_eq!(caret_scroll(78., 0., 26., 208., 78.), 0.);
+        assert_eq!(caret_scroll(80., 60., 4., 30., 0.), 0.);
+        assert_eq!(caret_scroll(40., 50., 4., 30., 100.), 40.);
+    }
     use std::time::{Duration, Instant};
     fn draft(text: &str) -> Draft {
         Draft {
