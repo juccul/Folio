@@ -2604,6 +2604,26 @@ impl Controller {
         self.request_pdf_background(background);
     }
     pub fn request_pdf_background(&mut self, background: PdfBackground) {
+        self.request_pdf_background_scaled(background, 2400);
+    }
+    pub fn pdf_scroll_preview_asset(background: &PdfBackground) -> Option<String> {
+        background
+            .preview_asset
+            .as_ref()
+            .map(|asset| format!("{asset}.scroll.png"))
+    }
+    pub fn request_pdf_scroll_preview(&mut self, mut background: PdfBackground) {
+        if background
+            .preview_asset
+            .as_ref()
+            .is_some_and(|asset| self.assets.join(asset).is_file())
+        {
+            return;
+        }
+        background.preview_asset = Self::pdf_scroll_preview_asset(&background);
+        self.request_pdf_background_scaled(background, 960);
+    }
+    fn request_pdf_background_scaled(&mut self, background: PdfBackground, size: u32) {
         let Some(asset) = &background.preview_asset else {
             return;
         };
@@ -2618,6 +2638,7 @@ impl Controller {
             .submit(Job::PdfPreview {
                 background: background.clone(),
                 assets: self.assets.clone(),
+                size,
             })
             .is_ok()
         {

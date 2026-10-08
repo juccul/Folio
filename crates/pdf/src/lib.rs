@@ -107,6 +107,9 @@ pub fn import_with_password(
     Ok(pages)
 }
 pub fn render_preview(background: &PdfBackground, assets: &Path) -> Result<(), Error> {
+    render_preview_scaled(background, assets, 2400)
+}
+pub fn render_preview_scaled(background: &PdfBackground, assets: &Path, size: u32) -> Result<(), Error> {
     let preview = background
         .preview_asset
         .as_deref()
@@ -129,7 +132,7 @@ pub fn render_preview(background: &PdfBackground, assets: &Path) -> Result<(), E
                     "-singlefile",
                     "-cropbox",
                     "-scale-to",
-                    "2400",
+                    &size.clamp(64, 2400).to_string(),
                     "-png",
                 ])
                 .arg(source)

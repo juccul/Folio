@@ -76,6 +76,9 @@ pub struct Painter {
     rasters: HashMap<Id, CachedRaster>,
     raster_pending: HashMap<Id, RasterRequest>,
     backgrounds: HashMap<String, ImageSource>,
+    pdf_view: Option<(Id, Id, Transform, Size<Pixels>)>,
+    pdf_moved: Option<std::time::Instant>,
+    pdf_idle_repaint: bool,
     page: Option<Id>,
     active_id: Option<Id>,
     active_chunks: Vec<Path<Pixels>>,
@@ -208,6 +211,103 @@ impl Painter {
             .iter()
             .map(|(i, _)| controller.session().document.pages[*i].id)
             .collect::<HashSet<_>>();
+        let view = (
+            controller.active,
+            session.page().id,
+            viewport.transform(),
+            bounds.size,
+        );
+        if self.pdf_view != Some(view) {
+            self.pdf_view = Some(view);
+            self.pdf_moved = Some(std::time::Instant::now());
+        }
+        let settled = self
+            .pdf_moved
+            .is_some_and(|last| last.elapsed() >= std::time::Duration::from_millis(180));
+        if !settled
+            && !self.pdf_idle_repaint
+            && frames
+                .iter()
+                .any(|(index, _)| session.document.pages[*index].properties.pdf.is_some())
+        {
+            self.pdf_idle_repaint = true;
+            // Movement itself can be the last frame. Ensure sharp previews are
+            // requested after it stops, even with no other background work.
+            cx.spawn(async move |view, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(200))
+                    .await;
+                let _ = view.update(cx, |view, cx| {
+                    view.painter.pdf_idle_repaint = false;
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        // Prepare visible PDFs first, then three neighbors on either side. Waiting
+        // until a page is painted starts both Poppler and PNG decoding too late
+        // for continuous scrolling; the paper flashes empty in the meantime.
+        let mut nearby = frames.iter().map(|(index, _)| *index).collect::<Vec<_>>();
+        if let Some(stack) = PageStack::new(&session.document.pages, active) {
+            let first = nearby.iter().copied().min().unwrap_or(active);
+            let last = nearby.iter().copied().max().unwrap_or(active);
+            for distance in 1..=3 {
+                for index in [last.checked_add(distance), first.checked_sub(distance)]
+                    .into_iter()
+                    .flatten()
+                {
+                    if index >= stack.pages[0].0
+                        && index <= stack.pages.last().unwrap().0
+                        && !nearby.contains(&index)
+                    {
+                        nearby.push(index);
+                    }
+                }
+            }
+        }
+        let mut warm_assets = HashSet::new();
+        for index in nearby {
+            let Some(pdf) = controller.session().document.pages[index]
+                .properties
+                .pdf
+                .clone()
+            else {
+                continue;
+            };
+            controller.request_pdf_scroll_preview(pdf.clone());
+            if settled && ids.contains(&controller.session().document.pages[index].id) {
+                controller.request_pdf_background(pdf.clone());
+            }
+            for asset in pdf
+                .preview_asset
+                .iter()
+                .cloned()
+                .chain(Controller::pdf_scroll_preview_asset(&pdf))
+            {
+                warm_assets.insert(asset.clone());
+                if let Some(path) = controller.asset_path(&asset)
+                    && path.is_file()
+                {
+                    let source = self
+                        .backgrounds
+                        .entry(asset)
+                        .or_insert_with(|| ImageSource::from(path));
+                    // Decode off-thread through GPUI's shared asset loader and
+                    // request a repaint when it completes, even off screen.
+                    let _ = source.use_render_image(window, cx);
+                }
+            }
+        }
+        // GPUI otherwise retains every decoded PDF ever visited. Drop distant
+        // pages while keeping the small neighboring working set warm.
+        self.backgrounds.retain(|asset, source| {
+            if warm_assets.contains(asset) {
+                true
+            } else {
+                source.remove_asset(cx);
+                false
+            }
+        });
         // Retain only visible pages, so scrolling a long document cannot grow
         // native path/image caches without bound.
         self.pages.retain(|id, _| ids.contains(id));
@@ -228,13 +328,6 @@ impl Painter {
         cx: &mut Context<NotesView>,
     ) {
         let active = page_index == controller.session().page;
-        if let Some(pdf) = controller.session().document.pages[page_index]
-            .properties
-            .pdf
-            .clone()
-        {
-            controller.request_pdf_background(pdf);
-        }
         let page_id = controller.session().document.pages[page_index].id;
         self.page = Some(page_id);
         let visible = viewport.visible(f32::from(bounds.size.width), f32::from(bounds.size.height));
@@ -751,10 +844,12 @@ impl Painter {
             window.paint_path(path, rgb(paper_color));
         }
         if let Some(pdf) = &properties.pdf {
-            if let Some(asset) = &pdf.preview_asset
-                && let Some(path) = controller.asset_path(asset)
-                && path.is_file()
+            for asset in pdf.preview_asset.iter().cloned()
+                .chain(Controller::pdf_scroll_preview_asset(pdf))
             {
+                let Some(path) = controller.asset_path(&asset).filter(|path| path.is_file()) else {
+                    continue;
+                };
                 let source = self
                     .backgrounds
                     .entry(asset.clone())
@@ -768,6 +863,10 @@ impl Painter {
                         false,
                         gpu_transform(world),
                     );
+                    // Keep the quick image visible while the sharper image is
+                    // still decoding. A file existing does not mean it is ready
+                    // for the GPU yet.
+                    break;
                 }
             }
             return;

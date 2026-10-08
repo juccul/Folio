@@ -52,6 +52,7 @@ pub enum Job {
     PdfPreview {
         background: PdfBackground,
         assets: PathBuf,
+        size: u32,
     },
     Preview {
         pixels_budget: u32,
@@ -186,6 +187,7 @@ type JobKey = (Id, Id, u8);
 pub struct Workers {
     documents: mpsc::SyncSender<Task>,
     search: mpsc::SyncSender<Task>,
+    pdf_scroll: mpsc::SyncSender<Task>,
     generations: Mutex<std::collections::HashMap<JobKey, Arc<AtomicU64>>>,
     pub results: mpsc::Receiver<Finished>,
 }
@@ -261,6 +263,9 @@ impl Workers {
         Self {
             documents: spawn("folio-documents"),
             search: spawn("folio-search"),
+            // Quick scrolling previews must not wait behind a full-resolution
+            // PDF render, export, or other long document operation.
+            pdf_scroll: spawn("folio-pdf-scroll"),
             generations: Mutex::new(std::collections::HashMap::new()),
             results,
         }
@@ -268,6 +273,7 @@ impl Workers {
     pub fn submit(&self, job: Job) -> Result<(), String> {
         let sender = match &job {
             Job::Search { .. } | Job::Load { .. } | Job::LibraryPreview { .. } => &self.search,
+            Job::PdfPreview { size, .. } if *size <= 960 => &self.pdf_scroll,
             _ => &self.documents,
         };
         let key = match &job {
@@ -373,8 +379,8 @@ fn process(job: Job) -> Result<Finished, String> {
             Job::Cleanup { root } => {
                 Finished::Cleaned(folio_storage::recovery::quarantine_orphans(&root)?)
             }
-            Job::PdfPreview { background, assets } => {
-                folio_pdf::render_preview(&background, &assets)?;
+            Job::PdfPreview { background, assets, size } => {
+                folio_pdf::render_preview_scaled(&background, &assets, size)?;
                 Finished::PdfPreview(background.preview_asset.unwrap_or_default())
             }
             Job::Preview {

@@ -482,6 +482,38 @@ fn inactive_page_raster_previews_do_not_switch_or_edit_the_current_page() {
 }
 
 #[test]
+fn pdf_scroll_preview_upgrades_without_switching_pages_or_changing_content() {
+    let mut a = app();
+    let source = pdf(&a);
+    a.import_as_note(source);
+    settle(&mut a);
+    let original = a.session().document.clone();
+    let current = a.page().id;
+    let background = original.pages[1].properties.pdf.clone().unwrap();
+    let quick = a.assets.join(Controller::pdf_scroll_preview_asset(&background).unwrap());
+    let sharp = a.assets.join(background.preview_asset.as_ref().unwrap());
+    a.request_pdf_scroll_preview(background.clone());
+    settle(&mut a);
+    let dimensions = |path: &std::path::Path| {
+        let png = std::fs::read(path).unwrap();
+        (
+            u32::from_be_bytes(png[16..20].try_into().unwrap()),
+            u32::from_be_bytes(png[20..24].try_into().unwrap()),
+        )
+    };
+    let (width, height) = dimensions(&quick);
+    assert_eq!(width.max(height), 960);
+    assert!(!sharp.exists());
+    a.request_pdf_background(background);
+    settle(&mut a);
+    let (width, height) = dimensions(&sharp);
+    assert_eq!(width.max(height), 2400);
+    assert!(quick.is_file(), "Quick image remains available during sharp-image decoding");
+    assert_eq!(a.page().id, current);
+    assert_eq!(a.session().document, original);
+}
+
+#[test]
 fn text_click_selects_then_edits_but_dragging_keeps_moving_the_box() {
     let mut a = app();
     a.add_text("editable text".into(), Point::new(100., 100.));
