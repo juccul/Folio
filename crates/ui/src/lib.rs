@@ -3290,6 +3290,51 @@ impl Render for NotesView {
             } else {
                 self.text_formatting_bar(cx)
             };
+            let import_notice = self
+                .controller
+                .library_imports
+                .get(&self.controller.active)
+                .cloned()
+                .map(|import| {
+                    let id = self.controller.active;
+                    let name = import
+                        .path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy();
+                    let mut row = div().px_4().py_2().flex().items_center().gap_3().child(
+                        div().flex_1().text_sm().child(if import.pending {
+                            format!("Importing {name}…")
+                        } else {
+                            format!(
+                                "Could not import {name}: {}",
+                                import.error.unwrap_or_default()
+                            )
+                        }),
+                    );
+                    if !import.pending {
+                        row = row
+                            .child(self.button(
+                                "retry-library-import",
+                                "Retry import",
+                                false,
+                                cx,
+                                move |this, _, _| this.controller.retry_library_import(id),
+                            ))
+                            .child(self.button(
+                                "dismiss-library-import",
+                                if self.controller.import_is_provisional(id) {
+                                    "Remove failed import"
+                                } else {
+                                    "Keep document"
+                                },
+                                false,
+                                cx,
+                                move |this, _, _| this.controller.dismiss_failed_import(id),
+                            ));
+                    }
+                    row
+                });
             let trash_notice = self.controller.read_only().then(|| {
                 div()
                     .px_4()
@@ -3371,6 +3416,7 @@ impl Render for NotesView {
                     .child(header)
                     .children(toolbar)
                     .children(trash_notice)
+                    .children(import_notice)
                     .when(self.region_selection.is_some(), |body| {
                         body.child(
                             div()

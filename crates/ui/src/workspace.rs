@@ -637,6 +637,18 @@ impl NotesView {
                 .as_ref()
                 .map(|(_, count)| format!("{count} page{}", if *count == 1 { "" } else { "s" }))
                 .unwrap_or(details);
+            let details = self
+                .controller
+                .library_imports
+                .get(&id)
+                .map(|import| {
+                    if import.pending {
+                        "Importing…".to_owned()
+                    } else {
+                        "Import failed · open to retry or remove".to_owned()
+                    }
+                })
+                .unwrap_or(details);
             let cover_content = if let Some((page, _)) = &preview {
                 if let Some(pdf) = &page.properties.pdf {
                     self.controller.request_pdf_background(pdf.clone());
@@ -945,7 +957,8 @@ impl NotesView {
                                         .items_center()
                                         .gap_2()
                                         .child(
-                                            icon(Icon::Plus, theme.primary_foreground).size(px(24.)),
+                                            icon(Icon::Plus, theme.primary_foreground)
+                                                .size(px(24.)),
                                         )
                                         .child("New document")
                                         .into_any_element(),

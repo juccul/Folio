@@ -713,3 +713,40 @@ fn trash_is_read_only_for_all_content_and_metadata_until_restored() {
     a.add_text("Allowed".into(), Point::new(30., 30.));
     assert_eq!(a.page().objects.len(), 2);
 }
+
+#[test]
+fn failed_home_import_is_provisional_and_can_retry_without_losing_annotations() {
+    let mut a = app();
+    let path = a.data_dir.join("missing.png");
+    let imported = a.import_as_note(path.clone());
+    settle(&mut a);
+    assert!(a.import_is_provisional(imported));
+    assert!(a.library_imports[&imported].error.is_some());
+    a.flush().unwrap();
+    let store = Store::open(&a.database).unwrap();
+    assert!(store.load(imported).unwrap().is_none());
+    a.dismiss_failed_import(imported);
+    assert!(!a.notes.iter().any(|n| n.id == imported));
+    let imported = a.import_as_note(path.clone());
+    a.add_text("Keep my work".into(), Point::new(10., 10.));
+    settle(&mut a);
+    assert!(!a.import_is_provisional(imported));
+    a.flush().unwrap();
+    assert!(store.load(imported).unwrap().is_some());
+    let source = a.data_dir.join("valid.png");
+    folio_export::png(a.page(), &a.assets, &source, 0.1).unwrap();
+    std::fs::copy(source, path).unwrap();
+    a.retry_library_import(imported);
+    settle(&mut a);
+    assert!(!a.library_imports.contains_key(&imported));
+    assert!(
+        a.page()
+            .ordered_objects()
+            .any(|o| matches!(o.as_ref(),Object::Text(t) if t.text == "Keep my work"))
+    );
+    assert!(
+        a.page()
+            .ordered_objects()
+            .any(|o| matches!(o.as_ref(), Object::Image(_)))
+    );
+}

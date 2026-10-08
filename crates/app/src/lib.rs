@@ -257,6 +257,12 @@ pub struct RasterPreview {
     pub height: u32,
     pub bgra: Arc<Vec<u8>>,
 }
+#[derive(Clone, Debug)]
+pub struct LibraryImport {
+    pub path: PathBuf,
+    pub pending: bool,
+    pub error: Option<String>,
+}
 pub struct Controller {
     pub recognition_for_index: bool,
     pub restored_library: Option<PathBuf>,
@@ -289,6 +295,8 @@ pub struct Controller {
     last_cache_trim: Instant,
     pending_actions: HashMap<Id, Vec<NoteAction>>,
     pending_imports: HashMap<Id, usize>,
+    pub library_imports: HashMap<Id, LibraryImport>,
+    provisional_imports: HashSet<Id>,
     pdf_password_queue: std::collections::VecDeque<(Id, PathBuf)>,
     pending_note: Option<Id>,
     loading_notes: HashSet<Id>,
@@ -409,6 +417,8 @@ impl Controller {
             last_cache_trim: Instant::now(),
             pending_actions: HashMap::new(),
             pending_imports: HashMap::new(),
+            library_imports: HashMap::new(),
+            provisional_imports: HashSet::new(),
             pdf_password_queue: std::collections::VecDeque::new(),
             pending_note: None,
             loading_notes: HashSet::new(),
@@ -555,6 +565,7 @@ impl Controller {
         if let Some(session) = self.sessions.get(&note) {
             handwriting_search::maintain_index(&session.document, &mut changes);
         }
+        self.provisional_imports.remove(&note);
         let cmd = Command {
             label: label.into(),
             changes,
@@ -619,6 +630,9 @@ impl Controller {
         }
     }
     pub fn save(&mut self) {
+        if self.provisional_imports.contains(&self.active) {
+            return;
+        }
         let delta = Delta::full(&self.session().document);
         let autosave = self.settings.autosave;
         self.settings.autosave = true;
@@ -630,6 +644,7 @@ impl Controller {
         let documents = self
             .sessions
             .values()
+            .filter(|s| !self.provisional_imports.contains(&s.document.metadata.id))
             .map(|s| {
                 let mut delta = Delta::full(&s.document);
                 delta.journal = vec![JournalEvent::Replace(s.history.clone())];
@@ -664,6 +679,14 @@ impl Controller {
         title: String,
         properties: PageProperties,
     ) -> Result<Id, String> {
+        self.create_note_with_properties_inner(title, properties, true)
+    }
+    fn create_note_with_properties_inner(
+        &mut self,
+        title: String,
+        properties: PageProperties,
+        persist: bool,
+    ) -> Result<Id, String> {
         let title = title.trim();
         if title.is_empty() {
             return Err("Give your notebook a name.".into());
@@ -692,7 +715,11 @@ impl Controller {
         self.active = id;
         self.filter = NoteFilter::All;
         self.search_highlights.clear();
-        self.persist(delta);
+        if persist {
+            self.persist(delta);
+        } else {
+            self.provisional_imports.insert(id);
+        }
         Ok(id)
     }
     pub fn requested_note(&self) -> Id {
@@ -2108,16 +2135,78 @@ impl Controller {
     }
     /// Home imports have their own document; editor imports retain their captured target.
     pub fn import_as_note(&mut self, path: PathBuf) -> Id {
-        self.create_note();
         let title = path
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("Imported note");
-        self.rename(title.into());
-        let id = self.active;
+            .unwrap_or("Imported document")
+            .to_owned();
+        let properties = PageProperties {
+            paper: self.settings.paper,
+            ..Default::default()
+        };
+        let id = self
+            .create_note_with_properties_inner(title, properties, false)
+            .expect("Valid import placeholder");
+        self.library_imports.insert(
+            id,
+            LibraryImport {
+                path: path.clone(),
+                pending: true,
+                error: None,
+            },
+        );
         self.import_into(id, path);
         id
     }
+    pub fn retry_library_import(&mut self, note: Id) {
+        let Some(import) = self.library_imports.get_mut(&note) else {
+            return;
+        };
+        if import.pending {
+            return;
+        }
+        import.pending = true;
+        import.error = None;
+        let path = import.path.clone();
+        self.import_into(note, path);
+    }
+    pub fn import_is_provisional(&self, note: Id) -> bool {
+        self.provisional_imports.contains(&note)
+    }
+    pub fn dismiss_failed_import(&mut self, note: Id) {
+        if !self
+            .library_imports
+            .get(&note)
+            .is_some_and(|import| !import.pending && import.error.is_some())
+        {
+            return;
+        }
+        self.library_imports.remove(&note);
+        if self.provisional_imports.remove(&note) {
+            self.notes.retain(|n| n.id != note);
+            self.sessions.remove(&note);
+            if note == self.active {
+                if let Some(id) = self.notes.iter().find(|n| !n.trashed).map(|n| n.id) {
+                    self.switch_note(id);
+                } else {
+                    self.create_note();
+                }
+            }
+            self.status = "Failed import removed".into();
+        } else {
+            self.status = "Document kept; failed import dismissed".into();
+        }
+    }
+    fn library_import_failed(&mut self, note: Id, message: String) {
+        self.import_finished(note);
+        if let Some(import) = self.library_imports.get_mut(&note) {
+            import.pending = false;
+            import.error = Some(message);
+        } else {
+            self.error = Some(message);
+        }
+    }
+
     pub fn import_into(&mut self, note: Id, path: PathBuf) {
         self.manage_note(note, NoteAction::Import(path));
     }
@@ -2150,7 +2239,7 @@ impl Controller {
             }
         };
         if let Err(e) = self.workers.submit(job) {
-            self.error = Some(e);
+            self.library_import_failed(note, e);
         } else {
             self.busy += 1;
             *self.pending_imports.entry(note).or_default() += 1;
@@ -2532,6 +2621,7 @@ impl Controller {
                 }
                 Finished::TemplatePage { note, page } => {
                     self.import_finished(note);
+                    self.library_imports.remove(&note);
                     if let Some(session) = self.sessions.get(&note) {
                         let index = session.document.pages.len();
                         self.commit_to(
@@ -2554,6 +2644,7 @@ impl Controller {
                 }
                 Finished::NotebookImported { note, document } => {
                     self.import_finished(note);
+                    self.library_imports.remove(&note);
                     let empty = self.sessions.get(&note).is_some_and(|s| {
                         s.document.pages.len() == 1
                             && s.document.pages[0].objects.is_empty()
@@ -2581,15 +2672,16 @@ impl Controller {
                     self.error = Some(message);
                 }
                 Finished::ImportError { note, message } => {
-                    self.import_finished(note);
-                    self.error = Some(message);
+                    self.library_import_failed(note, message);
                 }
                 Finished::Pdf { note, pages } => {
+                    self.library_imports.remove(&note);
                     self.apply_pdf(note, pages);
                     self.import_finished(note);
                 }
                 Finished::Image { note, page, object } => {
                     self.import_finished(note);
+                    self.library_imports.remove(&note);
                     if let Some(p) = self.sessions.get(&note).and_then(|s| s.document.page(page)) {
                         let index = p.order.len();
                         let id = object.id();
@@ -2621,7 +2713,10 @@ impl Controller {
                 self.pending_search = Some((query, generation));
             }
         }
-        if self.settings.autosave && self.last_draft.elapsed() > Duration::from_secs(1) {
+        if self.settings.autosave
+            && !self.provisional_imports.contains(&self.active)
+            && self.last_draft.elapsed() > Duration::from_secs(1)
+        {
             if let Some(Interaction::Ink {
                 builder,
                 suppress_tap: false,
@@ -2721,7 +2816,7 @@ impl Controller {
         self.pdf_preview_failed.clear();
     }
     pub fn cancel_pdf_import(&mut self, note: Id) {
-        self.import_finished(note);
+        self.library_import_failed(note, "PDF import cancelled".into());
     }
     pub fn unlock_pdf(&mut self, note: Id, path: PathBuf, password: String) {
         self.submit(Job::ImportPdf {
