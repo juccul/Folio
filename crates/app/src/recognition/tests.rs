@@ -322,8 +322,12 @@ fn reviewed_ink_index_keeps_raw_strokes_searches_unicode_and_tracks_undo_and_reo
     assert_eq!(app.search_highlights, vec![app.page().ink_text[0].bounds]);
     app.session_mut().selection = HashSet::from([id]);
     app.delete_selection();
-    assert!(app.page().ink_text.is_empty());
+    assert_eq!(app.page().ink_text[0].text, "Café tomorrow");
+    assert!(app.page().ink_text[0].stale);
+    assert!(app.page().ink_text[0].sources.is_empty());
+    app.session().document.validate().unwrap();
     app.undo();
+    assert!(!app.page().ink_text[0].stale);
     assert_eq!(app.page().ink_text[0].text, "Café tomorrow");
     app.clear_handwriting_index();
     assert!(app.page().ink_text.is_empty());
@@ -373,11 +377,14 @@ fn changed_or_overwritten_ink_cannot_keep_stale_index_and_undo_restores_reviewed
     review(&mut app);
     app.keep_ink_and_index("original".into()).unwrap();
     draw(&mut app, 40.);
-    assert!(app.page().ink_text.is_empty());
+    assert_eq!(app.page().ink_text[0].text, "original");
+    assert!(app.page().ink_text[0].stale);
     app.undo();
     assert_eq!(app.page().ink_text[0].text, "original");
+    assert!(!app.page().ink_text[0].stale);
     app.redo();
-    assert!(app.page().ink_text.is_empty());
+    assert_eq!(app.page().ink_text[0].text, "original");
+    assert!(app.page().ink_text[0].stale);
     clean(app, root);
 }
 
