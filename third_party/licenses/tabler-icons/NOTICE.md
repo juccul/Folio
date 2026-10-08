@@ -10,6 +10,8 @@ Copyright (c) 2020–2026 Paweł Kuna.
 
 Folio embeds 37 Tabler Outline SVGs in `crates/ui/assets/icons/`. The original 2px stroke is adjusted to 1.65 on the 24×24 grid, and GPUI applies the current interface color at rendering time. All other source geometry is retained.
 
+The scissors icon (`Cut.svg`) is an original Folio drawing in the same line style, licensed under GPL-3.0-or-later. `Copy.svg` uses the same Tabler `copy.svg` geometry as Restore.
+
 The marker icon is an original Folio drawing in the same line style, licensed under GPL-3.0-or-later. It keeps a distinct silhouette from the stock highlighter.
 
 The filled favorite state in `StarFilled.svg` is derived from the existing `star.svg` geometry, filled and closed rather than stroked.
@@ -55,3 +57,5 @@ The filled favorite state in `StarFilled.svg` is derived from the existing `star
 | List | `list.svg` |
 | Sliders | `adjustments-horizontal.svg` |
 | Help | `help-circle.svg` |
+
+Math.svg and Crop.svg are original Folio drawings in the same outline style, licensed under the project license.

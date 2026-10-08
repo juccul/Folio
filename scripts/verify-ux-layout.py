@@ -178,12 +178,16 @@ def main():
                             assert r.width>0 and r.height>0 and 0<=r.x and r.x+r.width<=width+2 and 0<=r.y and r.y+r.height<=height+2,(case,label,r.x,r.y,r.width,r.height)
                         if args.selection_only:
                             client.key('a',4);time.sleep(.3)
-                            for label in ['Duplicate','Delete','Solve']:inside(label)
-                            assert not any(n.get_name() in ['−10% size','+10% size','Rotate 15°'] for n in nodes()), 'Removed transforms remain in selection toolbar'
+                            for label in ['Cut','Copy','Delete','Solve']:inside(label)
+                            assert not any(n.get_name() in ['−10% size','+10% size','Rotate 15°','Apply pen','Refine ink','Remove refinement','Duplicate'] for n in nodes()), 'Removed transforms remain in selection toolbar'
                             capture('selection-toolbar')
+                            click('Copy');inside('Cut')
+                            click('Cut');time.sleep(.2)
+                            assert not any(n.get_name()=='Copy' for n in nodes()), 'Cut did not remove the selection'
+                            client.key('z',4);time.sleep(.3);client.key('a',4);time.sleep(.2);inside('Copy')
                             client.key('Escape');time.sleep(.2)
-                            assert not any(n.get_name()=='Duplicate' for n in nodes()), 'Selection toolbar did not dismiss'
-                            reports.append({'case':case,'selection_toolbar_restored':True,'size_and_rotation_removed':True});continue
+                            assert not any(n.get_name()=='Copy' for n in nodes()), 'Selection toolbar did not dismiss'
+                            reports.append({'case':case,'icon_toolbar':True,'cut_copy_undo':True,'removed_actions_absent':True});continue
                         click('Settings')
                         for label in ['Appearance','Writing','Library','Accessibility','Close settings','Light appearance','Dark appearance']:
                             inside(label)

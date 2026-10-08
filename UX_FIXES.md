@@ -64,3 +64,5 @@ Final validation on 2026-10-09:
 - Final screenshot-review validation: 254 workspace tests passed, one external OCR benchmark remained skipped, the native pen-input smoke passed, and all six expanded layout cases passed with light/dark Settings, list scrolling and favorite interaction checks. The updated development executable is `target/debug/folio`.
 
 - Selection-toolbar correction verified: 42 UI tests, four native window/scale checks confirming retained actions and absent size/rotation options, and native stylus refinement/overlay smoke all passed. Rebuilt `target/debug/folio`.
+
+- Selection actions now use compact icon buttons with tooltips, keyboard hints, grouped clipboard actions and quiet hover states. Replaced Apply pen, Refine ink and Duplicate with Cut and Copy. Text-only selections also expose clipboard actions. Toolbar remeasurement schedules a fresh frame so its position settles correctly. Verified 42 UI tests, native Cut/Copy/undo across four scale/window cases, and stylus Copy/occlusion replay.

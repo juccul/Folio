@@ -1426,6 +1426,8 @@ impl NotesView {
                 | "page-from-template"
                 | "move-document-folder"
                 | "paper-color"
+                | "selection-cut"
+                | "delete-selection"
         );
         let enabled = (!self.controller.read_only() || self.library_open || !editing)
             && (!self.blocking_overlay() || self.building_overlay || window_control)
@@ -1686,286 +1688,6 @@ impl NotesView {
                     cx.notify();
                 }
             }))
-    }
-    fn selection_toolbar_origin(&self) -> DocPoint {
-        let canvas_size = self
-            .canvas_bounds
-            .map(|b| (f32::from(b.size.width), f32::from(b.size.height)))
-            .unwrap_or((1000., 700.));
-        let bounds = self.controller.selection_bounds().unwrap_or_default();
-        let viewport = self.controller.session().viewport;
-        let bounds = folio_document::Rect::from_points([
-            viewport.to_screen(bounds.min),
-            viewport.to_screen(bounds.max),
-        ]);
-        selection::toolbar_origin(
-            bounds,
-            canvas_size,
-            (
-                f32::from(self.selection_toolbar_size.width),
-                f32::from(self.selection_toolbar_size.height),
-            ),
-        )
-    }
-    fn selection_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let theme = Theme::new(&self.controller.settings);
-        let objects: Vec<_> = self
-            .controller
-            .session()
-            .selection
-            .iter()
-            .filter_map(|id| self.controller.page().objects.get(id))
-            .cloned()
-            .collect();
-        let all_ink = !objects.is_empty()
-            && objects.iter().all(|o| {
-                matches!(
-                    o.as_ref(),
-                    folio_document::Object::Stroke(_) | folio_document::Object::Shape(_)
-                )
-            });
-        let all_strokes = !objects.is_empty()
-            && objects
-                .iter()
-                .all(|o| matches!(o.as_ref(), folio_document::Object::Stroke(_)));
-        let refined = all_strokes
-            && objects.iter().all(
-                |o| matches!(o.as_ref(),folio_document::Object::Stroke(s) if s.refinement_enabled),
-            );
-        let can_solve = objects.iter().any(|o| {
-            matches!(
-                o.as_ref(),
-                folio_document::Object::Stroke(_)
-                    | folio_document::Object::Text(_)
-                    | folio_document::Object::Equation(_)
-                    | folio_document::Object::Image(_)
-            )
-        });
-        let canvas_size = self
-            .canvas_bounds
-            .map(|b| (f32::from(b.size.width), f32::from(b.size.height)))
-            .unwrap_or((1000., 700.));
-        let origin = self.selection_toolbar_origin();
-        let entity = cx.entity().downgrade();
-        let dimensions = canvas(
-            move |bounds, _, cx| {
-                let _ = entity.update(cx, |view, cx| {
-                    if view.selection_toolbar_size != bounds.size {
-                        view.selection_toolbar_size = bounds.size;
-                        cx.notify();
-                    }
-                });
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .inset_0();
-        let mut row = div()
-            .occlude()
-            .absolute()
-            .left(px(origin.x))
-            .top(px(origin.y))
-            .max_w(px(self
-                .canvas_bounds
-                .map(|b| f32::from(b.size.width) - 32.)
-                .unwrap_or(960.)))
-            .flex_wrap()
-            .flex()
-            .items_center()
-            .gap_1()
-            .p_2()
-            .rounded(px(theme.radius))
-            .bg(rgb(theme.surface))
-            .border_1()
-            .border_color(theme.border)
-            .shadow_sm();
-        for (id, label, action) in [
-            ("restyle", "Apply pen", 4),
-            ("duplicate-selection", "Duplicate", 5),
-            (
-                "refine",
-                if refined {
-                    "Remove refinement"
-                } else {
-                    "Refine ink"
-                },
-                6,
-            ),
-            ("delete-selection", "Delete", 7),
-        ] {
-            if (action == 4 && !all_ink) || (action == 6 && !all_strokes) {
-                continue;
-            }
-            row =
-                row.child(
-                    self.button(id, label, action == 6 && refined, cx, move |this, _, _| {
-                        match action {
-                            4 => this.controller.restyle_selection(),
-                            5 => {
-                                let objects = this.controller.copy_objects();
-                                this.controller.paste_objects(objects);
-                            }
-                            6 => this.controller.refine_selection(),
-                            7 => this.controller.delete_selection(),
-                            _ => unreachable!("Unknown selection action"),
-                        }
-                    })
-                    .text_xs()
-                    .px_2(),
-                );
-        }
-        for id in self.controller.session().selection.clone() {
-            if let Some(folio_document::Object::Equation(e)) =
-                self.controller.page().objects.get(&id).map(|o| o.as_ref())
-                && let Some(error) = e
-                    .math_link
-                    .as_ref()
-                    .and_then(|link| link.last_error.clone())
-            {
-                row = row
-                    .child(
-                        div()
-                            .text_xs()
-                            .max_w(px(240.))
-                            .child(format!("Out of date: {error}")),
-                    )
-                    .child(self.button(
-                        format!("retry-linked-math-{id}"),
-                        "Retry calculation",
-                        false,
-                        cx,
-                        move |this, _, _| {
-                            if let Err(error) = this.controller.retry_linked_math(id) {
-                                this.controller.status = error;
-                            }
-                        },
-                    ));
-            }
-        }
-        if can_solve {
-            row = row.child(
-                self.button("solve-selection", "Solve", false, cx, |this, window, cx| {
-                    this.start_math(window, cx)
-                })
-                .text_xs()
-                .px_2(),
-            );
-        }
-        if self.controller.recognition_pending {
-            row = row
-                .child(div().text_xs().px_2().max_w(px(280.)).truncate().child(
-                    if self.controller.recognition_replacing {
-                        "Rendering equation…".to_string()
-                    } else {
-                        self.controller.recognition_status.clone()
-                    },
-                ))
-                .child(self.button(
-                    "cancel-recognition",
-                    "Cancel recognition",
-                    false,
-                    cx,
-                    |this, _, _| this.controller.cancel_recognition(),
-                ));
-        } else if self.controller.can_recognize_selection() {
-            row = row.child(
-                self.button(
-                    "index-handwriting",
-                    "Index handwriting…",
-                    false,
-                    cx,
-                    |this, _, _| {
-                        if let Err(e) = this.controller.index_selected_handwriting() {
-                            this.controller.error = Some(e);
-                        }
-                    },
-                )
-                .text_xs()
-                .px_2(),
-            );
-            for (id, label, kind) in [
-                ("recognize-text", "Recognize text", RecognitionKind::Text),
-                ("recognize-math", "Recognize math", RecognitionKind::Math),
-            ] {
-                row = row.child(
-                    self.button(id, label, false, cx, move |this, _, _| {
-                        if let Err(error) = this.controller.recognize_selection(kind) {
-                            this.controller.error = Some(error);
-                        }
-                    })
-                    .text_xs()
-                    .px_2(),
-                );
-            }
-        }
-        if self.controller.recognition_review.is_some() {
-            row = row.child(self.button(
-                "review-recognition",
-                "Review text",
-                false,
-                cx,
-                |this, window, cx| this.modal(Modal::Recognition, window, cx),
-            ));
-        }
-        if objects.len() == 1
-            && let Some(id) = self
-                .controller
-                .session()
-                .selection
-                .iter()
-                .find(|id| {
-                    matches!(
-                        self.controller.page().objects.get(id).map(|o| o.as_ref()),
-                        Some(folio_document::Object::Equation(_))
-                    )
-                })
-                .copied()
-        {
-            row = row.child(
-                self.button(
-                    "edit-equation",
-                    "Edit equation",
-                    false,
-                    cx,
-                    move |this, window, cx| this.modal(Modal::EditEquation(id), window, cx),
-                )
-                .text_xs()
-                .px_2(),
-            );
-        }
-        if objects.len() == 1 && matches!(objects[0].as_ref(), folio_document::Object::Image(_)) {
-            row = row
-                .child(
-                    self.button("crop-image", "Crop…", false, cx, |this, w, cx| {
-                        this.start_image_crop(w, cx)
-                    })
-                    .text_xs()
-                    .px_2(),
-                )
-                .child(
-                    self.button(
-                        "crop-image-coordinates",
-                        "Crop with numbers…",
-                        false,
-                        cx,
-                        |this, w, cx| this.modal(Modal::Crop, w, cx),
-                    )
-                    .text_xs()
-                    .px_2(),
-                )
-                .child(
-                    self.button("uncrop-image", "Reset crop", false, cx, |this, _, _| {
-                        this.controller.crop_selection(None)
-                    })
-                    .text_xs()
-                    .px_2(),
-                );
-        }
-        row.child(dimensions)
-            .id("selection-actions")
-            .flex_wrap()
-            .max_h(px((canvas_size.1 - 24.).max(28.)))
-            .overflow_y_scroll()
     }
     fn popover(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = Theme::new(&self.controller.settings);
@@ -2837,6 +2559,7 @@ impl NotesView {
         Ok(events)
     }
     pub fn smoke_toolbar_setup(&mut self, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(String::new()));
         self.controller.select_all();
         cx.notify();
     }
@@ -2844,7 +2567,7 @@ impl NotesView {
         let b = self.canvas_bounds.ok_or("Canvas not laid out")?;
         let button = self
             .accessibility
-            .control_bounds("Refine ink")
+            .control_bounds("Copy")
             .ok_or("Contextual selection toolbar not laid out")?;
         let origin = self.selection_toolbar_origin();
         let left = f32::from(b.origin.x) + origin.x;
@@ -2855,8 +2578,8 @@ impl NotesView {
             || button.y1 > (top + f32::from(self.selection_toolbar_size.height) + 1.) as f64
         {
             return Err(format!(
-                "Contextual selection toolbar is still laying out: button {button:?}; origin {left},{top}; size {:?}",
-                self.selection_toolbar_size
+                "Contextual selection toolbar is still laying out: button {button:?}; origin {left},{top}; size {:?}; canvas {b:?}; viewport {:?}",
+                self.selection_toolbar_size, self.controller.session().viewport
             ));
         }
         let position = point(
@@ -2931,7 +2654,7 @@ impl NotesView {
             }),
         ])
     }
-    pub fn smoke_verify(&mut self) -> Result<(), String> {
+    pub fn smoke_verify(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         let viewport = self.controller.session().viewport;
         if (viewport.zoom - 1.).abs() > 0.001
             || viewport.rotation.abs() > 0.001
@@ -2955,19 +2678,24 @@ impl NotesView {
             return Err("Rich tablet samples were lost".into());
         }
         if self.controller.page().objects.len() != 1
-            || self.controller.session().selection.len() != 1
-            || !stroke.refinement_enabled
             || (stroke.transform.a - 1.).abs() > 0.001
             || (stroke.transform.d - 1.).abs() > 0.001
             || stroke.transform.b.abs() > 0.001
             || stroke.transform.c.abs() > 0.001
         {
             return Err(format!(
-                "Stylus selection-toolbar click must refine ink without drawing through the overlay: {} objects, {} selected, transform {:?}",
+                "Stylus selection-toolbar Copy must preserve ink without drawing through the overlay: {} objects, {} selected, transform {:?}",
                 self.controller.page().objects.len(),
                 self.controller.session().selection.len(),
                 stroke.transform
             ));
+        }
+        self.controller.select_all(); // Pad undo/redo clears selection; restore it for clipboard comparison.
+        let clipboard = cx.read_from_clipboard().and_then(|item| item.text());
+        if clipboard != self.controller.encode_clipboard() {
+            return Err(
+                "Selection Copy did not write the selected objects to the clipboard".into(),
+            );
         }
         self.controller.select_all();
         self.controller.scale_selection(1.2);
@@ -3370,12 +3098,7 @@ impl Render for NotesView {
             && !self.controller.read_only()
             && !self.controller.session().selection.is_empty()
             && self.controller.math_session.is_none()
-            && self.controller.session().selection.iter().any(|id| {
-                !matches!(
-                    self.controller.page().objects.get(id).map(|o| o.as_ref()),
-                    Some(folio_document::Object::Text(_))
-                )
-            })
+            && self.inline_text.is_none()
         {
             center = center.child(self.selection_toolbar(cx));
         }
