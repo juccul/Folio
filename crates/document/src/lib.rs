@@ -446,6 +446,8 @@ pub struct Shape {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MathLink {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
     pub expression: String,
     pub operation: String,
     pub variable: String,

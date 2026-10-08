@@ -585,6 +585,47 @@ impl Painter {
                         }
                     }
                 }
+                if let Object::Equation(e) = object.as_ref() {
+                    let stale = e
+                        .math_link
+                        .as_ref()
+                        .is_some_and(|link| link.last_error.is_some());
+                    let updating = controller.math_updating(e.id);
+                    if stale || updating {
+                        let rect = object.bounds().expand(3.);
+                        let points = rect_points(rect).map(|p| world.compose(movement).apply(p));
+                        if let Some(path) = line_path(&points, 1.5, true) {
+                            window.paint_path(path, rgb(0xc28c36));
+                        }
+                        let label = if updating {
+                            "Updating calculation…"
+                        } else {
+                            "Out of date · select to retry"
+                        };
+                        let style = window.text_style();
+                        let run = TextRun {
+                            len: label.len(),
+                            font: style.font(),
+                            color: rgb(0xc28c36).into(),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        };
+                        let line =
+                            window
+                                .text_system()
+                                .shape_line(label.into(), px(12.), &[run], None);
+                        let origin = world
+                            .compose(movement)
+                            .apply(DocPoint::new(rect.min.x, rect.min.y));
+                        let _ = line.paint(
+                            point(px(origin.x), px(origin.y - 18.)),
+                            px(18.),
+                            window,
+                            cx,
+                        );
+                    }
+                }
             }
             if !active {
                 return;
@@ -844,7 +885,10 @@ impl Painter {
             window.paint_path(path, rgb(paper_color));
         }
         if let Some(pdf) = &properties.pdf {
-            for asset in pdf.preview_asset.iter().cloned()
+            for asset in pdf
+                .preview_asset
+                .iter()
+                .cloned()
                 .chain(Controller::pdf_scroll_preview_asset(pdf))
             {
                 let Some(path) = controller.asset_path(&asset).filter(|path| path.is_file()) else {

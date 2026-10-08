@@ -755,6 +755,7 @@ impl Controller {
         let attach = has_ink || source_text == request.expression;
         if live || graph || report.assignment.is_some() {
             equation.math_link = Some(MathLink {
+                last_error: None,
                 expression: report.assignment.as_ref().map_or_else(
                     || request.expression.clone(),
                     |name| {
@@ -927,6 +928,27 @@ impl Controller {
         self.math_live_signatures.clear();
         Ok(())
     }
+    pub fn math_updating(&self, id: Id) -> bool {
+        self.math_live_pending.contains(&id)
+    }
+    pub fn retry_linked_math(&mut self, id: Id) -> Result<(), String> {
+        if self.read_only() {
+            return Err("Restore this document before editing".into());
+        }
+        if self.math_updating(id) {
+            return Ok(());
+        }
+        let expression = self
+            .page()
+            .objects
+            .get(&id)
+            .and_then(|o| match o.as_ref() {
+                Object::Equation(e) => e.math_link.as_ref().map(|l| l.expression.clone()),
+                _ => None,
+            })
+            .ok_or("Select a linked calculation")?;
+        self.update_math_expression(id, expression)
+    }
     pub fn update_math_expression(&mut self, id: Id, expression: String) -> Result<(), String> {
         self.update_math_expression_inner(id, expression, false)
     }
@@ -1086,7 +1108,7 @@ impl Controller {
                     page,
                     before,
                     signature,
-                    link,
+                    mut link,
                     sources,
                     ink_version,
                 } => {
@@ -1154,6 +1176,7 @@ impl Controller {
                                 let mut after = old.clone();
                                 after.latex = report.answer_latex;
                                 after.rendered_svg = Some(svg);
+                                link.last_error = None;
                                 after.math_link = Some(*link);
                                 let index = self.sessions[&note]
                                     .document
@@ -1180,6 +1203,30 @@ impl Controller {
                         Err(error) => {
                             self.math_live_signatures.insert(before.id(), signature);
                             self.status = format!("Live math: {error}");
+                            if let Object::Equation(old) = before.as_ref() {
+                                let mut after = old.clone();
+                                link.last_error = Some(error);
+                                after.math_link = Some(*link);
+                                let index = self.sessions[&note]
+                                    .document
+                                    .page(page)
+                                    .unwrap()
+                                    .order
+                                    .iter()
+                                    .position(|id| *id == before.id())
+                                    .unwrap();
+                                self.commit_to(
+                                    note,
+                                    "Mark linked math out of date",
+                                    vec![Change::Object {
+                                        page,
+                                        id: before.id(),
+                                        before: Some(before),
+                                        after: Some(Arc::new(Object::Equation(after))),
+                                        index,
+                                    }],
+                                );
+                            }
                         }
                     }
                 }
@@ -1782,6 +1829,41 @@ for line in sys.stdin:
         assert!(app.math_sources_current(&snapshot));
         app.session_mut().document.pages[pdf_index].properties.pdf = None;
         assert!(!app.math_sources_current(&snapshot));
+        clean(app, root);
+    }
+    #[test]
+    fn failed_live_math_marks_the_retained_answer_and_recovers_durably() {
+        let (mut app, root) = fixture();
+        run(&mut app, "2+3", "auto");
+        app.insert_math_result(false, true).unwrap();
+        app.close_math_solver();
+        let id = *app.session().selection.iter().next().unwrap();
+        let latex = app.page().objects[&id].searchable_text().to_owned();
+        app.update_math_expression(id, "2+(".into()).unwrap();
+        wait(&mut app);
+        let Object::Equation(e) = app.page().objects[&id].as_ref() else {
+            panic!()
+        };
+        assert_eq!(e.latex, latex);
+        assert!(e.math_link.as_ref().unwrap().last_error.is_some());
+        assert_eq!(e.math_link.as_ref().unwrap().expression, "2+(");
+        app.flush().unwrap();
+        drop(app);
+        let mut app = Controller::open(root.clone()).unwrap();
+        let Object::Equation(e) = app.page().objects[&id].as_ref() else {
+            panic!()
+        };
+        assert!(e.math_link.as_ref().unwrap().last_error.is_some());
+        app.retry_linked_math(id).unwrap();
+        assert!(app.math_updating(id));
+        wait(&mut app);
+        app.update_math_expression(id, "3+4".into()).unwrap();
+        wait(&mut app);
+        let Object::Equation(e) = app.page().objects[&id].as_ref() else {
+            panic!()
+        };
+        assert!(e.math_link.as_ref().unwrap().last_error.is_none());
+        assert_eq!(e.latex, "7");
         clean(app, root);
     }
 }

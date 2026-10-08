@@ -1273,6 +1273,12 @@ impl NotesView {
                 || window_control)
             && match id.as_ref() {
                 "open-restored-library" => !self.controller.has_background_work(),
+                "retry-linked-math" => !self
+                    .controller
+                    .session()
+                    .selection
+                    .iter()
+                    .any(|id| self.controller.math_updating(*id)),
                 "submit-modal" if self.equation_draft.is_some() => {
                     !self.controller.equation_pending
                 }
@@ -1477,6 +1483,34 @@ impl NotesView {
                 .text_xs()
                 .px_2(),
             );
+        }
+        for id in self.controller.session().selection.clone() {
+            if let Some(folio_document::Object::Equation(e)) =
+                self.controller.page().objects.get(&id).map(|o| o.as_ref())
+                && let Some(error) = e
+                    .math_link
+                    .as_ref()
+                    .and_then(|link| link.last_error.clone())
+            {
+                row = row
+                    .child(
+                        div()
+                            .text_xs()
+                            .max_w(px(240.))
+                            .child(format!("Out of date: {error}")),
+                    )
+                    .child(self.button(
+                        "retry-linked-math",
+                        "Retry calculation",
+                        false,
+                        cx,
+                        move |this, _, _| {
+                            if let Err(error) = this.controller.retry_linked_math(id) {
+                                this.controller.status = error;
+                            }
+                        },
+                    ));
+            }
         }
         row = row.child(
             self.button("solve-selection", "Solve", false, cx, |this, window, cx| {

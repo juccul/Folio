@@ -201,6 +201,7 @@ fn linked_math_index_tracks_edits_undo_redo_and_page_changes() {
         source_strokes: vec![],
         transform: Transform::default(),
         math_link: Some(MathLink {
+            last_error: None,
             expression: "a:=5".into(),
             operation: "assign".into(),
             variable: "x".into(),
