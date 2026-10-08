@@ -12,6 +12,7 @@ mod graph;
 mod help;
 mod icons;
 pub use icons::IconAssets;
+mod export_options;
 mod inline_text;
 mod math_panel;
 mod motion;
@@ -199,6 +200,7 @@ pub struct NotesView {
     more_section: MoreSection,
     selection_toolbar_size: Size<Pixels>,
     export_open: bool,
+    export_options: export_options::Options,
     help_open: bool,
     library_open: bool,
     pages_open: bool,
@@ -281,6 +283,7 @@ impl NotesView {
             more_section: MoreSection::Document,
             selection_toolbar_size: size(px(600.), px(80.)),
             export_open: false,
+            export_options: export_options::Options::default(),
             help_open: false,
             library_open: true,
             pages_open: false,
@@ -945,7 +948,12 @@ impl NotesView {
             .title
             .replace(['/', '\\'], "-");
         let suggested = format!("{title}.{ext}");
-        let snapshot = self.controller.prepare_export();
+        let mut snapshot = self.controller.prepare_export();
+        if matches!(kind, ExportKind::Pdf | ExportKind::Svg | ExportKind::Png) {
+            let theme = Theme::new(&self.controller.settings);
+            let appearance = self.export_options.appearance;
+            snapshot.map_pages(|page| export_options::apply(page, theme, appearance));
+        }
         let path = cx.prompt_for_new_path(&self.controller.data_dir, Some(&suggested));
         cx.spawn(async move |view, cx| match path.await {
             Ok(Ok(Some(path))) => {
@@ -1907,6 +1915,7 @@ impl NotesView {
             .flex_col()
             .gap_2();
         if self.export_open {
+            panel = panel.child(self.export_appearance(cx));
             panel = panel.child(
                 div()
                     .px_2()
@@ -3669,7 +3678,10 @@ impl Render for NotesView {
                 cx.listener(|this, _: &OpenTab, w, cx| this.modal(Modal::OpenDocument, w, cx)),
             )
             .on_action(cx.listener(|this, _: &Import, _, cx| this.import(cx)))
-            .on_action(cx.listener(|this, _: &Export, _, cx| this.export(ExportKind::Pdf, cx)));
+            .on_action(cx.listener(|this, _: &Export, _, cx| {
+                this.export_open = true;
+                cx.notify();
+            }));
         let mut body = div().relative().flex().flex_1().min_h_0().min_w_0();
         if self.library_open {
             self.canvas_bounds = None;

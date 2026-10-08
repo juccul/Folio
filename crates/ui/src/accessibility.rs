@@ -199,6 +199,9 @@ fn semantics(key: &str) -> Semantics {
     ) {
         return radio(38, "Paper color");
     }
+    if matches!(key, "export-original" | "export-visible" | "export-print") {
+        return radio(46, "Export appearance");
+    }
     if matches!(key, "grid-view" | "list-view") {
         return radio(39, "Library view");
     }

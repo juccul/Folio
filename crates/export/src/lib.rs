@@ -347,6 +347,17 @@ fn svg_options() -> resvg::usvg::Options<'static> {
         ..Default::default()
     }
 }
+/// Bounded rendering shared by export previews and document thumbnails.
+pub fn raster_page_limited(
+    page: &Page,
+    assets: &Path,
+    edge: u32,
+) -> Result<resvg::tiny_skia::Pixmap> {
+    let svg = page_svg(page, assets, true)?;
+    let tree = resvg::usvg::Tree::from_str(&svg, &svg_options())?;
+    let scale = edge.clamp(1, 2048) as f32 / tree.size().width().max(tree.size().height()).max(1.);
+    raster_svg(&svg, scale)
+}
 pub fn raster_svg(svg: &str, scale: f32) -> Result<resvg::tiny_skia::Pixmap> {
     let tree = resvg::usvg::Tree::from_str(svg, &svg_options())?;
     let w = (tree.size().width() * scale).ceil() as u32;

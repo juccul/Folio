@@ -186,9 +186,17 @@ fn linked_math_objects(page: &Page) -> HashSet<Id> {
 }
 
 /// Immutable target captured before a native export dialog can switch focus.
+#[derive(Clone)]
 pub struct ExportSnapshot {
     document: Document,
     page: Id,
+}
+impl ExportSnapshot {
+    pub fn map_pages(&mut self, mut map: impl FnMut(&mut Page)) {
+        for page in &mut self.document.pages {
+            map(page);
+        }
+    }
 }
 pub enum Interaction {
     Ink {
