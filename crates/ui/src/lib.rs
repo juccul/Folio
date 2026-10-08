@@ -1273,6 +1273,14 @@ impl NotesView {
                 || window_control)
             && match id.as_ref() {
                 "open-restored-library" => !self.controller.has_background_work(),
+                "submit-modal"
+                    if matches!(self.modal.as_ref(), Some((Modal::Recognition, _)))
+                        && self.controller.recognition_for_index =>
+                {
+                    self.controller.can_index_review()
+                        && !self.controller.recognition_pending
+                        && !self.controller.read_only()
+                }
                 "retry-linked-math" => !self
                     .controller
                     .session()
@@ -3358,6 +3366,13 @@ impl Render for NotesView {
             } else {
                 self.text_formatting_bar(cx)
             };
+            let stale_index_notice = (self.controller.stale_handwriting_regions() > 0).then(|| {
+                let count = self.controller.stale_handwriting_regions();
+                div().px_4().py_2().flex().items_center().gap_3()
+                    .child(div().flex_1().text_sm().child(format!("Handwriting changed in {count} indexed region{}. Reviewed text is retained and needs updating.",if count==1 {""} else {"s"})))
+                    .child(self.button("review-stale-index","Review retained text",false,cx,|this,w,cx| {this.controller.review_stale_handwriting();this.modal(Modal::Recognition,w,cx);}))
+                    .when(!self.controller.read_only(),|row| row.child(self.button("reindex-stale-page","Recognize page again",false,cx,|this,_,_| {if let Err(error)=this.controller.index_page_handwriting(){this.controller.status=error;}})))
+            });
             let import_notice = self
                 .controller
                 .library_imports
@@ -3485,6 +3500,7 @@ impl Render for NotesView {
                     .children(toolbar)
                     .children(trash_notice)
                     .children(import_notice)
+                    .children(stale_index_notice)
                     .when(self.region_selection.is_some(), |body| {
                         body.child(
                             div()

@@ -634,6 +634,8 @@ pub struct InkGroup {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InkText {
+    #[serde(default)]
+    pub stale: bool,
     pub text: String,
     pub sources: Vec<Id>,
     pub bounds: Rect,
@@ -732,10 +734,11 @@ impl Page {
                 self.ink_text
                     .iter()
                     .filter(|entry| {
-                        entry
-                            .sources
-                            .iter()
-                            .all(|id| self.objects.contains_key(id) && !hidden.contains(id))
+                        !entry.stale
+                            && entry
+                                .sources
+                                .iter()
+                                .all(|id| self.objects.contains_key(id) && !hidden.contains(id))
                     })
                     .map(|entry| entry.text.clone()),
             );
@@ -807,7 +810,7 @@ impl Document {
             for entry in &page.ink_text {
                 if entry.text.trim().is_empty()
                     || entry.text.len() > 65536
-                    || entry.sources.is_empty()
+                    || (!entry.stale && entry.sources.is_empty())
                     || entry.sources.len() > 4096
                     || entry
                         .sources

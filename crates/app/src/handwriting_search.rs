@@ -16,6 +16,56 @@ impl Controller {
             .collect();
         self.index_selected_handwriting()
     }
+    pub fn stale_handwriting_regions(&self) -> usize {
+        self.page()
+            .ink_text
+            .iter()
+            .filter(|entry| entry.stale)
+            .count()
+    }
+    pub fn review_stale_handwriting(&mut self) {
+        let entries: Vec<_> = self
+            .page()
+            .ink_text
+            .iter()
+            .filter(|entry| entry.stale)
+            .collect();
+        let Some(bounds) = entries.iter().map(|entry| entry.bounds).reduce(Rect::union) else {
+            return;
+        };
+        let text = entries
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let hidden = self.page().hidden_sources();
+        let sources = self
+            .page()
+            .ordered_objects()
+            .filter(|o| {
+                matches!(o.as_ref(), Object::Stroke(_))
+                    && !hidden.contains(&o.id())
+                    && o.bounds().intersects(bounds.expand(2.))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let bounds = sources
+            .iter()
+            .map(|o| o.bounds())
+            .reduce(Rect::union)
+            .unwrap_or(bounds);
+        self.recognition_review = Some(RecognitionReview {
+            kind: RecognitionKind::Text,
+            text,
+            note: self.active,
+            page: self.page().id,
+            bounds,
+            sources,
+            pdf_source: None,
+        });
+        self.recognition_for_index = true;
+        self.status = "Review the retained text against the changed handwriting".into();
+    }
     pub fn can_index_review(&self) -> bool {
         self.recognition_review.as_ref().is_some_and(|r| {
             r.kind == RecognitionKind::Text
@@ -53,8 +103,12 @@ impl Controller {
         let before = self.page().ink_text.clone();
         let mut after = before.clone();
         let sources: Vec<_> = review.sources.iter().map(|o| o.id()).collect();
-        after.retain(|entry| !entry.sources.iter().any(|id| sources.contains(id)));
+        after.retain(|entry| {
+            !entry.sources.iter().any(|id| sources.contains(id))
+                && !(entry.stale && entry.bounds.intersects(review.bounds.expand(2.)))
+        });
         after.push(InkText {
+            stale: false,
             text: text.trim().into(),
             sources,
             bounds: review.bounds,
@@ -140,10 +194,17 @@ pub(super) fn maintain_index(document: &Document, changes: &mut Vec<Change>) {
                     }
                 } else { false }
             });
-            if changed {
-                continue;
-            }
-            let bounds = entry
+            let mut retained = entry.clone();
+            retained.stale |= changed;
+            retained.sources.retain(|id| {
+                let object = if let Some((_, after)) = edits.get(id) {
+                    after.as_ref()
+                } else {
+                    page.objects.get(id)
+                };
+                object.is_some_and(|o| matches!(o.as_ref(), Object::Stroke(_)))
+            });
+            let bounds = retained
                 .sources
                 .iter()
                 .filter_map(|id| {
@@ -155,11 +216,9 @@ pub(super) fn maintain_index(document: &Document, changes: &mut Vec<Change>) {
                 })
                 .reduce(Rect::union);
             if let Some(bounds) = bounds {
-                after.push(InkText {
-                    bounds,
-                    ..entry.clone()
-                });
+                retained.bounds = bounds;
             }
+            after.push(retained);
         }
         if after != page.ink_text {
             additions.push(Change::InkText {
@@ -170,4 +229,79 @@ pub(super) fn maintain_index(document: &Document, changes: &mut Vec<Change>) {
         }
     }
     changes.extend(additions);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn changed_handwriting_retains_reviewed_drafts_and_undo_restores_index() {
+        let mut app = Controller::open(
+            std::env::temp_dir().join(format!("folio-index-test-{}", Id::new_v4())),
+        )
+        .unwrap();
+        let mut builder = StrokeBuilder::new(PenStyle::default());
+        builder.push(StrokePoint::new(Point::new(10., 10.), 0.5, 0));
+        builder.push(StrokePoint::new(Point::new(100., 20.), 0.5, 16));
+        let stroke = builder.finish().unwrap();
+        let id = stroke.id;
+        let page = app.page().id;
+        app.commit(
+            "Ink",
+            vec![Change::Object {
+                page,
+                id,
+                before: None,
+                after: Some(Arc::new(Object::Stroke(stroke))),
+                index: 0,
+            }],
+        );
+        app.recognition_review = Some(RecognitionReview {
+            kind: RecognitionKind::Text,
+            text: "reviewed draft".into(),
+            note: app.active,
+            page,
+            bounds: app.page().objects[&id].bounds(),
+            sources: vec![app.page().objects[&id].clone()],
+            pdf_source: None,
+        });
+        app.keep_ink_and_index("reviewed draft".into()).unwrap();
+        let mut new_stroke = app.page().objects[&id].as_ref().clone();
+        new_stroke.set_id(Id::new_v4());
+        app.commit(
+            "New nearby ink",
+            vec![Change::Object {
+                page,
+                id: new_stroke.id(),
+                before: None,
+                after: Some(Arc::new(new_stroke)),
+                index: 1,
+            }],
+        );
+        assert_eq!(app.stale_handwriting_regions(), 1);
+        assert_eq!(app.page().ink_text[0].text, "reviewed draft");
+        assert!(!app.page().text().contains("reviewed draft"));
+        app.review_stale_handwriting();
+        assert_eq!(
+            app.recognition_review.as_ref().unwrap().text,
+            "reviewed draft"
+        );
+        assert_eq!(app.recognition_review.as_ref().unwrap().sources.len(), 2);
+        app.undo();
+        assert_eq!(app.stale_handwriting_regions(), 0);
+        app.redo();
+        assert_eq!(app.stale_handwriting_regions(), 1);
+        app.select_all();
+        app.delete_selection();
+        assert_eq!(app.page().ink_text[0].text, "reviewed draft");
+        assert!(app.page().ink_text[0].sources.is_empty());
+        app.session().document.validate().unwrap();
+        app.session().document.pages[0].duplicate();
+        app.flush().unwrap();
+        let root = app.data_dir.clone();
+        drop(app);
+        let app = Controller::open(root).unwrap();
+        assert_eq!(app.page().ink_text[0].text, "reviewed draft");
+        assert_eq!(app.stale_handwriting_regions(), 1);
+    }
 }

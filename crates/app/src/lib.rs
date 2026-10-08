@@ -2114,7 +2114,7 @@ impl Controller {
                 s.page()
                     .ink_text
                     .iter()
-                    .filter(|entry| folio_search::matches_text(&entry.text, &query))
+                    .filter(|entry| !entry.stale && folio_search::matches_text(&entry.text, &query))
                     .map(|entry| entry.bounds),
             );
             if let Some(r) = highlights.first() {
