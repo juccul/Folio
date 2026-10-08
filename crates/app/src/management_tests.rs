@@ -922,3 +922,51 @@ fn workspace_preferences_restore_documents_and_page_ids_and_allow_opt_out() {
     assert_eq!(a.session().page, 0);
     assert!(a.notes.iter().any(|n| n.id == a.active));
 }
+
+#[test]
+fn named_presets_deduplicate_manage_and_restore_each_drawing_tool() {
+    let mut a = app();
+    let root = a.data_dir.clone();
+    let count = a.settings.pen_presets.len();
+    a.style.color = Color::from_rgb(0x123456);
+    a.style.width = 5.5;
+    let id = a.save_named_preset("Lecture pen".into()).unwrap();
+    assert_eq!(a.settings.pen_presets.len(), count + 1);
+    assert_eq!(a.save_named_preset("Same settings".into()).unwrap(), id);
+    assert_eq!(a.settings.pen_presets.len(), count + 1);
+    assert!(a.rename_preset(id, "  ".into()).is_err());
+    a.rename_preset(id, "My writing".into()).unwrap();
+    let pen = a.style.clone();
+    a.set_ink_tool(InkTool::Highlighter);
+    a.style.width = 29.;
+    a.style.opacity = 0.4;
+    a.set_color(Color::from_rgb(0xffd100));
+    let highlighter = a.style.clone();
+    a.set_ink_tool(pen.tool);
+    assert_eq!(a.style, pen);
+    a.style.width = 6.;
+    a.update_preset(id).unwrap();
+    a.flush().unwrap();
+    drop(a);
+    let mut a = Controller::open(root.clone()).unwrap();
+    assert_eq!(
+        a.settings
+            .pen_presets
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap()
+            .name,
+        "My writing"
+    );
+    a.set_ink_tool(InkTool::Highlighter);
+    assert_eq!(a.style, highlighter);
+    a.apply_preset(id);
+    assert_eq!(a.style.width, 6.);
+    a.delete_preset(id);
+    let style = a.style.clone();
+    a.flush().unwrap();
+    drop(a);
+    let a = Controller::open(root).unwrap();
+    assert!(!a.settings.pen_presets.iter().any(|p| p.id == id));
+    assert_eq!(a.style, style);
+}

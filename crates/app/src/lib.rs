@@ -11,6 +11,7 @@ mod management_tests;
 #[cfg(test)]
 mod optimization_tests;
 mod page_actions;
+mod pen_presets;
 pub mod portable;
 mod starter;
 mod templates;
@@ -31,7 +32,7 @@ pub use folio_math::{VectorCommand, VectorFormula};
 use folio_storage::{Delta, JournalEvent, Persistence, Store};
 pub use math_solver::{MathReport, MathRequest, MathSession, MathStep};
 pub use recognition::{RecognitionKind, RecognitionReview};
-pub use settings::{EraserMode, PageTemplate, Settings, WorkspacePreferences};
+pub use settings::{EraserMode, PageTemplate, PenPreset, Settings, WorkspacePreferences};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -1134,10 +1135,22 @@ impl Controller {
         self.store_settings();
     }
     pub fn set_style(&mut self, style: PenStyle) {
+        if style == self.style {
+            return;
+        }
+        self.settings
+            .tool_styles
+            .retain(|s| s.tool != self.style.tool);
+        self.settings.tool_styles.push(self.style.clone());
         self.style = style;
+        self.store_settings();
     }
     pub fn store_settings(&mut self) {
         self.settings.default_pen = self.style.clone();
+        self.settings
+            .tool_styles
+            .retain(|s| s.tool != self.style.tool);
+        self.settings.tool_styles.push(self.style.clone());
         match serde_json::to_string(&self.settings) {
             Ok(data) => self.persistence.settings(data),
             Err(e) => self.error = Some(e.to_string()),
@@ -1157,10 +1170,6 @@ impl Controller {
                 self.persist(delta);
             }
         }
-        self.store_settings();
-    }
-    pub fn save_preset(&mut self) {
-        self.settings.presets.push(self.style.clone());
         self.store_settings();
     }
     pub fn cancel(&mut self) {

@@ -221,7 +221,10 @@ fn semantics(key: &str) -> Semantics {
     if key.starts_with("page-unit-") {
         return radio(48, "Page dimension unit");
     }
-    if key.starts_with("preset-") {
+    if key
+        .strip_prefix("preset-")
+        .is_some_and(|id| Id::parse_str(id).is_ok())
+    {
         return radio(43, "Pen presets");
     }
     if key.starts_with("pen-type-") {

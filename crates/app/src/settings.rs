@@ -16,6 +16,12 @@ pub struct PageTemplate {
     #[serde(default)]
     pub preview: Option<String>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PenPreset {
+    pub id: Id,
+    pub name: String,
+    pub style: PenStyle,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkspacePreferences {
@@ -55,7 +61,10 @@ pub struct Settings {
     pub appearance: crate::appearance::Appearance,
     pub ui_scale: f32,
     pub default_pen: PenStyle,
+    #[serde(default, skip_serializing)]
     pub presets: Vec<PenStyle>,
+    pub pen_presets: Vec<PenPreset>,
+    pub tool_styles: Vec<PenStyle>,
     pub paper: Paper,
     pub default_page: Option<PageProperties>,
     pub pad_buttons: Vec<String>,
@@ -137,6 +146,60 @@ impl Settings {
         for preset in &mut self.presets {
             normalize_pen(preset);
         }
+        for preset in &mut self.pen_presets {
+            normalize_pen(&mut preset.style);
+        }
+        for style in &mut self.tool_styles {
+            normalize_pen(style);
+        }
+        for style in std::mem::take(&mut self.presets) {
+            if !self.pen_presets.iter().any(|p| p.style == style) {
+                let name = format!("{:?} {}", style.tool, self.pen_presets.len() + 1);
+                self.pen_presets.push(PenPreset {
+                    id: Id::new_v4(),
+                    name,
+                    style,
+                });
+            }
+        }
+        let mut cleaned: Vec<PenPreset> = vec![];
+        for mut preset in std::mem::take(&mut self.pen_presets) {
+            if cleaned.iter().any(|p| p.style == preset.style) {
+                continue;
+            }
+            if cleaned.iter().any(|p| p.id == preset.id) {
+                preset.id = Id::new_v4();
+            }
+            let name = preset
+                .name
+                .trim()
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(56)
+                .collect::<String>();
+            let name = if name.is_empty() { "Pen".into() } else { name };
+            let mut candidate = name.clone();
+            let mut suffix = 2;
+            while cleaned
+                .iter()
+                .any(|p| p.name.to_lowercase() == candidate.to_lowercase())
+            {
+                candidate = format!("{name} {suffix}");
+                suffix += 1;
+            }
+            preset.name = candidate;
+            cleaned.push(preset);
+            if cleaned.len() == 64 {
+                break;
+            }
+        }
+        self.pen_presets = cleaned;
+        let mut profiles: Vec<PenStyle> = vec![];
+        for style in std::mem::take(&mut self.tool_styles) {
+            profiles.retain(|s| s.tool != style.tool);
+            profiles.push(style);
+        }
+        self.tool_styles = profiles;
     }
 }
 
@@ -153,6 +216,8 @@ impl Default for Settings {
             appearance: Default::default(),
             ui_scale: 1.,
             default_pen: PenStyle::default(),
+            pen_presets: vec![],
+            tool_styles: vec![],
             presets: vec![
                 PenStyle::default(),
                 PenStyle {
@@ -207,6 +272,25 @@ impl Default for Settings {
 mod tests {
     use super::*;
 
+    #[test]
+    fn legacy_presets_migrate_once_without_resurrecting_deleted_defaults() {
+        let style = PenStyle::default();
+        let mut settings: Settings =
+            serde_json::from_value(serde_json::json!({"presets":[style,style]})).unwrap();
+        settings.normalize();
+        assert_eq!(settings.pen_presets.len(), 1);
+        let id = settings.pen_presets[0].id;
+        let mut reopened: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        reopened.normalize();
+        assert_eq!(reopened.pen_presets.len(), 1);
+        assert_eq!(reopened.pen_presets[0].id, id);
+        reopened.pen_presets.clear();
+        let mut reopened: Settings =
+            serde_json::from_str(&serde_json::to_string(&reopened).unwrap()).unwrap();
+        reopened.normalize();
+        assert!(reopened.pen_presets.is_empty());
+    }
     #[test]
     fn malformed_numeric_preferences_are_bounded_without_losing_choices() {
         let mut settings = Settings {

@@ -1441,7 +1441,7 @@ impl NotesView {
                         let style = this
                             .controller
                             .settings
-                            .presets
+                            .tool_styles
                             .iter()
                             .find(|s| s.tool == InkTool::Highlighter)
                             .cloned()

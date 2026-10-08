@@ -22,6 +22,7 @@ mod notebook_setup;
 mod ocr_setup;
 mod page_size;
 mod painting;
+mod pen_presets;
 mod portable;
 mod region;
 mod selection;
@@ -86,6 +87,8 @@ enum Modal {
     SaveTemplate,
     Templates,
     RenameTemplate(Id),
+    SavePreset,
+    RenamePreset(Id),
     PageBookmark,
     MovePage,
     Recognition,
@@ -123,6 +126,8 @@ impl Modal {
             Self::SaveTemplate => "Save page as template",
             Self::Templates => "Page templates",
             Self::RenameTemplate(_) => "Rename template",
+            Self::SavePreset => "Name pen preset",
+            Self::RenamePreset(_) => "Rename pen preset",
             Self::PageBookmark => "Name bookmark (empty removes it)",
             Self::MovePage => "Move page to document",
             Self::Recognition => "Review recognized writing",
@@ -463,6 +468,19 @@ impl NotesView {
             self.prepare_notebook_setup(window, cx);
         }
         let content = match &modal {
+            Modal::SavePreset => format!(
+                "{:?} {}",
+                self.controller.style.tool,
+                self.controller.settings.pen_presets.len() + 1
+            ),
+            Modal::RenamePreset(id) => self
+                .controller
+                .settings
+                .pen_presets
+                .iter()
+                .find(|p| p.id == *id)
+                .map(|p| p.name.clone())
+                .unwrap_or_default(),
             Modal::SaveTemplate => self
                 .controller
                 .page()
@@ -759,6 +777,19 @@ impl NotesView {
                 field.read(cx).focus.focus(window);
                 cx.notify();
                 return;
+            }
+            Modal::SavePreset | Modal::RenamePreset(_) => {
+                let result = if let Modal::RenamePreset(id) = modal {
+                    self.controller.rename_preset(id, content)
+                } else {
+                    self.controller.save_named_preset(content).map(|_| ())
+                };
+                if let Err(error) = result {
+                    self.modal_error = Some(error);
+                    field.read(cx).focus.focus(window);
+                    cx.notify();
+                    return;
+                }
             }
             Modal::ThemeColor { dark, token } => {
                 match folio_app::appearance::ThemeColor::parse(&content) {
@@ -2194,11 +2225,7 @@ impl NotesView {
                         self.controller.style.tool == tool,
                         cx,
                         move |this, _, _| {
-                            this.controller.style.tool = tool;
-                            if tool == InkTool::Highlighter {
-                                this.controller.style.width = 20.;
-                                this.controller.style.opacity = 0.3;
-                            }
+                            this.controller.set_ink_tool(tool);
                         },
                     )
                     .text_xs()
@@ -2258,42 +2285,18 @@ impl NotesView {
                 )
                 .justify_start(),
             );
-            panel = panel.child(
-                self.button("save-preset", "Save as preset", false, cx, |this, _, _| {
-                    this.controller.save_preset()
-                })
-                .justify_start(),
-            );
-            for (i, preset) in self
-                .controller
-                .settings
-                .presets
-                .clone()
-                .into_iter()
-                .enumerate()
-            {
-                let label = format!(
-                    "{:?} · {:.1} · {}",
-                    preset.tool,
-                    preset.width,
-                    preset.color.hex()
-                );
-                panel = panel.child(
+            panel = panel
+                .child(
                     self.button(
-                        format!("preset-{i}"),
-                        label,
+                        "save-preset",
+                        "Save current pen as preset…",
                         false,
                         cx,
-                        move |this, _, _| {
-                            this.controller.set_style(preset.clone());
-                            this.region_selection = None;
-                            this.controller.set_tool(Tool::Pen)
-                        },
+                        |this, w, cx| this.modal(Modal::SavePreset, w, cx),
                     )
-                    .text_xs()
                     .justify_start(),
-                );
-            }
+                )
+                .child(self.preset_controls(cx));
         }
         if self.pen_settings && !self.controller.settings.recent_colors.is_empty() {
             let mut recent = div().flex().gap_1().items_center().child("Recent colors");
@@ -3211,6 +3214,7 @@ fn adjust_pen(this: &mut NotesView, kind: i32, sign: f32) {
         2 => s.stabilization = (s.stabilization + sign * 0.1).clamp(0., 0.9),
         _ => s.pressure_gamma = (s.pressure_gamma + sign * 0.1).clamp(0.2, 3.),
     }
+    this.controller.store_settings();
 }
 fn this_region(controller: &mut Controller, values: &[f32]) -> Result<(), String> {
     controller.read_pdf_math(folio_document::Rect::new(
