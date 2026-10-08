@@ -8,13 +8,13 @@ Windows 11 x64 build, portable package, per-user installer, and validation instr
 
 ## Releases
 
-Download [Folio 0.1.1](https://github.com/juccul/Folio/releases/tag/v0.1.1) for **Windows 11 x64**. The previous [0.1.0 Linux Flatpak](https://github.com/juccul/Folio/releases/tag/v0.1.0) remains available. Sign in to GitHub with access to this private repository.
+Download [Folio 0.1.1](https://github.com/juccul/Folio/releases/tag/v0.1.1) for **Linux x86_64 and Windows 11 x64**. Sign in to GitHub with access to this private repository.
 
 | Format | Download | Install |
 | --- | --- | --- |
 | Windows installer | [folio-0.1.1-windows-x64-setup.exe](https://github.com/juccul/Folio/releases/download/v0.1.1/folio-0.1.1-windows-x64-setup.exe) | Run the installer; no administrator rights needed. |
 | Windows portable ZIP | [folio-0.1.1-windows-x64.zip](https://github.com/juccul/Folio/releases/download/v0.1.1/folio-0.1.1-windows-x64.zip) | Extract the complete folder and run `bin/folio.exe`. |
-| Linux Flatpak (0.1.0) | [folio-0.1.0-x86_64.flatpak](https://github.com/juccul/Folio/releases/download/v0.1.0/folio-0.1.0-x86_64.flatpak) | `flatpak install --user ./folio-0.1.0-x86_64.flatpak` |
+| Linux Flatpak | [folio-0.1.1-x86_64.flatpak](https://github.com/juccul/Folio/releases/download/v0.1.1/folio-0.1.1-x86_64.flatpak) | `flatpak install --user ./folio-0.1.1-x86_64.flatpak` |
 
 On Windows, launch **Folio** from the Start menu. Notes are stored in `%LOCALAPPDATA%\Folio`; updates and uninstall preserve them. The installer bundles offline math, PDF tools, Python and the matching Visual C++ runtime. See [Windows instructions](WINDOWS.md).
 
@@ -22,7 +22,7 @@ On Linux, launch **Folio** from your application menu, or run `flatpak run io.gi
 
 The Flatpak includes the **offline CPU math solver**, pinned SymPy/mpmath dependencies and PDF preview tools. GLM-OCR Q8 weights and the Vulkan inference runtime download automatically on the first OCR request if no usable model pack exists; see [recognition setup](#install-optional-offline-recognition). Use the Flatpak file picker for importing and exporting files.
 
-The [0.1.1 release notes](RELEASE_NOTES.md) describe the Windows downloads and matching source. `SHA256SUMS` accompanies the release assets. Checksums and installation instructions for the previous Linux Flatpak remain in the [0.1.0 release notes](https://github.com/juccul/Folio/blob/v0.1.0/RELEASE_NOTES.md).
+The [0.1.1 release notes](RELEASE_NOTES.md) describe the Linux and Windows downloads and matching source. `SHA256SUMS` accompanies the release assets.
 
 The interface opens to a minimal document library with folders, favorites, recent notes, and grid/list views. Open a document for a compact writing toolbar and a collapsible page strip; the tab strip includes a + picker for opening an existing document or creating one. Drag tabs to reorder them. Right-click a library card or use its … menu to rename, duplicate, favorite, move, tag, trash or restore that document. Folio uses original icons and native GPUI rendering.
 
