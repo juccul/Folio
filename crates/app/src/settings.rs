@@ -21,6 +21,7 @@ pub struct PageTemplate {
 pub struct Settings {
     pub templates: Vec<PageTemplate>,
     pub collapsed_folders: Vec<Id>,
+    pub recent_documents: Vec<Id>,
     pub dark: bool,
     pub reduce_motion: bool,
     pub appearance: crate::appearance::Appearance,
@@ -60,6 +61,9 @@ impl Settings {
                     folio_export::asset_path(std::path::Path::new("."), name).is_ok()
                 })
         });
+        let mut seen_recent = std::collections::HashSet::new();
+        self.recent_documents.retain(|id| seen_recent.insert(*id));
+        self.recent_documents.truncate(20);
         let defaults = Self::default();
         let bound = |value: f32, fallback: f32, min: f32, max: f32| {
             if value.is_finite() {
@@ -103,6 +107,7 @@ impl Default for Settings {
         Self {
             templates: vec![],
             collapsed_folders: vec![],
+            recent_documents: vec![],
             dark: false,
             reduce_motion: false,
             appearance: Default::default(),

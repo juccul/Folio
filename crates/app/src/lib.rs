@@ -490,21 +490,36 @@ impl Controller {
     pub fn page(&self) -> &Page {
         self.session().page()
     }
+    pub fn mark_note_opened(&mut self, id: Id) {
+        if !self.notes.iter().any(|n| n.id == id && !n.trashed) {
+            return;
+        }
+        self.settings.recent_documents.retain(|n| *n != id);
+        self.settings.recent_documents.insert(0, id);
+        self.settings.recent_documents.truncate(20);
+        self.store_settings();
+    }
     pub fn visible_notes(&self) -> Vec<&NoteMetadata> {
-        self.notes
+        let mut notes: Vec<_> = self
+            .notes
             .iter()
             .filter(|n| match self.filter {
                 NoteFilter::Trash => n.trashed,
                 NoteFilter::Favorites => !n.trashed && n.favorite,
                 NoteFilter::Notebook(id) => !n.trashed && n.notebook == Some(id),
+                NoteFilter::Recent => !n.trashed && self.settings.recent_documents.contains(&n.id),
                 _ => !n.trashed,
             })
-            .take(if self.filter == NoteFilter::Recent {
-                20
-            } else {
-                usize::MAX
-            })
-            .collect()
+            .collect();
+        if self.filter == NoteFilter::Recent {
+            notes.sort_by_key(|n| {
+                self.settings
+                    .recent_documents
+                    .iter()
+                    .position(|id| *id == n.id)
+            });
+        }
+        notes
     }
     fn persist(&mut self, mut delta: Delta) {
         let id = delta.metadata.id;
@@ -726,6 +741,7 @@ impl Controller {
         self.active = id;
         self.filter = NoteFilter::All;
         self.search_highlights.clear();
+        self.mark_note_opened(id);
         if persist {
             self.persist(delta);
         } else {
@@ -755,6 +771,7 @@ impl Controller {
         self.pending_note = None;
         if self.sessions.contains_key(&id) {
             self.activate_note(id);
+            self.mark_note_opened(id);
             if self.read_only() {
                 self.tool = Tool::Hand;
             }
@@ -2239,6 +2256,8 @@ impl Controller {
         self.library_imports.remove(&note);
         if self.provisional_imports.remove(&note) {
             self.notes.retain(|n| n.id != note);
+            self.settings.recent_documents.retain(|id| *id != note);
+            self.store_settings();
             if note == self.active {
                 if let Some(id) = self.notes.iter().find(|n| !n.trashed).map(|n| n.id) {
                     self.switch_note(id);
@@ -2673,6 +2692,7 @@ impl Controller {
                     if self.pending_note == Some(id) {
                         self.finish();
                         self.activate_note(id);
+                        self.mark_note_opened(id);
                         if self.read_only() {
                             self.tool = Tool::Hand;
                         }

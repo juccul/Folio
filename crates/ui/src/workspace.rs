@@ -278,6 +278,7 @@ impl NotesView {
         self.document_menu = None;
         self.library_open = false;
         let id = self.controller.active;
+        self.controller.mark_note_opened(id);
         if !self.open_tabs.contains(&id) {
             self.open_tabs.push(id);
         }
@@ -850,7 +851,7 @@ impl NotesView {
             .collect::<Vec<_>>();
         if self.sort_by_name {
             notes.sort_by_key(|n| n.title.to_lowercase());
-        } else {
+        } else if self.controller.filter != NoteFilter::Recent {
             notes.sort_by_key(|n| std::cmp::Reverse(n.updated_at));
         }
         let count = notes.len();
@@ -1070,6 +1071,8 @@ impl NotesView {
                             "sort-notes",
                             if self.sort_by_name {
                                 "Name  ↓"
+                            } else if self.controller.filter == NoteFilter::Recent {
+                                "Last opened  ↓"
                             } else {
                                 "Last edited  ↓"
                             },

@@ -787,3 +787,40 @@ fn search_states_clear_stale_results_and_associate_latest_query_and_page() {
     assert!(matches!(a.search_state, SearchState::Failed(_)));
     assert!(a.error.is_none());
 }
+
+#[test]
+fn recent_documents_follow_opening_not_editing_and_survive_restart() {
+    let mut a = app();
+    let first = a.active;
+    a.filter = NoteFilter::Recent;
+    assert!(a.visible_notes().is_empty());
+    a.create_note();
+    let second = a.active;
+    a.switch_note(first);
+    let title = a.session().document.metadata.title.clone();
+    let edited = a.session().document.metadata.updated_at;
+    a.filter = NoteFilter::Recent;
+    assert_eq!(
+        a.visible_notes().iter().map(|n| n.id).collect::<Vec<_>>(),
+        vec![first, second]
+    );
+    assert_eq!(a.session().document.metadata.updated_at, edited);
+    assert_eq!(a.session().document.metadata.title, title);
+    a.rename("An edit".into());
+    assert_eq!(a.settings.recent_documents, vec![first, second]);
+    a.switch_note(second);
+    a.filter = NoteFilter::Recent;
+    assert_eq!(a.visible_notes()[0].id, second);
+    a.flush().unwrap();
+    let root = a.data_dir.clone();
+    drop(a);
+    let mut a = Controller::open(root).unwrap();
+    a.filter = NoteFilter::Recent;
+    assert_eq!(
+        a.visible_notes().iter().map(|n| n.id).collect::<Vec<_>>(),
+        vec![second, first]
+    );
+    a.manage_note(second, NoteAction::Trash);
+    settle(&mut a);
+    assert_eq!(a.visible_notes().len(), 1);
+}
