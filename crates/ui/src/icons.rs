@@ -49,6 +49,7 @@ define_icons! {
     Book => "Book.svg",
     Folder => "Folder.svg",
     Star => "Star.svg",
+    StarFilled => "StarFilled.svg",
     Clock => "Clock.svg",
     Trash => "Trash.svg",
     Search => "Search.svg",

@@ -99,7 +99,7 @@ def main():
                             for _ in range(5):
                                 rows=[]
                                 for node in nodes():
-                                    if node.get_name() not in labels:continue
+                                    if node.get_name() not in labels or node.get_role()!=Atspi.Role.PUSH_BUTTON:continue
                                     r=node.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
                                     assert r.width>width*.4 and r.height>=40*scale and 0<=r.x and r.x+r.width<=width+2,(case,node.get_name(),r.x,r.width,r.height)
                                     rows.append(r);seen.add(node.get_name())
@@ -112,9 +112,47 @@ def main():
                             capture('library-list')
                             for _ in range(5):client.click(width-100,height-90,button=4,delay=.04)
                             click('Grid view');capture('library-grid')
+                        def check_favorite_clicks():
+                            title='Lecture_2_homework'
+                            added='Add '+title+' to favorites';removed='Remove '+title+' from favorites'
+                            def pointer_click(label):
+                                r=find(label).get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                                assert 0<=r.x and r.x+r.width<=width+2 and 0<=r.y and r.y+r.height<=height+2,(case,label,r.x,r.y,r.width,r.height)
+                                client.click(r.x+r.width/2,r.y+r.height/2)
+                            for mode,activation in [('Grid view','space'),('List view','Return')]:
+                                click(mode)
+                                # In large-interface compact layouts a requested grid uses rows.
+                                # Scroll the chosen document into view if it is virtualized out.
+                                for _ in range(5):
+                                    if any(n.get_name()==added for n in nodes()):break
+                                    client.click(width-100,height-90,button=5)
+                                pointer_click(added);find(removed);find('List view')
+                                client.click(width-24,height-24) # Leave the star so its hover hint cannot hide the saved state.
+                                capture('favorite-'+mode.split()[0].lower())
+                                with sqlite3.connect(data/'notes.sqlite3') as db:
+                                    assert json.loads(db.execute('SELECT metadata FROM notes WHERE id=?',(note,)).fetchone()[0])['favorite']==metadata['favorite'], 'Favorite changed the editor document'
+                                assert find(removed).get_component_iface().grab_focus()
+                                for _ in range(20):
+                                    if find(removed).get_state_set().contains(Atspi.StateType.FOCUSED):break
+                                    time.sleep(.05)
+                                assert find(removed).get_state_set().contains(Atspi.StateType.FOCUSED)
+                                client.key(activation);find(added)
+                            pointer_click(added);find(removed)
+                            for _ in range(20):
+                                with sqlite3.connect(data/'notes.sqlite3') as db:
+                                    record=next(json.loads(row[0]) for row in db.execute('SELECT metadata FROM notes') if json.loads(row[0])['title']==title)
+                                if record['favorite']:break
+                                time.sleep(.1)
+                            assert record['favorite'], 'Favorite was not persisted'
+                            assert record['updated_at']==metadata['updated_at'], 'Favorite changed edit time and reordered the library'
+                            click('Favorites');find('Open '+title)
+                            pointer_click(removed);find('List view')
+                            assert not any(n.get_name()=='Open '+title for n in nodes()), 'Removed favorite remained in Favorites'
+                            click('Documents');click('Grid view')
                         if args.library_only:
                             check_library_rows()
-                            reports.append({'case':case,'full_width_rows':True,'no_overlap':True});continue
+                            check_favorite_clicks()
+                            reports.append({'case':case,'full_width_rows':True,'no_overlap':True,'native_favorite_mouse_and_keyboard':True,'favorite_persistence':True});continue
                         if fresh:
                             for label in ['Start writing','Try the sample notebook']:
                                 r=find(label).get_component_iface().get_extents(Atspi.CoordType.WINDOW)
@@ -168,7 +206,9 @@ def main():
                         assert find("Math expression").get_state_set().contains(Atspi.StateType.FOCUSED)
                         capture('panels')
                         client.key('Escape');client.key('l',5);time.sleep(.3);capture('library')
+                        click('Settings');click('Appearance');click('Dark appearance');click('Close settings')
                         check_library_rows()
+                        check_favorite_clicks()
                         if scale==1. and width==1366:
                             click('Last edited: newest first ▾');click('Name: A–Z');capture('explicit-sort')
                             star=next(n for n in nodes() if n.get_name().startswith('Add ') and n.get_name().endswith(' to favorites'))

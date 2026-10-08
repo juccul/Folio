@@ -12,6 +12,8 @@ Folio embeds 37 Tabler Outline SVGs in `crates/ui/assets/icons/`. The original 2
 
 The marker icon is an original Folio drawing in the same line style, licensed under GPL-3.0-or-later. It keeps a distinct silhouette from the stock highlighter.
 
+The filled favorite state in `StarFilled.svg` is derived from the existing `star.svg` geometry, filled and closed rather than stroked.
+
 ## Source mapping
 
 | Folio icon | Tabler Outline SVG |

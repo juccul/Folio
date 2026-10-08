@@ -1049,6 +1049,20 @@ pub struct Command {
 }
 impl Command {
     pub fn apply(&self, doc: &mut Document, forward: bool) {
+        // A favorite is library organization, not a content edit. Preserve its
+        // edit time in both directions so toggling it cannot reorder the shelf
+        // or invalidate the cover preview.
+        let edited_at = doc.metadata.updated_at;
+        let favorite_only = !self.changes.is_empty()
+            && self.changes.iter().all(|change| {
+                if let Change::Metadata { before, after } = change {
+                    let mut comparable = after.clone();
+                    comparable.favorite = before.favorite;
+                    before.favorite != after.favorite && comparable == *before
+                } else {
+                    false
+                }
+            });
         doc.version = FORMAT_VERSION;
         let mut inserted = Vec::new();
         let mut apply = |c: &Change, doc: &mut Document| match c {
@@ -1181,7 +1195,7 @@ impl Command {
             }
             start = end;
         }
-        doc.metadata.updated_at = now_ms();
+        doc.metadata.updated_at = if favorite_only { edited_at } else { now_ms() };
     }
 }
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
@@ -1260,6 +1274,42 @@ mod tests {
         let t =
             Transform::around(Point::new(10., 20.), 2., 0.8).compose(Transform::translate(-4., 9.));
         assert!(t.inverse().unwrap().apply(t.apply(p)).distance(p) < 0.0001);
+    }
+    #[test]
+    fn favorite_changes_preserve_edit_time_through_undo_and_redo() {
+        let mut doc = Document::new("Lecture notes");
+        doc.metadata.updated_at = 17;
+        let mut history = History::default();
+        let before = doc.metadata.clone();
+        let mut after = before.clone();
+        after.favorite = true;
+        history.execute(
+            Command {
+                label: "Favorite".into(),
+                changes: vec![Change::Metadata { before, after }],
+            },
+            &mut doc,
+        );
+        assert!(doc.metadata.favorite);
+        assert_eq!(doc.metadata.updated_at, 17);
+        doc = serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+        history.undo(&mut doc).unwrap();
+        assert!(!doc.metadata.favorite);
+        assert_eq!(doc.metadata.updated_at, 17);
+        history.redo(&mut doc).unwrap();
+        assert!(doc.metadata.favorite);
+        assert_eq!(doc.metadata.updated_at, 17);
+        let before = doc.metadata.clone();
+        let mut after = before.clone();
+        after.title = "Renamed lecture notes".into();
+        history.execute(
+            Command {
+                label: "Rename".into(),
+                changes: vec![Change::Metadata { before, after }],
+            },
+            &mut doc,
+        );
+        assert!(doc.metadata.updated_at > 17);
     }
     #[test]
     fn undo_page_and_metadata() {

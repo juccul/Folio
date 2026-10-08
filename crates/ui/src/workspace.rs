@@ -644,9 +644,16 @@ impl NotesView {
                         n.title,
                         if n.favorite { "from" } else { "to" }
                     ),
-                    icon(Icon::Star, if n.favorite { theme.ink } else { theme.muted })
-                        .size(rems(1.))
-                        .into_any_element(),
+                    icon(
+                        if n.favorite {
+                            Icon::StarFilled
+                        } else {
+                            Icon::Star
+                        },
+                        if n.favorite { theme.ink } else { theme.muted },
+                    )
+                    .size(rems(1.))
+                    .into_any_element(),
                     n.favorite,
                     cx,
                     move |this, _, cx| {
@@ -655,6 +662,7 @@ impl NotesView {
                         cx.stop_propagation();
                     },
                 )
+                .occlude()
                 .size(rems(2.))
                 .p_0()
                 .min_h(rems(2.))
@@ -834,7 +842,13 @@ impl NotesView {
                                         .text_xs()
                                         .text_color(rgb(theme.muted))
                                         .child(div().truncate().child(details))
-                                        .child(div().truncate().child(edited_label(n.updated_at))),
+                                        .child(
+                                            div().truncate().child(
+                                                edited_label(n.updated_at)
+                                                    .trim_start_matches("Edited ")
+                                                    .to_owned(),
+                                            ),
+                                        ),
                                 )
                                 .child(favorite)
                                 .child(menu),
@@ -1436,8 +1450,16 @@ impl NotesView {
             .child(div().flex_1())
             .child(self.chrome_button(
                 "favorite-note",
-                "Favorite document",
-                Icon::Star,
+                if favorite {
+                    "Remove document from favorites"
+                } else {
+                    "Add document to favorites"
+                },
+                if favorite {
+                    Icon::StarFilled
+                } else {
+                    Icon::Star
+                },
                 favorite,
                 cx,
                 |this, _, _| this.controller.metadata(|m| m.favorite = !m.favorite),

@@ -215,7 +215,7 @@ cargo run --release --locked -p folio-app --example benchmark -- 10000
 dbus-run-session -- python3 scripts/verify-accessibility.py
 ```
 
-The native smoke test opens a real GPUI window, dispatches synthetic rich tablet frames at 8 ms intervals, validates pressure/tilt retention, exercises a stylus-operated selection button without drawing through its overlay, edits/pages, and flushes storage. This is not a physical tablet or end-to-end latency measurement. The headless validation generates real exports, searches Unicode text, imports a two-page PDF, and reloads the database.
+The native smoke test opens a real GPUI window, dispatches synthetic rich tablet frames at 8 ms intervals, validates pressure/tilt retention, exercises a stylus-operated editor button without drawing through the toolbar, edits/pages, and flushes storage. This is not a physical tablet or end-to-end latency measurement. The headless validation generates real exports, searches Unicode text, imports a two-page PDF, and reloads the database.
 
 On a private Xvfb/D-Bus session, add `--virtual-display --shortcuts` to `scripts/verify-accessibility.py` to check Ctrl+N, actual modal typing through the native clipboard, Escape and Ctrl+S. This option requires GTK 3 Python introspection bindings and targets only the launched test app's window; use a disposable display, never your desktop session.
 

@@ -1588,7 +1588,6 @@ impl NotesView {
         )
         .absolute()
         .inset_0();
-        let keyboard_action = action.clone();
         let control_key = id.clone();
         div()
             .id(id)
@@ -1639,11 +1638,8 @@ impl NotesView {
                         return;
                     }
                 }
-                if enabled && (event.keystroke.key == "enter" || event.keystroke.key == "space") {
-                    keyboard_action(this, window, cx);
-                    cx.stop_propagation();
-                    cx.notify();
-                }
+                // GPUI invokes on_click once on Enter/Space release. Handling
+                // those keys here as well would activate toggles twice.
             }))
             .flex()
             .items_center()
