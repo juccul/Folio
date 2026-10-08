@@ -143,6 +143,35 @@ impl Modal {
         }
     }
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum MoreSection {
+    #[default]
+    Document,
+    Page,
+    Paper,
+    Math,
+    Layout,
+}
+impl MoreSection {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Document => "Document",
+            Self::Page => "Current page",
+            Self::Paper => "Paper and canvas",
+            Self::Math => "Math and handwriting",
+            Self::Layout => "Page layout",
+        }
+    }
+    fn contains(self, action: u8) -> bool {
+        match self {
+            Self::Document => matches!(action, 0..=4 | 26),
+            Self::Page => matches!(action, 5 | 16..=21),
+            Self::Paper => matches!(action, 6 | 7 | 25),
+            Self::Math => matches!(action, 12 | 15 | 22 | 23),
+            Self::Layout => matches!(action, 8 | 9),
+        }
+    }
+}
 pub struct NotesView {
     region_selection: Option<region::Selection>,
     pub controller: Controller,
@@ -165,6 +194,7 @@ pub struct NotesView {
     modal_error: Option<String>,
     pen_settings: bool,
     more_open: bool,
+    more_section: MoreSection,
     export_open: bool,
     help_open: bool,
     library_open: bool,
@@ -244,6 +274,7 @@ impl NotesView {
             modal_error: None,
             pen_settings: false,
             more_open: false,
+            more_section: MoreSection::Document,
             export_open: false,
             help_open: false,
             library_open: true,
@@ -1282,6 +1313,14 @@ impl NotesView {
                 | "dots"
                 | "toolbar-image"
                 | "import"
+                | "favorite-note"
+                | "header-add-page"
+                | "duplicate-page-panel"
+                | "bookmark-page-panel"
+                | "move-page-panel"
+                | "page-from-template"
+                | "move-document-folder"
+                | "paper-color"
         );
         let enabled = (!self.controller.read_only() || self.library_open || !editing)
             && (!self.blocking_overlay() || self.building_overlay || window_control)
@@ -1313,6 +1352,7 @@ impl NotesView {
                         true
                     }
                 }
+                "cleanup-assets-settings" => self.controller.can_cleanup_assets(),
                 "open-restored-library" => !self.controller.has_background_work(),
                 "submit-modal"
                     if matches!(self.modal.as_ref(), Some((Modal::Recognition, _)))
@@ -1753,6 +1793,24 @@ impl NotesView {
                 );
             }
         } else if self.more_open {
+            panel = panel.child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(self.more_section.title()),
+            );
+            if self.more_section != MoreSection::Document {
+                panel = panel.child(
+                    self.button(
+                        "more-back",
+                        "‹ Document actions",
+                        false,
+                        cx,
+                        |this, _, _| this.more_section = MoreSection::Document,
+                    )
+                    .justify_start(),
+                );
+            }
             for (id, label, action) in [
                 ("rename-note", "Rename document", 0),
                 ("duplicate-note", "Duplicate document", 1),
@@ -1775,17 +1833,18 @@ impl NotesView {
                 ("infinite", "Toggle infinite canvas", 7),
                 ("insert-space", "Insert 80 units below selection", 8),
                 ("remove-space", "Remove 40 units below selection", 9),
-                ("checkpoint", "Create recovery snapshot", 11),
                 ("insert-equation", "Insert LaTeX equation", 12),
-                ("retry-previews", "Retry failed previews", 13),
-                ("cleanup-assets", "Quarantine unused assets", 14),
                 ("open-math-solver", "Math solver", 15),
                 ("cover-page", "Use current page as cover", 19),
                 ("save-page-template", "Save page as template…", 20),
                 ("page-templates", "Add page from template…", 21),
                 ("index-page-handwriting", "Index page handwriting…", 22),
                 ("clear-page-index", "Clear page handwriting index", 23),
+                ("new-document-options", "New document with options…", 26),
             ] {
+                if !self.more_section.contains(action) {
+                    continue;
+                }
                 panel = panel.child(
                     self.button(id, label, false, cx, move |this, window, cx| {
                         this.more_open = false;
@@ -1828,49 +1887,69 @@ impl NotesView {
                                 )
                             }
                             12 => this.modal(Modal::Equation, window, cx),
-                            13 => this.controller.retry_previews(),
-                            14 => this.controller.cleanup_assets(),
                             15 => this.start_math(window, cx),
-                            _ => this.controller.recovery_checkpoint(),
+                            26 => this.modal(Modal::NewDocument, window, cx),
+                            _ => unreachable!("Unknown document action"),
                         }
                     })
                     .justify_start()
                     .text_sm(),
                 );
             }
-            let mut paper = div().flex().gap_1();
-            for (id, label, p) in [
-                ("blank", "Blank", Paper::Blank),
-                ("ruled", "Ruled", Paper::Ruled),
-                ("grid", "Grid", Paper::Grid),
-                ("dots", "Dots", Paper::Dots),
-            ] {
-                paper = paper.child(
-                    self.button(
-                        id,
-                        label,
-                        self.controller.page().properties.paper == p,
-                        cx,
-                        move |this, _, _| this.controller.paper(p),
-                    )
-                    .text_xs()
-                    .px_2(),
-                );
+            if self.more_section == MoreSection::Paper {
+                let mut paper = div().flex().gap_1();
+                for (id, label, p) in [
+                    ("blank", "Blank", Paper::Blank),
+                    ("ruled", "Ruled", Paper::Ruled),
+                    ("grid", "Grid", Paper::Grid),
+                    ("dots", "Dots", Paper::Dots),
+                ] {
+                    paper = paper.child(
+                        self.button(
+                            id,
+                            label,
+                            self.controller.page().properties.paper == p,
+                            cx,
+                            move |this, _, _| this.controller.paper(p),
+                        )
+                        .text_xs()
+                        .px_2(),
+                    );
+                }
+                panel = panel.child(paper);
             }
-            panel = panel.child(paper);
-            panel = panel.child(
-                self.button(
-                    "move-document-folder",
-                    "Move to folder…",
-                    false,
-                    cx,
-                    |this, w, cx| {
-                        this.more_open = false;
-                        this.modal(Modal::MoveDocument(this.controller.active), w, cx);
-                    },
-                )
-                .justify_start(),
-            );
+            if self.more_section == MoreSection::Document {
+                panel = panel.child(
+                    self.button(
+                        "move-document-folder",
+                        "Move to folder…",
+                        false,
+                        cx,
+                        |this, w, cx| {
+                            this.more_open = false;
+                            this.modal(Modal::MoveDocument(this.controller.active), w, cx);
+                        },
+                    )
+                    .justify_start(),
+                );
+                for (key, section) in [
+                    ("page", MoreSection::Page),
+                    ("paper", MoreSection::Paper),
+                    ("math", MoreSection::Math),
+                    ("layout", MoreSection::Layout),
+                ] {
+                    panel = panel.child(
+                        self.button(
+                            format!("more-section-{key}"),
+                            format!("{} ›", section.title()),
+                            false,
+                            cx,
+                            move |this, _, _| this.more_section = section,
+                        )
+                        .justify_start(),
+                    );
+                }
+            }
         } else if self.pen_settings && self.controller.tool == Tool::Eraser {
             panel = panel.child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Eraser"))
                 .child(self.eraser_controls("popover",cx))
@@ -2039,6 +2118,10 @@ impl NotesView {
             .child(self.button("backup-library", "Back up library…", false, cx, |this, _, cx| this.backup_dialog(cx)).justify_start())
             .child(self.button("restore-library", "Restore backup to a new library…", false, cx, |this, _, cx| this.restore_dialog(cx)).justify_start())
             .child(div().text_xs().text_color(rgb(theme.muted)).child("Includes documents, assets, folders, preferences and undo history. Downloadable OCR/math runtimes are excluded."));
+        body=body.child(div().mt_3().text_sm().font_weight(FontWeight::SEMIBOLD).child("Library maintenance"))
+            .child(self.button("checkpoint-settings","Create recovery snapshot",false,cx,|this,_,_| this.controller.recovery_checkpoint()).justify_start())
+            .child(self.button("cleanup-assets-settings","Quarantine unused assets",false,cx,|this,_,_| this.controller.cleanup_assets()).justify_start())
+            .child(div().text_xs().text_color(rgb(theme.muted)).child("Asset cleanup becomes available when autosave is on and all work has finished saving."));
         if let Some(path) = &self.controller.restored_library {
             body = body
                 .child(

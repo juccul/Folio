@@ -2885,13 +2885,15 @@ impl Controller {
         self.persistence.checkpoint();
         self.status = "Creating recovery snapshot…".into();
     }
+    pub fn can_cleanup_assets(&self) -> bool {
+        self.busy == 0
+            && self.saved >= self.queued
+            && self.dirty_notes.is_empty()
+            && self.interaction.is_none()
+            && self.settings.autosave
+    }
     pub fn cleanup_assets(&mut self) {
-        if self.busy > 0
-            || self.saved < self.queued
-            || !self.dirty_notes.is_empty()
-            || self.interaction.is_some()
-            || !self.settings.autosave
-        {
+        if !self.can_cleanup_assets() {
             self.error =
                 Some("Wait for saved changes and background work before asset maintenance".into());
             return;

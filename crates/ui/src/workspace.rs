@@ -1435,6 +1435,7 @@ impl NotesView {
                 cx,
                 |this, _, _| {
                     this.more_open = !this.more_open;
+                    this.more_section = MoreSection::Document;
                     this.export_open = false;
                     this.pen_settings = false;
                 },
@@ -1852,6 +1853,21 @@ impl NotesView {
                     false,
                     cx,
                     |this, w, cx| this.modal(Modal::Templates, w, cx),
+                )
+                .m_2(),
+            )
+            .child(
+                self.button(
+                    "page-options-panel",
+                    "More page options…",
+                    false,
+                    cx,
+                    |this, _, _| {
+                        this.more_section = MoreSection::Page;
+                        this.more_open = true;
+                        this.export_open = false;
+                        this.pen_settings = false;
+                    },
                 )
                 .m_2(),
             )
