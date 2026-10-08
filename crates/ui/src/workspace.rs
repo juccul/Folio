@@ -637,16 +637,7 @@ impl NotesView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(cover_content)
-                .when(n.favorite, |s| {
-                    s.child(
-                        div()
-                            .absolute()
-                            .right_2()
-                            .bottom_2()
-                            .child(icon(Icon::Star, theme.ink)),
-                    )
-                });
+                .child(cover_content);
             let metadata = div()
                 .flex()
                 .flex_col()
@@ -685,7 +676,6 @@ impl NotesView {
                     .child(icon(Icon::Book, theme.muted))
                     .child(metadata.flex_1())
                     .child(div().flex_1())
-                    .when(n.favorite, |s| s.child(icon(Icon::Star, theme.accent)))
                     .child(div().w(px(32.)))
             } else {
                 div()
@@ -726,6 +716,30 @@ impl NotesView {
                                 cx.stop_propagation();
                             }),
                         ),
+                    )
+                    .child(
+                        self.icon_button(
+                            format!("favorite-card-{id}"),
+                            format!(
+                                "{} {} {} favorites",
+                                if n.favorite { "Remove" } else { "Add" },
+                                n.title,
+                                if n.favorite { "from" } else { "to" }
+                            ),
+                            Icon::Star,
+                            n.favorite,
+                            cx,
+                            move |this, _, cx| {
+                                this.controller
+                                    .manage_note(id, folio_app::NoteAction::Favorite);
+                                cx.stop_propagation();
+                            },
+                        )
+                        .absolute()
+                        .top(px(12.))
+                        .right(rems(3.5))
+                        .size(rems(1.75))
+                        .bg(rgb(theme.sidebar)),
                     )
                     .child(
                         self.icon_button(

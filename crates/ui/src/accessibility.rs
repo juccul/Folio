@@ -242,6 +242,12 @@ fn semantics(key: &str) -> Semantics {
             ..button
         };
     }
+    if key.starts_with("favorite-card-") {
+        return Semantics {
+            toggle: true,
+            ..button
+        };
+    }
     if matches!(
         key,
         "favorite-note" | "refine" | "more" | "export" | "pen-options" | "pages" | "page-count"

@@ -1420,6 +1420,15 @@ impl NotesView {
                         true
                     }
                 }
+                key if key.starts_with("favorite-card-") => key
+                    .strip_prefix("favorite-card-")
+                    .and_then(|id| Id::parse_str(id).ok())
+                    .is_some_and(|id| {
+                        self.controller
+                            .notes
+                            .iter()
+                            .any(|n| n.id == id && !n.trashed)
+                    }),
                 "cleanup-assets-settings" => self.controller.can_cleanup_assets(),
                 "backup-library" => !self.controller.task_running("backup"),
                 "restore-library" => !self.controller.task_running("restore"),
