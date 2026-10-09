@@ -33,6 +33,7 @@ def main():
     temporary.replace(output/'pack.json')
     link=ROOT/'target/math-solver'
     if sys.platform != 'win32' and not link.exists() and not link.is_symlink():
+        link.parent.mkdir(parents=True,exist_ok=True)
         link.symlink_to(output,target_is_directory=True)
     print(f'Offline math solver ready: {output / "pack.json"}')
 

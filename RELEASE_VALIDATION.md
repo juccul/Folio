@@ -15,6 +15,8 @@ separate distribution branch are published; local task checkpoint refs are exclu
 - Windows workspace: **295 Rust tests passed** on the native MSVC/Windows 11 VM
   on the final native source build, with 393 compiled-source fingerprints matched.
 - Strict workspace/all-target Clippy and formatting passed.
+- Fresh-checkout Linux math setup passed after fixing a missing Cargo target
+  directory exposed by GitHub CI. The fix only affects build-tool setup.
 - **11 updater tests** cover signed metadata, numeric version comparisons,
   prerelease rejection, bounded metadata, corrupt packages, range-resume behavior,
   cache verification, user-action gating, duplicate clicks, Flatpak initial-signal
