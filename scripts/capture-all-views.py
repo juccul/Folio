@@ -68,7 +68,11 @@ def capture_session(args):
     from gi.repository import Gio, GLib
     from ui_x11 import Client
     processes = []
-    inventory = json.loads((args.output / 'inventory.json').read_text()) if args.pdf_only and (args.output / 'inventory.json').is_file() else []
+    inventory = json.loads((args.output / 'inventory.json').read_text()) if (args.pdf_only or args.media_only) and (args.output / 'inventory.json').is_file() else []
+    update_unavailable = 'A newer published release is required; this source build is already newer than public 0.1.3'
+    for record in inventory:
+        if record['view'] == 'update-download-restart':
+            record['error'] = update_unavailable
     try:
         processes.append(subprocess.Popen(['/usr/libexec/at-spi-bus-launcher', '--launch-immediately'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         time.sleep(.3)
@@ -132,7 +136,8 @@ def capture_session(args):
                             if object_type == 'Image':
                                 content.update(asset='screenshot-demo.png', crop=None)
                             else:
-                                content.update(latex='x^2 + 2x + 1', rendered_svg='<svg xmlns="http://www.w3.org/2000/svg" width="320" height="80"><text x="8" y="48" font-size="32">x² + 2x + 1</text></svg>', source_strokes=[], math_link=None)
+                                content['rect'] = {'min': {'x': 64, 'y': 120}, 'max': {'x': 704, 'y': 280}}
+                                content.update(latex='x^2 + 2x + 1', rendered_svg='<svg xmlns="http://www.w3.org/2000/svg" width="320" height="80" viewBox="0 0 320 80"><g fill="none" stroke="#3265a8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M10 30L30 55M30 30L10 55M36 18Q42 10 47 18Q49 22 36 28H49M65 42H87M76 31V53M106 33Q116 23 125 33Q130 42 108 54H128M144 30L164 55M164 30L144 55M183 42H205M194 31V53M223 34L233 28V55M225 55H242"/></g></svg>', source_strokes=[], math_link=None)
                             demo_page['order'] = [object_id]
                         db.execute('INSERT INTO notes(id,metadata) VALUES(?,?)', (demo['id'], json.dumps(demo)))
                         db.execute('INSERT INTO pages(id,note_id,position,header) VALUES(?,?,0,?)', (demo_page['id'], demo['id'], json.dumps(demo_page)))
@@ -174,7 +179,15 @@ def capture_session(args):
                         def nodes():
                             while GLib.MainContext.default().iteration(False):
                                 pass
-                            return list(walk(target))
+                            for attempt in range(4):
+                                try:
+                                    return list(walk(target))
+                                except GLib.Error:
+                                    if attempt == 3:
+                                        raise
+                                    # An asynchronous load may replace a native
+                                    # subtree halfway through the traversal.
+                                    time.sleep(.1)
 
                         def controls():
                             roles = {Atspi.Role.PUSH_BUTTON, Atspi.Role.PUSH_BUTTON_MENU, Atspi.Role.RADIO_BUTTON, Atspi.Role.CHECK_BOX, Atspi.Role.TOGGLE_BUTTON, Atspi.Role.PAGE_TAB, Atspi.Role.LIST_ITEM, Atspi.Role.TREE_ITEM}
@@ -227,12 +240,31 @@ def capture_session(args):
                                 actions()
                                 time.sleep(.25)
                                 filename = mode + '-' + name + '.png'
-                                subprocess.run([sys.executable, str(ROOT / 'scripts/capture-x11.py'), str(args.output / filename), '--pid', str(app.pid), '--virtual-display-root'], check=True, stdout=subprocess.DEVNULL)
                                 from PIL import Image
-                                with Image.open(args.output / filename) as image:
-                                    assert len(set(image.convert('RGB').resize((120, 80)).getdata())) > 40, 'Blank capture'
+                                for attempt in range(8):
+                                    if name in ('editor-pdf', 'editor-image'):
+                                        # Bare Xvfb may miss the image-loader repaint
+                                        # transition. Replay mapping only on this
+                                        # owned virtual window, then verify actual
+                                        # demo content rather than chrome entropy.
+                                        client.wake_virtual_window()
+                                    subprocess.run([sys.executable, str(ROOT / 'scripts/capture-x11.py'), str(args.output / filename), '--pid', str(app.pid), '--virtual-display-root'], check=True, stdout=subprocess.DEVNULL)
+                                    with Image.open(args.output / filename) as image:
+                                        assert len(set(image.convert('RGB').resize((120, 80)).getdata())) > 40, 'Blank capture'
+                                        if name not in ('editor-pdf', 'editor-image'):
+                                            break
+                                        pixels = image.convert('RGB').crop((300, 210, 1300, 920)).getdata()
+                                        blue = sum(red < 130 and green - red > 20 and blue - green > 30 for red, green, blue in pixels)
+                                        if blue > 80:
+                                            break
+                                    time.sleep(.5)
+                                else:
+                                    raise RuntimeError('Demo media did not render in the main canvas')
                                 record['file'] = filename
-                                record['controls'] = [n.get_name() for n in controls() if n.get_action_iface() and n.get_action_iface().get_n_actions()]
+                                try:
+                                    record['controls'] = [n.get_name() for n in controls() if n.get_action_iface() and n.get_action_iface().get_n_actions()]
+                                except GLib.Error:
+                                    record['accessibility_warning'] = 'Native tree changed during post-capture inventory traversal'
                                 print(mode, name, 'OK', flush=True)
                             except Exception as error:
                                 record['error'] = str(error)
@@ -252,8 +284,13 @@ def capture_session(args):
                         def require(label):
                             assert any(n.get_name() == label for n in nodes()), 'Expected screen: ' + label
 
-                        if args.pdf_only:
-                            capture('editor-pdf', lambda: sequence(library, 'Open Demo PDF'))
+                        if args.pdf_only or args.media_only:
+                            capture('editor-pdf', lambda: sequence(library, 'Open Demo PDF', lambda: time.sleep(2)))
+                            if args.media_only:
+                                capture('editor-image', lambda: sequence(library, 'Open Demo image', lambda: client.key('a', 4), lambda: time.sleep(2)))
+                                capture('image-crop', lambda: sequence(library, 'Open Demo image', lambda: client.key('a', 4), 'Crop…'))
+                                capture('image-crop-coordinates', lambda: sequence(library, 'Open Demo image', lambda: client.key('a', 4), 'Crop with numbers…'))
+                                capture('edit-equation', lambda: sequence(library, 'Open Demo equation', lambda: client.key('a', 4), lambda: time.sleep(2), 'Edit equation'))
                             continue
 
                         if encrypted_pdf.is_file():
@@ -305,8 +342,8 @@ def capture_session(args):
                         capture('text-font', lambda: sequence(editor, lambda: client.key('a', 4), 'sans-serif'))
                         capture('text-size', lambda: sequence(editor, lambda: client.key('a', 4), lambda: click(next(n.get_name() for n in nodes() if n.get_name().endswith(' pt')))))
                         capture('text-color', lambda: sequence(editor, lambda: client.key('a', 4), 'Text color'))
-                        capture('editor-pdf', lambda: sequence(library, 'Open Demo PDF'))
-                        capture('editor-image', lambda: sequence(library, 'Open Demo image', lambda: client.key('a', 4)))
+                        capture('editor-pdf', lambda: sequence(library, 'Open Demo PDF', lambda: time.sleep(2)))
+                        capture('editor-image', lambda: sequence(library, 'Open Demo image', lambda: client.key('a', 4), lambda: time.sleep(2)))
                         capture('image-crop', lambda: sequence(library, 'Open Demo image', lambda: client.key('a', 4), 'Crop…'))
                         capture('image-crop-coordinates', lambda: sequence(library, 'Open Demo image', lambda: client.key('a', 4), 'Crop with numbers…'))
                         capture('edit-equation', lambda: sequence(library, 'Open Demo equation', lambda: client.key('a', 4), 'Edit equation'))
@@ -345,7 +382,7 @@ def capture_session(args):
                         for name, reason in [
                             *([] if encrypted_pdf.is_file() else [('pdf-password', 'Requires Ghostscript to generate an encrypted demo PDF')]),
                             ('recognition-review', 'Requires installed recognition model and recognized handwriting'),
-                            ('update-download-restart', 'Requires an authenticated newer release; source build already newer than published 0.1.3'),
+                            ('update-download-restart', update_unavailable),
                             ('system-file-dialogs', 'File dialogs are desktop portal UI, outside the app client and private demo session'),
                         ]:
                             inventory.append({'view': name, 'mode': mode, 'error': reason})
@@ -374,6 +411,7 @@ def main():
     parser.add_argument('--xvfb', type=Path, default=ROOT / 'artifacts/build-tools/Xvfb')
     parser.add_argument('--private-session', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--pdf-only', action='store_true', help='Refresh only the demo PDF pair in an existing gallery')
+    parser.add_argument('--media-only', action='store_true', help='Refresh PDF, image and crop pairs after asynchronous asset loading')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -390,6 +428,8 @@ def main():
                 command = ['dbus-run-session', '--', sys.executable, str(Path(__file__).resolve()), '--private-session', '--binary', str(args.binary.resolve()), '--fixture', str(args.fixture.resolve()), '--output', str(args.output)]
                 if args.pdf_only:
                     command.append('--pdf-only')
+                if args.media_only:
+                    command.append('--media-only')
                 subprocess.run(command, env=environment, check=True)
                 report(args)
             finally:
