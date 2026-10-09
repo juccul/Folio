@@ -4,10 +4,13 @@ fn app() -> Controller {
         .unwrap()
 }
 fn settle(a: &mut Controller) {
+    settle_with_timeout(a, Duration::from_secs(15));
+}
+fn settle_with_timeout(a: &mut Controller, timeout: Duration) {
     let start = Instant::now();
     while a.has_background_work() {
         a.tick();
-        assert!(start.elapsed() < Duration::from_secs(15), "worker stalled");
+        assert!(start.elapsed() < timeout, "worker stalled");
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(a.error.is_none(), "{:?}", a.error);
@@ -476,7 +479,9 @@ fn inactive_page_raster_previews_do_not_switch_or_edit_the_current_page() {
     a.add_page();
     let current = a.page().id;
     a.request_page_previews(0, &HashSet::from([id]));
-    settle(&mut a);
+    // The first text raster loads the system font database. Cold Windows
+    // runners can exceed 15 seconds while other rendering tests run in parallel.
+    settle_with_timeout(&mut a, Duration::from_secs(60));
     assert_eq!(a.page().id, current);
     assert!(a.previews.contains_key(&(a.active, first, id)));
     assert!(a.page().objects.is_empty());
