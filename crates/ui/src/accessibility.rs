@@ -604,7 +604,8 @@ impl Accessibility {
         }
         if let Some((modal, field)) = &view.modal
             && view.controller.error.is_none()
-            && !view.settings_open
+            && (!view.settings_open
+                || matches!(modal, Modal::CanvasColor | Modal::ThemeColor { .. }))
             && !view.help_open
             && !matches!(modal, Modal::MovePage | Modal::Templates)
         {
