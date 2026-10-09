@@ -124,6 +124,63 @@ class UpdateWorkerTests(unittest.TestCase):
         self.assertFalse((self.job / 'ready').exists())
         self.assertEqual((self.root / 'bin/folio.exe').read_bytes(), b'old executable')
 
+    def test_progress_is_atomic_throttled_and_does_not_advance_without_work(self):
+        now = 0
+        with patch.object(worker.time, 'monotonic', side_effect=lambda: now):
+            progress = worker.Progress(self.job)
+            progress('Extract portable payload')
+            self.assertEqual(json.loads((self.job / 'progress.json').read_text())['sequence'], 1)
+            now = .9
+            for _ in range(100):
+                progress('Extract portable payload')
+            self.assertEqual(json.loads((self.job / 'progress.json').read_text())['sequence'], 1)
+            now = 1
+            progress('Extract portable payload')
+            self.assertEqual(json.loads((self.job / 'progress.json').read_text())['sequence'], 2)
+            now = 300
+            # Advancing time alone cannot generate a heartbeat for stuck work.
+            self.assertEqual(json.loads((self.job / 'progress.json').read_text())['sequence'], 2)
+        self.assertFalse((self.job / 'progress.tmp').exists())
+
+    def test_slow_preparation_reports_real_progress_before_verified_readiness(self):
+        now = 0
+        writes = []
+        replace = worker.os.replace
+        def elapsed():
+            nonlocal now
+            now += 5
+            return now
+        def record_progress(source, destination):
+            # During preparation the current payload stays usable, with no
+            # ready marker asking Folio to close yet.
+            self.assertFalse((self.job / 'ready').exists())
+            self.assertEqual((self.root / 'bin/folio.exe').read_bytes(), b'old executable')
+            replace(source, destination)
+            writes.append(json.loads((self.job / 'progress.json').read_text()))
+        class Parent(Processes):
+            def wait_parent(parent_self, handle):
+                self.assertGreater(now, 30)
+                self.assertTrue((self.job / 'ready').is_file())
+                incoming = self.base / f'.{self.root.name}-incoming-{self.job.name}'
+                worker.validate_payload(incoming, self.intent)
+                self.assertEqual((self.root / 'bin/folio.exe').read_bytes(), b'old executable')
+        with patch.object(worker.time, 'monotonic', side_effect=elapsed), patch.object(worker.os, 'replace', side_effect=record_progress), patch.object(worker, 'relaunch'):
+            worker.install(self.intent, self.job, Parent())
+        self.assertGreater(now, 30)
+        self.assertEqual([entry['sequence'] for entry in writes], list(range(1, len(writes) + 1)))
+        self.assertIn('Extract portable payload', [entry['phase'] for entry in writes])
+        self.assertEqual((self.root / 'bin/folio.exe').read_bytes(), b'new executable')
+        self.assert_notes()
+
+    def test_progress_does_not_make_a_failed_payload_ready(self):
+        self.intent['binary_sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'signed release'):
+            worker.install(self.intent, self.job, Processes())
+        self.assertTrue((self.job / 'progress.json').exists())
+        self.assertFalse((self.job / 'ready').exists())
+        self.assertEqual((self.root / 'bin/folio.exe').read_bytes(), b'old executable')
+        self.assert_notes()
+
 
 if __name__ == '__main__':
     unittest.main()

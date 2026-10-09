@@ -27,32 +27,71 @@ def resolved(path):
     return Path(value)
 
 
-def digest(path):
+class Progress:
+    """Report completed work, never a timer heartbeat that hides a stuck task."""
+    def __init__(self, job):
+        self.job = Path(job)
+        self.sequence = 0
+        self.last_write = float('-inf')
+        self.phase = None
+
+    def __call__(self, phase):
+        now = time.monotonic()
+        if phase == self.phase and now - self.last_write < 1:
+            return
+        sequence = self.sequence + 1
+        temporary = self.job / 'progress.tmp'
+        try:
+            temporary.write_text(json.dumps({'protocol': 1, 'sequence': sequence, 'phase': phase}), encoding='utf-8')
+            os.replace(temporary, self.job / 'progress.json')
+        except OSError:
+            # A transient sharing violation must not discard a valid payload.
+            # If reports remain unavailable, the app's inactivity limit stops us.
+            return
+        self.sequence = sequence
+        self.last_write = now
+        self.phase = phase
+
+
+def report(progress, phase):
+    if progress is not None:
+        progress(phase)
+
+
+def digest(path, progress=None, phase='Verify executable'):
     with Path(path).open('rb') as source:
-        return hashlib.file_digest(source, 'sha256').hexdigest()
+        if progress is None:
+            return hashlib.file_digest(source, 'sha256').hexdigest()
+        checksum = hashlib.sha256()
+        while chunk := source.read(2 * 1024**2):
+            checksum.update(chunk)
+            report(progress, phase)
+        return checksum.hexdigest()
 
 
-def verify_package(intent):
+def verify_package(intent, progress=None):
     package = Path(intent['package'])
-    if package.stat().st_size != intent['size'] or digest(package) != intent['sha256']:
+    if package.stat().st_size != intent['size'] or digest(package, progress, 'Verify package') != intent['sha256']:
         raise ValueError('The downloaded update changed; reopen Folio and download it again')
 
 
-def validate_payload(root, intent):
+def validate_payload(root, intent, progress=None):
     manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
     if manifest['version'] != intent['version'] or manifest['binary_sha256'] != intent['binary_sha256']:
         raise ValueError('The installed version does not match the signed release')
-    if digest(root / 'bin/folio.exe') != intent['binary_sha256']:
+    if digest(root / 'bin/folio.exe', progress) != intent['binary_sha256']:
         raise ValueError('The installed executable did not pass verification')
     required = ['python/python.exe', 'python/pythonw.exe', 'math-solver/pack.json', 'pdf/bin/pdftoppm.exe']
-    if any(not (root / name).is_file() for name in required):
-        raise ValueError('The updated runtime is incomplete')
+    for name in required:
+        if not (root / name).is_file():
+            raise ValueError('The updated runtime is incomplete')
+        report(progress, 'Verify runtime')
     for name, expected in manifest.get('app_runtime_dlls', {}).items():
-        if Path(name).name != name or digest(root / 'bin' / name) != expected:
+        if Path(name).name != name or digest(root / 'bin' / name, progress, 'Verify runtime') != expected:
             raise ValueError('The updated application runtime did not pass verification')
 
 
-def extract_portable(package, destination, intent):
+def extract_portable(package, destination, intent, progress=None):
     prefix = f"folio-{intent['version']}-windows-x64/"
     with zipfile.ZipFile(package) as archive:
         total = 0
@@ -85,10 +124,13 @@ def extract_portable(package, destination, intent):
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(entry) as source, target.open('xb') as output:
-                    shutil.copyfileobj(source, output)
+                    while chunk := source.read(2 * 1024**2):
+                        output.write(chunk)
+                        report(progress, 'Extract portable payload')
                     output.flush()
                     os.fsync(output.fileno())
-    validate_payload(destination, intent)
+            report(progress, 'Extract portable payload')
+    validate_payload(destination, intent, progress)
 
 
 class Windows:
@@ -182,10 +224,13 @@ def install(intent, job, windows):
     package = resolved(intent['package'])
     if data.is_relative_to(root) or resolved(job).is_relative_to(root):
         raise ValueError('The library and updater must be outside the installation directory')
-    verify_package(intent)
+    progress = Progress(job)
+    progress('Check update paths')
+    verify_package(intent, progress)
     for entry in root.rglob('*'):
         if entry.is_symlink() or (hasattr(entry, 'is_junction') and entry.is_junction()):
             raise ValueError('The installation contains linked directories. Use the manual installer after moving these links outside Folio')
+        progress('Inspect current installation')
     windows.reserve(root)
     if windows.other_instances(root, parent_pid=intent['parent_pid']):
         raise RuntimeError('Close the other Folio windows using this installation, then click Restart to update again')
@@ -193,14 +238,18 @@ def install(intent, job, windows):
     # Preflight write access and enough room before asking the app to exit.
     probe = root.parent / f'.folio-write-{job.name}'
     probe.mkdir(); probe.rmdir()
-    payload_bytes = sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+    payload_bytes = 0
+    for file in root.rglob('*'):
+        if file.is_file():
+            payload_bytes += file.stat().st_size
+        progress('Check available space')
     if shutil.disk_usage(root.parent).free < payload_bytes * 3 + intent['size']:
         raise RuntimeError('There is not enough disk space to safely update and keep the previous version')
     previous = root.parent / f'.{root.name}-previous-{job.name}'
     incoming = root.parent / f'.{root.name}-incoming-{job.name}'
     if intent['portable']:
         incoming.mkdir()
-        extract_portable(package, incoming, intent)
+        extract_portable(package, incoming, intent, progress)
     (job / 'ready').write_text('ready', encoding='utf-8')
     windows.wait_parent(parent)
     (job / 'parent-exited').write_text('closed', encoding='utf-8')
