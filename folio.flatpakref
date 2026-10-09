@@ -1,0 +1,8 @@
+[Flatpak Ref]
+Title=Folio
+Name=io.github.folio.Notes
+Branch=stable
+Url=https://juccul.github.io/Folio/flatpak/
+IsRuntime=false
+GPGKey=mDMEasjSIBYJKwYBBAHaRw8BAQdA6CfSkaJkwHbgSqqyRi0/mO7w+67yPxpR+/fpgYmu0DO0GkZvbGlvIGRpc3RyaWJ1dGlvbiBzaWduaW5niJMEExYKADsWIQTeGuSwNNiQCM+1LDqwGiPmKLqH5wUCasjSIAIbAwULCQgHAgIiAgYVCgkICwIEFgIDAQIeBwIXgAAKCRCwGiPmKLqH56ZfAQCMv0kEk/2rzxteFEDWUzbhi/rE6A1jin2xVgNBH5tHoQEAu9DHXBUHa0H25+OrKIaCm34u7ZkeJvV6dEs/EixFvQ8=
+RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
