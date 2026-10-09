@@ -89,11 +89,14 @@ def main():
                 with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
                     initial_notes=db.execute('SELECT count(*) FROM notes').fetchone()[0]
                     initial_objects=db.execute('SELECT count(*) FROM objects').fetchone()[0]
+                assert not any(n.get_name()=='New document with options…' for n in buttons), 'Creation options must be on the main button, without adjacent sliders'
                 capture('library-light')
                 if args.fixture:
                     click('List view');capture('library-list')
                     click('Grid view');click('Favorites');capture('library-favorites');click('Documents')
-                    click('Open Field notes');click('Page thumbnails',True);capture('editor-light')
+                    click('Open Field notes')
+                    assert sum(n.get_name()=='Library · Ctrl+Shift+L' for n in controls())==1, 'Editor must expose exactly one Library/Home button'
+                    click('Page thumbnails',True);capture('editor-light')
                     assert {'Go to page 1','Go to page 2'}.issubset({n.get_name() for n in controls()})
                     click('Go to page 2');capture('editor-page-two');click('Go to page 1')
                     # Separate document key context: Delete/Ctrl+A cannot affect
@@ -212,10 +215,27 @@ def main():
                     assert snapshot_objects()==objects_before,'Appearance controls changed document objects'
                     click('Settings');click('Appearance');click('Dark appearance');click('Close settings');capture('editor-dark-reset');click('Library ·',True)
                     print('APPEARANCE_OK: light/dark customization, alpha, validation, radius, fixed/custom/themed paper, reset, document preservation')
-                click('New document with options…')
-                for char in 'New notebook':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
+                click('New document')
+                assert any(n.get_name()=='A5 · 148 × 210 mm' for n in controls()), 'Main New document must expose page setup'
+                with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
+                    assert db.execute('SELECT count(*) FROM notes').fetchone()[0]==initial_notes, 'Opening setup created a hidden document'
+                click('Cancel')
+                with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
+                    assert db.execute('SELECT count(*) FROM notes').fetchone()[0]==initial_notes, 'Cancel created a document'
+                click('New document')
+                for char in 'new notebook':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
+                click('A5 · 148 × 210 mm');click('Landscape');click('Grid')
+                capture('creation-options')
                 click('Create document')
+                with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
+                    assert db.execute('SELECT count(*) FROM notes').fetchone()[0]==initial_notes+1
+                    created=next(id_ for id_,metadata in db.execute('SELECT id,metadata FROM notes') if json.loads(metadata)['title']=='new notebook')
+                    header=json.loads(db.execute('SELECT header FROM pages WHERE note_id=?',(created,)).fetchone()[0])
+                    props=header['properties']
+                    assert props['paper']=='Grid' and abs(props['width']-210/25.4*96)<1 and abs(props['height']-148/25.4*96)<1,props
                 buttons=controls()
+                assert sum(n.get_name()=='Library · Ctrl+Shift+L' for n in buttons)==1
+                capture('single-home-editor')
                 assert any(n.get_name()=='Undo' for n in buttons), 'Editor controls must follow notebook creation'
                 undo=next(n for n in buttons if n.get_name()=='Undo')
                 assert not undo.get_state_set().contains(Atspi.StateType.ENABLED), 'Empty-document Undo must be disabled'

@@ -72,6 +72,8 @@ try {
     if ($app.MainWindowHandle -eq 0) { throw 'No Folio window appeared.' }
     $window = [System.Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle)
     Find-Control $window 'Close window' | Out-Null
+    $homeCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, ('Library ' + [char]0xB7 + ' Ctrl+Shift+L'))
+    if ($window.FindAll([System.Windows.Automation.TreeScope]::Descendants,$homeCondition).Count -ne 1) { throw 'Editor must have exactly one Library/Home button.' }
     [FolioPenReplay]::SetForegroundWindow($app.MainWindowHandle) | Out-Null
     $before = $window.Current.BoundingRectangle
     [FolioPenReplay]::DragMouse([int]($before.X + $before.Width * .5), [int]($before.Y + 20), 50, 20)
@@ -87,14 +89,21 @@ try {
     $library = (Find-Control $window ('Library ' + [char]0xB7 + ' Ctrl+Shift+L')).Current.BoundingRectangle
     [FolioPenReplay]::Tap([int]($library.X + $library.Width / 2), [int]($library.Y + $library.Height / 2))
     Find-Control $window 'Documents' | Out-Null
+    $optionsCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, ('New document with options' + [char]0x2026))
+    if ($window.FindAll([System.Windows.Automation.TreeScope]::Descendants,$optionsCondition).Count -ne 0) { throw 'Removed sliders button is still exposed.' }
     Capture-Window $window 'library.png'
+    Invoke-Control $window 'New document'
+    Find-Control $window 'Create document' | Out-Null
+    Find-Control $window ('A5 ' + [char]0xB7 + ' 148 ' + [char]0xD7 + ' 210 mm') | Out-Null
+    Capture-Window $window 'creation-options.png'
+    Invoke-Control $window 'Cancel'
     Invoke-Control $window 'Settings'
     Capture-Window $window 'settings.png'
     Invoke-Control $window 'Close window'
     if (!$app.WaitForExit(20000)) { throw 'Window close did not flush and exit.' }
     & $python $runtimeScript --pen-database (Join-Path $uiData 'notes.sqlite3') --output (Join-Path $Output 'pen.json')
     if ($LASTEXITCODE) { throw 'Native pen verification failed.' }
-    @{native_move_resize=$true; native_pen_controls=$true; native_smoke=$true; durable_save=$true; uia_controls=$true; uia_actions=$true; close_flush=$true} | ConvertTo-Json | Set-Content (Join-Path $Output 'ui.json') -Encoding UTF8
+    @{native_move_resize=$true; native_pen_controls=$true; native_smoke=$true; durable_save=$true; uia_controls=$true; uia_actions=$true; close_flush=$true; main_button_creation_options=$true; single_library_button=$true; no_creation_sliders=$true} | ConvertTo-Json | Set-Content (Join-Path $Output 'ui.json') -Encoding UTF8
     Write-Output 'WINDOWS_UI_OK'
 } finally {
     if (!$app.HasExited) {

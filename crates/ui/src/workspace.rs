@@ -1167,19 +1167,11 @@ impl NotesView {
                                         .into_any_element(),
                                     true,
                                     cx,
-                                    |this, w, cx| this.new_notebook(w, cx),
+                                    |this, w, cx| this.modal(Modal::NewDocument, w, cx),
                                 )
                                 .bg(rgb(theme.accent))
                                 .text_color(rgb(theme.primary_foreground)),
-                            )
-                            .child(self.icon_button(
-                                "library-new-options",
-                                "New document with options…",
-                                Icon::Sliders,
-                                false,
-                                cx,
-                                |this, w, cx| this.modal(Modal::NewDocument, w, cx),
-                            )),
+                            ),
                     ),
             )
             .child(
@@ -1258,7 +1250,7 @@ impl NotesView {
         tabs = tabs.child(
             self.icon_button(
                 "tab-library",
-                "Documents · Ctrl+Shift+L",
+                "Library · Ctrl+Shift+L",
                 Icon::Library,
                 self.library_open,
                 cx,
@@ -1422,14 +1414,6 @@ impl NotesView {
             .items_center()
             .gap_2()
             .bg(rgb(theme.chrome))
-            .child(self.chrome_button(
-                "library",
-                "Library · Ctrl+Shift+L",
-                Icon::Library,
-                false,
-                cx,
-                |this, _, _| this.show_library(),
-            ))
             .child(self.chrome_button(
                 "toggle-pages",
                 "Page thumbnails · Ctrl+Shift+P",

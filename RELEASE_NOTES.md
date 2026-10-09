@@ -4,6 +4,8 @@ Folio 0.1.2 includes all application changes since 0.1.1 and the performance opt
 
 ## Install or update
 
+The 0.1.2 downloads were rebuilt to correct document creation and duplicate Home navigation. If you downloaded the earlier 0.1.2 files, download the refreshed installer or Flatpak again. The Windows installer replaces the existing installation; for an existing Flatpak installation, use `flatpak install --user --reinstall ./folio-0.1.2-x86_64.flatpak`.
+
 On Windows, run **`folio-0.1.2-windows-x64-setup.exe`**. No administrator rights are needed. Close an existing Folio window before updating. Notes and downloaded OCR assets stay under `%LOCALAPPDATA%\Folio`; the installer and uninstall preserve them. For portable use, extract **`folio-0.1.2-windows-x64.zip`** and launch `bin/folio.exe`, keeping all sibling folders together.
 
 On Linux, install **`folio-0.1.2-x86_64.flatpak`** with:
@@ -16,6 +18,8 @@ flatpak run io.github.folio.Notes
 The Flatpak uses Freedesktop Platform 25.08. Installation may download the runtime. Both platforms bundle offline SymPy/mpmath math tools and PDF previews; Windows includes embedded Python and the matching Visual C++ runtime. The pinned GLM-OCR model/runtime assets download on the first recognition request (about 1.47 GB), then recognition works offline. Notes, handwriting and PDFs remain local.
 
 ## Changes since 0.1.1
+
+- **Creation and navigation correction:** the main **New document** button opens paper/canvas creation options directly. The separate sliders button is removed, and the editor has one Library/Home button in the tab bar.
 
 - **Performance:** indexed search-row lookups remove unrelated-library work from saves; deferred edits stop cloning the entire undo history and building unused persistence snapshots. Cover/thumbnail, text-layout, formula, accessibility and unchanged translucent-ink caches reduce repeated work. Dense canvas queries, large-fragment restyling, page lookups, eraser cuts, folder traversal, OCR image preparation and exports use less work and fewer allocations.
 - **Measured CPU gains:** approximately 118× for saves with 10,000 unrelated pages, 253× for restyling a 2,000-point fragment over a 10,000-point trace, 12× for dense multicell queries and 25× for unchanged translucent repaints. These are specific generated benchmarks, not whole-app frame-rate or physical pen-latency claims. The [performance audit](https://github.com/juccul/Folio/blob/v0.1.2/PERFORMANCE_AUDIT.md) includes fixtures, raw-result locations, reproduction commands and remaining costs.

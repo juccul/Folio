@@ -31,6 +31,7 @@ def make_pdf(path):
 
 def verify_pen(database, output):
     with sqlite3.connect(database) as connection:
+        assert connection.execute('SELECT count(*) FROM notes').fetchone()[0] == 1, 'Cancelled page setup created an extra document'
         objects = [json.loads(row[0]) for row in connection.execute('SELECT data FROM objects')]
     strokes = [obj['Stroke'] for obj in objects if 'Stroke' in obj]
     assert len(strokes) == 1, f'Expected one native pen stroke, found {len(strokes)}'

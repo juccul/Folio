@@ -1,7 +1,8 @@
 # Folio 0.1.2 release validation
 
-Validated on 9 October 2026. This release contains every application change since 0.1.1, including the performance pass, and publishes a Linux x86_64 Flatpak, Windows 11 x64 installer and portable ZIP. The v0.1.2 tag retains the corresponding source and locked dependencies.
+Validated on 9 October 2026; the downloads were rebuilt the same day to correct the main creation button and duplicate Home navigation. This release contains every application change since 0.1.1, including the performance pass, and publishes a Linux x86_64 Flatpak, Windows 11 x64 installer and portable ZIP. The v0.1.2 tag retains the corresponding source and locked dependencies.
 
+- **Creation/navigation correction:** Native Linux accessibility actions confirmed that the main New document button opens page/canvas options, the separate sliders control is absent, Cancel creates no document, and confirmation persists the selected A5 landscape grid properties. The editor exposes exactly one Library/Home button in the tab bar. The corrected optimized build passed pen/save replay and all six layout cases. Its actual Flatpak bundle was installed privately and passed the runtime checks; its native replay passed with the same executable hash. Both the actual Windows ZIP and installed package also verified creation options on the main button, no sliders control, a single Library/Home button and no extra document after Cancel. Keyboard quick creation retains the remembered paper choices. The installer checks were rerun after restoring the VM display keep-awake state following nested portable validation.
 - **Regression checks:** All 288 Rust workspace tests passed on Linux and Windows. Four tests remain opt-in: real-model OCR integration and three manual performance tests. The three performance tests passed separately during the optimization pass. Strict workspace/all-targets Clippy (`-D warnings`), Rust formatting, AppStream validation and packaging-script syntax checks passed.
 - **Python and native workflows:** The performance pass also passed 37 Python tests (math solver, preprocessing, CPU encoder and worker protocol), with one CUDA test skipped. Headless integration covered vector exports, Unicode text, search, PDF import and durable reload. Native accessibility/notebook workflows and the final optimized six-case layout matrix passed, including interface scales 0.8/1.0/1.6, compact/normal windows, fresh onboarding, library scrolling, favorites, settings and editing. These application checks preceded the version bump; the installed 0.1.2 Flatpak replay passed again.
 - **Native Windows build:** Built the optimized executable in the Windows 11 VirtualBox VM **Ransom**, using the x64 MSVC toolchain and Windows SDK shader compiler. Embedded product/file version is 0.1.2. The portable ZIP executable hash matches the native build, and the package uses the matching Visual C++ redistributable files copied from that toolchain.
@@ -18,14 +19,14 @@ Performance results describe generated CPU fixtures and warmed caches, with ordi
 
 Ransom exposes a VirtualBox USB tablet pointer, with no physical pen passthrough configured. Physical pen latency, eraser/barrel buttons, palm rejection, mixed-DPI and reconnect behavior require hardware validation. Synthetic pen replay does not certify those behaviors.
 
-Build/test logs and disposable fixtures are retained under `artifacts/release-0.1.2` and `artifacts/validation/performance-pass`, excluded from Git and the release downloads. Validation uses synthetic or copied disposable notes; personal libraries are not opened or modified.
+Build/test logs and disposable fixtures are retained under `artifacts/release-0.1.2-corrected`, the original `artifacts/release-0.1.2` and `artifacts/validation/performance-pass`, excluded from Git and the release downloads. Validation uses synthetic or copied disposable notes; personal libraries are not opened or modified.
 
 ## Release downloads
 
 | Asset | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `folio-0.1.2-windows-x64-setup.exe` | 49,752,516 | `b0a9a9f4ac1d2d316615411acedab19d25b4abb00493915e8437db414cd56e70` |
-| `folio-0.1.2-windows-x64.zip` | 79,772,948 | `ce6cbe2cb7d3de90f92392330cc817f2d3c8bebec21c9b214490293c36200864` |
-| `folio-0.1.2-x86_64.flatpak` | 17,522,832 | `5951eae811191bf1aca9f6ddc10dc2bee42d40a687a596c6b7af11cccf698c01` |
+| `folio-0.1.2-windows-x64-setup.exe` | 49,746,603 | `ce4b27bc6809ce3bbfa243e48e788b4c799e2662e3101b655213b7d675bdfb4b` |
+| `folio-0.1.2-windows-x64.zip` | 79,767,414 | `332aa831a16552d00ea6a9ce59645c45491c9ed82ddaeb112c95bb0d32cc5ed2` |
+| `folio-0.1.2-x86_64.flatpak` | 17,515,264 | `be2b3d3ac3e3df2e0a50c13b5c79fbaf9cbb627aa55173e3966aa192545a7812` |
 
 The same checksums accompany the downloads in `SHA256SUMS`.

@@ -105,7 +105,7 @@ def main():
                     click('Cancel');click('Library · Ctrl+Shift+L');wait('New document')
                     assert bounds('Close window')[1]<40
                     library_starts_with_navigation()
-                    click('New document');click('Close window')
+                    click('New document');click('Create document');click('Close window')
                     assert app.wait(timeout=5)==0
                     with sqlite3.connect(database) as db:assert db.execute('SELECT count(*) FROM notes').fetchone()[0]>=2
                     result={name:True for name in ['native_wayland','picker_follows_tabs','sidebar_navigation','control_order','maximize_restore','controls_available_in_dialog','library_titlebar','close_flushes_and_exits','durable_note']}
@@ -208,7 +208,7 @@ def main():
                 library_starts_with_navigation();capture('library')
                 # New-note creation is durable even when the custom close button
                 # is invoked immediately afterwards.
-                click('New document');time.sleep(.15)
+                click('New document');click('Create document');time.sleep(.15)
                 with sqlite3.connect(database) as db: count=db.execute('SELECT count(*) FROM notes').fetchone()[0]
                 click('Close window');assert app.wait(timeout=5)==0
                 with sqlite3.connect(database) as db: assert db.execute('SELECT count(*) FROM notes').fetchone()[0]==count
