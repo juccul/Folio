@@ -205,6 +205,7 @@ pub struct NotesView {
     page_size_unit: page_size::Unit,
     notebook_setup: Option<notebook_setup::Setup>,
     color_drag: Option<(EntityId, usize)>,
+    color_picker: Option<color_picker::PickerState>,
     inline_text: Option<inline_text::Editor>,
     subscriptions: Vec<Subscription>,
     _appearance_subscription: Subscription,
@@ -335,6 +336,7 @@ impl NotesView {
             page_size_unit: page_size::Unit::default(),
             notebook_setup: None,
             color_drag: None,
+            color_picker: None,
             inline_text: None,
             subscriptions: vec![],
             _appearance_subscription: appearance_subscription,
@@ -648,6 +650,7 @@ impl NotesView {
         ));
         self.modal_error = None;
         self.color_drag = None;
+        self.color_picker = None;
         self.modal = Some((modal, field));
         cx.notify();
     }

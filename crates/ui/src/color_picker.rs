@@ -1,14 +1,138 @@
-//! Shared color controls edit a draft Field; Apply/Cancel keep existing semantics.
+//! Shared HSV color box edits a draft; Save/Cancel keep existing semantics.
 use super::*;
 use folio_app::appearance::ThemeColor;
 use std::{cell::Cell, rc::Rc};
 
-fn replace_channel(color: ThemeColor, channel: usize, value: u8) -> ThemeColor {
-    let shift = (3 - channel) * 8;
-    ThemeColor((color.0 & !(255 << shift)) | ((value as u32) << shift))
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Hsv {
+    hue: f32,
+    saturation: f32,
+    value: f32,
+}
+
+impl Hsv {
+    fn from_color(color: ThemeColor, hue: f32) -> Self {
+        let rgb = color.rgb();
+        let [r, g, b] = [16, 8, 0].map(|shift| ((rgb >> shift) & 255) as f32 / 255.);
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let delta = max - min;
+        let hue = if delta == 0. {
+            hue
+        } else if max == r {
+            ((g - b) / delta).rem_euclid(6.) / 6.
+        } else if max == g {
+            ((b - r) / delta + 2.) / 6.
+        } else {
+            ((r - g) / delta + 4.) / 6.
+        };
+        Self {
+            hue,
+            saturation: if max == 0. { 0. } else { delta / max },
+            value: max,
+        }
+    }
+
+    fn color(self, alpha: u8) -> ThemeColor {
+        let h = self.hue.rem_euclid(1.) * 6.;
+        let chroma = self.value * self.saturation;
+        let x = chroma * (1. - (h.rem_euclid(2.) - 1.).abs());
+        let m = self.value - chroma;
+        let channels = match h as u8 {
+            0 => [chroma, x, 0.],
+            1 => [x, chroma, 0.],
+            2 => [0., chroma, x],
+            3 => [0., x, chroma],
+            4 => [x, 0., chroma],
+            _ => [chroma, 0., x],
+        };
+        let [r, g, b] = channels.map(|c| ((c + m).clamp(0., 1.) * 255.).round() as u32);
+        ThemeColor((r << 24) | (g << 16) | (b << 8) | alpha as u32)
+    }
+}
+
+pub(super) struct PickerState {
+    field: EntityId,
+    color: ThemeColor,
+    hsv: Hsv,
+}
+
+fn marker(bounds: Bounds<Pixels>, window: &mut Window) {
+    window.paint_quad(quad(
+        bounds,
+        px(8.),
+        rgba(0),
+        px(3.),
+        rgb(0xffffff),
+        BorderStyle::Solid,
+    ));
+    window.paint_quad(quad(
+        bounds,
+        px(8.),
+        rgba(0),
+        px(1.),
+        rgb(0x171717),
+        BorderStyle::Solid,
+    ));
+}
+
+fn checkerboard(bounds: Bounds<Pixels>, window: &mut Window) {
+    window.paint_quad(fill(bounds, rgb(0xffffff)));
+    let tile = 8.;
+    for row in 0..(f32::from(bounds.size.height) / tile).ceil() as usize {
+        for col in 0..(f32::from(bounds.size.width) / tile).ceil() as usize {
+            if (row + col) % 2 == 0 {
+                let origin = bounds.origin + point(px(col as f32 * tile), px(row as f32 * tile));
+                let size = size(
+                    (bounds.right() - origin.x).min(px(tile)),
+                    (bounds.bottom() - origin.y).min(px(tile)),
+                );
+                window.paint_quad(fill(Bounds::new(origin, size), rgb(0xd2d2d2)));
+            }
+        }
+    }
 }
 
 impl NotesView {
+    fn picker_hsv(&mut self, field: &Entity<Field>, color: ThemeColor) -> Hsv {
+        match &mut self.color_picker {
+            Some(state) if state.field == field.entity_id() => {
+                if state.color != color {
+                    state.hsv = Hsv::from_color(color, state.hsv.hue);
+                    state.color = color;
+                }
+                state.hsv
+            }
+            _ => {
+                let hsv = Hsv::from_color(color, 0.);
+                self.color_picker = Some(PickerState {
+                    field: field.entity_id(),
+                    color,
+                    hsv,
+                });
+                hsv
+            }
+        }
+    }
+
+    fn set_picker_color(
+        &mut self,
+        field: &Entity<Field>,
+        hsv: Hsv,
+        alpha: u8,
+        cx: &mut Context<Self>,
+    ) {
+        let color = hsv.color(alpha);
+        self.color_picker = Some(PickerState {
+            field: field.entity_id(),
+            color,
+            hsv,
+        });
+        field.update(cx, |f, cx| f.set_content(color.hex(), cx));
+        // A hue change at white/black has no RGB change but must repaint the box.
+        cx.notify();
+    }
+
     pub(super) fn color_selector(
         &mut self,
         field: Entity<Field>,
@@ -18,6 +142,249 @@ impl NotesView {
         let theme = Theme::new(&self.controller.settings);
         let color = ThemeColor::parse(&field.read(cx).content)
             .unwrap_or(ThemeColor::opaque(theme.canvas.paper));
+        let hsv = self.picker_hsv(&field, color);
+        let mut picker = div().flex().flex_col().gap_3();
+        for channel in 0..if opacity { 3 } else { 2 } {
+            let bounds = Rc::new(Cell::new(Bounds::default()));
+            let measured = bounds.clone();
+            let entity = cx.entity();
+            let drag_field = field.clone();
+            let track = canvas(
+                move |b, _, _| measured.set(b),
+                move |b, _, window, _| {
+                    match channel {
+                        0 => {
+                            let hue = Hsv {
+                                hue: hsv.hue,
+                                saturation: 1.,
+                                value: 1.,
+                            }
+                            .color(255);
+                            window.paint_quad(fill(b, rgba(hue.0)));
+                            window.paint_quad(fill(
+                                b,
+                                linear_gradient(
+                                    90.,
+                                    linear_color_stop(rgba(0xffffffff), 0.),
+                                    linear_color_stop(rgba(0xffffff00), 1.),
+                                ),
+                            ));
+                            window.paint_quad(fill(
+                                b,
+                                linear_gradient(
+                                    180.,
+                                    linear_color_stop(rgba(0x00000000), 0.),
+                                    linear_color_stop(rgba(0x000000ff), 1.),
+                                ),
+                            ));
+                            let center = b.origin
+                                + point(
+                                    b.size.width * hsv.saturation,
+                                    b.size.height * (1. - hsv.value),
+                                );
+                            marker(
+                                Bounds::new(center - point(px(7.), px(7.)), size(px(14.), px(14.))),
+                                window,
+                            );
+                        }
+                        1 => {
+                            let colors = [
+                                0xff0000, 0xffff00, 0x00ff00, 0x00ffff, 0x0000ff, 0xff00ff,
+                                0xff0000,
+                            ];
+                            for i in 0..6 {
+                                let part = Bounds::new(
+                                    b.origin + point(b.size.width * (i as f32 / 6.), px(0.)),
+                                    size(b.size.width / 6. + px(0.5), b.size.height),
+                                );
+                                window.paint_quad(fill(
+                                    part,
+                                    linear_gradient(
+                                        90.,
+                                        linear_color_stop(rgb(colors[i]), 0.),
+                                        linear_color_stop(rgb(colors[i + 1]), 1.),
+                                    ),
+                                ));
+                            }
+                            marker(
+                                Bounds::new(
+                                    point(
+                                        b.origin.x + (b.size.width - px(8.)) * hsv.hue,
+                                        b.origin.y + px(1.),
+                                    ),
+                                    size(px(8.), b.size.height - px(2.)),
+                                ),
+                                window,
+                            );
+                        }
+                        _ => {
+                            checkerboard(b, window);
+                            window.paint_quad(fill(
+                                b,
+                                linear_gradient(
+                                    90.,
+                                    linear_color_stop(rgba(color.0 & !255), 0.),
+                                    linear_color_stop(rgba(color.0 | 255), 1.),
+                                ),
+                            ));
+                            marker(
+                                Bounds::new(
+                                    point(
+                                        b.origin.x + (b.size.width - px(8.)) * color.alpha(),
+                                        b.origin.y + px(1.),
+                                    ),
+                                    size(px(8.), b.size.height - px(2.)),
+                                ),
+                                window,
+                            );
+                        }
+                    }
+                    let move_entity = entity.clone();
+                    let move_field = drag_field.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                        if phase.capture() {
+                            move_entity.update(cx, |this, cx| {
+                                if this.color_drag == Some((move_field.entity_id(), channel)) {
+                                    if event.pressed_button == Some(MouseButton::Left) {
+                                        this.pick_color(
+                                            &move_field,
+                                            channel,
+                                            event.position,
+                                            b,
+                                            opacity,
+                                            cx,
+                                        );
+                                    } else {
+                                        this.color_drag = None;
+                                    }
+                                    cx.stop_propagation();
+                                }
+                            });
+                        }
+                    });
+                    let up_entity = entity.clone();
+                    let up_field = drag_field.clone();
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                        if phase.capture() && event.button == MouseButton::Left {
+                            up_entity.update(cx, |this, cx| {
+                                if this.color_drag == Some((up_field.entity_id(), channel)) {
+                                    this.pick_color(
+                                        &up_field,
+                                        channel,
+                                        event.position,
+                                        b,
+                                        opacity,
+                                        cx,
+                                    );
+                                    this.color_drag = None;
+                                    cx.stop_propagation();
+                                }
+                            });
+                        }
+                    });
+                },
+            )
+            .w_full()
+            .h(px(if channel == 0 { 180. } else { 26. }));
+            let (id, label) = match channel {
+                0 => (
+                    "picker-saturation-value",
+                    format!(
+                        "Saturation and brightness: {:.0}%, {:.0}%. Arrow keys adjust; Shift adjusts by 10%",
+                        hsv.saturation * 100.,
+                        hsv.value * 100.
+                    ),
+                ),
+                1 => (
+                    "picker-hue",
+                    format!(
+                        "Hue: {:.0} degrees. Arrow keys adjust; Shift adjusts by 10 degrees",
+                        hsv.hue * 360.
+                    ),
+                ),
+                _ => (
+                    "picker-opacity",
+                    format!(
+                        "Opacity: {:.0}%. Arrow keys adjust; Shift adjusts by 10%",
+                        color.alpha() * 100.
+                    ),
+                ),
+            };
+            let down_field = field.clone();
+            let key_field = field.clone();
+            let control = self
+                .control(id, label, track.into_any_element(), false, cx, |_, _, _| {})
+                .w_full()
+                .min_w_0()
+                .p_0()
+                .overflow_hidden()
+                .rounded(px(4.))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        this.color_drag = Some((down_field.entity_id(), channel));
+                        this.pick_color(
+                            &down_field,
+                            channel,
+                            event.position,
+                            bounds.get(),
+                            opacity,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    }),
+                )
+                .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                    let current = ThemeColor::parse(&key_field.read(cx).content).unwrap_or(color);
+                    let mut hsv = this.picker_hsv(&key_field, current);
+                    let mut alpha = if opacity { current.alpha() } else { 1. };
+                    let step = if event.keystroke.modifiers.shift {
+                        10.
+                    } else {
+                        1.
+                    };
+                    let key = event.keystroke.key.as_str();
+                    match channel {
+                        0 => match key {
+                            "left" => hsv.saturation = (hsv.saturation - step / 100.).max(0.),
+                            "right" => hsv.saturation = (hsv.saturation + step / 100.).min(1.),
+                            "up" => hsv.value = (hsv.value + step / 100.).min(1.),
+                            "down" => hsv.value = (hsv.value - step / 100.).max(0.),
+                            "home" => {
+                                hsv.saturation = 0.;
+                                hsv.value = 1.;
+                            }
+                            "end" => hsv.value = 0.,
+                            _ => return,
+                        },
+                        1 => match key {
+                            "left" | "down" => hsv.hue = (hsv.hue - step / 360.).rem_euclid(1.),
+                            "right" | "up" => hsv.hue = (hsv.hue + step / 360.).rem_euclid(1.),
+                            "home" => hsv.hue = 0.,
+                            "end" => hsv.hue = 359. / 360.,
+                            _ => return,
+                        },
+                        _ => match key {
+                            "left" | "down" => alpha = (alpha - step / 100.).max(0.),
+                            "right" | "up" => alpha = (alpha + step / 100.).min(1.),
+                            "home" => alpha = 0.,
+                            "end" => alpha = 1.,
+                            _ => return,
+                        },
+                    }
+                    this.set_picker_color(&key_field, hsv, (alpha * 255.).round() as u8, cx);
+                    cx.stop_propagation();
+                }));
+            picker = picker.child(control);
+            if channel == 2 {
+                picker = picker.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(theme.muted))
+                        .child(format!("Opacity · {:.0}%", color.alpha() * 100.)),
+                );
+            }
+        }
         let mut swatches = div().flex().flex_wrap().gap_2();
         let mut palette = vec![
             0x171717, 0xffffff, 0xfff7e6, 0xc6605c, 0xe6ad48, 0x55917e, 0x3265a8, 0x8d6eb5,
@@ -27,20 +394,20 @@ impl NotesView {
                 palette.push(recent.rgb());
             }
         }
-        for rgb_value in palette {
+        for value in palette {
             let draft = field.clone();
             swatches = swatches.child(
                 self.control(
-                    format!("picker-swatch-{rgb_value}"),
-                    format!("Choose #{rgb_value:06X}"),
+                    format!("picker-swatch-{value}"),
+                    format!("Choose #{value:06X}"),
                     div()
                         .size(px(24.))
-                        .rounded_full()
-                        .bg(rgb(rgb_value))
+                        .rounded(px(3.))
+                        .bg(rgb(value))
                         .border_1()
                         .border_color(theme.border)
                         .into_any_element(),
-                    color.rgb() == rgb_value,
+                    color.rgb() == value,
                     cx,
                     move |_, _, cx| {
                         let alpha = if opacity {
@@ -49,7 +416,7 @@ impl NotesView {
                             255
                         };
                         draft.update(cx, |f, cx| {
-                            f.set_content(ThemeColor((rgb_value << 8) | alpha).hex(), cx)
+                            f.set_content(ThemeColor((value << 8) | alpha).hex(), cx)
                         });
                     },
                 )
@@ -57,173 +424,25 @@ impl NotesView {
                 .p_0(),
             );
         }
-        let mut picker = div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .size(px(42.))
-                            .rounded(px(theme.radius))
-                            .border_1()
-                            .border_color(theme.border)
-                            .bg(rgb(theme.surface))
-                            .child(
-                                div()
-                                    .size_full()
-                                    .rounded(px(theme.radius))
-                                    .bg(rgba(color.0)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(color.hex().to_uppercase())
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(theme.muted))
-                                    .child("Drag to mix a color"),
-                            ),
-                    ),
-            )
-            .child(swatches);
-        for (channel, label) in ["Red", "Green", "Blue", "Opacity"].into_iter().enumerate() {
-            if channel == 3 && !opacity {
-                break;
-            }
-            let shift = (3 - channel) * 8;
-            let value = ((color.0 >> shift) & 255) as u8;
-            let bounds = Rc::new(Cell::new(Bounds::default()));
-            let measured = bounds.clone();
-            let gradient = linear_gradient(
-                90.,
-                linear_color_stop(rgba(replace_channel(color, channel, 0).0), 0.),
-                linear_color_stop(rgba(replace_channel(color, channel, 255).0), 1.),
-            );
-            let track = canvas(
-                move |b, _, _| measured.set(b),
-                move |b, _, window, _| {
-                    window.paint_quad(fill(b, rgb(theme.surface)).corner_radii(px(4.)));
-                    window.paint_quad(fill(b, gradient).corner_radii(px(4.)));
-                    let x = b.origin.x + (b.size.width - px(4.)) * (value as f32 / 255.);
-                    let marker = Bounds::new(
-                        point(x, b.origin.y + px(2.)),
-                        size(px(4.), b.size.height - px(4.)),
-                    );
-                    window.paint_quad(fill(marker, rgb(0xffffff)).corner_radii(px(2.)));
-                    window.paint_quad(quad(
-                        marker,
-                        px(2.),
-                        rgba(0),
-                        px(1.),
-                        rgb(0x171717),
-                        BorderStyle::Solid,
-                    ));
-                },
-            )
-            .w_full()
-            .h(px(26.));
-            let down_field = field.clone();
-            let move_field = field.clone();
-            let key_field = field.clone();
-            let down_bounds = bounds.clone();
-            let slider = self
-                .control(
-                    format!("picker-channel-{channel}"),
-                    format!("{label}: {value}. Left and right arrows adjust the value"),
-                    track.into_any_element(),
-                    false,
-                    cx,
-                    |_, _, _| {},
-                )
-                .flex_1()
-                .min_w_0()
-                .p_0()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                        this.color_drag = Some((down_field.entity_id(), channel));
-                        this.pick_channel(
-                            &down_field,
-                            channel,
-                            event.position,
-                            down_bounds.get(),
-                            opacity,
-                            cx,
-                        );
-                        cx.stop_propagation();
-                    }),
-                )
-                .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                    if event.dragging()
-                        && this.color_drag == Some((move_field.entity_id(), channel))
-                    {
-                        this.pick_channel(
-                            &move_field,
-                            channel,
-                            event.position,
-                            bounds.get(),
-                            opacity,
-                            cx,
-                        );
-                        cx.stop_propagation();
-                    }
-                }))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, _| this.color_drag = None),
-                )
-                .on_mouse_up_out(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, _| this.color_drag = None),
-                )
-                .on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
-                    let current = ThemeColor::parse(&key_field.read(cx).content).unwrap_or(color);
-                    let value = ((current.0 >> shift) & 255) as u8;
-                    let step = if event.keystroke.modifiers.shift {
-                        10
-                    } else {
-                        1
-                    };
-                    let value = match event.keystroke.key.as_str() {
-                        "left" | "down" => value.saturating_sub(step),
-                        "right" | "up" => value.saturating_add(step),
-                        "home" => 0,
-                        "end" => 255,
-                        _ => return,
-                    };
-                    key_field.update(cx, |f, cx| {
-                        f.set_content(replace_channel(current, channel, value).hex(), cx)
-                    });
-                    cx.stop_propagation();
-                }));
-            picker = picker.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(div().w(px(54.)).text_xs().child(label))
-                    .child(slider)
-                    .child(div().w(px(28.)).text_xs().child(value.to_string())),
-            );
-        }
-        picker.child(
+        picker.child(swatches).child(
             div()
-                .text_xs()
-                .text_color(rgb(theme.muted))
-                .child("Tab to a channel; use arrow keys to adjust. Shift adjusts by 10."),
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .size(px(28.))
+                        .rounded(px(3.))
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(rgb(theme.surface))
+                        .child(div().size_full().bg(rgba(color.0))),
+                )
+                .child(div().text_sm().child(color.hex().to_uppercase())),
         )
     }
 
-    fn pick_channel(
+    fn pick_color(
         &mut self,
         field: &Entity<Field>,
         channel: usize,
@@ -232,18 +451,77 @@ impl NotesView {
         opacity: bool,
         cx: &mut Context<Self>,
     ) {
-        if bounds.size.width <= px(0.) {
+        if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
             return;
         }
-        let fraction =
+        let x =
             (f32::from(position.x - bounds.origin.x) / f32::from(bounds.size.width)).clamp(0., 1.);
-        let mut color = ThemeColor::parse(&field.read(cx).content).unwrap_or(ThemeColor::opaque(
+        let y =
+            (f32::from(position.y - bounds.origin.y) / f32::from(bounds.size.height)).clamp(0., 1.);
+        let color = ThemeColor::parse(&field.read(cx).content).unwrap_or(ThemeColor::opaque(
             Theme::new(&self.controller.settings).canvas.paper,
         ));
-        if !opacity {
-            color.0 |= 255;
+        let mut hsv = self.picker_hsv(field, color);
+        let mut alpha = if opacity { (color.0 & 255) as u8 } else { 255 };
+        match channel {
+            0 => {
+                hsv.saturation = x;
+                hsv.value = 1. - y;
+            }
+            1 => hsv.hue = x.min(1. - f32::EPSILON),
+            _ => alpha = (x * 255.).round() as u8,
         }
-        let color = replace_channel(color, channel, (fraction * 255.).round() as u8);
-        field.update(cx, |field, cx| field.set_content(color.hex(), cx));
+        self.set_picker_color(field, hsv, alpha, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Hsv;
+    use folio_app::appearance::ThemeColor;
+
+    #[test]
+    fn hsv_round_trips_rgb_and_alpha() {
+        for r in (0..=255).step_by(17) {
+            for g in (0..=255).step_by(17) {
+                for b in (0..=255).step_by(17) {
+                    let color = ThemeColor((r << 24) | (g << 16) | (b << 8) | 73);
+                    assert_eq!(Hsv::from_color(color, 0.).color(73), color);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grayscale_keeps_hue_and_box_corners_are_white_hue_and_black() {
+        let hue = 2. / 3.;
+        for rgb in [0, 0x777777, 0xffffff] {
+            assert_eq!(Hsv::from_color(ThemeColor::opaque(rgb), hue).hue, hue);
+        }
+        let base = Hsv {
+            hue,
+            saturation: 0.,
+            value: 1.,
+        };
+        assert_eq!(base.color(255).rgb(), 0xffffff);
+        assert_eq!(
+            Hsv {
+                saturation: 1.,
+                ..base
+            }
+            .color(255)
+            .rgb(),
+            0x0000ff
+        );
+        assert_eq!(
+            Hsv {
+                saturation: 1.,
+                value: 0.,
+                ..base
+            }
+            .color(255)
+            .rgb(),
+            0
+        );
     }
 }
