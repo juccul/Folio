@@ -321,7 +321,8 @@ impl NotesView {
                 .rounded(px(4.))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        this.accessibility.focus_control(id, window);
                         this.color_drag = Some((down_field.entity_id(), channel));
                         this.pick_color(
                             &down_field,
@@ -334,7 +335,12 @@ impl NotesView {
                         cx.stop_propagation();
                     }),
                 )
-                .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "enter" {
+                        this.submit_modal(window, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
                     let current = ThemeColor::parse(&key_field.read(cx).content).unwrap_or(color);
                     let mut hsv = this.picker_hsv(&key_field, current);
                     let mut alpha = if opacity { current.alpha() } else { 1. };
