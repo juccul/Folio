@@ -158,7 +158,7 @@ fn semantics(key: &str) -> Semantics {
     if matches!(key, "all" | "favorite" | "recent" | "trash") {
         return radio(45, "Library filter");
     }
-    if matches!(key, "light-theme" | "dark-theme") {
+    if matches!(key, "system-theme" | "light-theme" | "dark-theme") {
         return radio(30, "Appearance");
     }
     if matches!(

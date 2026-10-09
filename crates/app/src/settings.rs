@@ -58,6 +58,9 @@ pub struct Settings {
     pub collapsed_folders: Vec<Id>,
     pub recent_documents: Vec<Id>,
     pub dark: bool,
+    /// Missing in older profiles: preserve their explicit light/dark choice.
+    #[serde(default)]
+    pub follow_system_theme: bool,
     pub reduce_motion: bool,
     pub appearance: crate::appearance::Appearance,
     pub ui_scale: f32,
@@ -83,6 +86,14 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Resolve system appearance without replacing an explicit user override.
+    pub fn apply_system_theme(&mut self, dark: bool) -> bool {
+        if !self.follow_system_theme || self.dark == dark {
+            return false;
+        }
+        self.dark = dark;
+        true
+    }
     pub fn effective_eraser_mode(&self) -> EraserMode {
         if self.segment_eraser {
             EraserMode::Segment
@@ -214,6 +225,7 @@ impl Default for Settings {
             collapsed_folders: vec![],
             recent_documents: vec![],
             dark: false,
+            follow_system_theme: true,
             reduce_motion: false,
             appearance: Default::default(),
             ui_scale: 1.,
@@ -272,6 +284,37 @@ impl Default for Settings {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn system_theme_defaults_and_legacy_manual_choices_round_trip() {
+        let fresh = Settings::default();
+        assert!(fresh.follow_system_theme);
+        for dark in [false, true] {
+            let old: Settings = serde_json::from_value(serde_json::json!({"dark": dark})).unwrap();
+            assert!(!old.follow_system_theme);
+            assert_eq!(old.dark, dark);
+            let reopened: Settings =
+                serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
+            assert!(!reopened.follow_system_theme);
+            assert_eq!(reopened.dark, dark);
+        }
+        let reopened: Settings =
+            serde_json::from_str(&serde_json::to_string(&fresh).unwrap()).unwrap();
+        assert!(reopened.follow_system_theme);
+    }
+
+    #[test]
+    fn system_changes_preserve_palettes_and_respect_manual_override() {
+        let mut settings = Settings::default();
+        let palette = serde_json::to_value(&settings.appearance).unwrap();
+        assert!(settings.apply_system_theme(true));
+        assert!(settings.dark);
+        assert!(!settings.apply_system_theme(true));
+        assert!(settings.apply_system_theme(false));
+        assert_eq!(serde_json::to_value(&settings.appearance).unwrap(), palette);
+        settings.follow_system_theme = false;
+        assert!(!settings.apply_system_theme(true));
+        assert!(!settings.dark);
+    }
     use super::*;
 
     #[test]

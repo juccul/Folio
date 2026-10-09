@@ -207,6 +207,7 @@ pub struct NotesView {
     color_drag: Option<(EntityId, usize)>,
     inline_text: Option<inline_text::Editor>,
     subscriptions: Vec<Subscription>,
+    _appearance_subscription: Subscription,
     motion: std::cell::RefCell<motion::Motion>,
     building_overlay: bool,
     settings_open: bool,
@@ -246,7 +247,22 @@ pub struct NotesView {
     accessibility: std::rc::Rc<accessibility::Accessibility>,
 }
 impl NotesView {
-    pub fn new(controller: Controller, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(mut controller: Controller, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        controller.settings.apply_system_theme(matches!(
+            window.appearance(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        ));
+        let entity = cx.entity().downgrade();
+        let appearance_subscription = window.observe_window_appearance(move |window, cx| {
+            let _ = entity.update(cx, |view, cx| {
+                if view.controller.settings.apply_system_theme(matches!(
+                    window.appearance(),
+                    WindowAppearance::Dark | WindowAppearance::VibrantDark
+                )) {
+                    cx.notify();
+                }
+            });
+        });
         let focus = cx.focus_handle();
         focus.focus(window);
         let entity = cx.entity().downgrade();
@@ -321,6 +337,7 @@ impl NotesView {
             color_drag: None,
             inline_text: None,
             subscriptions: vec![],
+            _appearance_subscription: appearance_subscription,
             motion: Default::default(),
             building_overlay: false,
             settings_open: false,
@@ -2109,12 +2126,7 @@ impl NotesView {
         let search = matches!(modal, Modal::Search);
         let multiline = matches!(modal, Modal::Recognition);
         let mut panel = div()
-            .id("modal-panel")
-            .max_h(px((f32::from(window.viewport_size().height)
-                / self.controller.settings.ui_scale
-                - 48.)
-                .max(240.)))
-            .overflow_y_scroll()
+            .flex_shrink_0()
             .w(px(if search || matches!(modal, Modal::NewDocument) { 660. } else { 520. }))
             .max_w_full()
             .p_6()
@@ -2565,7 +2577,17 @@ impl NotesView {
             .flex()
             .items_center()
             .justify_center()
-            .child(panel)
+            .child(
+                div()
+                    .id("modal-panel")
+                    .max_h(px((f32::from(window.viewport_size().height)
+                        / self.controller.settings.ui_scale
+                        - 48.)
+                        .max(240.)))
+                    .overflow_y_scroll()
+                    .rounded(px(theme.radius + 4.))
+                    .child(panel),
+            )
     }
     /// Prepare synthetic 120 Hz input. Dispatch is performed without borrowing
     /// this entity, exactly as the native platform event loop dispatches frames.

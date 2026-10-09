@@ -31,7 +31,7 @@ The interface opens to a minimal document library with folders, favorites, recen
 
 The tab strip is Folio's title bar, with the + picker immediately after the tabs and minimize, maximize/restore and close buttons at the far right. Drag empty space to move the window; double-click it to maximize or restore. Window edges and corners resize it. Dragging a tab reorders documents. The title bar remains available in the library and above dialogs, and closing saves pending note changes.
 
-**Settings → Appearance** provides neutral Light/Dark themes, separate custom colors for each mode, corner radius and reset. Paper follows the theme by default; turn off **Paper follows appearance** to keep white paper or choose a fixed paper color. **Keep ink readable** adjusts low-contrast handwriting and text only on screen and can be disabled. Original document colors, PDF/image backgrounds and exports stay intact.
+**Settings → Appearance** provides System, Light and Dark themes, separate custom colors for each palette, corner radius and reset. System follows your device's appearance at startup and when it changes; Light and Dark stay fixed. New profiles use System, while existing profiles retain their previous choice until you select System. Paper follows the theme by default; turn off **Paper follows appearance** to keep white paper or choose a fixed paper color. **Keep ink readable** adjusts low-contrast handwriting and text only on screen and can be disabled. Original document colors, PDF/image backgrounds and exports stay intact.
 
 ## Tablet stability notice
 

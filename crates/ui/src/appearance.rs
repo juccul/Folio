@@ -5,6 +5,7 @@ impl NotesView {
     pub(super) fn appearance_panel(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
         let dark = self.controller.settings.dark;
+        let system = self.controller.settings.follow_system_theme;
         let follows = self.controller.settings.appearance.canvas_follows_theme;
         let mut modes = div()
             .flex()
@@ -14,33 +15,43 @@ impl NotesView {
             .bg(rgb(theme.bg))
             .flex_shrink_0();
         for (id, label, value) in [
-            ("light-theme", "Light", false),
-            ("dark-theme", "Dark", true),
+            ("system-theme", "System", None),
+            ("light-theme", "Light", Some(false)),
+            ("dark-theme", "Dark", Some(true)),
         ] {
+            let selected = if system {
+                value.is_none()
+            } else {
+                value == Some(dark)
+            };
             modes = modes.child(
                 self.control(
                     id,
-                    if value {
-                        "Dark appearance"
-                    } else {
-                        "Light appearance"
+                    match value {
+                        None => "System appearance",
+                        Some(true) => "Dark appearance",
+                        Some(false) => "Light appearance",
                     },
                     div().child(label).into_any_element(),
-                    dark == value,
+                    selected,
                     cx,
-                    move |this, _, _| {
-                        this.controller.settings.dark = value;
+                    move |this, window, _| {
+                        this.controller.settings.follow_system_theme = value.is_none();
+                        if let Some(dark) = value {
+                            this.controller.settings.dark = dark;
+                        } else {
+                            this.controller.settings.apply_system_theme(matches!(
+                                window.appearance(),
+                                WindowAppearance::Dark | WindowAppearance::VibrantDark
+                            ));
+                        }
                         this.controller.store_settings();
                     },
                 )
                 .px_4()
                 .py_1()
                 .rounded(px(5.))
-                .bg(rgb(if dark == value {
-                    theme.selected
-                } else {
-                    theme.bg
-                })),
+                .bg(rgb(if selected { theme.selected } else { theme.bg })),
             );
         }
         let mut body = div()
@@ -49,7 +60,7 @@ impl NotesView {
             .child(
                 self.settings_row(
                     "Color theme",
-                    "Light and dark palettes are saved separately.",
+                    "System follows your device. Light and dark palettes are saved separately.",
                 )
                 .child(modes),
             )

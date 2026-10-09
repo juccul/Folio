@@ -4,7 +4,7 @@ members = ["apps/desktop", "crates/*"]
 exclude = ["vendor/gpui", "vendor/xattr", "vendor/proc-macro-error2"]
 
 [workspace.package]
-version = "0.1.3"
+version = "0.1.4-dev"
 edition = "2024"
 license = "GPL-3.0-or-later"
 rust-version = "1.92"
