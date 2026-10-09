@@ -62,6 +62,15 @@ fn oval(turns: f32) -> Vec<Point> {
         .collect()
 }
 
+fn narrow_overdrawn_oval() -> Vec<Point> {
+    (0..=120)
+        .map(|i| {
+            let a = i as f32 / 120. * TAU * 1.08;
+            Point::new(140. + a.cos() * 15., 160. + a.sin() * 50.)
+        })
+        .collect()
+}
+
 fn with_app(test: impl FnOnce(&mut Controller)) {
     let root = std::env::temp_dir().join(format!("folio-gesture-test-{}", Id::new_v4()));
     let mut app = Controller::open(root.clone()).unwrap();
@@ -228,6 +237,79 @@ fn holding_an_encircle_selects_before_lift_and_takes_priority_over_shape_snappin
         assert_eq!(app.session().selection, HashSet::from([enclosed]));
         assert_eq!(app.page().objects.len(), 1);
     });
+}
+
+#[test]
+fn held_mouse_encircle_takes_priority_over_scratch_without_erasing_ink() {
+    for tick_before_lift in [false, true] {
+        with_app(|app| {
+            app.settings.encircle_select = true;
+            app.settings.scratch_erase = true;
+            draw(app, &[Point::new(153., 155.), Point::new(153., 165.)], 0);
+            let original = app.page().ordered_objects().next().unwrap().clone();
+            let points = narrow_overdrawn_oval();
+            let samples = points
+                .iter()
+                .enumerate()
+                .map(|(i, &p)| StrokePoint::new(p, 0.65, 1000 + i as u64 * 8))
+                .collect::<Vec<_>>();
+            let scratch = folio_gestures::scratch(&samples).unwrap();
+            assert!(scratch.erases(&original));
+            assert!(folio_gestures::encloses(
+                &folio_gestures::selection_loop(&points).unwrap(),
+                &original
+            ));
+            for (i, &point) in points.iter().enumerate() {
+                let mut event = frame(
+                    app,
+                    point,
+                    if i == 0 { Phase::Down } else { Phase::Move },
+                    1000 + i as u64 * 8,
+                );
+                event.device = Device::Mouse;
+                app.pointer(event);
+            }
+            hold(app);
+            if tick_before_lift {
+                app.tick();
+            }
+            let mut up = frame(app, *points.last().unwrap(), Phase::Up, 2500);
+            up.device = Device::Mouse;
+            app.pointer(up);
+            assert_eq!(app.session().selection, HashSet::from([original.id()]));
+            assert_eq!(app.page().objects.len(), 1);
+            assert_eq!(app.page().objects[&original.id()], original);
+            assert_eq!(app.tool, Tool::Lasso);
+            // Selection must not add an undo command or mutate the original ink.
+            app.undo();
+            assert!(app.page().objects.is_empty());
+        });
+    }
+}
+
+#[test]
+fn overlapping_scratch_still_erases_without_enabled_held_selection() {
+    for encircle_enabled in [false, true] {
+        with_app(|app| {
+            app.settings.encircle_select = encircle_enabled;
+            app.settings.scratch_erase = true;
+            draw(app, &[Point::new(153., 155.), Point::new(153., 165.)], 0);
+            let original = app.page().ordered_objects().next().unwrap().clone();
+            let points = narrow_overdrawn_oval();
+            if encircle_enabled {
+                // An unheld loop keeps ordinary scratch behavior.
+                draw(app, &points, 1000);
+            } else {
+                // A hold cannot select when circle selection is disabled.
+                draw_held(app, &points, 1000);
+            }
+            assert!(app.page().objects.is_empty());
+            assert!(app.session().selection.is_empty());
+            assert_eq!(app.tool, Tool::Pen);
+            app.undo();
+            assert_eq!(app.page().objects[&original.id()], original);
+        });
+    }
 }
 
 #[test]

@@ -1586,6 +1586,23 @@ impl Controller {
                     let points = stroke.raw.iter().map(|p| p.position()).collect::<Vec<_>>();
                     let smart_pen =
                         self.tool == Tool::Pen && stroke.style.tool != InkTool::Highlighter;
+                    // A deliberate endpoint hold identifies selection intent.
+                    // Narrow, overdrawn ovals can also resemble a scratch; never
+                    // erase their enclosed ink before honoring that selection.
+                    if smart_pen
+                        && self.settings.encircle_select
+                        && last_move.elapsed() >= INK_HOLD_DELAY
+                    {
+                        let ids = self.encircled_ids(&points);
+                        if !ids.is_empty() {
+                            self.session_mut().selection = ids;
+                            self.tool = Tool::Lasso;
+                            self.temporary_selection = true;
+                            self.persistence
+                                .draft(self.active, self.page().id, stroke.id, None);
+                            return;
+                        }
+                    }
                     if smart_pen
                         && self.settings.scratch_erase
                         && let Some(gesture) = folio_gestures::scratch(&stroke.raw)
@@ -1625,20 +1642,6 @@ impl Controller {
                             self.persistence
                                 .draft(self.active, self.page().id, stroke.id, None);
                             self.delete_ids(&ids, "Scratch erase");
-                            return;
-                        }
-                    }
-                    if smart_pen
-                        && self.settings.encircle_select
-                        && last_move.elapsed() >= INK_HOLD_DELAY
-                    {
-                        let ids = self.encircled_ids(&points);
-                        if !ids.is_empty() {
-                            self.session_mut().selection = ids;
-                            self.tool = Tool::Lasso;
-                            self.temporary_selection = true;
-                            self.persistence
-                                .draft(self.active, self.page().id, stroke.id, None);
                             return;
                         }
                     }
