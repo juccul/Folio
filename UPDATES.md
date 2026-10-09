@@ -118,3 +118,7 @@ handled by the host portal; a denied or unavailable dialog is reported as a
 recoverable failure. Folio does not silently alter the desktop's permission store.
 Libraries under `/tmp` or `/var/tmp` cannot be restarted safely into a new sandbox;
 move them to persistent app storage first.
+
+## Reissued Flatpak updater repair
+
+The original 45-second availability wait is repaired in both 0.1.3 and 0.1.4. See [FLATPAK_UPDATER_REPAIR.md](FLATPAK_UPDATER_REPAIR.md) for the explicitly requested same-version replacement, unchanged Windows downloads and retained original source. Future fixes should increase the version.
