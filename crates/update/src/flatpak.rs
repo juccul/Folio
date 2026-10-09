@@ -3,6 +3,8 @@
 use futures_lite::{StreamExt, future};
 use std::{
     collections::HashMap,
+    io::Read,
+    os::{fd::AsFd, unix::net::UnixStream},
     path::Path,
     sync::{
         Arc,
@@ -28,16 +30,83 @@ fn number(info: &Info, key: &str) -> Option<u32> {
 pub struct Monitor {
     connection: Connection,
     path: OwnedObjectPath,
+    expected_commit: String,
+    cancel: Arc<AtomicBool>,
 }
 impl Monitor {
     fn proxy(&self) -> Result<Proxy<'_>, String> {
         Proxy::new(&self.connection, PORTAL, &self.path, MONITOR).map_err(|e| e.to_string())
+    }
+    fn verify_deployment(&self) -> Result<(), String> {
+        let (mut reader, writer) = UnixStream::pair().map_err(|e| e.to_string())?;
+        reader
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .map_err(|e| e.to_string())?;
+        let portal =
+            Proxy::new(&self.connection, PORTAL, OBJECT, PORTAL).map_err(|e| e.to_string())?;
+        let fds = HashMap::from([(1u32, zbus::zvariant::Fd::from(writer.as_fd()))]);
+        let env: HashMap<&str, &str> = HashMap::new();
+        let options: HashMap<&str, Value<'_>> = HashMap::new();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err("The Flatpak update was cancelled".into());
+        }
+        // LATEST_VERSION reads the actual newly deployed sandbox. This command
+        // never opens the app or its library; stdout is the only passed FD.
+        let _: u32 = portal
+            .call(
+                "Spawn",
+                &(
+                    b"/\0".to_vec(),
+                    vec![b"/usr/bin/cat\0".to_vec(), b"/.flatpak-info\0".to_vec()],
+                    fds,
+                    env,
+                    2u32,
+                    options,
+                ),
+            )
+            .map_err(|e| format!("Could not verify the updated Flatpak deployment: {e}"))?;
+        drop(writer);
+        let mut bytes = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            if self.cancel.load(Ordering::Relaxed) {
+                return Err("The Flatpak update was cancelled".into());
+            }
+            if Instant::now() >= deadline {
+                return Err("Timed out verifying the updated Flatpak deployment".into());
+            }
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    if bytes.len() + count > 65_536 {
+                        return Err("Flatpak deployment metadata is too large".into());
+                    }
+                    bytes.extend_from_slice(&buffer[..count]);
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Could not read Flatpak deployment metadata: {error}"
+                    ));
+                }
+            }
+        }
+        let metadata = std::str::from_utf8(&bytes)
+            .map_err(|_| "Flatpak deployment metadata is not valid UTF-8".to_owned())?;
+        verify_commit(metadata, &self.expected_commit)
     }
     pub fn restart(&self, data: &Path) -> Result<(), String> {
         use std::os::unix::ffi::OsStrExt;
         if data.starts_with("/tmp") || data.starts_with("/var/tmp") {
             return Err("This library is in the sandbox's temporary directory. Move it to persistent app storage before restarting to update".into());
         }
+        self.verify_deployment()?;
         let proxy =
             Proxy::new(&self.connection, PORTAL, OBJECT, PORTAL).map_err(|e| e.to_string())?;
         let nul = |s: &[u8]| {
@@ -62,6 +131,25 @@ impl Monitor {
         Ok(())
     }
 }
+fn verify_commit(metadata: &str, expected: &str) -> Result<(), String> {
+    let mut instance = false;
+    let mut commit = None;
+    for line in metadata.lines().map(str::trim) {
+        if line.starts_with('[') {
+            instance = line == "[Instance]";
+        } else if instance
+            && let Some(value) = line.strip_prefix("app-commit=")
+            && commit.replace(value.trim()).is_some()
+        {
+            return Err("Flatpak deployment metadata has duplicate commits".into());
+        }
+    }
+    if commit != Some(expected) {
+        return Err("The installed Flatpak does not match this update. Check for updates again or update Folio with your software manager".into());
+    }
+    Ok(())
+}
+
 impl Drop for Monitor {
     fn drop(&mut self) {
         if let Ok(proxy) = self.proxy() {
@@ -89,8 +177,8 @@ fn download_on_connection(
 ) -> Result<Monitor, String> {
     let portal = Proxy::new(&connection, PORTAL, OBJECT, PORTAL).map_err(|e| e.to_string())?;
     let options: HashMap<&str, Value<'_>> = HashMap::new();
-    // Subscribe before creating the object, because the initial availability
-    // signal can precede the method reply. Filtering happens by returned path.
+    // Subscribe before creating the object and starting Update: progress can
+    // precede its method reply. Filter messages by the returned monitor path.
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
         .sender(PORTAL)
@@ -110,18 +198,27 @@ fn download_on_connection(
     let monitor = Monitor {
         connection: connection.clone(),
         path,
+        expected_commit: expected_commit.into(),
+        cancel: cancel.clone(),
     };
-    let available_by = Instant::now() + Duration::from_secs(45);
-    let mut updating = false;
+    if cancel.load(Ordering::Relaxed) {
+        return Err("The Flatpak update was cancelled".into());
+    }
+    // Availability is polled only twice an hour by the default portal. The
+    // user already approved this transaction by clicking Update, so start it
+    // directly instead of waiting for the first availability signal.
+    let options: HashMap<&str, Value<'_>> = HashMap::new();
+    monitor.proxy()?.call::<_, _, ()>("Update", &("", options)).map_err(|e| format!("Flatpak could not start the update: {e}. If permissions changed, update Folio with your software manager"))?;
+    let mut received_progress = false;
     let mut last_progress = Instant::now();
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err("The Flatpak update was cancelled".into());
         }
-        if !updating && Instant::now() >= available_by {
-            return Err("The Folio update repository is not ready. Install the new .flatpakref once to connect it, then retry".into());
-        }
-        if updating && last_progress.elapsed() > Duration::from_secs(180) {
+        // The first-use permission dialog can stay open while the user reads
+        // it. After transaction progress begins, retain a shorter stall limit.
+        let timeout = if received_progress { 180 } else { 600 };
+        if last_progress.elapsed() > Duration::from_secs(timeout) {
             return Err("Flatpak stopped reporting progress. Your current version is safe; retry when the connection is available".into());
         }
         let message = future::block_on(future::race(async { stream.next().await }, async {
@@ -135,48 +232,29 @@ fn download_on_connection(
             continue;
         }
         let info: Info = message.body().deserialize().map_err(|e| e.to_string())?;
-        match header.member().map(|m| m.as_str()) {
-            Some("UpdateAvailable") if !updating => {
-                if text(&info, "local-commit") == Some(expected_commit) {
+        if let Some("Progress") = header.member().map(|m| m.as_str()) {
+            received_progress = true;
+            last_progress = Instant::now();
+            match number(&info, "status").unwrap_or(0) {
+                0 => {
+                    let operations = number(&info, "n_ops").unwrap_or(1).max(1);
+                    let operation = number(&info, "op").unwrap_or(0).min(operations - 1);
+                    let percent = number(&info, "progress").unwrap_or(0).min(100);
+                    progress(((operation * 100 + percent) / operations).min(99) as u8);
+                }
+                1 | 2 => {
+                    monitor.verify_deployment()?;
+                    progress(100);
                     return Ok(monitor);
                 }
-                if text(&info, "remote-commit") != Some(expected_commit) {
-                    return Err("The Flatpak repository has not published the advertised version yet. Retry shortly".into());
-                }
-                let options: HashMap<&str, Value<'_>> = HashMap::new();
-                monitor.proxy()?.call::<_, _, ()>("Update", &("", options)).map_err(|e| format!("Flatpak could not start the update: {e}. If permissions changed, update Folio with your software manager"))?;
-                updating = true;
-                last_progress = Instant::now();
-            }
-            Some("Progress") if updating => {
-                last_progress = Instant::now();
-                match number(&info, "status").unwrap_or(0) {
-                    0 => {
-                        let operations = number(&info, "n_ops").unwrap_or(1).max(1);
-                        let operation = number(&info, "op").unwrap_or(0).min(operations - 1);
-                        let percent = number(&info, "progress").unwrap_or(0).min(100);
-                        progress(((operation * 100 + percent) / operations).min(99) as u8);
-                    }
-                    2 => {
-                        progress(100);
-                        return Ok(monitor);
-                    }
-                    1 => {
-                        return Err(
-                            "Flatpak found no matching update. Refresh the Folio remote and retry"
-                                .into(),
-                        );
-                    }
-                    _ => {
-                        return Err(format!(
-                            "Flatpak update failed: {}",
-                            text(&info, "error_message")
-                                .unwrap_or("permission denied or connection unavailable")
-                        ));
-                    }
+                _ => {
+                    return Err(format!(
+                        "Flatpak update failed: {}",
+                        text(&info, "error_message")
+                            .unwrap_or("permission denied or connection unavailable")
+                    ));
                 }
             }
-            _ => {}
         }
     }
 }
@@ -185,9 +263,9 @@ fn download_on_connection(
 mod tests {
     use super::*;
     use std::{
-        io::{BufRead, BufReader},
+        io::{BufRead, BufReader, Write},
         process::{Child, Command, Stdio},
-        sync::atomic::AtomicUsize,
+        sync::{Mutex, atomic::AtomicUsize},
     };
     const HANDLE: &str = "/org/freedesktop/portal/Flatpak/update_monitor/test";
     struct Bus(Child);
@@ -198,8 +276,8 @@ mod tests {
         }
     }
     struct Portal {
-        remote: String,
-        local: String,
+        metadata: Arc<Mutex<String>>,
+        availability: bool,
     }
     #[zbus::interface(name = "org.freedesktop.portal.Flatpak")]
     impl Portal {
@@ -208,23 +286,49 @@ mod tests {
             _options: HashMap<String, OwnedValue>,
             #[zbus(connection)] connection: &zbus::Connection,
         ) -> zbus::fdo::Result<OwnedObjectPath> {
-            let info = HashMap::from([
-                ("running-commit", Value::from("old")),
-                ("local-commit", Value::from(self.local.as_str())),
-                ("remote-commit", Value::from(self.remote.as_str())),
-            ]);
-            // Deliberately emit before the method returns to cover the race.
-            connection
-                .emit_signal(None::<&str>, HANDLE, MONITOR, "UpdateAvailable", &info)
-                .await
-                .unwrap();
+            if self.availability {
+                let info = HashMap::from([
+                    ("running-commit", Value::from("old")),
+                    ("local-commit", Value::from("old")),
+                    ("remote-commit", Value::from("stale")),
+                ]);
+                connection
+                    .emit_signal(None::<&str>, HANDLE, MONITOR, "UpdateAvailable", &info)
+                    .await
+                    .unwrap();
+            }
             Ok(OwnedObjectPath::try_from(HANDLE).unwrap())
+        }
+        fn spawn(
+            &self,
+            cwd: Vec<u8>,
+            argv: Vec<Vec<u8>>,
+            mut fds: HashMap<u32, zbus::zvariant::OwnedFd>,
+            env: HashMap<String, String>,
+            flags: u32,
+            options: HashMap<String, OwnedValue>,
+        ) -> u32 {
+            assert_eq!(cwd, b"/\0");
+            assert_eq!(
+                argv,
+                [b"/usr/bin/cat\0".to_vec(), b"/.flatpak-info\0".to_vec()]
+            );
+            assert_eq!(flags, 2, "LATEST_VERSION without WATCH_BUS");
+            assert!(env.is_empty() && options.is_empty());
+            assert_eq!(fds.len(), 1, "only stdout is passed");
+            let fd: std::os::fd::OwnedFd = fds.remove(&1).unwrap().into();
+            let mut stdout = UnixStream::from(fd);
+            stdout
+                .write_all(self.metadata.lock().unwrap().as_bytes())
+                .unwrap();
+            123
         }
     }
     struct Update {
         calls: Arc<AtomicUsize>,
         status: u32,
         deny: bool,
+        cancel: Arc<AtomicBool>,
     }
     #[zbus::interface(name = "org.freedesktop.portal.Flatpak.UpdateMonitor")]
     impl Update {
@@ -250,7 +354,16 @@ mod tests {
                 .emit_signal(None::<&str>, HANDLE, MONITOR, "Progress", &info)
                 .await
                 .unwrap();
-            let info = HashMap::from([("status", Value::from(self.status))]);
+            if self.status == 4 {
+                self.cancel.store(true, Ordering::Relaxed);
+            }
+            let mut info = HashMap::from([("status", Value::from(self.status))]);
+            if self.status == 3 {
+                info.insert(
+                    "error_message",
+                    Value::from("Update permission was declined"),
+                );
+            }
             connection
                 .emit_signal(None::<&str>, HANDLE, MONITOR, "Progress", &info)
                 .await
@@ -260,11 +373,24 @@ mod tests {
         fn close(&self) {}
     }
     fn run(
-        remote: &str,
-        local: &str,
+        metadata: &str,
+        availability: bool,
         status: u32,
         deny: bool,
+        cancelled: bool,
     ) -> (Result<(), String>, usize, Vec<u8>) {
+        run_with_restart(metadata, availability, status, deny, cancelled, false)
+    }
+    fn run_with_restart(
+        metadata: &str,
+        availability: bool,
+        status: u32,
+        deny: bool,
+        cancelled: bool,
+        changed_before_restart: bool,
+    ) -> (Result<(), String>, usize, Vec<u8>) {
+        let metadata = Arc::new(Mutex::new(metadata.to_owned()));
+        let cancel = Arc::new(AtomicBool::new(cancelled));
         let child = Command::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address"])
             .stdout(Stdio::piped())
@@ -284,8 +410,8 @@ mod tests {
             .serve_at(
                 OBJECT,
                 Portal {
-                    remote: remote.into(),
-                    local: local.into(),
+                    metadata: metadata.clone(),
+                    availability,
                 },
             )
             .unwrap()
@@ -295,6 +421,7 @@ mod tests {
                     calls: calls.clone(),
                     status,
                     deny,
+                    cancel: cancel.clone(),
                 },
             )
             .unwrap()
@@ -306,42 +433,104 @@ mod tests {
             .build()
             .unwrap();
         let mut progress = vec![];
-        let result = download_on_connection(
-            connection,
-            "expected",
-            &Arc::new(AtomicBool::new(false)),
-            |p| progress.push(p),
-        )
-        .map(|_| ());
+        let result = download_on_connection(connection, "expected", &cancel, |p| progress.push(p))
+            .and_then(|monitor| {
+                if changed_before_restart {
+                    *metadata.lock().unwrap() = "[Instance]\napp-commit=different\n".into();
+                    monitor.restart(Path::new("/home/folio-private-library"))
+                } else {
+                    Ok(())
+                }
+            });
         drop(service);
         (result, calls.load(Ordering::SeqCst), progress)
     }
+    const EXPECTED: &str =
+        "[Application]\nname=io.github.folio.Notes\n[Instance]\napp-commit=expected\n";
     #[test]
-    fn catches_initial_signal_before_reply_and_reports_download_progress() {
-        let (result, calls, progress) = run("expected", "old", 2, false);
+    fn starts_update_without_availability_and_catches_progress_before_reply() {
+        let (result, calls, progress) = run(EXPECTED, false, 2, false, false);
         result.unwrap();
         assert_eq!(calls, 1);
         assert_eq!(progress, [75, 100]);
     }
     #[test]
-    fn already_deployed_update_needs_no_new_download() {
-        let (result, calls, _) = run("expected", "expected", 2, false);
+    fn stale_availability_does_not_block_explicit_update() {
+        let (result, calls, _) = run(EXPECTED, true, 2, false, false);
         result.unwrap();
-        assert_eq!(calls, 0);
+        assert_eq!(calls, 1);
     }
     #[test]
-    fn wrong_remote_commit_never_starts_an_installation() {
-        let (result, calls, _) = run("different", "old", 2, false);
-        assert!(result.unwrap_err().contains("not published"));
-        assert_eq!(calls, 0);
+    fn empty_transaction_is_ready_only_when_expected_update_is_deployed() {
+        let (result, calls, progress) = run(EXPECTED, false, 1, false, false);
+        result.unwrap();
+        assert_eq!(calls, 1);
+        assert!(progress.contains(&100));
+        let (result, _, progress) = run("[Instance]\napp-commit=old\n", false, 1, false, false);
+        assert!(result.unwrap_err().contains("does not match"));
+        assert!(!progress.contains(&100));
     }
     #[test]
-    fn portal_denial_empty_update_and_failure_never_report_ready() {
-        for (status, deny) in [(1, false), (3, false), (2, true)] {
-            let (result, calls, progress) = run("expected", "old", status, deny);
-            assert!(result.is_err());
+    fn completed_transaction_with_wrong_commit_never_reports_ready() {
+        let (result, calls, progress) =
+            run("[Instance]\napp-commit=different\n", false, 2, false, false);
+        assert!(result.unwrap_err().contains("does not match"));
+        assert_eq!(calls, 1);
+        assert!(!progress.contains(&100));
+    }
+    #[test]
+    fn portal_denial_and_permission_prompt_failure_never_report_ready() {
+        for (status, deny) in [(3, false), (2, true)] {
+            let (result, calls, progress) = run(EXPECTED, false, status, deny, false);
+            let error = result.unwrap_err();
+            assert!(error.contains(if deny {
+                "Permissions increased"
+            } else {
+                "Update permission was declined"
+            }));
             assert_eq!(calls, 1);
             assert!(!progress.contains(&100));
+        }
+    }
+    #[test]
+    fn cancellation_before_transaction_prevents_update() {
+        let (result, calls, progress) = run(EXPECTED, false, 2, false, true);
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert_eq!(calls, 0);
+        assert!(progress.is_empty());
+    }
+    #[test]
+    fn cancellation_during_transaction_never_reports_ready() {
+        let (result, calls, progress) = run(EXPECTED, false, 4, false, false);
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert_eq!(calls, 1);
+        assert!(!progress.contains(&100));
+    }
+    #[test]
+    fn restart_rechecks_latest_commit_before_starting_app() {
+        let (result, calls, progress) = run_with_restart(EXPECTED, false, 2, false, false, true);
+        assert!(result.unwrap_err().contains("does not match"));
+        assert_eq!(calls, 1);
+        assert!(
+            progress.contains(&100),
+            "download was verified before deployment changed"
+        );
+    }
+    #[test]
+    fn oversized_deployment_metadata_is_rejected() {
+        let (result, _, progress) = run(&"x".repeat(65_537), false, 2, false, false);
+        assert!(result.unwrap_err().contains("too large"));
+        assert!(!progress.contains(&100));
+    }
+    #[test]
+    fn commit_metadata_requires_instance_section_and_one_commit() {
+        verify_commit(EXPECTED, "expected").unwrap();
+        for metadata in [
+            "",
+            "[Application]\napp-commit=expected\n",
+            "[Instance]\napp-commit=expected\napp-commit=expected\n",
+        ] {
+            assert!(verify_commit(metadata, "expected").is_err());
         }
     }
 }
