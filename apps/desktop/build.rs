@@ -14,7 +14,13 @@ fn main() {
             std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("folio.rc");
         let icon = icon.display().to_string().replace('\\', "\\\\");
         let version = env!("CARGO_PKG_VERSION");
-        let numbers = version.replace('.', ",");
+        let numbers = concat!(
+            env!("CARGO_PKG_VERSION_MAJOR"),
+            ",",
+            env!("CARGO_PKG_VERSION_MINOR"),
+            ",",
+            env!("CARGO_PKG_VERSION_PATCH")
+        );
         std::fs::write(
             &resource,
             format!(
