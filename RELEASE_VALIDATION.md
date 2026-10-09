@@ -23,7 +23,7 @@ handling and Windows version-resource fixes since 0.1.3.
 - Ten Windows updater recovery/progress tests and the math protocol test passed.
 - Four Rust readiness tests cover work lasting longer than thirty seconds,
   missing/repeated progress, the preparation ceiling and bounded protocol parsing.
-- Three packaging tests and 21 actual ZIP-import math regressions passed. All
+- Four packaging tests and 21 actual ZIP-import math regressions passed. All
   pinned math wheel members and original license bytes remain available. Windows
   portable ZIP entries dropped from 4,520 to 660.
 - The exact published 0.1.3 portable helper prepared the compact prototype in

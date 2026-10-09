@@ -52,9 +52,11 @@ def fetch(asset, cache):
 
 
 def safe_archive_path(entry):
-    name = entry.filename
+    # ZipInfo normalizes Windows separators and truncates NULs in filename.
+    # Validate the original archive spelling before either transformation.
+    name = entry.orig_filename
     path = PurePosixPath(name)
-    if path.is_absolute() or '..' in path.parts or '\\' in name or ':' in name:
+    if path.is_absolute() or '..' in path.parts or '\\' in name or ':' in name or '\0' in name:
         raise ValueError(f'Unsafe archive path: {name}')
     if (entry.external_attr >> 16) & 0o170000 == 0o120000:
         raise ValueError(f'Archive symlink: {name}')

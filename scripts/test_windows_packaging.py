@@ -50,7 +50,7 @@ assert importlib.metadata.version('compact-demo') == '1.0'
 
     def test_rejects_unsafe_duplicate_and_native_members(self):
         bad_members = [('../outside.py', b''), ('/outside.py', b''),
-                       ('folder\\outside.py', b''), ('C:/outside.py', b''),
+                       ('C:/outside.py', b''),
                        ('module.pyd', b'')]
         link = zipfile.ZipInfo('linked.py')
         link.external_attr = 0o120777 << 16
@@ -66,6 +66,19 @@ assert importlib.metadata.version('compact-demo') == '1.0'
                 second = self.wheel(f'second-{index}.whl', [(duplicate, b'second')])
                 with self.assertRaisesRegex(ValueError, 'Duplicate'):
                     packaging.stage_python_packages([first, second], self.root / f'duplicate-{index}.zip')
+
+    def test_rejects_raw_names_before_windows_zip_normalization(self):
+        for index, (safe, unsafe) in enumerate([
+            ('folder/outside.py', 'folder\\outside.py'),
+            ('module.pyXoutside.py', 'module.py\0outside.py'),
+        ]):
+            with self.subTest(name=unsafe):
+                # Writing a ZIP normally sanitizes separators on Windows.
+                # Patch both equal-length headers to model an actual raw input.
+                archive = self.wheel(f'raw-{index}.whl', [(safe, b'content')])
+                archive.write_bytes(archive.read_bytes().replace(safe.encode(), unsafe.encode()))
+                with self.assertRaisesRegex(ValueError, 'Unsafe archive path'):
+                    packaging.stage_python_packages([archive], self.root / f'raw-{index}.zip')
 
     def test_notices_keep_exact_non_utf8_bytes_and_working_inventory_links(self):
         source = self.root / 'source'
