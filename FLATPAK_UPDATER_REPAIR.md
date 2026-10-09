@@ -24,4 +24,4 @@ Windows payload remains identical. An already verified restart target stays
 pinned. This repair is an exception; future hotfixes should increase the version.
 
 
-The updater library passes 22 tests, including 10 private D-Bus Flatpak contract tests. Final default-portal/native update evidence is recorded with the reissued releases.
+The 0.1.3 backport updater library passes 18 tests, including the same 10 private D-Bus Flatpak contract tests as 0.1.4. The 0.1.4 suite passes 22 tests, including its additional Windows preparation guards. Final default-portal/native update evidence is recorded with the reissued releases.
