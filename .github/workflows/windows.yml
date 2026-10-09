@@ -19,6 +19,8 @@ jobs:
           python-version: '3.13'
       - name: Verify updater recovery
         run: python scripts/test_windows_update_worker.py
+      - name: Verify compact Windows packaging
+        run: python scripts/test_windows_packaging.py
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal; rustup default stable
       - name: Prepare offline tools
@@ -81,3 +83,4 @@ jobs:
           cargo test --locked --workspace
           python scripts/test_math_worker_protocol.py
           python scripts/test_windows_update_worker.py
+          python scripts/test_windows_packaging.py

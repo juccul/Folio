@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import subprocess
 import tempfile
@@ -50,15 +51,21 @@ def fetch(asset, cache):
     return path
 
 
+def safe_archive_path(entry):
+    name = entry.filename
+    path = PurePosixPath(name)
+    if path.is_absolute() or '..' in path.parts or '\\' in name or ':' in name:
+        raise ValueError(f'Unsafe archive path: {name}')
+    if (entry.external_attr >> 16) & 0o170000 == 0o120000:
+        raise ValueError(f'Archive symlink: {name}')
+    return path
+
+
 def extract(archive, destination, prefix=''):
     with zipfile.ZipFile(archive) as source:
         for entry in source.infolist():
             name = entry.filename
-            path = PurePosixPath(name)
-            if path.is_absolute() or '..' in path.parts or '\\' in name or ':' in name:
-                raise ValueError(f'Unsafe archive path: {name}')
-            if (entry.external_attr >> 16) & 0o170000 == 0o120000:
-                raise ValueError(f'Archive symlink: {name}')
+            safe_archive_path(entry)
             if not name.startswith(prefix):
                 continue
             relative = name[len(prefix):]
@@ -73,6 +80,63 @@ def extract(archive, destination, prefix=''):
                     shutil.copyfileobj(input_file, output)
 
 
+def stage_python_packages(archives, destination):
+    """Keep every pure-Python wheel member in one standard zipimport payload."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    seen = set()
+    # Store members once; the outer portable ZIP provides the compression.
+    with zipfile.ZipFile(destination, 'w', compression=zipfile.ZIP_STORED) as target:
+        for archive in archives:
+            with zipfile.ZipFile(archive) as source:
+                for entry in source.infolist():
+                    path = safe_archive_path(entry)
+                    key = path.as_posix().rstrip('/').casefold()
+                    if key in seen:
+                        raise ValueError(f'Duplicate Python wheel path: {entry.filename}')
+                    seen.add(key)
+                    if not entry.is_dir() and path.suffix.lower() in ('.pyd', '.dll', '.so'):
+                        raise ValueError(f'Python zipimport needs pure-Python wheels: {entry.filename}')
+                    target.writestr(entry, source.read(entry), compress_type=zipfile.ZIP_STORED)
+
+
+def stage_notices(destination):
+    """Retain full notices and exact originals without thousands of disk writes."""
+    source = ROOT / 'third_party/licenses'
+    target = destination / 'third_party/licenses'
+    target.mkdir(parents=True, exist_ok=True)
+    index = ['# Retained dependency notices', '',
+             'All original files are retained byte for byte in [licenses.zip](licenses.zip).',
+             'The [full searchable text](THIRD_PARTY_NOTICES.txt) has original path and SHA-256 markers.',
+             'Search either file for the package name or path below. Non-UTF-8 bytes are escaped in the text;',
+             'the archive preserves the exact original bytes. The corresponding source retains the full tree.',
+             '', '| Original path | SHA-256 | Bytes |', '| --- | --- | --- |']
+    with (target / 'THIRD_PARTY_NOTICES.txt').open('wb') as notices, zipfile.ZipFile(
+            target / 'licenses.zip', 'w', compression=zipfile.ZIP_DEFLATED) as originals:
+        notices.write(('Folio retained third-party notices\n'
+                       'Original paths and SHA-256 markers identify every full notice.\n'
+                       'licenses.zip retains exact original bytes; the corresponding source retains the full tree.\n\n').encode())
+        for path in sorted(source.rglob('*')):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(source).as_posix()
+            raw = path.read_bytes()
+            checksum = hashlib.sha256(raw).hexdigest()
+            notices.write(f'===== third_party/licenses/{relative} | SHA-256 {checksum} =====\n'.encode())
+            notices.write(raw.decode('utf-8', errors='backslashreplace').encode('utf-8'))
+            notices.write(b'\n\n')
+            originals.writestr(relative, raw)
+            index.append(f'| `{relative}` | `{checksum}` | {len(raw)} |')
+    (target / 'INDEX.md').write_text('\n'.join(index) + '\n', encoding='utf-8')
+    inventory = destination / 'LICENSES.md'
+    if inventory.is_file():
+        text = inventory.read_text(encoding='utf-8')
+        text = re.sub(r'\]\(third_party/licenses/[^)]+\)', '](third_party/licenses/INDEX.md)', text)
+        text = ('Windows package notices: see [the searchable index](third_party/licenses/INDEX.md), '
+                '[full text](third_party/licenses/THIRD_PARTY_NOTICES.txt), and '
+                '[exact original files](third_party/licenses/licenses.zip).\n\n' + text)
+        inventory.write_text(text, encoding='utf-8')
+
+
 def stage_runtime(destination, cache):
     assets = json.loads((ROOT / 'packaging/windows/runtime-assets.json').read_text())
     files = {name: fetch(asset, cache) for name, asset in assets.items()}
@@ -81,9 +145,9 @@ def stage_runtime(destination, cache):
     if len(python_paths) != 1:
         raise ValueError('Expected one embedded Python path configuration')
     standard_library = python_paths[0].stem + '.zip'
-    python_paths[0].write_text(standard_library + '\n.\n../math-solver\n../math-solver/site-packages\n', encoding='utf-8')
-    for package in ('sympy', 'mpmath'):
-        extract(files[package], destination / 'math-solver/site-packages')
+    python_paths[0].write_text(standard_library + '\n.\n../math-solver\n../math-solver/site-packages.zip\n', encoding='utf-8')
+    stage_python_packages([files[name] for name in ('sympy', 'mpmath')],
+                          destination / 'math-solver/site-packages.zip')
     for name in ('math-solver-worker.py', 'math_parser.py'):
         shutil.copy2(ROOT / 'scripts' / name, destination / 'math-solver' / name)
     config = {'python': '../python/python.exe', 'worker': 'math-solver-worker.py',
@@ -137,7 +201,7 @@ def main():
             shutil.copy2(ROOT / 'scripts' / file, stage / 'tools' / file)
         for file in ('LICENSE', 'LICENSES.md', 'README.md', 'WINDOWS.md', 'UPDATES.md'):
             shutil.copy2(ROOT / file, stage / file)
-        shutil.copytree(ROOT / 'third_party/licenses', stage / 'third_party/licenses')
+        stage_notices(stage)
         shutil.copytree(ROOT / 'third_party/ocr', stage / 'third_party/ocr')
         manifest = {'version': version, 'target': 'x86_64-pc-windows-msvc', 'runtime_only': args.runtime_only,
                     'assets': assets, 'cargo_lock_sha256': sha256(ROOT / 'Cargo.lock')}
