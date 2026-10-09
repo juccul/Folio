@@ -626,7 +626,13 @@ impl NotesView {
             field.theme = Theme::new(&self.controller.settings);
             field
         });
-        field.read(cx).focus.focus(window);
+        // These pickers do not mount the field, so their keyboard focus stays
+        // on the dialog's root for Escape and focus navigation.
+        if matches!(modal, Modal::MovePage | Modal::Templates) {
+            self.focus.focus(window);
+        } else {
+            field.read(cx).focus.focus(window);
+        }
         self.subscriptions.clear();
         self.observe_notebook_setup(window, cx);
         self.subscriptions.push(cx.observe(&field, |this, _, cx| {

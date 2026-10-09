@@ -180,6 +180,20 @@ def main():
                     client.key('z',4);time.sleep(.2)
                     click('Document actions');client.key('Escape');time.sleep(.2)
                     assert any(n.get_name()=='Copy' for n in controls()), 'Closing a menu lost the selection'
+                    with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
+                        dialog_objects=list(db.execute('SELECT id,data FROM objects ORDER BY id'))
+                        dialog_pages=list(db.execute('SELECT id,note_id,header FROM pages ORDER BY id'))
+                    for label,close_label in [('Move page to document…','Cancel'),('Add page from template…','Close')]:
+                        click('Document actions');click('Current page',True);click(label)
+                        assert any(n.get_name()==close_label for n in controls()), 'Fieldless page dialog did not open: '+label
+                        assert not any(n.get_role()==Atspi.Role.ENTRY for n in walk(target)), 'Page picker unexpectedly exposes a text field'
+                        assert not any(n.get_name() in {'Copy','Cut','Undo','Delete'} for n in controls()), 'Page picker leaked background editing controls'
+                        client.key('a',4);client.key('Delete');client.key('z',4);client.key('Escape');time.sleep(.3)
+                        assert not any(n.get_name()==close_label for n in controls()), 'Escape did not dismiss fieldless page dialog: '+label
+                        assert any(n.get_name()=='Copy' for n in controls()), 'Dismissing page picker lost the document selection'
+                        with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
+                            assert list(db.execute('SELECT id,data FROM objects ORDER BY id'))==dialog_objects, 'Page-dialog shortcuts changed document objects'
+                            assert list(db.execute('SELECT id,note_id,header FROM pages ORDER BY id'))==dialog_pages, 'Page-dialog shortcuts changed or moved document pages'
                     client.key('Escape');time.sleep(.2)
                     assert not any(n.get_name()=='Copy' for n in controls()), 'Escape on the canvas must still clear the selection'
                     click('Library ·',True);click('Keyboard shortcuts and help')
@@ -191,7 +205,7 @@ def main():
                         prefs=json.loads(db.execute("SELECT data FROM settings WHERE key='preferences'").fetchone()[0])
                         assert prefs['reduce_motion'] is True, 'Motion preference was not saved'
                         assert db.execute('SELECT count(*) FROM objects').fetchone()[0]==initial_objects
-                    print('POLISH_UI_OK: modal focus isolation, shortcut safety, selection preservation, inline validation, help and persisted reduced motion',flush=True)
+                    print('POLISH_UI_OK: modal focus isolation, fieldless page-picker Escape, shortcut safety, selection preservation, inline validation, help and persisted reduced motion',flush=True)
                 if args.navigation:
                     def rename_dialog(value):
                         inputs=[n for n in walk(target) if n.get_role()==Atspi.Role.ENTRY]
