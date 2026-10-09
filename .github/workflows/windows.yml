@@ -32,16 +32,30 @@ jobs:
         run: |
           ./scripts/build-windows.ps1 -Check
           ./scripts/build-windows.ps1 -Test
+      - name: Find installer compiler
+        run: |
+          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          if (!$compiler) {
+            $candidates = @(
+              "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+              "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+              "$env:ProgramFiles\Inno Setup 7\ISCC.exe"
+            )
+            $path = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (!$path) { throw 'The Windows runner is missing its preinstalled Inno Setup compiler.' }
+            (Split-Path $path) >> $env:GITHUB_PATH
+          }
       - name: Build release and package
         run: |
           ./scripts/build-windows.ps1
-          python scripts/package-windows.py --output artifacts/dist
-      - name: Save portable package and runtime evidence
+          python scripts/package-windows.py --installer --output artifacts/dist
+      - name: Save installer, portable package and runtime evidence
         uses: actions/upload-artifact@v4
         with:
           name: folio-windows-x64
           path: |
             artifacts/dist/*.zip
+            artifacts/dist/*-setup.exe
             artifacts/dist/*.sha256
             artifacts/runtime.json
 

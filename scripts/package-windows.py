@@ -157,6 +157,10 @@ def main():
             raise SystemExit('Portable ZIP is ready. Install Inno Setup 6 to compile the installer.')
         subprocess.run([compiler, f'/DPayloadDir={destination}', f'/DFolioVersion={version}',
                         f'/O{output}', str(ROOT / 'packaging/windows/folio.iss')], check=True)
+        installer = output / f'{name}-setup.exe'
+        if not installer.is_file():
+            raise SystemExit(f'Inno Setup did not produce the expected installer: {installer.name}')
+        installer.with_suffix('.exe.sha256').write_text(sha256(installer) + '  ' + installer.name + '\n')
     print(archive)
 
 
