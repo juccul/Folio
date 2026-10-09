@@ -8,6 +8,7 @@ pub(super) enum Section {
     Writing,
     Library,
     Accessibility,
+    Updates,
 }
 impl Section {
     fn title(self) -> &'static str {
@@ -16,6 +17,7 @@ impl Section {
             Self::Writing => "Writing",
             Self::Library => "Library",
             Self::Accessibility => "Accessibility",
+            Self::Updates => "Updates",
         }
     }
     fn description(self) -> &'static str {
@@ -24,6 +26,7 @@ impl Section {
             Self::Writing => "Choose how your pen and gestures behave.",
             Self::Library => "Manage your documents, saving and backups.",
             Self::Accessibility => "Adjust the interface for comfortable writing.",
+            Self::Updates => "New releases and installation status.",
         }
     }
 }
@@ -410,6 +413,7 @@ impl NotesView {
             ("writing", Section::Writing),
             ("library", Section::Library),
             ("accessibility", Section::Accessibility),
+            ("updates", Section::Updates),
         ] {
             navigation = navigation.child(
                 self.button(
@@ -434,6 +438,7 @@ impl NotesView {
             Section::Writing => self.writing_settings(cx),
             Section::Library => self.library_settings(cx),
             Section::Accessibility => self.accessibility_settings(cx),
+            Section::Updates => self.update_settings(cx),
         };
         let body = div()
             .id(("settings-content", section as usize))

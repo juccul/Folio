@@ -18,6 +18,7 @@ unicode-segmentation = "1.12"
 smallvec = "1"
 accesskit = "=0.25.1"
 folio-storage = { path = "../storage" }
+folio-update = { path = "../update" }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui = { workspace = true, features = ["wayland", "x11"] }

@@ -64,11 +64,15 @@ impl NotesView {
                 window_icon(Icon::Close, theme.muted).into_any_element(),
                 false,
                 cx,
-                |this, window, cx| match this.controller.flush() {
-                    Ok(()) => window.remove_window(),
-                    Err(error) => {
-                        this.controller.error = Some(error);
-                        cx.notify();
+                |this, window, cx| {
+                    this.finish_inline_text(window, cx);
+                    this.store_workspace();
+                    match this.controller.flush() {
+                        Ok(()) => window.remove_window(),
+                        Err(error) => {
+                            this.controller.error = Some(error);
+                            cx.notify();
+                        }
                     }
                 },
             )

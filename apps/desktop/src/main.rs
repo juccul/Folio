@@ -23,6 +23,7 @@ fn main() -> anyhow::Result<()> {
     let mut new_note = false;
     let mut open_note = None;
     let mut recover = false;
+    let mut restart_after_update = false;
     let mut args = args.iter().skip(1);
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -43,6 +44,7 @@ fn main() -> anyhow::Result<()> {
             "--smoke-test" => smoke = true,
             "--new-note" => new_note = true,
             "--recover" => recover = true,
+            "--restart-after-update" => restart_after_update = true,
             value if value.starts_with('-') => anyhow::bail!("Unknown option: {value}"),
             value => files.push(PathBuf::from(value)),
         }
@@ -55,6 +57,21 @@ fn main() -> anyhow::Result<()> {
             report.destination.display()
         );
         data_dir = report.destination;
+    }
+    if restart_after_update {
+        let start = std::time::Instant::now();
+        loop {
+            match folio_platform::lock_data_dir(&data_dir) {
+                Ok(_) => break,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && start.elapsed() < Duration::from_secs(120) =>
+                {
+                    std::thread::sleep(Duration::from_millis(100))
+                }
+                Err(_) => break,
+            }
+        }
     }
     let result = if !explicit_path
         && data_dir != folio_platform::default_data_dir()
@@ -125,6 +142,12 @@ fn main() -> anyhow::Result<()> {
             cx.spawn(async move |cx| {
                 cx.background_executor().timer(Duration::from_millis(600)).await;
                 let result: anyhow::Result<()> = (async {
+                    for phase in 0..3 {
+                        window.update(cx, |view, _, cx| { view.update_smoke_phase(phase); cx.notify(); })?;
+                        cx.background_executor().timer(Duration::from_millis(200)).await;
+                        window.update(cx, |view, _, _| view.update_smoke_verify(phase))?.map_err(anyhow::Error::msg)?;
+                    }
+                    window.update(cx, |view, _, cx| { view.update_smoke_phase(3); cx.notify(); })?;
                     let events=window.update(cx,|view,_,_|view.smoke_events())?.map_err(anyhow::Error::msg)?;
                     for event in events {
                         cx.update_window(window.into(),|_,window,cx|{window.dispatch_tablet_event(event,cx);})?;

@@ -802,6 +802,15 @@ impl Controller {
         }
         self.persistence.flush()
     }
+    /// Restart must wait for operations that can still add or change documents.
+    pub fn can_restart_for_update(&self) -> bool {
+        !self.has_background_work()
+            && !self.recognition_pending
+            && !self.equation_pending
+            && !self.math_session.as_ref().is_some_and(|s| s.pending)
+            && self.math_live_pending.is_empty()
+            && self.pending_note.is_none()
+    }
     pub fn has_background_work(&self) -> bool {
         self.busy > 0 || self.pending_search.is_some()
     }

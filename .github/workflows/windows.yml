@@ -30,6 +30,7 @@ jobs:
         run: |
           ./scripts/build-windows.ps1 -Check
           ./scripts/build-windows.ps1 -Test
+          python scripts/test_windows_update_worker.py
       - name: Build release and package
         run: |
           ./scripts/build-windows.ps1
@@ -64,3 +65,4 @@ jobs:
           rustup default stable
           cargo test --locked --workspace
           python scripts/test_math_worker_protocol.py
+          python scripts/test_windows_update_worker.py

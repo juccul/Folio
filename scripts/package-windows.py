@@ -135,7 +135,7 @@ def main():
         (stage / 'tools').mkdir()
         for file in ('verify-windows.ps1', 'verify-windows-runtime.py', 'windows-pen-replay.cs'):
             shutil.copy2(ROOT / 'scripts' / file, stage / 'tools' / file)
-        for file in ('LICENSE', 'LICENSES.md', 'README.md', 'WINDOWS.md'):
+        for file in ('LICENSE', 'LICENSES.md', 'README.md', 'WINDOWS.md', 'UPDATES.md'):
             shutil.copy2(ROOT / file, stage / file)
         shutil.copytree(ROOT / 'third_party/licenses', stage / 'third_party/licenses')
         shutil.copytree(ROOT / 'third_party/ocr', stage / 'third_party/ocr')

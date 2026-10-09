@@ -13,7 +13,7 @@ fn edited_label(updated: u64) -> String {
     }
 }
 
-struct Hint(SharedString, Theme);
+pub(super) struct Hint(pub(super) SharedString, pub(super) Theme);
 impl Render for Hint {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -1394,6 +1394,7 @@ impl NotesView {
                     ),
             )
             .child(div().flex_1().h_full())
+            .child(self.update_notice(cx))
             .child(
                 self.window_controls(window, cx)
                     .flex_shrink_0()

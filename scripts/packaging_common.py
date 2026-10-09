@@ -65,6 +65,7 @@ def stage_metadata(prefix):
         (ROOT / f"packaging/{APP_ID}.metainfo.xml", f"share/metainfo/{APP_ID}.metainfo.xml"),
         (ROOT / "LICENSE", "share/doc/folio/LICENSE"),
         (ROOT / "LICENSES.md", "share/doc/folio/LICENSES.md"),
+        (ROOT / "UPDATES.md", "share/doc/folio/UPDATES.md"),
     ):
         copy(source, prefix / destination)
     shutil.copytree(ROOT / "third_party/licenses", prefix / "share/doc/folio/third_party")

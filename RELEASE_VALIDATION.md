@@ -1,32 +1,93 @@
-# Folio 0.1.2 release validation
+# Folio 0.1.3 release validation
 
-Validated on 9 October 2026; the downloads were rebuilt the same day to correct the main creation button and duplicate Home navigation. This release contains every application change since 0.1.1, including the performance pass, and publishes a Linux x86_64 Flatpak, Windows 11 x64 installer and portable ZIP. The v0.1.2 tag retains the corresponding source and locked dependencies.
+The source repository and release downloads are public at
+https://github.com/juccul/Folio. The signed Flatpak repository is hosted at
+https://juccul.github.io/Folio/flatpak/. Anonymous summary, signature and installation
+reference downloads matched the local signed repository. Private signing keys are
+stored outside the source and distribution trees. An audit of 1,566 published
+history blobs and 1,860 working files found no matches for private keys or common
+GitHub, AWS, Google or Slack access-token formats. Only main, release tags and the
+separate distribution branch are published; local task checkpoint refs are excluded.
 
-- **Creation/navigation correction:** Native Linux accessibility actions confirmed that the main New document button opens page/canvas options, the separate sliders control is absent, Cancel creates no document, and confirmation persists the selected A5 landscape grid properties. The editor exposes exactly one Library/Home button in the tab bar. The corrected optimized build passed pen/save replay and all six layout cases. Its actual Flatpak bundle was installed privately and passed the runtime checks; its native replay passed with the same executable hash. Both the actual Windows ZIP and installed package also verified creation options on the main button, no sliders control, a single Library/Home button and no extra document after Cancel. Keyboard quick creation retains the remembered paper choices. The installer checks were rerun after restoring the VM display keep-awake state following nested portable validation.
-- **Regression checks:** All 288 Rust workspace tests passed on Linux and Windows. Four tests remain opt-in: real-model OCR integration and three manual performance tests. The three performance tests passed separately during the optimization pass. Strict workspace/all-targets Clippy (`-D warnings`), Rust formatting, AppStream validation and packaging-script syntax checks passed.
-- **Python and native workflows:** The performance pass also passed 37 Python tests (math solver, preprocessing, CPU encoder and worker protocol), with one CUDA test skipped. Headless integration covered vector exports, Unicode text, search, PDF import and durable reload. Native accessibility/notebook workflows and the final optimized six-case layout matrix passed, including interface scales 0.8/1.0/1.6, compact/normal windows, fresh onboarding, library scrolling, favorites, settings and editing. These application checks preceded the version bump; the installed 0.1.2 Flatpak replay passed again.
-- **Native Windows build:** Built the optimized executable in the Windows 11 VirtualBox VM **Ransom**, using the x64 MSVC toolchain and Windows SDK shader compiler. Embedded product/file version is 0.1.2. The portable ZIP executable hash matches the native build, and the package uses the matching Visual C++ redistributable files copied from that toolchain.
-- **Linux Flatpak:** Built the optimized executable with Rust 1.98 against Debian Bookworm; the maximum required glibc symbol version is 2.35. Installed the actual single-file bundle into a private Flatpak installation using Freedesktop Platform 25.08. Version, executable hash, AppStream metadata, pinned SymPy 1.14.0/mpmath 1.3.0, Unicode requests, malformed-request recovery and actual PDF rasterization passed. The installed editor replay passed pressure/tilt, toolbar interactions, undo/redo, page creation, card menus, duplication, tab picking/dragging, crop outline/undo and durable saving. The package grants display, IPC, GPU and first-use download network access, with no host filesystem permission. Models and personal notes are excluded. Local installed-package checks disabled document-portal startup because the host's document-portal mount was unavailable; OS file-chooser portal integration was not exercised by those checks.
-- **Windows portable and installed packages:** The actual Inno Setup installer installed per user without elevation. Both the portable ZIP and installed package passed offline math, Unicode protocol input, malformed-request recovery, PDF previews from an unrelated working directory, native editor replay, window movement/resizing, UI Automation actions and close/save. Windows Ink replay saved exactly one stroke with 25 pressure/tilt samples and no duplicate mouse ink. The executable loaded the bundled Visual C++ runtime.
-- **Upgrade and uninstall:** Installed 0.1.1 into an isolated directory and upgraded it using the actual 0.1.2 installer. A copied disposable library from prior package validation retained note IDs/titles, page IDs/order and every saved object exactly. The installer left its database hash unchanged; launching 0.1.2 migrated schema 3 to 6 and reopened it successfully. Uninstall removed the executable and retained every validation database unchanged. The VM's existing default installation, its registration/shortcut and personal notes were preserved.
-- **Corresponding source:** All 381 Rust sources, Cargo manifests, Cargo.lock and build configuration files in the native Windows source snapshot were checked against the release checkout and matched exactly. Runtime manifests record the executable, lockfile and app-local Visual C++ runtime hashes. The tag includes local dependency patches, build/package scripts, notices, retained Poppler 26.09.0 source matching the Windows runtime and Poppler 26.10.0 source matching the Flatpak runtime. Runtime URLs and SHA-256 values are pinned in the packaging configuration.
+## Completed checks
 
-## Scope
+- Linux workspace: **299 Rust tests passed**, four existing opt-in/OCR tests ignored.
+- Windows workspace: **295 Rust tests passed** on the native MSVC/Windows 11 VM
+  on the final native source build, with 393 compiled-source fingerprints matched.
+- Strict workspace/all-target Clippy and formatting passed.
+- **11 updater tests** cover signed metadata, numeric version comparisons,
+  prerelease rejection, bounded metadata, corrupt packages, range-resume behavior,
+  cache verification, user-action gating, duplicate clicks, Flatpak initial-signal
+  races, wrong remote commits, permission denial and failed/empty transactions.
+- **Seven Python recovery tests** passed on Linux and Windows: installer failure,
+  partial backup failure, portable replacement, checksum tampering, unsafe archives,
+  mismatched binaries and libraries inside the installation directory.
+- Native Linux smoke checks rendered the Update, Downloading and Restart controls
+  and verified their position before the window controls. Accessibility/shortcuts,
+  creation-options and single-Library-button checks passed.
+- Six native layout cases passed at 1000×620 and 1366×768 with scales 0.8, 1.0 and
+  1.6, including first launch. The first run failed a favorite-button scroll lookup;
+  the unchanged test passed on rerun. Both logs are retained.
+- Actual Flatpak bundle installation passed version, executable hash, offline
+  SymPy/mpmath, Unicode requests, malformed-request recovery, PDF rasterization,
+  AppStream and native UI smoke checks on Freedesktop Platform 25.08.
+- A disposable 0.1.2 Flatpak installation downloaded and deployed 0.1.3 through
+  the real Flatpak update portal from a signed local HTTP OSTree repository. A
+  second run used the restart portal and confirmed the launched sandbox used the
+  advertised 0.1.3 commit. A further real-portal run downloaded and restarted into
+  the exact signed commit from the public HTTPS endpoint. Its first fixture export
+  had a timestamp newer than the release and was correctly rejected by Flatpak;
+  exporting the old-version fixture with an earlier timestamp passed.
+  Package permissions remained IPC/network, X11/Wayland
+  and GPU access, with no host filesystem/host-command permission added.
+- Actual Windows installer and portable update helpers waited for graceful app
+  exit, installed 0.1.3, verified the executable hash, retained the previous payload,
+  reopened the same custom library and preserved note IDs, saved objects and order.
+  The test also exercised Windows canonical path prefixes and spaces.
+- Actual manual Windows upgrade from 0.1.2 passed native UI, app-local CRT,
+  offline math/PDF runtime and synthetic Windows Ink checks. Installation did not
+  touch the library; opening migrated the disposable schema-3 fixture to schema 6
+  without changing saved objects. Uninstall preserved all validation databases.
+  The first UI Automation attachment failed; using a foreground native window and
+  an explicit process-ID lookup passed on rerun. First-attempt diagnostics remain.
 
-Database writers now migrate existing libraries transactionally to schema 6. Earlier Folio versions reject the upgraded library; document format remains 4. Migration and rollback tests cover versions 3–5, legacy search rebuilding, stable search row identifiers across VACUUM and content/history preservation. Installers do not migrate notes themselves.
+All upgrade tests used disposable installations and copied fixture libraries.
+Windows uninstall registration and shortcut were backed up and restored around
+installation tests. The VM's ordinary installation and real user notes were not
+upgraded. Flatpak portal permission approval used a private permission-store
+instance; the user's desktop update permissions were not changed.
 
-Performance results describe generated CPU fixtures and warmed caches, with ordinary input/save/load results and remaining costs documented in [PERFORMANCE_AUDIT.md](PERFORMANCE_AUDIT.md). They do not establish whole-app frame rates or physical pen latency. First-use OCR downloads about 1.47 GB of pinned model/runtime assets; offline math and PDF tools are bundled. Earlier Windows port validation exercised real CPU OCR, native replacement, undo/redo/reopening, image rotation and PDF import. Recognition-accuracy and real-model inference benchmarks were not repeated for this release.
+## Distribution checks
 
-Ransom exposes a VirtualBox USB tablet pointer, with no physical pen passthrough configured. Physical pen latency, eraser/barrel buttons, palm rejection, mixed-DPI and reconnect behavior require hardware validation. Synthetic pen replay does not certify those behaviors.
+- Signed Ed25519 metadata identifies immutable versioned Windows assets by size,
+  SHA-256 and executable hash, and the exact GPG-signed Flatpak commit.
+- The public Flatpak installation reference and single-file bundle include the
+  update remote and public signing key. Catalog metadata and icons are included.
+- Migration from an actual 0.1.2 bundle through an explicitly named public remote
+  passed and changed the origin to the signed remote. Opening `.flatpakref` on an
+  already installed bundle fails even with `--reinstall`; the documented migration
+  uses a new bundle or `remote-add` followed by named-remote installation.
+- Windows registration and shortcut were verified restored; the ordinary 0.1.1
+  installation remained untouched, and the validation VM was shut down.
+- Corresponding source includes the locked Cargo registry sources, local patches,
+  notices and matching Windows/Flatpak Poppler source and packaging recipes.
+- Release checksums are provided in `SHA256SUMS` alongside the signed manifest.
 
-Build/test logs and disposable fixtures are retained under `artifacts/release-0.1.2-corrected`, the original `artifacts/release-0.1.2` and `artifacts/validation/performance-pass`, excluded from Git and the release downloads. Validation uses synthetic or copied disposable notes; personal libraries are not opened or modified.
+## Package identity
 
-## Release downloads
+The Flatpak commit and Windows executable digest are in `folio-update.json`.
+The Linux release executable digest is
+`aa2013c68c64876e99501b2fba52a9f21cc962213cd4cbc4a7cefd9bf7013af4`.
 
-| Asset | Bytes | SHA-256 |
-| --- | ---: | --- |
-| `folio-0.1.2-windows-x64-setup.exe` | 49,746,603 | `ce4b27bc6809ce3bbfa243e48e788b4c799e2662e3101b655213b7d675bdfb4b` |
-| `folio-0.1.2-windows-x64.zip` | 79,767,414 | `332aa831a16552d00ea6a9ce59645c45491c9ed82ddaeb112c95bb0d32cc5ed2` |
-| `folio-0.1.2-x86_64.flatpak` | 17,515,264 | `be2b3d3ac3e3df2e0a50c13b5c79fbaf9cbb627aa55173e3966aa192545a7812` |
+## Limits
 
-The same checksums accompany the downloads in `SHA256SUMS`.
+The checks do not guarantee every machine, power-loss condition, antivirus policy
+or physical tablet. The Flatpak tests ran on this Fedora host with isolated user
+installations; a system installation requiring authorization depends on the host
+portal and policy. First-use update permission was preapproved only in the private
+test permission store. Native GUI tests use a virtual display; Windows pen tests
+use synthetic Windows Ink. Local bundle checks disabled the documents portal
+because this host lacks its expected document mount. No app sandbox permissions
+were widened to work around that host condition.
+
+Detailed evidence is retained locally in `artifacts/release-0.1.3/`.

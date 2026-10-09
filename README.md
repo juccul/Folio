@@ -2,27 +2,30 @@
 
 Offline handwriting and mixed-media notes for Linux and Windows, built in Rust with GPUI. Raw tablet samples and editable vector ink are the document's source of truth.
 
-Folio 0.1.2 includes native pen/pad input, vector editing, search over titles/tags/typed text, mixed-media/PDF notes, persistent undo, recovery and accessibility interfaces. Optional offline recognition converts selected handwriting into editable text or LaTeX. Normal note taking needs no model or Python runtime. Physical pen latency and desktop/device compatibility still require broader testing. See [DEVELOPMENT.md](DEVELOPMENT.md) for the exact status.
+Folio 0.1.3 includes native pen/pad input, vector editing, search over titles/tags/typed text, mixed-media/PDF notes, persistent undo, recovery and accessibility interfaces. Optional offline recognition converts selected handwriting into editable text or LaTeX. Normal note taking needs no model or Python runtime. Physical pen latency and desktop/device compatibility still require broader testing. See [DEVELOPMENT.md](DEVELOPMENT.md) for the exact status.
 
 Windows 11 x64 build, portable package, per-user installer, and validation instructions are in [WINDOWS.md](WINDOWS.md).
 
 ## Releases
 
-Download [Folio 0.1.2](https://github.com/juccul/Folio/releases/tag/v0.1.2) for **Linux x86_64 and Windows 11 x64**. Sign in to GitHub with access to this private repository.
+Download [Folio 0.1.3](https://github.com/juccul/Folio/releases/tag/v0.1.3) for **Linux x86_64 and Windows 11 x64**.
 
 | Format | Download | Install |
 | --- | --- | --- |
-| Windows installer | [folio-0.1.2-windows-x64-setup.exe](https://github.com/juccul/Folio/releases/download/v0.1.2/folio-0.1.2-windows-x64-setup.exe) | Run the installer; no administrator rights needed. |
-| Windows portable ZIP | [folio-0.1.2-windows-x64.zip](https://github.com/juccul/Folio/releases/download/v0.1.2/folio-0.1.2-windows-x64.zip) | Extract the complete folder and run `bin/folio.exe`. |
-| Linux Flatpak | [folio-0.1.2-x86_64.flatpak](https://github.com/juccul/Folio/releases/download/v0.1.2/folio-0.1.2-x86_64.flatpak) | `flatpak install --user ./folio-0.1.2-x86_64.flatpak` |
+| Windows installer | [folio-0.1.3-windows-x64-setup.exe](https://github.com/juccul/Folio/releases/download/v0.1.3/folio-0.1.3-windows-x64-setup.exe) | Run the installer; no administrator rights needed. |
+| Windows portable ZIP | [folio-0.1.3-windows-x64.zip](https://github.com/juccul/Folio/releases/download/v0.1.3/folio-0.1.3-windows-x64.zip) | Extract the complete folder and run `bin/folio.exe`. |
+| Linux Flatpak with update remote | [folio.flatpakref](https://juccul.github.io/Folio/folio.flatpakref) | `flatpak install --user https://juccul.github.io/Folio/folio.flatpakref` |
+| Linux Flatpak bundle | [folio-0.1.3-x86_64.flatpak](https://github.com/juccul/Folio/releases/download/v0.1.3/folio-0.1.3-x86_64.flatpak) | `flatpak install --user ./folio-0.1.3-x86_64.flatpak` |
 
 On Windows, launch **Folio** from the Start menu. Notes are stored in `%LOCALAPPDATA%\Folio`; updates and uninstall preserve them. The installer bundles offline math, PDF tools, Python and the matching Visual C++ runtime. See [Windows instructions](WINDOWS.md).
+
+To upgrade an older Flatpak bundle, close Folio and use `flatpak install --user --reinstall ./folio-0.1.3-x86_64.flatpak`. The new bundle connects the update remote. See [update and recovery instructions](UPDATES.md).
 
 On Linux, launch **Folio** from your application menu, or run `flatpak run io.github.folio.Notes`. The Flatpak uses the Freedesktop 25.08 runtime. If Flathub is not configured, add it first with `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`. Installation may download the runtime; note taking and math solving then work offline.
 
 The Flatpak includes the **offline CPU math solver**, pinned SymPy/mpmath dependencies and PDF preview tools. GLM-OCR Q8 weights and the Vulkan inference runtime download automatically on the first OCR request if no usable model pack exists; see [recognition setup](#install-optional-offline-recognition). Use the Flatpak file picker for importing and exporting files.
 
-The [0.1.2 release notes](RELEASE_NOTES.md) describe the Linux and Windows downloads and matching source. `SHA256SUMS` accompanies the release assets.
+The [0.1.3 release notes](RELEASE_NOTES.md) describe the Linux and Windows downloads and matching source. `SHA256SUMS` accompanies the release assets.
 
 The interface opens to a minimal document library with folders, favorites, recent notes, and grid/list views. Open a document for a compact writing toolbar and a collapsible page strip; the tab strip includes a + picker for opening an existing document or creating one. Drag tabs to reorder them. Right-click a library card or use its … menu to rename, duplicate, favorite, move, tag, trash or restore that document. Folio uses embedded Tabler Outline icons and a matching custom marker with native GPUI rendering.
 
@@ -268,3 +271,5 @@ Dense pages may exceed the OCR selection/token limit; index smaller paragraphs i
 ## Check tablet input
 
 Open **Help → Start input check** to inspect pressure, tilt, eraser and tablet-pad delivery while writing on a test page. Stop/reset the check and save a local JSON report. The timing report measures delivery to CPU canvas paint; physical pen-to-screen latency requires the [camera procedure and validation matrix](INPUT_VALIDATION.md). Physical desktop/tablet trials remain pending.
+
+Updates show beside the window controls. Click **Update**, then **Restart to update** once the package is ready. Downloads and restarts require your action. See [UPDATES.md](UPDATES.md) for Windows/Flatpak installation, backups and recovery.

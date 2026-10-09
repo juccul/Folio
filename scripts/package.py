@@ -47,7 +47,7 @@ def main():
     with tarfile.open(binary_archive, 'w:gz', compresslevel=6) as archive:
         add(archive, binary, f'{binary_name}/bin/folio-native')
         add(archive, ROOT / 'packaging/folio-launcher', f'{binary_name}/bin/folio')
-        for item in ['README.md', 'DEVELOPMENT.md', 'RECOGNITION_RESEARCH.md', 'MATH_SOLVER_DESIGN.md', 'LICENSE', 'LICENSES.md', 'third_party', 'packaging']:
+        for item in ['README.md', 'UPDATES.md', 'DEVELOPMENT.md', 'RECOGNITION_RESEARCH.md', 'MATH_SOLVER_DESIGN.md', 'LICENSE', 'LICENSES.md', 'third_party', 'packaging']:
             add(archive, ROOT / item, f'{binary_name}/{item}')
     with tempfile.TemporaryDirectory(prefix='folio-corresponding-source-') as temp:
         vendor = Path(temp) / 'source'
@@ -56,14 +56,18 @@ def main():
         config_path = Path(temp) / 'config.toml'
         config_path.write_text((ROOT / '.cargo/config.toml').read_text() + '\n' + config)
         with tarfile.open(source_archive, 'w:gz', compresslevel=6) as archive:
-            for item in ['Cargo.toml', 'Cargo.lock', 'apps', 'crates', 'vendor', 'scripts', 'packaging', 'third_party', 'README.md', 'DEVELOPMENT.md', 'RECOGNITION_RESEARCH.md', 'MATH_SOLVER_DESIGN.md', 'LICENSE', 'LICENSES.md']:
+            for item in ['Cargo.toml', 'Cargo.lock', 'apps', 'crates', 'vendor', 'scripts', 'packaging', 'third_party', '.github', 'LICENSE']:
                 add(archive, ROOT / item, f'{source_name}/{item}')
-            for item in ['RELEASE_NOTES.md', 'RELEASE_VALIDATION.md', 'OPTIMIZATION_AND_BUGFIX_REPORT.md']:
-                if (ROOT / item).exists():
-                    add(archive, ROOT / item, f'{source_name}/{item}')
+            for item in sorted(ROOT.glob('*.md')):
+                add(archive, item, f'{source_name}/{item.name}')
             if args.poppler_source:
-                add(archive, args.poppler_source,
-                    f'{source_name}/third_party/flatpak/{args.poppler_source.name}')
+                retained = ROOT / 'third_party/flatpak' / args.poppler_source.name
+                if retained.is_file():
+                    if hashlib.sha256(retained.read_bytes()).digest() != hashlib.sha256(args.poppler_source.read_bytes()).digest():
+                        raise SystemExit('Retained Poppler source differs from the packaged build source')
+                else:
+                    add(archive, args.poppler_source,
+                        f'{source_name}/third_party/flatpak/{args.poppler_source.name}')
             add(archive, config_path, f'{source_name}/.cargo/config.toml')
             add(archive, vendor, f'{source_name}/third_party/source')
     archives=[binary_archive,source_archive]

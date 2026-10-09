@@ -32,6 +32,7 @@ mod templates;
 mod text_render;
 mod theme;
 mod titlebar;
+mod updates;
 mod validation;
 mod workspace;
 mod workspace_state;
@@ -189,6 +190,8 @@ impl MoreSection {
     }
 }
 pub struct NotesView {
+    updater: folio_update::Updater,
+    update_preparing: bool,
     region_selection: Option<region::Selection>,
     pub controller: Controller,
     math_inputs: Option<math_panel::Inputs>,
@@ -250,6 +253,9 @@ impl NotesView {
         window.on_window_should_close(cx, move |_, cx| {
             entity
                 .update(cx, |view, cx| {
+                    if view.update_preparing {
+                        return false;
+                    }
                     view.store_workspace();
                     match view.controller.flush() {
                         Ok(()) => true,
@@ -268,9 +274,18 @@ impl NotesView {
                     .timer(Duration::from_millis(16))
                     .await;
                 let result = view.update(cx, |view, cx| {
-                    let changed = view.controller.tick();
+                    let changed = !view.update_preparing && view.controller.tick();
+                    let update_changed = view.updater.poll();
+                    if view.updater.state == folio_update::State::Exit {
+                        view.update_preparing = false;
+                        cx.quit();
+                        return;
+                    }
+                    if matches!(view.updater.state, folio_update::State::Failed { .. }) {
+                        view.update_preparing = false;
+                    }
                     let motion_changed = view.motion.borrow_mut().advance();
-                    if changed || view.accessibility.poll() || motion_changed {
+                    if changed || update_changed || view.accessibility.poll() || motion_changed {
                         cx.notify();
                     }
                 });
@@ -289,6 +304,8 @@ impl NotesView {
             workspace.library_open = true;
         }
         Self {
+            updater: folio_update::Updater::new(),
+            update_preparing: false,
             region_selection: None,
             controller,
             math_inputs: None,
@@ -400,7 +417,8 @@ impl NotesView {
         ]);
     }
     fn blocking_overlay(&self) -> bool {
-        self.modal.is_some()
+        self.update_preparing
+            || self.modal.is_some()
             || self.controller.recognition_setup_needed()
             || self.document_menu.is_some()
             || self.canvas_menu.is_some()
@@ -1467,7 +1485,12 @@ impl NotesView {
                 || navigation
                 || self.building_overlay
                 || window_control)
+            && !self.update_preparing
             && match id.as_ref() {
+                "app-update" | "update-settings-action" => {
+                    self.updater.state.can_download() || self.updater.state.can_restart()
+                }
+                "update-check" => !self.updater.state.busy(),
                 "canvas-paste" => self.canvas_menu.is_some_and(|menu| menu.can_paste),
                 "delete-folder" => match self.controller.filter {
                     NoteFilter::Notebook(id) | NoteFilter::NotebookTrash(id) => {
@@ -3153,7 +3176,9 @@ impl Render for NotesView {
         }
         let mut root = div()
             .id("folio-root")
-            .key_context(if self.canvas_menu.is_some() {
+            .key_context(if self.update_preparing {
+                "FolioUpdating"
+            } else if self.canvas_menu.is_some() {
                 "FolioCanvasMenu"
             } else if self.blocking_overlay() || self.controller.loading_note() {
                 "FolioDialog"
@@ -3695,6 +3720,28 @@ impl Render for NotesView {
             );
         }
         root = root.child(body).children(canvas_overlay);
+        if self.update_preparing {
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .bg(rgba(0x00000070))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .p_6()
+                            .rounded(px(theme.radius))
+                            .bg(rgb(theme.surface))
+                            .text_sm()
+                            .child("Saving, backing up and preparing the update…"),
+                    ),
+            );
+        }
         self.accessibility.publish(self, window, cx);
         titlebar::frame(root, window)
     }
