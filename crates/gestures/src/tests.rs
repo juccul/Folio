@@ -206,6 +206,19 @@ fn arcs_letters_and_double_loops_do_not_become_selection() {
 }
 
 #[test]
+fn minimum_encircle_size_is_measured_on_screen() {
+    let small = oval(1., 8., 8.);
+    assert!(selection_loop_with_scale(&small, 4.).is_some());
+    assert!(selection_loop_with_scale(&small, 1.).is_none());
+    assert!(selection_loop_with_scale(&oval(1., 40., 30.), 0.1).is_none());
+    for scale in [0., -1., f32::NAN, f32::INFINITY] {
+        assert!(selection_loop_with_scale(&small, scale).is_none());
+    }
+    let polygon = selection_loop_with_scale(&small, 4.).unwrap();
+    assert!(folio_ink::inside_polygon(Point::new(100., 100.), &polygon));
+}
+
+#[test]
 fn encircle_uses_transformed_ink_and_rejects_long_crossing_strokes() {
     let polygon = selection_loop(&oval(0.9, 50., 40.)).unwrap();
     assert!(encloses(

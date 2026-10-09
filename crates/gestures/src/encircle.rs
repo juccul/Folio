@@ -5,6 +5,15 @@ use std::f32::consts::{PI, TAU};
 /// Accept a rough oval with a small gap or modest overrun. Endpoint distance
 /// alone cannot distinguish a real encircling stroke from a hook or figure eight.
 pub fn selection_loop(points: &[Point]) -> Option<Vec<Point>> {
+    selection_loop_with_scale(points, 1.)
+}
+
+/// Apply the minimum gesture size in screen pixels while returning the polygon
+/// in the original document coordinates. `scale` is the viewport zoom.
+pub fn selection_loop_with_scale(points: &[Point], scale: f32) -> Option<Vec<Point>> {
+    if !scale.is_finite() || scale <= 0. {
+        return None;
+    }
     let points = geometry::clean(points)?;
     if points.len() < 6 {
         return None;
@@ -14,7 +23,7 @@ pub fn selection_loop(points: &[Point]) -> Option<Vec<Point>> {
     let projected: Vec<_> = path.iter().map(|&p| geometry::project(p, axis)).collect();
     let bounds = Rect::from_points(projected.iter().copied());
     let diagonal = bounds.width().hypot(bounds.height());
-    if diagonal < 32. || bounds.width().min(bounds.height()) < 12. {
+    if diagonal * scale < 32. || bounds.width().min(bounds.height()) * scale < 12. {
         return None;
     }
     let first = projected[0];

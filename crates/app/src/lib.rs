@@ -1783,7 +1783,9 @@ impl Controller {
         }
     }
     fn encircled_ids(&self, points: &[Point]) -> HashSet<Id> {
-        let Some(polygon) = folio_gestures::selection_loop(points) else {
+        let Some(polygon) =
+            folio_gestures::selection_loop_with_scale(points, self.session().viewport.zoom)
+        else {
             return HashSet::new();
         };
         self.session()

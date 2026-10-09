@@ -174,6 +174,36 @@ fn encircle_selects_enclosed_ink_and_leaves_crossing_ink_unselected() {
 }
 
 #[test]
+fn encircle_selects_visible_shapes_without_selecting_hidden_source_ink() {
+    with_app(|app| {
+        app.settings.encircle_select = true;
+        app.set_tool(Tool::Shape);
+        draw(app, &[Point::new(110., 155.), Point::new(170., 165.)], 0);
+        let shape = app
+            .page()
+            .ordered_objects()
+            .find(|object| matches!(object.as_ref(), Object::Shape(_)))
+            .unwrap()
+            .clone();
+        let hidden = app.page().hidden_sources();
+        assert_eq!(hidden.len(), 1);
+        app.set_tool(Tool::Pen);
+        draw_held(app, &oval(1.), 1000);
+        assert_eq!(app.session().selection, HashSet::from([shape.id()]));
+        assert_eq!(app.page().objects.len(), 2);
+        draw(app, &[Point::new(140., 160.), Point::new(160., 175.)], 3000);
+        for id in hidden.into_iter().chain([shape.id()]) {
+            assert_eq!(
+                app.page().objects[&id].transform(),
+                Transform::translate(20., 15.)
+            );
+        }
+        app.undo();
+        assert_eq!(app.page().objects[&shape.id()], shape);
+    });
+}
+
+#[test]
 fn holding_an_encircle_selects_before_lift_and_takes_priority_over_shape_snapping() {
     with_app(|app| {
         app.settings.encircle_select = true;
@@ -378,6 +408,67 @@ fn held_circle_works_without_shape_snapping_and_tolerates_screen_pixel_tremor() 
             app.pointer(frame(app, points[80], Phase::Up, 2700));
             assert_eq!(app.page().objects.len(), 1);
         });
+    }
+}
+
+#[test]
+fn held_encircle_uses_screen_size_at_every_zoom() {
+    for (device, tick_before_lift) in [
+        (Device::Mouse, true),
+        (Device::Mouse, false),
+        (Device::Tablet, true),
+        (Device::Tablet, false),
+    ] {
+        for zoom in [0.25, 0.5, 1., 4., 8.] {
+            with_app(|app| {
+                app.settings.encircle_select = true;
+                app.settings.hold_shapes = false;
+                app.session_mut().viewport.zoom = zoom;
+                let center = Point::new(300., 300.);
+                draw(
+                    app,
+                    &[
+                        Point::new(center.x - 10. / zoom, center.y),
+                        Point::new(center.x + 10. / zoom, center.y),
+                    ],
+                    0,
+                );
+                let enclosed = app.page().order[0];
+                let points = (0..=80)
+                    .map(|i| {
+                        let a = i as f32 / 80. * TAU;
+                        Point::new(
+                            center.x + a.cos() * 35. / zoom,
+                            center.y + a.sin() * 25. / zoom,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                for (i, &point) in points.iter().enumerate() {
+                    let mut event = frame(
+                        app,
+                        point,
+                        if i == 0 { Phase::Down } else { Phase::Move },
+                        1000 + i as u64 * 12,
+                    );
+                    event.device = device;
+                    app.pointer(event);
+                }
+                hold(app);
+                if tick_before_lift {
+                    app.tick();
+                    assert!(app.interaction.is_none());
+                }
+                let mut up = frame(app, points[80], Phase::Up, 3000);
+                up.device = device;
+                app.pointer(up);
+                assert_eq!(
+                    app.session().selection,
+                    HashSet::from([enclosed]),
+                    "A 70 × 50 screen-pixel circle must select at zoom {zoom}"
+                );
+                assert_eq!(app.page().objects.len(), 1);
+            });
+        }
     }
 }
 

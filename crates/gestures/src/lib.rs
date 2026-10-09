@@ -3,7 +3,7 @@
 mod encircle;
 mod geometry;
 mod scratch;
-pub use encircle::{closed_loop, encloses, selection_loop};
+pub use encircle::{closed_loop, encloses, selection_loop, selection_loop_with_scale};
 pub use scratch::{Scratch, scratch};
 #[cfg(test)]
 mod tests;
