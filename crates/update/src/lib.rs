@@ -260,6 +260,23 @@ fn read_manifest(client: &Client, channel: &Channel) -> Result<Vec<u8>, String> 
         .map_err(|e| e.to_string())?;
     Ok(bytes)
 }
+// A signed Flatpak-only repair can replace metadata that has not been staged.
+// Keep every Windows payload and an already verified restart target pinned.
+fn accepts_flatpak_repair(
+    backend: Backend,
+    ready: bool,
+    previous: &Release,
+    candidate: &Release,
+) -> bool {
+    backend == Backend::Flatpak
+        && !ready
+        && previous.schema == candidate.schema
+        && previous.version == candidate.version
+        && previous.windows_installer == candidate.windows_installer
+        && previous.windows_portable == candidate.windows_portable
+        && previous.windows_binary_sha256 == candidate.windows_binary_sha256
+        && previous.flatpak_commit != candidate.flatpak_commit
+}
 fn worker(
     commands: Receiver<Command>,
     events: Sender<Event>,
@@ -321,15 +338,19 @@ fn worker(
                                 if ordering.is_lt() {
                                     continue;
                                 }
-                                if ordering.is_eq() && previous != &candidate {
+                                if ordering.is_eq()
+                                    && previous != &candidate
+                                    && !accepts_flatpak_repair(backend, ready, previous, &candidate)
+                                {
                                     let _ = events.send(Event::CheckError(Some("The published release changed without increasing its version. Waiting for a new immutable release".into())));
                                     continue;
                                 }
                             }
-                            if release
-                                .as_ref()
-                                .is_none_or(|r| r.version != candidate.version)
-                            {
+                            if release.as_ref().is_none_or(|r| r != &candidate) {
+                                #[cfg(target_os = "linux")]
+                                {
+                                    flatpak_ready = None;
+                                }
                                 ready = backend != Backend::Flatpak
                                     && download::verified(
                                         &package_path(&cache, backend, &candidate),
@@ -455,12 +476,20 @@ fn worker(
                         &data,
                     )
                 };
+                if result.is_err() && backend == Backend::Flatpak {
+                    ready = false;
+                    #[cfg(target_os = "linux")]
+                    {
+                        flatpak_ready = None;
+                    }
+                    next_check = Instant::now();
+                }
                 let _ = events.send(Event::State(match result {
                     Ok(()) => State::Exit,
                     Err(error) => State::Failed {
                         version: r.version.clone(),
                         error,
-                        ready: true,
+                        ready,
                     },
                 }));
             }
@@ -472,6 +501,70 @@ fn worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn release() -> Release {
+        let asset = manifest::Asset {
+            url: "https://github.com/juccul/Folio/releases/download/v0.1.4/package".into(),
+            sha256: "a".repeat(64),
+            size: 10,
+        };
+        Release {
+            schema: 1,
+            version: "0.1.4".into(),
+            windows_installer: asset.clone(),
+            windows_portable: asset,
+            windows_binary_sha256: "b".repeat(64),
+            flatpak_commit: "c".repeat(64),
+        }
+    }
+    #[test]
+    fn signed_flatpak_repair_refreshes_only_unstaged_flatpak_metadata() {
+        let previous = release();
+        let mut candidate = previous.clone();
+        candidate.flatpak_commit = "d".repeat(64);
+        assert!(accepts_flatpak_repair(
+            Backend::Flatpak,
+            false,
+            &previous,
+            &candidate
+        ));
+        for backend in [
+            Backend::WindowsInstaller,
+            Backend::WindowsPortable,
+            Backend::Unsupported,
+        ] {
+            assert!(!accepts_flatpak_repair(
+                backend, false, &previous, &candidate
+            ));
+        }
+        assert!(!accepts_flatpak_repair(
+            Backend::Flatpak,
+            true,
+            &previous,
+            &candidate
+        ));
+        for changed in 0..5 {
+            let mut unsafe_candidate = candidate.clone();
+            match changed {
+                0 => unsafe_candidate.schema += 1,
+                1 => unsafe_candidate.version = "0.1.5".into(),
+                2 => unsafe_candidate.windows_installer.size += 1,
+                3 => unsafe_candidate.windows_portable.url.push_str("-changed"),
+                _ => unsafe_candidate.windows_binary_sha256 = "e".repeat(64),
+            }
+            assert!(!accepts_flatpak_repair(
+                Backend::Flatpak,
+                false,
+                &previous,
+                &unsafe_candidate
+            ));
+        }
+        assert!(!accepts_flatpak_repair(
+            Backend::Flatpak,
+            false,
+            &previous,
+            &previous
+        ));
+    }
     #[test]
     fn actions_require_available_or_verified_ready_state_and_double_clicks_are_ignored() {
         let (tx, commands) = mpsc::channel();
