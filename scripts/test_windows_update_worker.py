@@ -30,7 +30,9 @@ class UpdateWorkerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name)
+        # Windows runners can expose TEMP through an 8.3 alias (RUNNER~1).
+        # Compare canonical fixture paths with the worker's canonical paths.
+        self.base = Path(self.temp.name).resolve()
         self.root = self.base / 'Folio α custom installation'
         self.data = self.base / 'library 日本語'
         self.data.mkdir()

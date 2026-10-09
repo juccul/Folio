@@ -17,6 +17,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+      - name: Verify updater recovery
+        run: python scripts/test_windows_update_worker.py
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal; rustup default stable
       - name: Prepare offline tools
@@ -30,7 +32,6 @@ jobs:
         run: |
           ./scripts/build-windows.ps1 -Check
           ./scripts/build-windows.ps1 -Test
-          python scripts/test_windows_update_worker.py
       - name: Build release and package
         run: |
           ./scripts/build-windows.ps1
