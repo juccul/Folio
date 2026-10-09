@@ -58,7 +58,7 @@ pub fn import_with_password(
     if source_pages.is_empty() {
         return Err(Error::Invalid("PDF has no pages".into()));
     }
-    let mut pages = Vec::new();
+    let mut pages = Vec::with_capacity(source_pages.len());
     for (number, page_id) in source_pages {
         let mut value = inherited(&document, page_id, b"CropBox")
             .or_else(|| inherited(&document, page_id, b"MediaBox"))
@@ -109,7 +109,11 @@ pub fn import_with_password(
 pub fn render_preview(background: &PdfBackground, assets: &Path) -> Result<(), Error> {
     render_preview_scaled(background, assets, 2400)
 }
-pub fn render_preview_scaled(background: &PdfBackground, assets: &Path, size: u32) -> Result<(), Error> {
+pub fn render_preview_scaled(
+    background: &PdfBackground,
+    assets: &Path,
+    size: u32,
+) -> Result<(), Error> {
     let preview = background
         .preview_asset
         .as_deref()

@@ -7,3 +7,7 @@ license.workspace = true
 [dependencies]
 folio-document = { path = "../document" }
 folio-ink = { path = "../ink" }
+
+[dev-dependencies]
+folio-shapes = { path = "../shapes" }
+folio-gestures = { path = "../gestures" }

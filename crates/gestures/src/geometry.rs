@@ -1,8 +1,12 @@
 use folio_document::{Point, Rect};
 
 pub(crate) fn clean(points: &[Point]) -> Option<Vec<Point>> {
-    let mut out: Vec<Point> = Vec::with_capacity(points.len());
-    for &p in points {
+    clean_iter(points.iter().copied())
+}
+pub(crate) fn clean_iter(points: impl IntoIterator<Item = Point>) -> Option<Vec<Point>> {
+    let points = points.into_iter();
+    let mut out: Vec<Point> = Vec::with_capacity(points.size_hint().0);
+    for p in points {
         if !p.x.is_finite() || !p.y.is_finite() {
             return None;
         }
@@ -59,20 +63,24 @@ pub(crate) fn resample(points: &[Point], count: usize) -> Vec<Point> {
     if total <= 0.01 {
         return points.to_vec();
     }
-    let mut out = vec![points[0]];
+    let mut out = Vec::with_capacity(count);
+    out.push(points[0]);
     let mut segment = 0;
     let mut covered = 0.;
+    let mut segment_length = points[0].distance(points[1]);
     for i in 1..count - 1 {
         let at = total * i as f32 / (count - 1) as f32;
-        while segment + 2 < points.len()
-            && covered + points[segment].distance(points[segment + 1]) < at
-        {
-            covered += points[segment].distance(points[segment + 1]);
+        while segment + 2 < points.len() && covered + segment_length < at {
+            covered += segment_length;
             segment += 1;
+            segment_length = points[segment].distance(points[segment + 1]);
         }
         let a = points[segment];
         let b = points[segment + 1];
-        out.push(a.lerp(b, ((at - covered) / a.distance(b).max(0.001)).clamp(0., 1.)));
+        out.push(a.lerp(
+            b,
+            ((at - covered) / segment_length.max(0.001)).clamp(0., 1.),
+        ));
     }
     out.push(*points.last().unwrap());
     out

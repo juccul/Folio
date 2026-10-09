@@ -796,28 +796,20 @@ fn render_ink(strokes: &[Vec<[f32; 2]>], kind: RecognitionKind) -> Result<Vec<u8
     {
         return Err("Select a smaller passage of writing".into());
     }
-    let points: Vec<_> = strokes.iter().flatten().collect();
-    if points.is_empty()
-        || points
-            .iter()
-            .any(|p| !p[0].is_finite() || !p[1].is_finite())
-    {
-        return Err("No valid ink in selection".into());
+    let mut bounds: Option<(f32, f32, f32, f32)> = None;
+    for point in strokes.iter().flatten() {
+        if !point[0].is_finite() || !point[1].is_finite() {
+            return Err("No valid ink in selection".into());
+        }
+        let (x0, y0, x1, y1) = bounds.get_or_insert((point[0], point[1], point[0], point[1]));
+        *x0 = x0.min(point[0]);
+        *y0 = y0.min(point[1]);
+        *x1 = x1.max(point[0]);
+        *y1 = y1.max(point[1]);
     }
-    let x0 = points.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
-    let y0 = points.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
-    let w = (points
-        .iter()
-        .map(|p| p[0])
-        .fold(f32::NEG_INFINITY, f32::max)
-        - x0)
-        .max(1.);
-    let h = (points
-        .iter()
-        .map(|p| p[1])
-        .fold(f32::NEG_INFINITY, f32::max)
-        - y0)
-        .max(1.);
+    let (x0, y0, x1, y1) = bounds.ok_or("No valid ink in selection")?;
+    let w = (x1 - x0).max(1.);
+    let h = (y1 - y0).max(1.);
     let scale = match kind {
         RecognitionKind::Math => (608. / w).min(480. / h),
         RecognitionKind::Text => (1400. / w).min(1000. / h).min(2.),
@@ -852,7 +844,7 @@ fn render_ink(strokes: &[Vec<[f32; 2]>], kind: RecognitionKind) -> Result<Vec<u8
     }
     svg.push_str("</svg>");
     let pixmap = folio_export::raster_svg(&svg, 4.).map_err(io)?;
-    let image = image::RgbaImage::from_raw(pixmap.width(), pixmap.height(), pixmap.data().to_vec())
+    let image = image::RgbaImage::from_raw(pixmap.width(), pixmap.height(), pixmap.take())
         .ok_or("Invalid ink image")?;
     let image = image::DynamicImage::ImageRgba8(image)
         .resize_exact(

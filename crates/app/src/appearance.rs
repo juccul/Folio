@@ -194,10 +194,18 @@ impl Default for Appearance {
         }
     }
 }
+static DEFAULTS: std::sync::LazyLock<[BTreeMap<ThemeToken, ThemeColor>; 2]> =
+    std::sync::LazyLock::new(|| [defaults(false), defaults(true)]);
 impl Appearance {
+    /// Resolve a single theme token without allocating an entire palette.
+    pub fn color(&self, dark: bool, token: ThemeToken) -> ThemeColor {
+        let overrides = if dark { &self.dark } else { &self.light };
+        overrides
+            .get(&token)
+            .copied()
+            .unwrap_or(DEFAULTS[usize::from(dark)][&token])
+    }
     pub fn palette(&self, dark: bool) -> BTreeMap<ThemeToken, ThemeColor> {
-        static DEFAULTS: std::sync::LazyLock<[BTreeMap<ThemeToken, ThemeColor>; 2]> =
-            std::sync::LazyLock::new(|| [defaults(false), defaults(true)]);
         let mut palette = DEFAULTS[usize::from(dark)].clone();
         palette.extend(if dark { &self.dark } else { &self.light });
         palette
@@ -221,6 +229,25 @@ impl Appearance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn individual_colors_match_full_palettes_and_mode_overrides() {
+        let mut appearance = Appearance::default();
+        appearance.set_color(
+            true,
+            ThemeToken::Border,
+            ThemeColor::parse("#12345678").unwrap(),
+        );
+        appearance.set_color(
+            false,
+            ThemeToken::Foreground,
+            ThemeColor::parse("#102030").unwrap(),
+        );
+        for dark in [false, true] {
+            for (token, color) in appearance.palette(dark) {
+                assert_eq!(appearance.color(dark, token), color);
+            }
+        }
+    }
     #[test]
     fn defaults_match_requested_oklch_tokens_and_alpha() {
         let appearance = Appearance::default();

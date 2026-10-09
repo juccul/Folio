@@ -319,6 +319,13 @@ pub struct Accessibility {
     requests: mpsc::Receiver<ActionRequest>,
     pending: RefCell<Vec<ActionRequest>>,
 }
+fn replace_snapshot(current: &mut Option<TreeUpdate>, update: &TreeUpdate) -> bool {
+    if current.as_ref() == Some(update) {
+        return false;
+    }
+    *current = Some(update.clone());
+    true
+}
 impl Accessibility {
     pub fn new(window: &Window) -> Self {
         let snapshot = Arc::new(Mutex::new(None));
@@ -355,6 +362,8 @@ impl Accessibility {
             .find(|c| c.id == id && c.enabled)
             .map(|c| (c.callback.clone(), c.focus.clone()))
     }
+    // Registration keeps the native control identity, semantics, callback, and GPUI context together.
+    #[allow(clippy::too_many_arguments)]
     pub fn control(
         &self,
         key: &str,
@@ -864,18 +873,51 @@ impl Accessibility {
             tree_id: TreeId::ROOT,
             focus,
         };
-        if let Ok(mut current) = self.snapshot.lock() {
-            *current = Some(update.clone());
-        }
+        let changed = self
+            .snapshot
+            .lock()
+            .map_or(true, |mut current| replace_snapshot(&mut current, &update));
         let mut adapter = self.adapter.borrow_mut();
         adapter.update_window(window);
-        adapter.update_if_active(|| update);
+        // Hover/motion redraws usually leave semantic nodes unchanged. Avoid
+        // cloning/dispatching the complete native tree again in that case.
+        if changed {
+            adapter.update_if_active(|| update);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    fn unchanged_accessibility_trees_skip_dispatch_but_focus_and_content_changes_do_not() {
+        let mut node = Node::new(Role::TextInput);
+        node.set_value("initial");
+        let update = TreeUpdate {
+            nodes: vec![(NodeId(1), node)],
+            tree: Some(TreeInfo::new(NodeId(1))),
+            tree_id: TreeId::ROOT,
+            focus: NodeId(1),
+        };
+        let mut current = None;
+        assert!(replace_snapshot(&mut current, &update));
+        assert!(!replace_snapshot(&mut current, &update));
+        let mut focused = update.clone();
+        focused.focus = NodeId(2);
+        assert!(replace_snapshot(&mut current, &focused));
+        assert!(!replace_snapshot(&mut current, &focused));
+        let mut changed = focused.clone();
+        changed.nodes[0].1.set_value("edited");
+        assert!(replace_snapshot(&mut current, &changed));
+        changed.nodes[0].1.set_bounds(accesskit::Rect {
+            x0: 1.,
+            y0: 2.,
+            x1: 100.,
+            y1: 30.,
+        });
+        assert!(replace_snapshot(&mut current, &changed));
+    }
     #[::core::prelude::v1::test]
     fn semantic_controls_expose_selection_toggle_and_disabled_states() {
         let tab = semantic_node(&format!("tab-{}", Id::new_v4()), "Document", true, true);

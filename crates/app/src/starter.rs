@@ -130,7 +130,7 @@ mod onboarding_tests {
         app.save();
         app.flush().unwrap();
         assert!(
-            Store::open(&root.join("notes.sqlite3"))
+            Store::open(root.join("notes.sqlite3"))
                 .unwrap()
                 .list_notes()
                 .unwrap()

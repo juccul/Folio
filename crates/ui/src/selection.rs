@@ -19,25 +19,6 @@ pub(super) fn toolbar_origin(selection: Rect, canvas: (f32, f32), toolbar: (f32,
         y.clamp(margin, (canvas.1 - height - margin).max(margin)),
     )
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[::core::prelude::v1::test]
-    fn actions_follow_selection_without_leaving_small_or_edge_viewports() {
-        assert_eq!(
-            toolbar_origin(Rect::new(300., 300., 100., 80.), (1000., 700.), (500., 60.)),
-            Point::new(300., 228.)
-        );
-        assert_eq!(
-            toolbar_origin(Rect::new(900., 0., 100., 20.), (1000., 700.), (500., 60.)),
-            Point::new(488., 32.)
-        );
-        assert_eq!(
-            toolbar_origin(Rect::new(-300., 1000., 50., 20.), (200., 100.), (500., 60.)),
-            Point::new(12., 28.)
-        );
-    }
-}
 
 struct SelectionHint {
     text: SharedString,
@@ -360,5 +341,25 @@ impl NotesView {
             .flex_wrap()
             .max_h(px((canvas_size.1 - 24.).max(28.)))
             .overflow_y_scroll()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[::core::prelude::v1::test]
+    fn actions_follow_selection_without_leaving_small_or_edge_viewports() {
+        assert_eq!(
+            toolbar_origin(Rect::new(300., 300., 100., 80.), (1000., 700.), (500., 60.)),
+            Point::new(300., 228.)
+        );
+        assert_eq!(
+            toolbar_origin(Rect::new(900., 0., 100., 20.), (1000., 700.), (500., 60.)),
+            Point::new(488., 32.)
+        );
+        assert_eq!(
+            toolbar_origin(Rect::new(-300., 1000., 50., 20.), (200., 100.), (500., 60.)),
+            Point::new(12., 28.)
+        );
     }
 }

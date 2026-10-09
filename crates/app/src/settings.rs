@@ -310,7 +310,12 @@ mod tests {
         assert_eq!(settings.cursor_size, 4.);
         assert!(settings.dark && !settings.autosave);
         assert!(settings.default_pen.valid());
-        assert!(settings.pen_presets.iter().all(|preset| preset.style.valid()));
+        assert!(
+            settings
+                .pen_presets
+                .iter()
+                .all(|preset| preset.style.valid())
+        );
     }
 
     #[test]

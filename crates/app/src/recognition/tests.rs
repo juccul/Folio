@@ -339,7 +339,7 @@ fn reviewed_ink_index_keeps_raw_strokes_searches_unicode_and_tracks_undo_and_reo
             .connection
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        5
+        6
     );
     drop(store);
     drop(app);

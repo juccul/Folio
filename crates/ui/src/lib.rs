@@ -6,8 +6,8 @@ mod input_check;
 mod recovery;
 pub use recovery::RecoveryView;
 mod appearance;
-mod color_picker;
 mod canvas_menu;
+mod color_picker;
 mod field;
 mod graph;
 mod help;
@@ -1670,7 +1670,6 @@ impl NotesView {
                         callback(this, window, cx);
                         cx.stop_propagation();
                         cx.notify();
-                        return;
                     }
                 }
                 // GPUI invokes on_click once on Enter/Space release. Handling
@@ -2612,7 +2611,8 @@ impl NotesView {
         {
             return Err(format!(
                 "Contextual selection toolbar is still laying out: button {button:?}; origin {left},{top}; size {:?}; canvas {b:?}; viewport {:?}",
-                self.selection_toolbar_size, self.controller.session().viewport
+                self.selection_toolbar_size,
+                self.controller.session().viewport
             ));
         }
         let position = point(
@@ -3153,17 +3153,15 @@ impl Render for NotesView {
         }
         let mut root = div()
             .id("folio-root")
-            .key_context(
-                if self.canvas_menu.is_some() {
-                    "FolioCanvasMenu"
-                } else if self.blocking_overlay() || self.controller.loading_note() {
-                    "FolioDialog"
-                } else if self.library_open {
-                    "FolioLibrary"
-                } else {
-                    "Folio"
-                },
-            )
+            .key_context(if self.canvas_menu.is_some() {
+                "FolioCanvasMenu"
+            } else if self.blocking_overlay() || self.controller.loading_note() {
+                "FolioDialog"
+            } else if self.library_open {
+                "FolioLibrary"
+            } else {
+                "Folio"
+            })
             .track_focus(&self.focus)
             .size_full()
             .relative()

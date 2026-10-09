@@ -2,19 +2,19 @@
 
 Offline handwriting and mixed-media notes for Linux and Windows, built in Rust with GPUI. Raw tablet samples and editable vector ink are the document's source of truth.
 
-Folio 0.1.1 includes native pen/pad input, vector editing, search over titles/tags/typed text, mixed-media/PDF notes, persistent undo, recovery and accessibility interfaces. Optional offline recognition converts selected handwriting into editable text or LaTeX. Normal note taking needs no model or Python runtime. Physical pen latency and desktop/device compatibility still require broader testing. See [DEVELOPMENT.md](DEVELOPMENT.md) for the exact status.
+Folio 0.1.2 includes native pen/pad input, vector editing, search over titles/tags/typed text, mixed-media/PDF notes, persistent undo, recovery and accessibility interfaces. Optional offline recognition converts selected handwriting into editable text or LaTeX. Normal note taking needs no model or Python runtime. Physical pen latency and desktop/device compatibility still require broader testing. See [DEVELOPMENT.md](DEVELOPMENT.md) for the exact status.
 
 Windows 11 x64 build, portable package, per-user installer, and validation instructions are in [WINDOWS.md](WINDOWS.md).
 
 ## Releases
 
-Download [Folio 0.1.1](https://github.com/juccul/Folio/releases/tag/v0.1.1) for **Linux x86_64 and Windows 11 x64**. Sign in to GitHub with access to this private repository.
+Download [Folio 0.1.2](https://github.com/juccul/Folio/releases/tag/v0.1.2) for **Linux x86_64 and Windows 11 x64**. Sign in to GitHub with access to this private repository.
 
 | Format | Download | Install |
 | --- | --- | --- |
-| Windows installer | [folio-0.1.1-windows-x64-setup.exe](https://github.com/juccul/Folio/releases/download/v0.1.1/folio-0.1.1-windows-x64-setup.exe) | Run the installer; no administrator rights needed. |
-| Windows portable ZIP | [folio-0.1.1-windows-x64.zip](https://github.com/juccul/Folio/releases/download/v0.1.1/folio-0.1.1-windows-x64.zip) | Extract the complete folder and run `bin/folio.exe`. |
-| Linux Flatpak | [folio-0.1.1-x86_64.flatpak](https://github.com/juccul/Folio/releases/download/v0.1.1/folio-0.1.1-x86_64.flatpak) | `flatpak install --user ./folio-0.1.1-x86_64.flatpak` |
+| Windows installer | [folio-0.1.2-windows-x64-setup.exe](https://github.com/juccul/Folio/releases/download/v0.1.2/folio-0.1.2-windows-x64-setup.exe) | Run the installer; no administrator rights needed. |
+| Windows portable ZIP | [folio-0.1.2-windows-x64.zip](https://github.com/juccul/Folio/releases/download/v0.1.2/folio-0.1.2-windows-x64.zip) | Extract the complete folder and run `bin/folio.exe`. |
+| Linux Flatpak | [folio-0.1.2-x86_64.flatpak](https://github.com/juccul/Folio/releases/download/v0.1.2/folio-0.1.2-x86_64.flatpak) | `flatpak install --user ./folio-0.1.2-x86_64.flatpak` |
 
 On Windows, launch **Folio** from the Start menu. Notes are stored in `%LOCALAPPDATA%\Folio`; updates and uninstall preserve them. The installer bundles offline math, PDF tools, Python and the matching Visual C++ runtime. See [Windows instructions](WINDOWS.md).
 
@@ -22,7 +22,7 @@ On Linux, launch **Folio** from your application menu, or run `flatpak run io.gi
 
 The Flatpak includes the **offline CPU math solver**, pinned SymPy/mpmath dependencies and PDF preview tools. GLM-OCR Q8 weights and the Vulkan inference runtime download automatically on the first OCR request if no usable model pack exists; see [recognition setup](#install-optional-offline-recognition). Use the Flatpak file picker for importing and exporting files.
 
-The [0.1.1 release notes](RELEASE_NOTES.md) describe the Linux and Windows downloads and matching source. `SHA256SUMS` accompanies the release assets.
+The [0.1.2 release notes](RELEASE_NOTES.md) describe the Linux and Windows downloads and matching source. `SHA256SUMS` accompanies the release assets.
 
 The interface opens to a minimal document library with folders, favorites, recent notes, and grid/list views. Open a document for a compact writing toolbar and a collapsible page strip; the tab strip includes a + picker for opening an existing document or creating one. Drag tabs to reorder them. Right-click a library card or use its … menu to rename, duplicate, favorite, move, tag, trash or restore that document. Folio uses embedded Tabler Outline icons and a matching custom marker with native GPUI rendering.
 
@@ -108,7 +108,7 @@ The math engine is a separate CPU SymPy worker; it needs no neural weights or GP
 
 `FOLIO_MATH_CONFIG` overrides the data-directory or portable math pack. Installation may fetch dependencies; runtime calculation is offline and never downloads them. Teaching traces cover supported rules; other solvable problems can have explicitly labeled summary steps. Unsupported or incomplete results are reported. Multi-letter names are single variables; write `x*y` for a product. `log` is base 10 and `ln` is natural logarithm. Formula rendering falls back to source text when a step cannot be rendered.
 
-Saved math links use document format 3 and database schema 4. Earlier notes remain readable; older Folio builds refuse databases that have used math links. See [implementation and coverage](MATH_SOLVER_DESIGN.md).
+Saved math links use document format 3. Earlier notes remain readable. The current database uses schema 6; older Folio builds refuse upgraded databases. See [implementation and coverage](MATH_SOLVER_DESIGN.md).
 
 ### OCR setup and offline recognition
 
@@ -186,7 +186,7 @@ PDF metadata/import/export use Rust. Requested-page previews require `pdftoppm` 
 
 Clean equations can be inserted by entering LaTeX in the document menu. A bundled open font and pure Rust renderer generate SVG offline; existing equation objects remain editable. Selected handwriting can be recognized as editable text or LaTeX through the optional offline OCR pack described above. Spellchecking and a graphical model/device configuration editor are not available. Shape snapping, scratch erase and encircle selection remain geometric pen features.
 
-Search indexes titles, tags, typed text, LaTeX equation source and explicitly reviewed handwriting annotations with SQLite FTS5. Selecting a result opens its page and highlights matching objects. On first opening a database from an older version, a transaction rebuilds the derived index to exclude old OCR text. Original stroke data, previous group metadata and undo history remain readable; the derived search index is upgraded to schema 3. Saving live math links upgrades the database to schema 4; builds that do not support the resulting schema refuse to open it.
+Search indexes titles, tags, typed text, LaTeX equation source and explicitly reviewed handwriting annotations with SQLite FTS5. Selecting a result opens its page and highlights matching objects. On opening an older database, Folio upgrades it to schema 6 with an indexed, stable page-to-search-row mapping. Databases predating schema 3 also rebuild the derived index to exclude old OCR text. Original stroke data, previous group metadata and undo history remain readable. The migration is transactional; older builds refuse the upgraded database. Incremental saves no longer scan unrelated library pages or rewrite unchanged search text. See the [performance audit](PERFORMANCE_AUDIT.md) for measurements and validation.
 
 ## Save, backup and recovery
 
@@ -263,7 +263,7 @@ Select a line or short paragraph and choose **Index handwriting…**, or use **D
 
 **Ctrl+F** finds indexed handwriting with Unicode/accent-aware prefix queries. Opening a result highlights its source region. Moving, rotating or restyling the indexed strokes keeps the text and updates the region. Changing their geometry, deleting/replacing them, converting them to shapes/equations, or writing over the indexed region invalidates the annotation. Undo restores the writing and index together. **Clear page handwriting index** is also undoable. Page duplication, templates and notebook archives remap index source identities.
 
-Dense pages may exceed the OCR selection/token limit; index smaller paragraphs instead. Indexing uses document format 4 and database schema 5; older builds refuse a database that has used this feature. OCR annotations are reviewed text, not a guarantee of recognition accuracy.
+Dense pages may exceed the OCR selection/token limit; index smaller paragraphs instead. Indexing uses document format 4. The current database uses schema 6; older builds refuse upgraded databases. OCR annotations are reviewed text, not a guarantee of recognition accuracy.
 
 ## Check tablet input
 

@@ -70,7 +70,10 @@ pub struct Session {
     pub selection: HashSet<Id>,
     pub index: SpatialIndex,
     pub order_positions: HashMap<Id, usize>,
-    pending_journal: Vec<JournalEvent>,
+    indexed_page: Id,
+    // Mark unsaved history without cloning every prior command on each edit.
+    history_needs_save: bool,
+    library_cover: Option<Arc<Page>>,
     linked_math: HashSet<Id>,
 }
 impl Session {
@@ -85,6 +88,7 @@ impl Session {
             .collect();
         let linked_math = linked_math_objects(&document.pages[0]);
         Self {
+            indexed_page: document.pages[0].id,
             document,
             linked_math,
             history: History::default(),
@@ -93,7 +97,8 @@ impl Session {
             selection: HashSet::new(),
             index,
             order_positions,
-            pending_journal: vec![],
+            history_needs_save: false,
+            library_cover: None,
         }
     }
     pub fn page(&self) -> &Page {
@@ -110,6 +115,10 @@ impl Session {
             .changes
             .iter()
             .any(|c| matches!(c, Change::Page { .. }));
+        if pages_changed {
+            // A page replacement can preserve both identity and revision.
+            self.library_cover = None;
+        }
         let object_changes = command
             .changes
             .iter()
@@ -132,7 +141,8 @@ impl Session {
             .any(|id| self.order_positions.contains_key(id) && !page.objects.contains_key(id));
         let suffix = page.order.len().saturating_sub(inserted.len());
         let appended = page.order[suffix..].iter().all(|id| inserted.contains(id));
-        if pages_changed || removed || !appended {
+        let page_changed = self.indexed_page != page.id;
+        if page_changed || pages_changed || removed || !appended {
             self.order_positions = page
                 .order
                 .iter()
@@ -144,7 +154,7 @@ impl Session {
                 self.order_positions.insert(*id, suffix + offset);
             }
         }
-        if pages_changed || old_page != self.page {
+        if page_changed || pages_changed || old_page != self.page {
             self.linked_math = linked_math_objects(page);
         } else {
             for id in &object_changes {
@@ -157,17 +167,19 @@ impl Session {
             }
         }
         self.selection.retain(|id| page.objects.contains_key(id));
-        if old_page != self.page {
+        if page_changed || old_page != self.page {
             self.index.rebuild(page);
         } else {
             self.index.update(page, command);
         }
+        self.indexed_page = page.id;
     }
     fn refresh(&mut self) {
         self.page = self.page.min(self.document.pages.len() - 1);
         self.selection
             .retain(|id| self.document.pages[self.page].objects.contains_key(id));
         self.index.rebuild(&self.document.pages[self.page]);
+        self.indexed_page = self.document.pages[self.page].id;
         self.linked_math = linked_math_objects(&self.document.pages[self.page]);
         self.order_positions = self.document.pages[self.page]
             .order
@@ -578,26 +590,31 @@ impl Controller {
         }
         notes
     }
+    fn defer_history_save(&mut self, note: Id) {
+        if let Some(session) = self.sessions.get_mut(&note) {
+            session.history_needs_save = true;
+        }
+        self.status = "Unsaved · autosave is off".into();
+    }
     fn persist(&mut self, mut delta: Delta) {
         let id = delta.metadata.id;
         if !self.settings.autosave {
-            if let Some(session) = self.sessions.get_mut(&id) {
-                session.pending_journal = vec![JournalEvent::Replace(session.history.clone())];
-            }
-            self.status = "Unsaved · autosave is off".into();
+            self.defer_history_save(id);
             return;
         }
         if let Some(session) = self.sessions.get_mut(&id) {
             if self.dirty_notes.contains(&id) {
                 delta = Delta::full(&session.document);
                 delta.journal = vec![JournalEvent::Replace(session.history.clone())];
-                session.pending_journal.clear();
-            } else if !session.pending_journal.is_empty() {
-                delta.journal = std::mem::take(&mut session.pending_journal);
+            } else if session.history_needs_save {
+                delta.journal = vec![JournalEvent::Replace(session.history.clone())];
             }
         }
         match self.persistence.save(delta) {
             Ok(seq) => {
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    session.history_needs_save = false;
+                }
                 self.save_notes.insert(seq, id);
                 self.dirty_notes.remove(&id);
                 self.queued = seq;
@@ -606,7 +623,7 @@ impl Controller {
             Err(e) => {
                 self.dirty_notes.insert(id);
                 if let Some(s) = self.sessions.get_mut(&id) {
-                    s.pending_journal = vec![JournalEvent::Replace(s.history.clone())];
+                    s.history_needs_save = true;
                 }
                 self.status = "Changes are not saved".into();
                 self.save_error = Some(e);
@@ -660,22 +677,31 @@ impl Controller {
             label: label.into(),
             changes,
         };
+        let autosave = self.settings.autosave;
         let Some(s) = self.sessions.get_mut(&note) else {
             return;
         };
         s.history.execute(cmd.clone(), &mut s.document);
         s.refresh_command(&cmd);
-        let mut delta = if provisional {
-            Delta::full(&s.document)
-        } else {
-            Delta::command(&s.document, &cmd)
-        };
-        delta.journal.push(JournalEvent::Execute(cmd));
+        // Deferred edits do not need a page header/search-text snapshot yet.
+        let delta = autosave.then(|| {
+            let mut delta = if provisional {
+                Delta::full(&s.document)
+            } else {
+                Delta::command(&s.document, &cmd)
+            };
+            delta.journal.push(JournalEvent::Execute(cmd));
+            delta
+        });
         self.refresh_metadata(note);
         if note == self.active && self.read_only() {
             self.tool = Tool::Hand;
         }
-        self.persist(delta);
+        if let Some(delta) = delta {
+            self.persist(delta);
+        } else {
+            self.defer_history_save(note);
+        }
         if first_writing {
             self.mark_note_opened(note);
         }
@@ -685,6 +711,7 @@ impl Controller {
             return;
         }
         self.cancel();
+        let autosave = self.settings.autosave;
         let s = self.session_mut();
         let current_page = s.page().id;
         if let Some(cmd) = s.history.undo(&mut s.document) {
@@ -697,10 +724,17 @@ impl Controller {
                 s.page = index;
             }
             s.refresh_command(&cmd);
-            let mut delta = Delta::command(&s.document, &cmd);
-            delta.journal.push(JournalEvent::Undo);
+            let delta = autosave.then(|| {
+                let mut delta = Delta::command(&s.document, &cmd);
+                delta.journal.push(JournalEvent::Undo);
+                delta
+            });
             self.refresh_metadata(self.active);
-            self.persist(delta);
+            if let Some(delta) = delta {
+                self.persist(delta);
+            } else {
+                self.defer_history_save(self.active);
+            }
         }
     }
     pub fn redo(&mut self) {
@@ -708,6 +742,7 @@ impl Controller {
             return;
         }
         self.cancel();
+        let autosave = self.settings.autosave;
         let s = self.session_mut();
         let current_page = s.page().id;
         if let Some(cmd) = s.history.redo(&mut s.document) {
@@ -720,10 +755,17 @@ impl Controller {
                 s.page = index;
             }
             s.refresh_command(&cmd);
-            let mut delta = Delta::command(&s.document, &cmd);
-            delta.journal.push(JournalEvent::Redo);
+            let delta = autosave.then(|| {
+                let mut delta = Delta::command(&s.document, &cmd);
+                delta.journal.push(JournalEvent::Redo);
+                delta
+            });
             self.refresh_metadata(self.active);
-            self.persist(delta);
+            if let Some(delta) = delta {
+                self.persist(delta);
+            } else {
+                self.defer_history_save(self.active);
+            }
         }
     }
     pub fn save(&mut self) {
@@ -755,7 +797,7 @@ impl Controller {
             self.save_notes.insert(sequence, note);
             self.dirty_notes.remove(&note);
             if let Some(session) = self.sessions.get_mut(&note) {
-                session.pending_journal.clear();
+                session.history_needs_save = false;
             }
         }
         self.persistence.flush()
@@ -1220,11 +1262,9 @@ impl Controller {
         self.cursor = Some(p);
         if event.phase == Phase::Down {
             self.finish();
-            if self.session().document.metadata.trashed {
-                if self.tool != Tool::Hand {
-                    self.status = "In Trash · restore this document to edit".into();
-                    return;
-                }
+            if self.session().document.metadata.trashed && self.tool != Tool::Hand {
+                self.status = "In Trash · restore this document to edit".into();
+                return;
             }
             if self.tool == Tool::Hand {
                 self.interaction = Some(Interaction::Pan {
@@ -1833,19 +1873,38 @@ impl Controller {
         mut change: impl FnMut(&Object) -> Option<Object>,
     ) -> Vec<Change> {
         let page = self.page();
-        page.order
-            .iter()
-            .enumerate()
-            .filter(|(_, id)| ids.contains(id))
+        // Selected edits scale with the selection, preserving document order for
+        // durable commands without visiting every object on a large page.
+        let mut selected = if self.session().indexed_page == page.id {
+            ids.iter()
+                .filter_map(|id| {
+                    self.session()
+                        .order_positions
+                        .get(id)
+                        .map(|index| (*index, *id))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            // Session exposes its page selector; callers may change it directly.
+            page.order
+                .iter()
+                .enumerate()
+                .filter(|(_, id)| ids.contains(id))
+                .map(|(index, id)| (index, *id))
+                .collect()
+        };
+        selected.sort_unstable_by_key(|(index, _)| *index);
+        selected
+            .into_iter()
             .filter_map(|(index, id)| {
-                let before = page.objects.get(id)?.clone();
+                let before = page.objects.get(&id)?.clone();
                 let after = change(&before).map(Arc::new);
                 if after.as_deref() == Some(before.as_ref()) {
                     return None;
                 }
                 Some(Change::Object {
                     page: page.id,
-                    id: *id,
+                    id,
                     before: Some(before),
                     after,
                     index,
@@ -2020,7 +2079,7 @@ impl Controller {
             Point::new(position.x - bounds.min.x, position.y - bounds.min.y),
         );
     }
-    fn paste_objects_offset(&mut self, mut objects: Vec<Object>, offset: Point) {
+    fn paste_objects_offset(&mut self, objects: Vec<Object>, offset: Point) {
         if self.read_only() || objects.is_empty() {
             return;
         }
@@ -2028,10 +2087,10 @@ impl Controller {
         let mut changes = vec![];
         let index = self.page().order.len();
         let mut ids = HashSet::new();
-        for (i, o) in objects.iter_mut().enumerate() {
+        for (i, mut o) in objects.into_iter().enumerate() {
             o.set_id(map[&o.id()]);
             o.set_transform(Transform::translate(offset.x, offset.y).compose(o.transform()));
-            match o {
+            match &mut o {
                 Object::Shape(s) => {
                     s.source_strokes = s
                         .source_strokes
@@ -2072,7 +2131,7 @@ impl Controller {
                 page: self.page().id,
                 id: o.id(),
                 before: None,
-                after: Some(Arc::new(o.clone())),
+                after: Some(Arc::new(o)),
                 index: index + i,
             });
         }
@@ -2233,14 +2292,13 @@ impl Controller {
             Ok(()) => {
                 self.busy += 1;
                 if let Some((kind, label)) = identity {
-                    if self.tasks.len() >= 32 {
-                        if let Some(index) = self
+                    if self.tasks.len() >= 32
+                        && let Some(index) = self
                             .tasks
                             .iter()
                             .position(|t| t.state != TaskState::Running)
-                        {
-                            self.tasks.remove(index);
-                        }
+                    {
+                        self.tasks.remove(index);
                     }
                     self.tasks.push(BackgroundTask {
                         id,
@@ -2362,21 +2420,18 @@ impl Controller {
                 .position(|p| p.id == page)
                 .unwrap_or(0);
             s.refresh();
-            let query = self.search_query.clone();
+            let matcher = folio_search::TextMatcher::new(&self.search_query);
             let mut highlights: Vec<_> = s
                 .page()
                 .ordered_objects()
-                .filter(|o| {
-                    folio_search::matches_text(o.searchable_text(), &query)
-                        && !o.searchable_text().is_empty()
-                })
+                .filter(|o| matcher.matches(o.searchable_text()) && !o.searchable_text().is_empty())
                 .map(|o| o.bounds())
                 .collect();
             highlights.extend(
                 s.page()
                     .ink_text
                     .iter()
-                    .filter(|entry| !entry.stale && folio_search::matches_text(&entry.text, &query))
+                    .filter(|entry| !entry.stale && matcher.matches(&entry.text))
                     .map(|entry| entry.bounds),
             );
             if let Some(r) = highlights.first() {
@@ -2625,10 +2680,7 @@ impl Controller {
                         && Some(*id) != self.pending_note
                         && !self.pending_actions.contains_key(id)
                         && !self.pending_imports.contains_key(id)
-                        && self
-                            .sessions
-                            .get(id)
-                            .is_some_and(|s| s.pending_journal.is_empty())
+                        && self.sessions.get(id).is_some_and(|s| !s.history_needs_save)
                 });
                 let Some(victim) = victim else {
                     break;
@@ -2696,7 +2748,7 @@ impl Controller {
                         && self
                             .sessions
                             .values()
-                            .all(|session| session.pending_journal.is_empty())
+                            .all(|session| !session.history_needs_save)
                     {
                         self.save_error = None;
                         self.status = "All changes saved".into()

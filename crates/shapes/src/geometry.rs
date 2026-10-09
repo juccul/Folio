@@ -11,7 +11,7 @@ pub(crate) fn distance(p: Point, a: Point, b: Point) -> f32 {
     p.distance(a.lerp(b, t.clamp(0., 1.)))
 }
 pub(crate) fn clean(points: &[Point]) -> Option<Vec<Point>> {
-    let mut out: Vec<Point> = vec![];
+    let mut out: Vec<Point> = Vec::with_capacity(points.len());
     for &p in points {
         if !p.x.is_finite() || !p.y.is_finite() {
             return None;
@@ -27,21 +27,23 @@ pub(crate) fn length(points: &[Point]) -> f32 {
 }
 pub(crate) fn resample(points: &[Point], count: usize) -> Vec<Point> {
     let total = length(points);
-    let mut result = vec![points[0]];
+    let mut result = Vec::with_capacity(count);
+    result.push(points[0]);
     let mut index = 0;
     let mut traversed = 0.;
+    let mut segment_length = points[0].distance(points[1]);
     for i in 1..count - 1 {
         let at = total * i as f32 / (count - 1) as f32;
-        while index + 2 < points.len() && traversed + points[index].distance(points[index + 1]) < at
-        {
-            traversed += points[index].distance(points[index + 1]);
+        while index + 2 < points.len() && traversed + segment_length < at {
+            traversed += segment_length;
             index += 1;
+            segment_length = points[index].distance(points[index + 1]);
         }
         let a = points[index];
         let b = points[index + 1];
         result.push(a.lerp(
             b,
-            ((at - traversed) / a.distance(b).max(1e-8)).clamp(0., 1.),
+            ((at - traversed) / segment_length.max(1e-8)).clamp(0., 1.),
         ));
     }
     result.push(*points.last().unwrap());
@@ -134,6 +136,50 @@ pub(crate) fn residual(points: &[Point], vertices: &[Point], closed: bool) -> (f
         })
         .collect::<Vec<_>>();
     let mean = errors.iter().sum::<f32>() / errors.len() as f32;
-    errors.sort_by(f32::total_cmp);
-    (mean, errors[(errors.len() - 1) * 95 / 100])
+    let percentile = (errors.len() - 1) * 95 / 100;
+    let (_, worst, _) = errors.select_nth_unstable_by(percentile, f32::total_cmp);
+    (mean, *worst)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_residual_percentile_matches_sorted_errors() {
+        let vertices = [Point::new(-10., 0.), Point::new(10., 0.)];
+        for count in [1, 2, 20, 192] {
+            let points = (0..count)
+                .map(|i| Point::new(0., (i as f32 * 1.7).sin()))
+                .collect::<Vec<_>>();
+            let mut expected = points.iter().map(|p| p.y.abs()).collect::<Vec<_>>();
+            let mean = expected.iter().sum::<f32>() / count as f32;
+            expected.sort_by(f32::total_cmp);
+            assert_eq!(
+                residual(&points, &vertices, false),
+                (mean, expected[(count - 1) * 95 / 100])
+            );
+        }
+    }
+
+    #[test]
+    fn resampling_keeps_endpoints_and_handles_zero_length_segments() {
+        let points = [
+            Point::new(0., 0.),
+            Point::new(0., 0.),
+            Point::new(0., 10.),
+            Point::new(0., 10.),
+            Point::new(10., 10.),
+        ];
+        assert_eq!(
+            resample(&points, 5),
+            vec![
+                Point::new(0., 0.),
+                Point::new(0., 5.),
+                Point::new(0., 10.),
+                Point::new(5., 10.),
+                Point::new(10., 10.)
+            ]
+        );
+    }
 }

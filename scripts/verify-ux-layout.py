@@ -93,11 +93,26 @@ def main():
                                 client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0,delay=.02)
                             time.sleep(.15)
                         def capture(name):subprocess.run([sys.executable,'scripts/capture-x11.py',str(args.output/(case+'-'+name+'.png')),'--pid',str(app.pid),'--virtual-display-root'],check=True)
+                        def scroll_library(button,delay=.2):
+                            # Scaled chrome and virtual rows make fixed coordinates unreliable.
+                            # Replay the wheel inside a currently painted document body.
+                            view=find('List view').get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                            top=view.y+view.height
+                            bottom=height-36-28*scale
+                            for node in nodes():
+                                if not node.get_name().startswith('Open ') or node.get_role()!=Atspi.Role.PUSH_BUTTON:continue
+                                r=node.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                                low=max(r.y,top);high=min(r.y+r.height,bottom)
+                                if r.width>0 and r.height>=40*scale and low<high:
+                                    client.click(r.x+r.width*.4,(low+high)/2,button=button,delay=delay)
+                                    return
+                            raise AssertionError((case,'No visible document body for scrolling'))
                         def check_library_rows():
                             click('List view')
+                            for _ in range(12):scroll_library(4,delay=.04)
                             labels={'Open '+title for title in [metadata['title'],'Untitled note','Lecture_2_homework']}
                             seen=set()
-                            for _ in range(5):
+                            for _ in range(30):
                                 rows=[]
                                 for node in nodes():
                                     if node.get_name() not in labels or node.get_role()!=Atspi.Role.PUSH_BUTTON:continue
@@ -108,25 +123,38 @@ def main():
                                 if any(a.y+a.height>b.y+1 for a,b in zip(rows,rows[1:])):capture('list-overlap-failure')
                                 assert all(a.y+a.height<=b.y+1 for a,b in zip(rows,rows[1:])),[(r.y,r.height) for r in rows]
                                 if seen==labels:break
-                                client.click(width-100,height-90,button=5)
-                            assert seen==labels,(case,'Rows unreachable by scrolling',seen,labels)
+                                scroll_library(5)
+                            if seen!=labels:capture('list-unreachable-failure')
+                            assert seen==labels,(case,'Rows unreachable by scrolling',seen,labels,[n.get_name() for n in nodes() if n.get_name().startswith('Open ')])
                             capture('library-list')
-                            for _ in range(5):client.click(width-100,height-90,button=4,delay=.04)
+                            for _ in range(5):scroll_library(4,delay=.04)
                             click('Grid view');capture('library-grid')
                         def check_favorite_clicks():
                             title='Lecture_2_homework'
                             added='Add '+title+' to favorites';removed='Remove '+title+' from favorites'
                             def pointer_click(label):
-                                r=find(label).get_component_iface().get_extents(Atspi.CoordType.WINDOW)
-                                assert 0<=r.x and r.x+r.width<=width+2 and 0<=r.y and r.y+r.height<=height+2,(case,label,r.x,r.y,r.width,r.height)
-                                client.click(r.x+r.width/2,r.y+r.height/2)
+                                # Virtual lists can register a partly visible row
+                                # before its star is inside the shelf content mask.
+                                # Click the visible intersection and verify the favorite action below.
+                                for _ in range(20):
+                                    item=next((n for n in nodes() if n.get_name()==label),None)
+                                    r=item.get_component_iface().get_extents(Atspi.CoordType.WINDOW) if item else None
+                                    view=find('List view').get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                                    top=view.y+view.height
+                                    low=max(r.y,top) if r else 0
+                                    high=min(r.y+r.height,height-36-28*scale) if r else 0
+                                    if r and r.width>0 and r.height>0 and 0<=r.x and r.x+r.width<=width+2 and low<high:
+                                        client.click(r.x+r.width/2,(low+high)/2)
+                                        return
+                                    scroll_library(4 if r and r.y<top else 5)
+                                raise AssertionError((case,'Control unreachable by scrolling',label,None if r is None else (r.x,r.y,r.width,r.height)))
                             for mode,activation in [('Grid view','space'),('List view','Return')]:
                                 click(mode)
                                 # In large-interface compact layouts a requested grid uses rows.
                                 # Scroll the chosen document into view if it is virtualized out.
                                 for _ in range(5):
                                     if any(n.get_name()==added for n in nodes()):break
-                                    client.click(width-100,height-90,button=5)
+                                    scroll_library(5)
                                 pointer_click(added);find(removed);find('List view')
                                 client.click(width-24,height-24) # Leave the star so its hover hint cannot hide the saved state.
                                 capture('favorite-'+mode.split()[0].lower())

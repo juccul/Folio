@@ -11,16 +11,25 @@ pub struct SearchResult {
     pub page_number: Option<usize>,
 }
 pub fn search(conn: &Connection, query: &str) -> rusqlite::Result<Vec<SearchResult>> {
-    let tokens: Vec<_> = query
-        .split_whitespace()
-        .map(|s| format!("\"{}\"*", s.replace('"', "\"\"")))
-        .collect();
-    if tokens.is_empty() {
+    let mut expression = String::with_capacity(query.len());
+    for (index, token) in query.split_whitespace().enumerate() {
+        if index > 0 {
+            expression.push_str(" AND ");
+        }
+        expression.push('"');
+        for character in token.chars() {
+            expression.push(character);
+            if character == '"' {
+                expression.push('"');
+            }
+        }
+        expression.push_str("\"*");
+    }
+    if expression.is_empty() {
         return Ok(vec![]);
     }
-    let query = tokens.join(" AND ");
-    let mut q=conn.prepare("SELECT note_id,page_id,title,snippet(search,4,'[',']','…',24) FROM search WHERE search MATCH ?1 ORDER BY bm25(search,0,0,3,2,1) LIMIT 100")?;
-    let rows = q.query_map(params![query], |r| {
+    let mut q=conn.prepare_cached("SELECT note_id,page_id,title,snippet(search,4,'[',']','…',24) FROM search WHERE search MATCH ?1 ORDER BY bm25(search,0,0,3,2,1) LIMIT 100")?;
+    let rows = q.query_map(params![expression], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
@@ -43,45 +52,65 @@ pub fn search(conn: &Connection, query: &str) -> rusqlite::Result<Vec<SearchResu
     }
     Ok(out)
 }
-/// Approximate the unicode61 prefix matching used by FTS for object highlighting.
-pub fn matches_text(text: &str, query: &str) -> bool {
+/// Pre-normalized query reused while highlighting many objects or annotations.
+#[derive(Clone, Debug)]
+pub struct TextMatcher {
+    terms: Vec<Vec<String>>,
+}
+fn fold(text: &str) -> String {
     use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
-    let fold = |s: &str| {
-        s.nfkd()
-            .filter(|c| !is_combining_mark(*c))
-            .flat_map(char::to_lowercase)
-            .collect::<String>()
-    };
-    if query.trim().is_empty() {
-        return false;
+    text.nfkd()
+        .filter(|character| !is_combining_mark(*character))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+impl TextMatcher {
+    pub fn new(query: &str) -> Self {
+        Self {
+            terms: query
+                .split_whitespace()
+                .map(|term| {
+                    fold(term)
+                        .split(|character: char| !character.is_alphanumeric())
+                        .filter(|part| !part.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .collect(),
+        }
     }
-    let text = fold(text);
-    let words: Vec<_> = text
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    query.split_whitespace().all(|term| {
-        let term = fold(term);
-        let parts: Vec<_> = term
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|s| !s.is_empty())
+    /// Approximate unicode61 phrase-prefix matching with diacritic folding.
+    pub fn matches(&self, text: &str) -> bool {
+        if self.terms.is_empty() || self.terms.iter().any(Vec::is_empty) {
+            return false;
+        }
+        let text = fold(text);
+        let words: Vec<_> = text
+            .split(|character: char| !character.is_alphanumeric())
+            .filter(|word| !word.is_empty())
             .collect();
-        !parts.is_empty()
-            && words.windows(parts.len()).any(|window| {
+        self.terms.iter().all(|parts| {
+            words.windows(parts.len()).any(|window| {
                 window
                     .iter()
-                    .zip(&parts)
+                    .zip(parts)
                     .enumerate()
                     .all(|(index, (word, part))| {
                         if index + 1 == parts.len() {
                             word.starts_with(part)
                         } else {
-                            word == part
+                            *word == part
                         }
                     })
             })
-    })
+        })
+    }
 }
+/// Approximate the unicode61 prefix matching used by FTS for object highlighting.
+pub fn matches_text(text: &str, query: &str) -> bool {
+    TextMatcher::new(query).matches(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +130,18 @@ mod tests {
         assert!(search(&c, "\" OR *").is_ok());
         assert!(search(&c, "").unwrap().is_empty());
     }
+    #[test]
+    fn reusable_matcher_preserves_phrase_prefix_and_unicode_semantics() {
+        let matcher = TextMatcher::new("ALPHA-be café");
+        assert!(matcher.matches("Alpha-beta CAFE"));
+        assert!(matcher.matches("alpha-berry caffè café"));
+        assert!(!matcher.matches("alphabet-beta café"));
+        assert!(!matcher.matches("alpha-be elsewhere"));
+        for query in ["", "  ", "*", "cafe *"] {
+            assert!(!TextMatcher::new(query).matches("Café tomorrow"));
+        }
+    }
+
     #[test]
     fn highlights_follow_unicode_prefix_terms_and_ignore_empty_queries() {
         assert!(matches_text("Café tomorrow", "cafe tom"));

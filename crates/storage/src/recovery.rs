@@ -114,12 +114,19 @@ pub fn recover(root: &Path) -> Result<RecoveryReport> {
                         };
                         match serde_json::from_str::<Object>(&data) {
                             Ok(object) => {
-                                let mut isolated = page.clone();
-                                isolated.order = vec![object.id()];
-                                isolated.objects = std::collections::BTreeMap::from([(
-                                    object.id(),
-                                    Arc::new(object.clone()),
-                                )]);
+                                let object = Arc::new(object);
+                                let isolated = Page {
+                                    id: page.id,
+                                    properties: page.properties.clone(),
+                                    ink_text: vec![],
+                                    groups: vec![],
+                                    revision: page.revision,
+                                    order: vec![object.id()],
+                                    objects: std::collections::BTreeMap::from([(
+                                        object.id(),
+                                        object.clone(),
+                                    )]),
+                                };
                                 if let Err(error) = (Document {
                                     version: FORMAT_VERSION,
                                     metadata: metadata.clone(),
@@ -131,7 +138,7 @@ pub fn recover(root: &Path) -> Result<RecoveryReport> {
                                     continue;
                                 }
                                 page.order.push(object.id());
-                                page.objects.insert(object.id(), Arc::new(object));
+                                page.objects.insert(object.id(), object);
                             }
                             Err(e) => report.issues.push(format!("Object {id}: {e}")),
                         }
@@ -141,40 +148,40 @@ pub fn recover(root: &Path) -> Result<RecoveryReport> {
                         .into_iter()
                         .filter(|id| page.objects.contains_key(id))
                         .collect::<Vec<_>>();
+                    // Corrupt headers may repeat an object or omit survivors.
+                    let mut ordered = HashSet::with_capacity(page.objects.len());
+                    order.retain(|id| ordered.insert(*id));
                     for id in &page.order {
-                        if !order.contains(id) {
+                        if ordered.insert(*id) {
                             order.push(*id);
                         }
                     }
                     page.order = order;
                     // Validate annotations only after all surviving ink has been recovered.
                     // A corrupt neighbor must not discard the user's corrected handwriting text.
+                    let mut candidate = Document {
+                        version: FORMAT_VERSION,
+                        metadata: metadata.clone(),
+                        pages: vec![page],
+                    };
+                    let mut annotations = Vec::new();
                     for annotation in header.ink_text {
-                        let mut isolated = page.clone();
-                        isolated.ink_text = vec![annotation.clone()];
-                        match (Document {
-                            version: FORMAT_VERSION,
-                            metadata: metadata.clone(),
-                            pages: vec![isolated],
-                        })
-                        .validate()
-                        {
-                            Ok(()) => page.ink_text.push(annotation),
+                        candidate.pages[0].ink_text = vec![annotation];
+                        match candidate.validate() {
+                            Ok(()) => annotations.push(candidate.pages[0].ink_text.pop().unwrap()),
                             Err(error) => report.issues.push(format!(
                                 "Search annotation on page {} skipped: {error}",
-                                page.id
+                                candidate.pages[0].id
                             )),
                         }
                     }
-                    let candidate = Document {
-                        version: FORMAT_VERSION,
-                        metadata: metadata.clone(),
-                        pages: vec![page.clone()],
-                    };
+                    candidate.pages[0].ink_text = annotations;
                     if let Err(e) = candidate.validate() {
-                        report.issues.push(format!("Page {} skipped: {e}", page.id));
+                        report
+                            .issues
+                            .push(format!("Page {} skipped: {e}", candidate.pages[0].id));
                     } else {
-                        pages.push(page);
+                        pages.push(candidate.pages.pop().unwrap());
                     }
                 }
                 if pages.is_empty() {

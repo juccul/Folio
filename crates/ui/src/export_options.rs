@@ -118,9 +118,10 @@ impl NotesView {
             self.export_options.image = None;
             self.export_options.error = None;
             let mut page = page.clone();
-            apply(&mut page, theme, self.export_options.appearance);
+            let appearance = self.export_options.appearance;
             let assets = self.controller.assets.clone();
             let task = cx.background_executor().spawn(async move {
+                apply(&mut page, theme, appearance);
                 folio_export::raster_page_limited(&page, &assets, 512)
                     .map(|p| graph::image(p.width(), p.height(), p.take()))
                     .map_err(|e| e.to_string())

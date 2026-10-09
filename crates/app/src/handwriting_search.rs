@@ -103,8 +103,9 @@ impl Controller {
         let before = self.page().ink_text.clone();
         let mut after = before.clone();
         let sources: Vec<_> = review.sources.iter().map(|o| o.id()).collect();
+        let source_ids: HashSet<_> = sources.iter().copied().collect();
         after.retain(|entry| {
-            !entry.sources.iter().any(|id| sources.contains(id))
+            !entry.sources.iter().any(|id| source_ids.contains(id))
                 && !(entry.stale && entry.bounds.intersects(review.bounds.expand(2.)))
         });
         after.push(InkText {
@@ -182,13 +183,20 @@ pub(super) fn maintain_index(document: &Document, changes: &mut Vec<Change>) {
         }
         let mut after = Vec::new();
         for entry in &page.ink_text {
+            let source_ids = (edits.len() > 4 && entry.sources.len() > 16)
+                .then(|| entry.sources.iter().copied().collect::<HashSet<_>>());
+            let includes = |id: &Id| {
+                source_ids
+                    .as_ref()
+                    .map_or_else(|| entry.sources.contains(id), |ids| ids.contains(id))
+            };
             let changed = edits.iter().any(|(id,(before,after))| {
-                if entry.sources.contains(id) {
-                    !matches!((before.as_deref(), after.as_deref()),(Some(Object::Stroke(a)),Some(Object::Stroke(b))) if (Arc::ptr_eq(&a.raw,&b.raw) || a.raw == b.raw) && a.display_path() == b.display_path())
+                if includes(id) {
+                    !matches!((before.as_deref(), after.as_deref()),(Some(Object::Stroke(a)),Some(Object::Stroke(b))) if (Arc::ptr_eq(&a.raw,&b.raw) || a.raw == b.raw) && (std::ptr::eq(a.display_path(), b.display_path()) || a.display_path() == b.display_path()))
                 } else if let Some(object) = after {
                     match object.as_ref() {
-                        Object::Shape(shape) => shape.source_strokes.iter().any(|id|entry.sources.contains(id)),
-                        Object::Equation(equation) => equation.source_strokes.iter().any(|id|entry.sources.contains(id)),
+                        Object::Shape(shape) => shape.source_strokes.iter().any(&includes),
+                        Object::Equation(equation) => equation.source_strokes.iter().any(&includes),
                         Object::Stroke(_) if before.is_none() => object.bounds().intersects(entry.bounds.expand(2.)),
                         _ => false,
                     }

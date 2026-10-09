@@ -49,21 +49,22 @@ fn circle(points: &[Point]) -> Option<(Point, f32, f32)> {
     Some((center, radius, error))
 }
 fn sweep(points: &[Point], center: Point, rx: f32, ry: f32) -> Option<(f32, f32)> {
-    let angles = points
-        .iter()
-        .map(|p| ((p.y - center.y) / ry).atan2((p.x - center.x) / rx))
-        .collect::<Vec<_>>();
+    let angle = |p: Point| ((p.y - center.y) / ry).atan2((p.x - center.x) / rx);
+    let start = angle(points[0]);
+    let mut previous = start;
     let mut signed = 0.;
     let mut absolute = 0.;
-    for p in angles.windows(2) {
-        let delta = (p[1] - p[0] + PI).rem_euclid(TAU) - PI;
+    for &p in &points[1..] {
+        let current = angle(p);
+        let delta = (current - previous + PI).rem_euclid(TAU) - PI;
         signed += delta;
         absolute += delta.abs();
+        previous = current;
     }
     if absolute > signed.abs() * 1.3 {
         return None;
     }
-    Some((angles[0], signed))
+    Some((start, signed))
 }
 pub(crate) fn fit(points: &[Point]) -> Option<Fit> {
     if let Some((center, radius, error)) = circle(points)

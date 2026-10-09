@@ -124,6 +124,13 @@ impl Delta {
                 _ => {}
             }
         }
+        // A replacement includes before and after snapshots of the same page,
+        // and commands can touch one object more than once. Persist its final
+        // document value once rather than serializing and writing it repeatedly.
+        if objects.len() > 1 {
+            let mut written = std::collections::HashSet::with_capacity(objects.len());
+            objects.retain(|write| written.insert((write.page, write.id)));
+        }
         let touched = cmd
             .changes
             .iter()
@@ -173,6 +180,14 @@ impl Delta {
         delta
     }
 }
+fn execute_cached(
+    connection: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> rusqlite::Result<usize> {
+    connection.prepare_cached(sql)?.execute(params)
+}
+
 pub struct Store {
     pub connection: Connection,
     path: PathBuf,
@@ -189,7 +204,7 @@ impl Store {
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )?;
         let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 5 {
+        if version > 6 {
             return Err(Error::Invalid(format!(
                 "Database version {version} is newer than this application"
             )));
@@ -199,7 +214,9 @@ impl Store {
    CREATE TABLE IF NOT EXISTS pages(id TEXT PRIMARY KEY,note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,position INTEGER NOT NULL,header TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY,page_id TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,data TEXT NOT NULL);
    CREATE INDEX IF NOT EXISTS objects_page ON objects(page_id);
+   CREATE INDEX IF NOT EXISTS pages_note_position ON pages(note_id,position);
    CREATE TABLE IF NOT EXISTS drafts(id TEXT PRIMARY KEY,note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,page_id TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,data TEXT NOT NULL);
+   CREATE INDEX IF NOT EXISTS drafts_note ON drafts(note_id);
    CREATE TABLE IF NOT EXISTS history(note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, command TEXT NOT NULL, applied INTEGER NOT NULL, PRIMARY KEY(note_id,ordinal));
    CREATE TABLE IF NOT EXISTS notebooks(id TEXT PRIMARY KEY,data TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,data TEXT NOT NULL);
@@ -259,6 +276,23 @@ impl Store {
             tx.pragma_update(None, "user_version", 3)?;
             tx.commit()?;
         }
+        if version < 6 {
+            // FTS UNINDEXED columns cannot locate a page without scanning the
+            // whole library. Preserve existing FTS rowids in a durable integer
+            // primary-key table (ordinary pages.rowid can change on VACUUM).
+            let tx = conn.transaction()?;
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS search_entries(
+                id INTEGER PRIMARY KEY,
+                page_id TEXT NOT NULL UNIQUE REFERENCES pages(id) ON DELETE CASCADE
+            );
+            INSERT OR IGNORE INTO search_entries(id,page_id)
+                SELECT MIN(s.rowid),p.id FROM search s JOIN pages p ON p.id=s.page_id GROUP BY p.id;
+            DELETE FROM search WHERE rowid NOT IN (SELECT id FROM search_entries);",
+            )?;
+            tx.pragma_update(None, "user_version", 6)?;
+            tx.commit()?;
+        }
         Ok(Self {
             connection: conn,
             path,
@@ -275,7 +309,7 @@ impl Store {
         )?;
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         let version: i32 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if !(3..=5).contains(&version) {
+        if version != 6 {
             return Err(Error::Invalid(format!(
                 "Database version {version} requires initialization by the application"
             )));
@@ -339,9 +373,9 @@ impl Store {
         };
         tx.commit()?;
         let mut check = Document::new("preview");
-        check.pages = vec![page.clone()];
+        check.pages = vec![page];
         check.validate().map_err(Error::Invalid)?;
-        Ok(Some((page, count as usize)))
+        Ok(Some((check.pages.pop().unwrap(), count as usize)))
     }
     pub fn load(&self, id: Id) -> Result<Option<Document>> {
         let transaction = self.connection.unchecked_transaction()?;
@@ -365,13 +399,13 @@ impl Store {
         let mut q = self
             .connection
             .prepare("SELECT header FROM pages WHERE note_id=?1 ORDER BY position")?;
+        let mut object_query = self
+            .connection
+            .prepare_cached("SELECT data FROM objects WHERE page_id=?1")?;
         for row in q.query_map([id.to_string()], |r| r.get::<_, String>(0))? {
             let h: PageHeader = serde_json::from_str(&row?)?;
             let mut objects = std::collections::BTreeMap::new();
-            let mut q = self
-                .connection
-                .prepare("SELECT data FROM objects WHERE page_id=?1")?;
-            for row in q.query_map([h.id.to_string()], |r| r.get::<_, String>(0))? {
+            for row in object_query.query_map([h.id.to_string()], |r| r.get::<_, String>(0))? {
                 let o: Object = serde_json::from_str(&row?)?;
                 objects.insert(o.id(), Arc::new(o));
             }
@@ -385,6 +419,11 @@ impl Store {
                 revision: h.revision,
             });
         }
+        let page_indices: std::collections::HashMap<_, _> = pages
+            .iter()
+            .enumerate()
+            .map(|(index, page)| (page.id, index))
+            .collect();
         let mut drafts = self
             .connection
             .prepare("SELECT page_id,data FROM drafts WHERE note_id=?1")?;
@@ -393,7 +432,9 @@ impl Store {
         })? {
             let (page_id, data) = row?;
             let o: Object = serde_json::from_str(&data)?;
-            if let Some(p) = pages.iter_mut().find(|p| p.id.to_string() == page_id)
+            let page_id = Id::parse_str(&page_id)
+                .map_err(|_| Error::Invalid("Invalid draft page ID".into()))?;
+            if let Some(p) = page_indices.get(&page_id).map(|index| &mut pages[*index])
                 && !p.objects.contains_key(&o.id())
             {
                 p.order.push(o.id());
@@ -425,10 +466,17 @@ impl Store {
             }
         }
         if delta.pages.iter().any(|page| !page.ink_text.is_empty()) || delta.journal.iter().any(|event| matches!(event, JournalEvent::Execute(command) if command.changes.iter().any(|c| matches!(c, Change::InkText { .. })))) {
-            tx.pragma_update(None, "user_version", 5)?;
+            let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            if version < 5 {
+                tx.pragma_update(None, "user_version", 5)?;
+            }
         }
         let note = delta.metadata.id.to_string();
-        tx.execute("INSERT INTO notes VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata",params![note,serde_json::to_string(&delta.metadata)?])?;
+        execute_cached(
+            &tx,
+            "INSERT INTO notes VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata",
+            params![note, serde_json::to_string(&delta.metadata)?],
+        )?;
         let page_ids = delta
             .page_ids
             .iter()
@@ -442,61 +490,93 @@ impl Store {
         };
         for old in current {
             if !Id::parse_str(&old).is_ok_and(|id| page_ids.contains(&id)) {
-                tx.execute("DELETE FROM search WHERE page_id=?1", [&old])?;
-                tx.execute("DELETE FROM pages WHERE id=?1", [old])?;
+                execute_cached(
+                    &tx,
+                    "DELETE FROM search WHERE rowid=(SELECT id FROM search_entries WHERE page_id=?1)",
+                    [&old],
+                )?;
+                execute_cached(&tx, "DELETE FROM pages WHERE id=?1", [old])?;
             }
         }
         for p in &delta.pages {
-            tx.execute("INSERT INTO pages VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET position=excluded.position,header=excluded.header",params![p.id.to_string(),note,p.position as i64,serde_json::to_string(p)?])?;
+            execute_cached(
+                &tx,
+                "INSERT INTO pages VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET position=excluded.position,header=excluded.header",
+                params![
+                    p.id.to_string(),
+                    note,
+                    p.position as i64,
+                    serde_json::to_string(p)?
+                ],
+            )?;
+        }
+        for p in &delta.pages {
+            execute_cached(
+                &tx,
+                "INSERT OR IGNORE INTO search_entries(page_id) VALUES(?1)",
+                [p.id.to_string()],
+            )?;
         }
         for o in &delta.objects {
             if !page_ids.contains(&o.page) {
                 continue;
             }
-            tx.execute("DELETE FROM drafts WHERE id=?1", [o.id.to_string()])?;
+            execute_cached(&tx, "DELETE FROM drafts WHERE id=?1", [o.id.to_string()])?;
             if let Some(value) = &o.value {
-                tx.execute("INSERT INTO objects VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET page_id=excluded.page_id,data=excluded.data",params![o.id.to_string(),o.page.to_string(),serde_json::to_string(value)?])?;
+                execute_cached(
+                    &tx,
+                    "INSERT INTO objects VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET page_id=excluded.page_id,data=excluded.data",
+                    params![
+                        o.id.to_string(),
+                        o.page.to_string(),
+                        serde_json::to_string(value)?
+                    ],
+                )?;
             } else {
-                tx.execute("DELETE FROM objects WHERE id=?1", [o.id.to_string()])?;
+                execute_cached(&tx, "DELETE FROM objects WHERE id=?1", [o.id.to_string()])?;
             }
         }
         if delta.authoritative {
             for page in &delta.pages {
-                tx.execute("DELETE FROM objects WHERE page_id=?1 AND id NOT IN (SELECT value FROM json_each(?2))",params![page.id.to_string(),serde_json::to_string(&page.order)?])?;
+                execute_cached(
+                    &tx,
+                    "DELETE FROM objects WHERE page_id=?1 AND id NOT IN (SELECT value FROM json_each(?2))",
+                    params![page.id.to_string(), serde_json::to_string(&page.order)?],
+                )?;
             }
         }
+        let tags = delta.metadata.tags.join(" ");
         if delta.metadata.trashed {
-            tx.execute("DELETE FROM search WHERE note_id=?1", [&note])?;
+            execute_cached(
+                &tx,
+                "DELETE FROM search WHERE rowid IN (SELECT e.id FROM search_entries e JOIN pages p ON p.id=e.page_id WHERE p.note_id=?1)",
+                [&note],
+            )?;
         } else {
             if delta.metadata_changed {
-                tx.execute(
-                    "UPDATE search SET title=?2,tags=?3 WHERE note_id=?1",
-                    params![note, delta.metadata.title, delta.metadata.tags.join(" ")],
+                execute_cached(
+                    &tx,
+                    "UPDATE search SET title=?2,tags=?3 WHERE rowid IN (SELECT e.id FROM search_entries e JOIN pages p ON p.id=e.page_id WHERE p.note_id=?1) AND (title<>?2 OR tags<>?3)",
+                    params![note, delta.metadata.title, tags],
                 )?;
             }
             for p in &delta.pages {
-                tx.execute(
-                    "DELETE FROM search WHERE note_id=?1 AND page_id=?2",
-                    params![note, p.id.to_string()],
-                )?;
-                tx.execute(
-                    "INSERT INTO search(note_id,page_id,title,tags,body) VALUES(?1,?2,?3,?4,?5)",
-                    params![
-                        note,
-                        p.id.to_string(),
-                        delta.metadata.title,
-                        delta.metadata.tags.join(" "),
-                        p.text
-                    ],
+                // Ink geometry changes usually leave searchable text unchanged.
+                // Avoid replacing an identical FTS row and rewriting its tokens.
+                execute_cached(
+                    &tx,
+                    "INSERT OR REPLACE INTO search(rowid,note_id,page_id,title,tags,body) SELECT e.id,?1,?2,?3,?4,?5 FROM search_entries e WHERE e.page_id=?2 AND NOT EXISTS (SELECT 1 FROM search WHERE rowid=e.id AND title=?3 AND tags=?4 AND body=?5)",
+                    params![note, p.id.to_string(), delta.metadata.title, tags, p.text],
                 )?;
             }
         }
         for event in &delta.journal {
             match event {
                 JournalEvent::Replace(history) => {
-                    tx.execute("DELETE FROM history WHERE note_id=?1", [&note])?;
+                    execute_cached(&tx, "DELETE FROM history WHERE note_id=?1", [&note])?;
                     for (index, (command, applied)) in history.entries().enumerate() {
-                        tx.execute(
+                        execute_cached(
+                            &tx,
                             "INSERT INTO history VALUES(?1,?2,?3,?4)",
                             params![
                                 &note,
@@ -508,7 +588,8 @@ impl Store {
                     }
                 }
                 JournalEvent::Execute(command) => {
-                    tx.execute(
+                    execute_cached(
+                        &tx,
                         "DELETE FROM history WHERE note_id=?1 AND applied=0",
                         [&note],
                     )?;
@@ -517,20 +598,30 @@ impl Store {
                         [&note],
                         |r| r.get(0),
                     )?;
-                    tx.execute(
+                    execute_cached(
+                        &tx,
                         "INSERT INTO history VALUES(?1,?2,?3,1)",
                         params![note, ordinal, serde_json::to_string(command)?],
                     )?;
-                    tx.execute(
+                    execute_cached(
+                        &tx,
                         "DELETE FROM history WHERE note_id=?1 AND ordinal<=?2",
                         params![note, ordinal - 512],
                     )?;
                 }
                 JournalEvent::Undo => {
-                    tx.execute("UPDATE history SET applied=0 WHERE note_id=?1 AND ordinal=(SELECT MAX(ordinal) FROM history WHERE note_id=?1 AND applied=1)",[&note])?;
+                    execute_cached(
+                        &tx,
+                        "UPDATE history SET applied=0 WHERE note_id=?1 AND ordinal=(SELECT MAX(ordinal) FROM history WHERE note_id=?1 AND applied=1)",
+                        [&note],
+                    )?;
                 }
                 JournalEvent::Redo => {
-                    tx.execute("UPDATE history SET applied=1 WHERE note_id=?1 AND ordinal=(SELECT MIN(ordinal) FROM history WHERE note_id=?1 AND applied=0)",[&note])?;
+                    execute_cached(
+                        &tx,
+                        "UPDATE history SET applied=1 WHERE note_id=?1 AND ordinal=(SELECT MIN(ordinal) FROM history WHERE note_id=?1 AND applied=0)",
+                        [&note],
+                    )?;
                 }
             }
         }
@@ -894,6 +985,298 @@ mod tests {
         std::env::temp_dir().join(format!("folio-storage-test-{}.db", Id::new_v4()))
     }
     #[test]
+    fn replacement_page_delta_serializes_each_final_object_once() {
+        let mut document = Document::new("Replace");
+        let object = Arc::new(Object::Text(TextBlock {
+            id: Id::new_v4(),
+            text: "Final content".into(),
+            rect: Rect::new(0., 0., 200., 100.),
+            transform: Transform::default(),
+            font_family: "sans-serif".into(),
+            font_size: 16.,
+            color: Color::INK,
+            bold: false,
+            italic: false,
+            underline: false,
+            alignment: Alignment::Left,
+            list: ListStyle::None,
+        }));
+        document.pages[0].order.push(object.id());
+        document.pages[0]
+            .objects
+            .insert(object.id(), object.clone());
+        let command = Command {
+            label: "Replace page".into(),
+            changes: vec![Change::Page {
+                index: 0,
+                before: Some(document.pages[0].clone()),
+                after: Some(document.pages[0].clone()),
+            }],
+        };
+        let delta = Delta::command(&document, &command);
+        assert_eq!(delta.objects.len(), 1);
+        assert!(Arc::ptr_eq(
+            delta.objects[0].value.as_ref().unwrap(),
+            &object
+        ));
+    }
+
+    #[test]
+    fn legacy_search_rowids_migrate_without_reindexing_and_survive_vacuum() {
+        for version in 3..=5 {
+            let path = path();
+            let mut store = Store::open(&path).unwrap();
+            let document = Document::new("Legacy searchable note");
+            store.save(&Delta::full(&document)).unwrap();
+            store
+                .connection
+                .execute_batch("DROP TABLE search_entries; UPDATE search SET rowid=1000; VACUUM;")
+                .unwrap();
+            store
+                .connection
+                .pragma_update(None, "user_version", version)
+                .unwrap();
+            assert!(Store::open_reader(&path).is_err());
+            drop(store);
+            let mut store = Store::open(&path).unwrap();
+            let locator: i64 = store
+                .connection
+                .query_row(
+                    "SELECT id FROM search_entries WHERE page_id=?1",
+                    [document.pages[0].id.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(locator, 1000);
+            assert_eq!(store.load(document.metadata.id).unwrap().unwrap(), document);
+            store.connection.execute_batch("VACUUM").unwrap();
+            store.save(&Delta::full(&document)).unwrap();
+            assert_eq!(
+                store
+                    .connection
+                    .query_row("SELECT rowid FROM search", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                locator
+            );
+            assert_eq!(
+                store
+                    .connection
+                    .query_row(
+                        "SELECT count(*) FROM search WHERE search MATCH 'Legacy'",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                1
+            );
+            let reader = Store::open_reader(&path).unwrap();
+            assert_eq!(
+                reader.load(document.metadata.id).unwrap().unwrap(),
+                document
+            );
+            drop(reader);
+            drop(store);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn search_locators_preserve_other_notes_across_rename_trash_restore_and_delete() {
+        let path = path();
+        let mut store = Store::open(&path).unwrap();
+        let mut document = Document::new("First");
+        document.pages.push(Page::new());
+        let other = Document::new("Unrelated");
+        store.save(&Delta::full(&document)).unwrap();
+        store.save(&Delta::full(&other)).unwrap();
+        let count = |store: &Store, note: Id| {
+            store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM search WHERE note_id=?1",
+                    [note.to_string()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        let before = document.metadata.clone();
+        document.metadata.title = "Renamed".into();
+        document.metadata.tags = vec!["tagged".into()];
+        let rename = Command {
+            label: "Rename".into(),
+            changes: vec![Change::Metadata {
+                before,
+                after: document.metadata.clone(),
+            }],
+        };
+        store.save(&Delta::command(&document, &rename)).unwrap();
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM search WHERE search MATCH 'Renamed AND tagged'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            2
+        );
+        document.metadata.trashed = true;
+        store.save(&Delta::full(&document)).unwrap();
+        assert_eq!(count(&store, document.metadata.id), 0);
+        assert_eq!(count(&store, other.metadata.id), 1);
+        let before = document.metadata.clone();
+        document.metadata.trashed = false;
+        let restore = Command {
+            label: "Restore".into(),
+            changes: vec![Change::Metadata {
+                before,
+                after: document.metadata.clone(),
+            }],
+        };
+        store.save(&Delta::command(&document, &restore)).unwrap();
+        assert_eq!(count(&store, document.metadata.id), 2);
+        let deleted = document.pages.pop().unwrap();
+        let delete = Command {
+            label: "Delete page".into(),
+            changes: vec![Change::Page {
+                index: 1,
+                before: Some(deleted.clone()),
+                after: None,
+            }],
+        };
+        store.save(&Delta::command(&document, &delete)).unwrap();
+        assert_eq!(count(&store, document.metadata.id), 1);
+        assert_eq!(count(&store, other.metadata.id), 1);
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM search_entries WHERE page_id=?1",
+                    [deleted.id.to_string()],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        let plan: String = store.connection.query_row("EXPLAIN QUERY PLAN DELETE FROM search WHERE rowid=(SELECT id FROM search_entries WHERE page_id=?1)", [document.pages[0].id.to_string()], |row| row.get(3)).unwrap();
+        assert!(
+            plan.contains('='),
+            "FTS rowid lookup must be constrained: {plan}"
+        );
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn failed_search_migration_rolls_back_and_annotation_saves_keep_schema_version() {
+        let path = path();
+        let mut store = Store::open(&path).unwrap();
+        let document = Document::new("Original");
+        store.save(&Delta::full(&document)).unwrap();
+        store.connection.execute_batch("DELETE FROM search_entries; CREATE TRIGGER reject_locator BEFORE INSERT ON search_entries BEGIN SELECT RAISE(ABORT, 'migration fault'); END; PRAGMA user_version=5;").unwrap();
+        drop(store);
+        assert!(Store::open(&path).is_err());
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            5
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM search", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        connection
+            .execute_batch("DROP TRIGGER reject_locator")
+            .unwrap();
+        drop(connection);
+        let mut store = Store::open(&path).unwrap();
+        let mut delta = Delta::full(&document);
+        delta.journal.push(JournalEvent::Execute(Command {
+            label: "Annotation".into(),
+            changes: vec![Change::InkText {
+                page: document.pages[0].id,
+                before: vec![],
+                after: vec![],
+            }],
+        }));
+        store.save(&delta).unwrap();
+        assert_eq!(
+            store
+                .connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            6
+        );
+        assert_eq!(store.load(document.metadata.id).unwrap().unwrap(), document);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// Run with `cargo test -p folio-storage incremental_save_scaling -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn incremental_save_scaling() {
+        for unrelated in [0, 10_000] {
+            let path = path();
+            let mut store = Store::open(&path).unwrap();
+            let document = Document::new("Active note");
+            let delta = Delta::full(&document);
+            store.save(&delta).unwrap();
+            let tx = store.connection.transaction().unwrap();
+            for _ in 0..unrelated {
+                let note = Document::new("Unrelated note");
+                let header = &Delta::full(&note).pages[0];
+                tx.execute(
+                    "INSERT INTO notes VALUES(?1,?2)",
+                    params![
+                        note.metadata.id.to_string(),
+                        serde_json::to_string(&note.metadata).unwrap()
+                    ],
+                )
+                .unwrap();
+                tx.execute(
+                    "INSERT INTO pages VALUES(?1,?2,0,?3)",
+                    params![
+                        header.id.to_string(),
+                        note.metadata.id.to_string(),
+                        serde_json::to_string(header).unwrap()
+                    ],
+                )
+                .unwrap();
+                tx.execute("INSERT INTO search(note_id,page_id,title,tags,body) VALUES(?1,?2,'Unrelated note','','background text')", params![note.metadata.id.to_string(), header.id.to_string()]).unwrap();
+            }
+            tx.commit().unwrap();
+            // Populate the derived locator table when running the optimized schema.
+            if store
+                .connection
+                .prepare("SELECT 1 FROM search_entries")
+                .is_ok()
+            {
+                store.connection.execute("INSERT OR IGNORE INTO search_entries(id,page_id) SELECT rowid,page_id FROM search", []).unwrap();
+            }
+            for _ in 0..5 {
+                store.save(&delta).unwrap();
+            }
+            let started = std::time::Instant::now();
+            for _ in 0..100 {
+                store.save(&delta).unwrap();
+            }
+            eprintln!(
+                "unrelated_pages={unrelated}, mean_save_us={:.1}",
+                started.elapsed().as_secs_f64() * 10_000.
+            );
+            drop(store);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
     fn reader_works_during_a_write_and_never_creates_or_modifies_a_database() {
         let path = path();
         assert!(Store::open_reader(&path).is_err());
@@ -1047,11 +1430,11 @@ mod tests {
                 .connection
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                 .unwrap(),
-            3
+            6
         );
     }
     #[test]
-    fn math_links_roundtrip_and_protect_database_with_schema_four() {
+    fn math_links_roundtrip_and_keep_current_schema() {
         let path = path();
         let mut store = Store::open(&path).unwrap();
         let mut document = Document::new("Live calculation");
@@ -1061,7 +1444,7 @@ mod tests {
                 .connection
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                 .unwrap(),
-            3
+            6
         );
         let id = Id::new_v4();
         let source = Id::new_v4();
@@ -1096,7 +1479,7 @@ mod tests {
                 .connection
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                 .unwrap(),
-            4
+            6
         );
         drop(store);
         let mut store = Store::open(&path).unwrap();
@@ -1109,7 +1492,7 @@ mod tests {
                 .connection
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                 .unwrap(),
-            4
+            6
         );
         drop(store);
         std::fs::remove_file(path).unwrap();

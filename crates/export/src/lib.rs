@@ -31,12 +31,20 @@ pub fn asset_path(root: &Path, name: &str) -> Result<PathBuf> {
     Ok(root.join(p))
 }
 pub fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
 }
+
 fn matrix(t: Transform) -> String {
     format!("matrix({} {} {} {} {} {})", t.a, t.b, t.c, t.d, t.tx, t.ty)
 }
@@ -356,10 +364,18 @@ pub fn raster_page_limited(
     let svg = page_svg(page, assets, true)?;
     let tree = resvg::usvg::Tree::from_str(&svg, &svg_options())?;
     let scale = edge.clamp(1, 2048) as f32 / tree.size().width().max(tree.size().height()).max(1.);
-    raster_svg(&svg, scale)
+    raster_tree(&tree, scale)
 }
 pub fn raster_svg(svg: &str, scale: f32) -> Result<resvg::tiny_skia::Pixmap> {
     let tree = resvg::usvg::Tree::from_str(svg, &svg_options())?;
+    raster_tree(&tree, scale)
+}
+fn raster_tree(tree: &resvg::usvg::Tree, scale: f32) -> Result<resvg::tiny_skia::Pixmap> {
+    if !scale.is_finite() || scale <= 0. {
+        return Err(Error::Invalid(
+            "Export scale must be finite and positive".into(),
+        ));
+    }
     let w = (tree.size().width() * scale).ceil() as u32;
     let h = (tree.size().height() * scale).ceil() as u32;
     if w == 0 || h == 0 || w > 8192 || h > 8192 || w as u64 * h as u64 > 32_000_000 {
@@ -370,7 +386,7 @@ pub fn raster_svg(svg: &str, scale: f32) -> Result<resvg::tiny_skia::Pixmap> {
     let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h)
         .ok_or_else(|| Error::Invalid("Cannot allocate export image".into()))?;
     resvg::render(
-        &tree,
+        tree,
         resvg::tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
@@ -386,12 +402,21 @@ pub fn png(page: &Page, assets: &Path, path: &Path, scale: f32) -> Result<()> {
     atomic_write(path, &data)
 }
 pub fn text(doc: &Document) -> String {
-    doc.pages
-        .iter()
-        .map(|p| p.text())
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    let mut text = String::new();
+    for (page_index, page) in doc.pages.iter().enumerate() {
+        if page_index > 0 {
+            text.push_str("\n\n");
+        }
+        for (fragment_index, fragment) in page.text_fragments().enumerate() {
+            if fragment_index > 0 {
+                text.push('\n');
+            }
+            text.push_str(fragment);
+        }
+    }
+    text
 }
+
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     let parent = path
         .parent()
@@ -424,6 +449,35 @@ pub fn pdf(doc: &Document, assets: &Path, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn text_export_preserves_empty_pages_and_xml_escaping_preserves_unicode() {
+        let mut document = Document::new("Text");
+        document.pages.push(Page::new());
+        document.pages.push(Page::new());
+        assert_eq!(text(&document), "\n\n\n\n");
+        assert_eq!(
+            escape("Café & <x> \"quoted\" 'apostrophe'"),
+            "Café &amp; &lt;x&gt; &quot;quoted&quot; &apos;apostrophe&apos;"
+        );
+    }
+
+    #[test]
+    fn bounded_raster_matches_single_parse_render_and_rejects_invalid_scale() {
+        let page = Page::new();
+        let svg = page_svg(&page, Path::new("."), true).unwrap();
+        let preview = raster_page_limited(&page, Path::new("."), 128).unwrap();
+        let reference = raster_svg(
+            &svg,
+            128. / page.properties.width.max(page.properties.height),
+        )
+        .unwrap();
+        assert_eq!(preview.data(), reference.data());
+        assert!(preview.width().max(preview.height()) <= 128);
+        for scale in [0., -1., f32::NAN, f32::INFINITY] {
+            assert!(raster_svg(&svg, scale).is_err());
+        }
+    }
+
     #[test]
     fn custom_paper_color_and_pattern_are_present_in_svg_and_png_exports() {
         let mut page = Page::new();

@@ -133,8 +133,8 @@ impl Theme {
     }
     pub fn new(settings: &Settings) -> Self {
         use ThemeToken::*;
-        let palette = settings.appearance.palette(settings.dark);
-        let color = |token| palette[&token].rgb();
+        let resolve = |token| settings.appearance.color(settings.dark, token);
+        let color = |token| resolve(token).rgb();
         let paper = if settings.appearance.canvas_follows_theme {
             color(Background)
         } else {
@@ -168,8 +168,8 @@ impl Theme {
             sidebar_accent: color(SidebarPrimary),
             destructive: color(Destructive),
             ring: color(Ring),
-            border: native(palette[&Border]),
-            input: native(palette[&Input]),
+            border: native(resolve(Border)),
+            input: native(resolve(Input)),
             radius: settings.appearance.radius(),
             canvas: CanvasTheme {
                 paper,

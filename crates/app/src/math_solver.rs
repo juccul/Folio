@@ -178,7 +178,22 @@ fn formula(latex: &str) -> Result<(String, Arc<folio_math::VectorFormula>), Stri
     let vector = folio_math::VectorFormula::from_svg(&svg).map_err(|e| e.to_string())?;
     Ok((svg, Arc::new(vector)))
 }
+type FormulaCache = HashMap<String, (String, Arc<folio_math::VectorFormula>)>;
+fn cached_formula(
+    latex: &str,
+    cache: &mut FormulaCache,
+) -> Result<(String, Arc<folio_math::VectorFormula>), String> {
+    if let Some(formula) = cache.get(latex) {
+        return Ok(formula.clone());
+    }
+    let rendered = formula(latex)?;
+    cache.insert(latex.to_owned(), rendered.clone());
+    Ok(rendered)
+}
 fn prepare_report(report: &mut MathReport, root: &std::path::Path) {
+    // A report commonly repeats its answer in the final step and nested rules.
+    // Keep reuse local to this bounded report rather than retaining formulas forever.
+    let mut formulas = FormulaCache::new();
     if let Some(graph) = &report.graph {
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         graph.svg.hash(&mut hash);
@@ -194,23 +209,23 @@ fn prepare_report(report: &mut MathReport, root: &std::path::Path) {
             .is_some();
         report.preview = saved.then_some(path);
         report.rendered_svg = Some(graph.svg.clone());
-    } else if let Ok((svg, vector)) = formula(&report.answer_latex) {
+    } else if let Ok((svg, vector)) = cached_formula(&report.answer_latex, &mut formulas) {
         report.rendered_svg = Some(svg);
         report.vector = Some(vector);
     }
-    prepare_steps(&mut report.steps, &mut 96);
+    prepare_steps(&mut report.steps, &mut 96, &mut formulas);
 }
-fn prepare_steps(steps: &mut [MathStep], remaining: &mut usize) {
+fn prepare_steps(steps: &mut [MathStep], remaining: &mut usize, formulas: &mut FormulaCache) {
     for step in steps.iter_mut().take(48) {
         if *remaining == 0 {
             break;
         }
         *remaining -= 1;
-        if let Ok((svg, vector)) = formula(&step.after) {
+        if let Ok((svg, vector)) = cached_formula(&step.after, formulas) {
             step.rendered_svg = Some(svg);
             step.vector = Some(vector);
         }
-        prepare_steps(&mut step.children, remaining);
+        prepare_steps(&mut step.children, remaining, formulas);
     }
 }
 impl Service {
@@ -1384,6 +1399,38 @@ fn request_from_link(link: &MathLink, variables: BTreeMap<String, String>) -> Ma
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeated_report_formulas_share_outlines_and_keep_rendering_bounds() {
+        let step = || MathStep {
+            after: "x=4".into(),
+            ..Default::default()
+        };
+        let mut report = MathReport {
+            answer_latex: "x=4".into(),
+            steps: vec![
+                MathStep {
+                    children: vec![step()],
+                    ..step()
+                },
+                step(),
+            ],
+            ..Default::default()
+        };
+        prepare_report(&mut report, std::path::Path::new("unused-no-graph"));
+        let answer = report.vector.as_ref().unwrap();
+        for step in [
+            &report.steps[0],
+            &report.steps[0].children[0],
+            &report.steps[1],
+        ] {
+            assert!(Arc::ptr_eq(answer, step.vector.as_ref().unwrap()));
+            assert_eq!(report.rendered_svg, step.rendered_svg);
+        }
+        let mut steps = vec![step(); 100];
+        prepare_steps(&mut steps, &mut 2, &mut FormulaCache::new());
+        assert!(steps[1].vector.is_some());
+        assert!(steps[2].vector.is_none());
+    }
     fn fixture() -> (Controller, PathBuf) {
         let root = std::env::temp_dir().join(format!("folio-solver-test-{}", Id::new_v4()));
         (Controller::open(root.clone()).unwrap(), root)

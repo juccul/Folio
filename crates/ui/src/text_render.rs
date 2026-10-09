@@ -17,6 +17,46 @@ pub struct Layout {
     pub font_size: f32,
     pub line_height: f32,
 }
+/// Only properties that affect glyph shaping, wrapping, or line positions.
+/// Moving, recoloring, and underlining text reuse the same native layout.
+#[derive(Clone)]
+pub(super) struct LayoutKey {
+    content: String,
+    family: String,
+    size: f32,
+    width: f32,
+    bold: bool,
+    italic: bool,
+    alignment: Alignment,
+    list: ListStyle,
+}
+impl LayoutKey {
+    pub fn new(text: &TextBlock) -> Self {
+        Self {
+            content: text.text.clone(),
+            family: text.font_family.clone(),
+            size: text.font_size,
+            width: text.rect.width(),
+            bold: text.bold,
+            italic: text.italic,
+            alignment: text.alignment,
+            list: text.list,
+        }
+    }
+    pub fn matches(&self, text: &TextBlock) -> bool {
+        self.matches_content(text, &text.text)
+    }
+    pub fn matches_content(&self, text: &TextBlock, content: &str) -> bool {
+        self.size == text.font_size
+            && self.width == text.rect.width()
+            && self.bold == text.bold
+            && self.italic == text.italic
+            && self.alignment == text.alignment
+            && self.list == text.list
+            && self.family == text.font_family
+            && self.content == content
+    }
+}
 pub fn layout(text: &TextBlock, color: u32, window: &mut Window) -> Layout {
     let mut font = font(text.font_family.clone());
     if text.bold {
@@ -243,6 +283,50 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn text() -> TextBlock {
+        TextBlock {
+            id: folio_document::Id::new_v4(),
+            text: "café αβ\ntext".into(),
+            rect: Rect::new(20., 30., 160., 80.),
+            transform: Transform::default(),
+            font_family: "Sans".into(),
+            font_size: 16.,
+            color: folio_document::Color::from_rgb(0x112233),
+            bold: false,
+            italic: false,
+            underline: false,
+            alignment: Alignment::Left,
+            list: ListStyle::None,
+        }
+    }
+    #[::core::prelude::v1::test]
+    fn text_layout_reuses_moves_colors_and_underline_but_invalidates_shaping_inputs() {
+        let text = text();
+        let key = LayoutKey::new(&text);
+        let mut painted = text.clone();
+        painted.id = folio_document::Id::new_v4();
+        painted.transform = Transform::translate(120., 60.);
+        painted.rect = Rect::new(90., 50., 160., 500.);
+        painted.color = folio_document::Color::from_rgb(0xaabbcc);
+        painted.underline = true;
+        assert!(key.matches(&painted));
+        for change in [
+            |t: &mut TextBlock| t.text.push('!'),
+            |t: &mut TextBlock| t.font_family = "Serif".into(),
+            |t: &mut TextBlock| t.font_size += 1.,
+            |t: &mut TextBlock| t.rect.max.x += 1.,
+            |t: &mut TextBlock| t.bold = true,
+            |t: &mut TextBlock| t.italic = true,
+            |t: &mut TextBlock| t.alignment = Alignment::Center,
+            |t: &mut TextBlock| t.list = ListStyle::Bullet,
+        ] {
+            let mut changed = text.clone();
+            change(&mut changed);
+            assert!(!key.matches(&changed));
+        }
+        assert!(key.matches_content(&text, &text.text));
+        assert!(!key.matches_content(&text, "unsaved inline edit"));
+    }
     #[::core::prelude::v1::test]
     fn wrapping_retains_unicode_offsets_whitespace_and_explicit_empty_lines() {
         let text = "café  αβ γδ\n\nlast";
@@ -256,9 +340,8 @@ mod tests {
                 .iter()
                 .all(|r| text.is_char_boundary(r.start) && text.is_char_boundary(r.end))
         );
-        assert_eq!(
-            folio_document::text_wrap_ranges("unbreakable", 3., |t| t.len() as f32),
-            [0..11]
-        );
+        let unbreakable = folio_document::text_wrap_ranges("unbreakable", 3., |t| t.len() as f32);
+        assert_eq!(unbreakable.len(), 1);
+        assert_eq!(unbreakable[0], 0..11);
     }
 }

@@ -94,16 +94,44 @@ fn word_boundary(text: &str, head: usize, forward: bool) -> usize {
 }
 #[derive(Clone)]
 pub struct InlineStyle {
-    pub text: folio_document::TextBlock,
+    pub text: std::sync::Arc<folio_document::TextBlock>,
+    pub source: std::sync::Arc<folio_document::Object>,
     pub transform: folio_document::Transform,
     pub mask: Bounds<Pixels>,
     pub color: u32,
     pub handles: Vec<folio_document::Point>,
 }
+#[derive(Clone)]
+struct FieldLayoutKey {
+    content: String,
+    font: Font,
+    font_size: f32,
+    width: f32,
+    color: Hsla,
+    multiline: bool,
+    secret: bool,
+}
+impl FieldLayoutKey {
+    fn matches(
+        &self,
+        content: &str,
+        font: &Font,
+        size_width: (f32, f32),
+        color: Hsla,
+        modes: (bool, bool),
+    ) -> bool {
+        (self.font_size, self.width) == size_width
+            && (self.multiline, self.secret) == modes
+            && self.color == color
+            && self.font == *font
+            && self.content == content
+    }
+}
 pub struct Field {
     pub content: String,
     pub inline: Option<InlineStyle>,
     inline_layout: Option<super::text_render::Layout>,
+    inline_layout_key: Option<super::text_render::LayoutKey>,
     pub focus: FocusHandle,
     pub multiline: bool,
     pub height: Option<f32>,
@@ -113,7 +141,8 @@ pub struct Field {
     selection: Range<usize>,
     selection_anchor: usize,
     marked: Option<Range<usize>>,
-    layouts: Vec<(usize, ShapedLine)>,
+    layouts: std::sync::Arc<Vec<(usize, ShapedLine)>>,
+    layout_key: Option<FieldLayoutKey>,
     pub(super) bounds: Option<Bounds<Pixels>>,
     selecting: bool,
     history: EditHistory,
@@ -128,6 +157,7 @@ impl Field {
             content,
             inline: None,
             inline_layout: None,
+            inline_layout_key: None,
             focus: cx.focus_handle(),
             multiline,
             height: None,
@@ -137,7 +167,8 @@ impl Field {
             selection: end..end,
             selection_anchor: end,
             marked: None,
-            layouts: vec![],
+            layouts: std::sync::Arc::new(vec![]),
+            layout_key: None,
             bounds: None,
             selecting: false,
             history: EditHistory::default(),
@@ -515,7 +546,7 @@ impl IntoElement for FieldElement {
 }
 impl Element for FieldElement {
     type RequestLayoutState = ();
-    type PrepaintState = Vec<(usize, ShapedLine)>;
+    type PrepaintState = std::sync::Arc<Vec<(usize, ShapedLine)>>;
     fn id(&self) -> Option<ElementId> {
         None
     }
@@ -548,13 +579,23 @@ impl Element for FieldElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        if let Some(style) = self.field.read(cx).inline.clone() {
-            let mut text = style.text;
-            text.text = self.field.read(cx).content.clone();
-            let layout = super::text_render::layout(&text, style.color, window);
-            self.field
-                .update(cx, |field, _| field.inline_layout = Some(layout));
-            return vec![];
+        let field = self.field.read(cx);
+        if let Some(style) = &field.inline {
+            if field
+                .inline_layout_key
+                .as_ref()
+                .is_none_or(|key| !key.matches_content(&style.text, &field.content))
+            {
+                let mut text = style.text.as_ref().clone();
+                text.text.clone_from(&field.content);
+                let layout = super::text_render::layout(&text, style.color, window);
+                let key = super::text_render::LayoutKey::new(&text);
+                self.field.update(cx, |field, _| {
+                    field.inline_layout = Some(layout);
+                    field.inline_layout_key = Some(key);
+                });
+            }
+            return std::sync::Arc::new(vec![]);
         }
         let font_size = f32::from(window.rem_size());
         let line_height = font_size * 26. / 16.;
@@ -562,10 +603,21 @@ impl Element for FieldElement {
             .update(cx, |field, _| field.line_height = line_height);
         let field = self.field.read(cx);
         let style = window.text_style();
+        let font = style.font();
+        let width = f32::from(bounds.size.width);
+        let cached = field.layout_key.as_ref().is_some_and(|key| {
+            key.matches(
+                &field.content,
+                &font,
+                (font_size, width),
+                style.color,
+                (field.multiline, field.secret),
+            )
+        });
         let shape = |text: &str| {
             let run = TextRun {
                 len: text.len(),
-                font: style.font(),
+                font: font.clone(),
                 color: style.color,
                 background_color: None,
                 underline: None,
@@ -575,26 +627,46 @@ impl Element for FieldElement {
                 .text_system()
                 .shape_line(text.to_owned().into(), px(font_size), &[run], None)
         };
-        let ranges = if field.multiline && !field.secret {
-            folio_document::text_wrap_ranges(&field.content, f32::from(bounds.size.width), |text| {
-                f32::from(shape(text).width)
-            })
+        let lines = if cached {
+            field.layouts.clone()
         } else {
-            vec![0..field.content.len()]
+            let ranges = if field.multiline && !field.secret {
+                folio_document::text_wrap_ranges(
+                    &field.content,
+                    f32::from(bounds.size.width),
+                    |text| f32::from(shape(text).width),
+                )
+            } else {
+                std::iter::once(0..field.content.len()).collect()
+            };
+            let lines: Vec<_> = ranges
+                .into_iter()
+                .map(|range| {
+                    let text = &field.content[range.clone()];
+                    let displayed = if field.secret {
+                        "*".repeat(text.chars().count())
+                    } else {
+                        text.to_owned()
+                    };
+                    (range.start, shape(&displayed))
+                })
+                .collect();
+            std::sync::Arc::new(lines)
         };
-        let lines: Vec<_> = ranges
-            .into_iter()
-            .map(|range| {
-                let text = &field.content[range.clone()];
-                let displayed = if field.secret {
-                    "*".repeat(text.chars().count())
-                } else {
-                    text.to_owned()
-                };
-                (range.start, shape(&displayed))
-            })
-            .collect();
+        let key = (!cached).then(|| FieldLayoutKey {
+            content: field.content.clone(),
+            font,
+            font_size,
+            width,
+            color: style.color,
+            multiline: field.multiline,
+            secret: field.secret,
+        });
         self.field.update(cx, |field, _| {
+            if let Some(key) = key {
+                field.layout_key = Some(key);
+                field.layouts = lines.clone();
+            }
             let head = if field.selection_anchor == field.selection.start {
                 field.selection.end
             } else {
@@ -753,7 +825,6 @@ impl Element for FieldElement {
             }
         });
         self.field.update(cx, |field, cx| {
-            field.layouts = lines.clone();
             if field.bounds != Some(bounds) {
                 field.bounds = Some(bounds);
                 // Publish the bounds after a newly revealed field is painted so
@@ -1009,6 +1080,40 @@ fn move_selection(
 #[cfg(test)]
 mod tests {
     use super::{Draft, EditHistory, caret_scroll, word_boundary};
+    #[test]
+    fn field_layout_cache_invalidates_wrapping_font_color_and_display_modes() {
+        let font = gpui::font("Sans");
+        let color: gpui::Hsla = gpui::rgb(0x112233).into();
+        let key = super::FieldLayoutKey {
+            content: "café\ntext".into(),
+            font: font.clone(),
+            font_size: 16.,
+            width: 200.,
+            color,
+            multiline: true,
+            secret: false,
+        };
+        assert!(key.matches("café\ntext", &font, (16., 200.), color, (true, false)));
+        assert!(!key.matches("edited", &font, (16., 200.), color, (true, false)));
+        assert!(!key.matches(
+            &key.content,
+            &gpui::font("Serif"),
+            (16., 200.),
+            color,
+            (true, false)
+        ));
+        assert!(!key.matches(&key.content, &font, (17., 200.), color, (true, false)));
+        assert!(!key.matches(&key.content, &font, (16., 201.), color, (true, false)));
+        assert!(!key.matches(
+            &key.content,
+            &font,
+            (16., 200.),
+            gpui::rgb(0xffffff).into(),
+            (true, false)
+        ));
+        assert!(!key.matches(&key.content, &font, (16., 200.), color, (false, false)));
+        assert!(!key.matches(&key.content, &font, (16., 200.), color, (true, true)));
+    }
     #[test]
     fn scrolling_keeps_caret_visible_and_clamps_after_deletion() {
         assert_eq!(caret_scroll(0., 260., 26., 208., 78.), 78.);

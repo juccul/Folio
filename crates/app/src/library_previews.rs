@@ -1,14 +1,22 @@
 use super::*;
 impl Controller {
     pub fn library_preview(&mut self, note: Id) -> Option<(Arc<Page>, usize)> {
-        let metadata = self.notes.iter().find(|n| n.id == note)?.clone();
-        if let Some(session) = self.sessions.get(&note) {
-            let page = metadata
+        if let Some(session) = self.sessions.get_mut(&note) {
+            let page = session
+                .document
+                .metadata
                 .cover_page
                 .and_then(|id| session.document.page(id))
                 .unwrap_or(&session.document.pages[0]);
-            return Some((Arc::new(page.clone()), session.document.pages.len()));
+            let cover = session
+                .library_cover
+                .get_or_insert_with(|| Arc::new(page.clone()));
+            if cover.id != page.id || cover.revision != page.revision {
+                *cover = Arc::new(page.clone());
+            }
+            return Some((cover.clone(), session.document.pages.len()));
         }
+        let metadata = self.notes.iter().find(|n| n.id == note)?;
         if let Some((updated, page, count)) = self.library_previews.get(&note)
             && *updated == metadata.updated_at
         {

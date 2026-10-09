@@ -49,6 +49,7 @@ impl Viewport {
         self.rotation = 0.;
     }
     pub fn visible(self, width: f32, height: f32) -> Rect {
+        let inverse = self.transform().inverse().unwrap_or_default();
         Rect::from_points(
             [
                 Point::new(0., 0.),
@@ -56,7 +57,7 @@ impl Viewport {
                 Point::new(width, height),
                 Point::new(0., height),
             ]
-            .map(|p| self.to_document(p)),
+            .map(|p| inverse.apply(p)),
         )
     }
 }
@@ -113,21 +114,28 @@ impl PageStack {
         let p = viewport.to_document(screen);
         let origin = self.frame(active).min;
         let global = Point::new(p.x + origin.x, p.y + origin.y);
+        let index = self.pages.partition_point(|(_, r)| r.max.y < global.y);
         self.pages
-            .iter()
-            .find(|(_, r)| r.contains(global))
+            .get(index)
+            .filter(|(_, r)| r.contains(global))
             .map(|(i, _)| *i)
     }
     pub fn nearest(&self, viewport: Viewport, active: usize, screen: Point) -> usize {
         let y = viewport.to_document(screen).y + self.frame(active).min.y;
-        self.pages
-            .iter()
-            .min_by(|(_, a), (_, b)| {
-                let distance = |r: &Rect| (r.min.y - y).max(y - r.max.y).max(0.);
-                distance(a).total_cmp(&distance(b))
-            })
-            .unwrap()
-            .0
+        let next = self.pages.partition_point(|(_, r)| r.max.y < y);
+        if next == 0 {
+            return self.pages[0].0;
+        }
+        if next == self.pages.len() {
+            return self.pages[next - 1].0;
+        }
+        let before = self.pages[next - 1];
+        let after = self.pages[next];
+        if y - before.1.max.y <= (after.1.min.y - y).max(0.) {
+            before.0
+        } else {
+            after.0
+        }
     }
     pub fn clamp_vertical(&self, viewport: &mut Viewport, active: usize, height: f32) {
         if viewport.rotation.abs() > 0.0001 {
@@ -197,9 +205,10 @@ impl SpatialIndex {
                         }
                     }
                 }
+            } else {
+                self.oversize.retain(|v| *v != id);
             }
         }
-        self.oversize.retain(|v| *v != id);
     }
     pub fn insert(&mut self, id: Id, r: Rect) {
         if self.bounds.get(&id) == Some(&r) {
@@ -303,37 +312,48 @@ impl SpatialIndex {
     }
     pub fn query(&self, r: Rect) -> HashSet<Id> {
         let mut out = HashSet::new();
+        self.query_into(r, &mut out);
+        out
+    }
+    /// Clear and reuse the caller's result storage for repeated broad-phase queries.
+    pub fn query_into(&self, r: Rect, out: &mut HashSet<Id>) {
+        out.clear();
         if !Self::valid(r) {
-            return out;
+            return;
         }
         let (x0, y0, x1, y1) = Self::cells(r);
         if !Self::bounded((x0, y0, x1, y1)) {
-            out.extend(
-                self.bounds
-                    .iter()
-                    .filter(|(_, b)| b.intersects(r))
-                    .map(|(id, _)| *id),
-            );
-            return out;
+            self.query_bounds(r, out);
+            return;
         }
+        let mut candidates = self.oversize.len();
+        let budget = self.bounds.len().saturating_mul(2);
         for x in x0..=x1 {
             for y in y0..=y1 {
                 if let Some(ids) = self.cells.get(&(x, y)) {
-                    out.extend(
-                        ids.iter()
-                            .copied()
-                            .filter(|id| self.bounds[id].intersects(r)),
-                    );
+                    candidates = candidates.saturating_add(ids.len());
+                    if candidates > budget {
+                        // For dense multi-cell objects, inspecting each object's
+                        // bounds once is cheaper than hashing repeated references.
+                        out.clear();
+                        self.query_bounds(r, out);
+                        return;
+                    }
+                    out.extend(ids.iter().copied());
                 }
             }
         }
+        out.extend(self.oversize.iter().copied());
+        // An object may occupy thousands of cells; test its actual bounds once.
+        out.retain(|id| self.bounds[id].intersects(r));
+    }
+    fn query_bounds(&self, r: Rect, out: &mut HashSet<Id>) {
         out.extend(
-            self.oversize
+            self.bounds
                 .iter()
-                .copied()
-                .filter(|id| self.bounds[id].intersects(r)),
+                .filter(|(_, b)| b.intersects(r))
+                .map(|(id, _)| *id),
         );
-        out
     }
 }
 #[cfg(test)]
@@ -407,6 +427,54 @@ mod incremental_tests {
 mod robustness_tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn reused_queries_match_brute_force_and_clear_previous_results() {
+        let mut index = SpatialIndex::default();
+        let objects = (0..200)
+            .map(|i| {
+                let r = Rect::new(
+                    (i % 20) as f32 * 47. - 450.,
+                    (i / 20) as f32 * 71. - 300.,
+                    300.,
+                    230.,
+                );
+                (Id::new_v4(), r)
+            })
+            .chain(std::iter::once((
+                Id::new_v4(),
+                Rect::new(-10000., -10000., 20000., 20000.),
+            )))
+            .collect::<Vec<_>>();
+        for &(id, r) in &objects {
+            index.insert(id, r);
+        }
+        let mut output = HashSet::with_capacity(512);
+        let capacity = output.capacity();
+        for i in 0..100 {
+            let r = Rect::new(i as f32 * 19. - 800., i as f32 * 7. - 500., 250., 310.);
+            let expected = objects
+                .iter()
+                .filter(|(_, b)| b.intersects(r))
+                .map(|(id, _)| *id)
+                .collect::<HashSet<_>>();
+            index.query_into(r, &mut output);
+            assert_eq!(output, expected);
+        }
+        index.query_into(Rect::new(-20000., -20000., 40000., 40000.), &mut output);
+        assert_eq!(output.len(), objects.len());
+        index.query_into(Rect::new(f32::NAN, 0., 10., 10.), &mut output);
+        assert!(output.is_empty());
+        assert_eq!(output.capacity(), capacity);
+        for &(id, _) in &objects {
+            index.remove(id);
+        }
+        assert!(
+            index
+                .query(Rect::new(-20000., -20000., 40000., 40000.))
+                .is_empty()
+        );
+    }
 
     #[test]
     fn huge_and_invalid_geometry_cannot_overflow_grid_cell_counts() {
@@ -509,6 +577,54 @@ mod page_stack_tests {
                 p
             })
             .into()
+    }
+    #[test]
+    fn binary_page_lookup_matches_linear_lookup_at_edges_gaps_and_rotations() {
+        let pages = (0..300)
+            .map(|i| {
+                let mut page = Page::new();
+                page.properties.width = 200. + (i % 7) as f32 * 53.;
+                page.properties.height = 100. + (i % 11) as f32 * 29.;
+                page
+            })
+            .collect::<Vec<_>>();
+        let stack = PageStack::new(&pages, 0).unwrap();
+        for rotation in [0., 0.4] {
+            let viewport = Viewport {
+                rotation,
+                zoom: 1.3,
+                ..Default::default()
+            };
+            for &(_, frame) in &stack.pages {
+                for y in [
+                    frame.min.y - 15.,
+                    frame.min.y,
+                    frame.center().y,
+                    frame.max.y,
+                    frame.max.y + 14.,
+                ] {
+                    let origin = stack.frame(0).min;
+                    let screen = viewport.to_screen(Point::new(frame.center().x - origin.x, y));
+                    // Use the same roundtrip as the production path at f32 boundaries.
+                    let local = viewport.to_document(screen);
+                    let global = Point::new(local.x + origin.x, local.y + origin.y);
+                    let hit = stack
+                        .pages
+                        .iter()
+                        .find(|(_, r)| r.contains(global))
+                        .map(|(i, _)| *i);
+                    assert_eq!(stack.hit(viewport, 0, screen), hit);
+                    let distance = |r: &Rect| (r.min.y - global.y).max(global.y - r.max.y).max(0.);
+                    let nearest = stack
+                        .pages
+                        .iter()
+                        .min_by(|(_, a), (_, b)| distance(a).total_cmp(&distance(b)))
+                        .unwrap()
+                        .0;
+                    assert_eq!(stack.nearest(viewport, 0, screen), nearest);
+                }
+            }
+        }
     }
     #[test]
     fn different_sizes_center_and_hit_test_without_drawing_in_gaps() {

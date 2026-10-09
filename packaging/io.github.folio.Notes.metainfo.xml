@@ -12,6 +12,9 @@
   <launchable type="desktop-id">io.github.folio.Notes.desktop</launchable>
   <supports><control>pointing</control><control>keyboard</control></supports>
   <releases>
+    <release version="0.1.2" date="2026-10-09">
+      <description><p>Improves large-library saves, fragment restyling, dense canvas queries, thumbnails, text layout and repeated ink rendering. Adds focused settings, clearer folder and document workflows, remembered pen presets and workspace choices, export previews, explicit OCR download controls and stronger recovery. Includes eraser, selection, context-menu and accessibility fixes. Opening an existing library upgrades its database to schema 6; older Folio versions cannot open the upgraded library.</p></description>
+    </release>
     <release version="0.1.1" date="2026-10-08">
       <description><p>Windows 11 x64 port with a per-user installer, Windows Ink input, native accessibility and portable offline PDF/math tools. Adds configurable notebooks, inline text formatting and continuous page scrolling alongside page organization, notebook sharing, backups, reusable templates and handwriting search.</p></description>
     </release>

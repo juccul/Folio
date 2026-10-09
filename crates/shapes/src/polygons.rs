@@ -5,28 +5,26 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 pub(crate) fn line(points: &[Point]) -> Option<Fit> {
     let axis = geometry::axis(points);
     let center = geometry::mean(points);
-    let projections = points
-        .iter()
-        .map(|p| (p.x - center.x) * axis.x + (p.y - center.y) * axis.y)
-        .collect::<Vec<_>>();
-    let min = projections.iter().copied().fold(f32::INFINITY, f32::min);
-    let max = projections
-        .iter()
-        .copied()
-        .fold(f32::NEG_INFINITY, f32::max);
+    let projection = |p: Point| (p.x - center.x) * axis.x + (p.y - center.y) * axis.y;
+    let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
+    let (mut squared_error, mut worst_error) = (0., 0_f32);
+    for &p in points {
+        let along = projection(p);
+        min = min.min(along);
+        max = max.max(along);
+        let error = ((p.x - center.x) * axis.y - (p.y - center.y) * axis.x).abs();
+        squared_error += error * error;
+        worst_error = worst_error.max(error);
+    }
     if max - min < 0.8 || geometry::length(points) > (max - min) * 1.22 {
         return None;
     }
-    let errors = points
-        .iter()
-        .map(|p| ((p.x - center.x) * axis.y - (p.y - center.y) * axis.x).abs())
-        .collect::<Vec<_>>();
-    let rms = (errors.iter().map(|v| v * v).sum::<f32>() / errors.len() as f32).sqrt();
-    if rms > 0.026 || errors.iter().copied().fold(0., f32::max) > 0.065 {
+    let rms = (squared_error / points.len() as f32).sqrt();
+    if rms > 0.026 || worst_error > 0.065 {
         return None;
     }
     let endpoint = |t| Point::new(center.x + axis.x * t, center.y + axis.y * t);
-    let vertices = if projections[0] < *projections.last()? {
+    let vertices = if projection(points[0]) < projection(*points.last()?) {
         vec![endpoint(min), endpoint(max)]
     } else {
         vec![endpoint(max), endpoint(min)]
@@ -150,12 +148,18 @@ pub(crate) fn closed(points: &[Point]) -> Option<Fit> {
             .collect::<Vec<_>>();
         let mut xs = projected.iter().map(|p| p.x).collect::<Vec<_>>();
         let mut ys = projected.iter().map(|p| p.y).collect::<Vec<_>>();
-        xs.sort_by(f32::total_cmp);
-        ys.sort_by(f32::total_cmp);
         // Small start/closure hooks should not expand the whole fitted box.
         let low = (points.len() - 1) * 5 / 100;
         let high = (points.len() - 1) * 95 / 100;
-        let r = Rect::new(xs[low], ys[low], xs[high] - xs[low], ys[high] - ys[low]);
+        let quantiles = |values: &mut [f32]| {
+            let (below, upper, _) = values.select_nth_unstable_by(high, f32::total_cmp);
+            let upper = *upper;
+            let (_, lower, _) = below.select_nth_unstable_by(low, f32::total_cmp);
+            (*lower, upper)
+        };
+        let (x0, x1) = quantiles(&mut xs);
+        let (y0, y1) = quantiles(&mut ys);
+        let r = Rect::new(x0, y0, x1 - x0, y1 - y0);
         if r.width().min(r.height()) < 0.08 {
             continue;
         }

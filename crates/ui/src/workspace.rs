@@ -49,8 +49,24 @@ struct Thumbnail {
     aspect: f32,
     touched: u64,
 }
+impl Thumbnails {
+    fn touch(&mut self, id: Id, key: &ThumbnailKey) -> (u64, bool) {
+        self.clock += 1;
+        let touched = self.clock;
+        let valid = self.entries.get(&id).is_some_and(|entry| &entry.key == key);
+        (touched, valid)
+    }
+}
+enum ThumbnailSource {
+    Cover(Arc<Page>),
+    Current(usize),
+}
 impl NotesView {
-    fn thumbnail(&mut self, mut page: Page, width: f32, cx: &mut Context<Self>) -> Div {
+    fn thumbnail(&mut self, source: ThumbnailSource, width: f32, cx: &mut Context<Self>) -> Div {
+        let page = match &source {
+            ThumbnailSource::Cover(page) => page.as_ref(),
+            ThumbnailSource::Current(index) => &self.controller.session().document.pages[*index],
+        };
         let theme = Theme::new(&self.controller.settings);
         let palette = theme.canvas_for_page(&page.properties);
         let pdf_ready = page
@@ -65,28 +81,22 @@ impl NotesView {
             theme: palette,
             pdf_ready,
         };
-        self.thumbnails.clock += 1;
-        let touched = self.thumbnails.clock;
         let id = page.id;
         let default_aspect = page.properties.width / page.properties.height.max(1.);
-        let valid = self
-            .thumbnails
-            .entries
-            .get(&id)
-            .is_some_and(|e| e.key == key);
+        let (touched, valid) = self.thumbnails.touch(id, &key);
         if !valid && self.thumbnails.pending.len() < 2 && !self.thumbnails.pending.contains_key(&id)
         {
-            if self.thumbnails.entries.len() >= 48 {
-                if let Some(oldest) = self
+            if !self.thumbnails.entries.contains_key(&id)
+                && self.thumbnails.entries.len() >= 48
+                && let Some(oldest) = self
                     .thumbnails
                     .entries
                     .iter()
                     .filter(|(id, _)| !self.thumbnails.pending.contains_key(id))
                     .min_by_key(|(_, e)| e.touched)
                     .map(|(id, _)| *id)
-                {
-                    self.thumbnails.entries.remove(&oldest);
-                }
+            {
+                self.thumbnails.entries.remove(&oldest);
             }
             let generation = touched;
             let aspect = page.properties.width / page.properties.height.max(1.);
@@ -102,9 +112,17 @@ impl NotesView {
                 },
             );
             self.thumbnails.pending.insert(id, generation);
-            export_options::apply(&mut page, theme, export_options::Appearance::Visible);
+            // Snapshot only when a raster job is needed. Cached redraws avoid
+            // cloning the entire page/object map, and appearance adaptation runs
+            // on the worker with the rasterization.
+            let source = match source {
+                ThumbnailSource::Cover(page) => page,
+                ThumbnailSource::Current(_) => Arc::new(page.clone()),
+            };
             let assets = self.controller.assets.clone();
             let task = cx.background_executor().spawn(async move {
+                let mut page = source.as_ref().clone();
+                export_options::apply(&mut page, theme, export_options::Appearance::Visible);
                 folio_export::raster_page_limited(&page, &assets, 384)
                     .map(|p| {
                         let aspect = p.width() as f32 / p.height() as f32;
@@ -770,7 +788,7 @@ impl NotesView {
                         self.controller.request_pdf_background(pdf.clone());
                     }
                     self.thumbnail(
-                        page.as_ref().clone(),
+                        ThumbnailSource::Cover(page.clone()),
                         144. * self.controller.settings.ui_scale,
                         cx,
                     )
@@ -1784,8 +1802,8 @@ impl NotesView {
                     if let Some(background) = background {
                         this.controller.request_pdf_background(background);
                     }
-                    let page = this.controller.session().document.pages[index].clone();
-                    let thumbnail = this.thumbnail(page.clone(), 122., cx);
+                    let thumbnail = this.thumbnail(ThumbnailSource::Current(index), 122., cx);
+                    let page = &this.controller.session().document.pages[index];
                     let page_id = page.id;
                     let label = page.properties.bookmark.as_ref().map_or_else(
                         || format!("Go to page {}", index + 1),
@@ -2010,5 +2028,102 @@ impl NotesView {
                 )
                 .size(rems(1.75)),
             )
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_tests {
+    use super::*;
+    fn key(page: &Page) -> ThumbnailKey {
+        ThumbnailKey {
+            revision: page.revision,
+            properties: page.properties.clone(),
+            theme: Theme::new(&folio_app::Settings::default()).canvas,
+            pdf_ready: true,
+        }
+    }
+    #[::core::prelude::v1::test]
+    fn thumbnail_cache_keys_invalidate_content_properties_theme_and_pdf_readiness() {
+        let page = Page::new();
+        let original = key(&page);
+        let mut cache = Thumbnails::default();
+        cache.entries.insert(
+            page.id,
+            Thumbnail {
+                key: original.clone(),
+                generation: 1,
+                image: None,
+                error: None,
+                aspect: 1.,
+                touched: 1,
+            },
+        );
+        assert!(cache.touch(page.id, &original).1);
+        for change in [
+            |k: &mut ThumbnailKey| k.revision += 1,
+            |k: &mut ThumbnailKey| k.properties.width += 10.,
+            |k: &mut ThumbnailKey| k.theme.paper ^= 0xffffff,
+            |k: &mut ThumbnailKey| k.pdf_ready = false,
+        ] {
+            let mut changed = original.clone();
+            change(&mut changed);
+            assert!(!cache.touch(page.id, &changed).1);
+        }
+        assert!(!cache.touch(Id::new_v4(), &original).1);
+    }
+    #[::core::prelude::v1::test]
+    #[ignore = "manual device-free performance measurement"]
+    fn benchmark_thumbnail_cache_hit_snapshot_cost() {
+        let mut page = Page::new();
+        for _ in 0..2000 {
+            let id = Id::new_v4();
+            let object = folio_document::TextBlock {
+                id,
+                text: "Synthetic thumbnail benchmark".into(),
+                rect: folio_document::Rect::new(0., 0., 120., 30.),
+                transform: Default::default(),
+                font_family: "Sans".into(),
+                font_size: 16.,
+                color: folio_document::Color::from_rgb(0),
+                bold: false,
+                italic: false,
+                underline: false,
+                alignment: folio_document::Alignment::Left,
+                list: folio_document::ListStyle::None,
+            };
+            page.objects
+                .insert(id, Arc::new(folio_document::Object::Text(object)));
+            page.order.push(id);
+        }
+        let page = Arc::new(page);
+        let key = key(&page);
+        let mut cache = Thumbnails::default();
+        cache.entries.insert(
+            page.id,
+            Thumbnail {
+                key: key.clone(),
+                generation: 1,
+                image: None,
+                error: None,
+                aspect: 1.,
+                touched: 1,
+            },
+        );
+        let frames = 1000;
+        let start = std::time::Instant::now();
+        for _ in 0..frames {
+            let snapshot = std::hint::black_box(page.as_ref().clone());
+            std::hint::black_box(cache.touch(snapshot.id, &key));
+        }
+        let before = start.elapsed();
+        let start = std::time::Instant::now();
+        for _ in 0..frames {
+            let source = std::hint::black_box(page.clone());
+            std::hint::black_box(cache.touch(source.id, &key));
+        }
+        let after = start.elapsed();
+        println!(
+            "2,000-object thumbnail cache hit, {frames} redraws: baseline={before:?}, lazy={after:?}"
+        );
     }
 }

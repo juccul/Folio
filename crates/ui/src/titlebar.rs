@@ -95,21 +95,37 @@ fn window_icon(kind: Icon, color: u32) -> impl IntoElement {
         Icon::Close => &[&[(3., 3.), (15., 15.)], &[(15., 3.), (3., 15.)]],
         _ => unreachable!("Not a window control"),
     };
-    let paths = lines.iter().filter_map(|line| {
-        let mut path = PathBuilder::stroke(px(1.4));
-        path.move_to(point(px(line[0].0), px(line[0].1)));
-        for &(x, y) in &line[1..] {
-            path.line_to(point(px(x), px(y)));
-        }
-        path.build().ok()
-    }).collect::<Vec<_>>();
-    canvas(|_, _, _| (), move |bounds, _, window, _| {
-        for path in &paths {
-            window.paint_path(path.clone().transformed([
-                1., 0., 0., 1., f32::from(bounds.origin.x), f32::from(bounds.origin.y),
-            ]), rgb(color));
-        }
-    }).size(px(18.)).flex_shrink_0()
+    let paths = lines
+        .iter()
+        .filter_map(|line| {
+            let mut path = PathBuilder::stroke(px(1.4));
+            path.move_to(point(px(line[0].0), px(line[0].1)));
+            for &(x, y) in &line[1..] {
+                path.line_to(point(px(x), px(y)));
+            }
+            path.build().ok()
+        })
+        .collect::<Vec<_>>();
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            for path in &paths {
+                window.paint_path(
+                    path.clone().transformed([
+                        1.,
+                        0.,
+                        0.,
+                        1.,
+                        f32::from(bounds.origin.x),
+                        f32::from(bounds.origin.y),
+                    ]),
+                    rgb(color),
+                );
+            }
+        },
+    )
+    .size(px(18.))
+    .flex_shrink_0()
 }
 
 pub(super) fn background_press(event: &MouseDownEvent, window: &mut Window, cx: &mut App) {

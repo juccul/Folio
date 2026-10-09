@@ -281,3 +281,165 @@ fn a_failed_close_flush_is_tracked_and_retried() {
     );
     cleanup(app, root);
 }
+
+#[test]
+fn loaded_library_cover_reuses_snapshot_and_invalidates_after_commands() {
+    let (mut app, root) = fixture();
+    app.add_text("original".into(), Point::new(0., 0.));
+    let note = app.active;
+    let first = app.library_preview(note).unwrap().0;
+    let again = app.library_preview(note).unwrap().0;
+    assert!(Arc::ptr_eq(&first, &again));
+    let id = app.page().order[0];
+    app.edit_text(id, |text| text.text = "edited".into());
+    let edited = app.library_preview(note).unwrap().0;
+    assert!(!Arc::ptr_eq(&first, &edited));
+    assert!(edited.text().contains("edited"));
+    assert!(first.text().contains("original"));
+    app.undo();
+    let undone = app.library_preview(note).unwrap().0;
+    assert!(!Arc::ptr_eq(&edited, &undone));
+    assert!(undone.text().contains("original"));
+    let before = app.page().clone();
+    let mut after = before.clone();
+    after.properties.paper = Paper::Grid;
+    app.commit(
+        "Replace page snapshot",
+        vec![Change::Page {
+            index: 0,
+            before: Some(before),
+            after: Some(after),
+        }],
+    );
+    let replaced = app.library_preview(note).unwrap().0;
+    assert!(!Arc::ptr_eq(&undone, &replaced));
+    assert_eq!(replaced.properties.paper, Paper::Grid);
+    app.add_page();
+    app.add_text("second page".into(), Point::new(0., 0.));
+    app.use_page_as_cover();
+    let (cover, pages) = app.library_preview(note).unwrap();
+    assert_eq!(pages, 2);
+    assert_eq!(cover.id, app.page().id);
+    assert!(cover.text().contains("second page"));
+    app.delete_page();
+    assert_eq!(app.library_preview(note).unwrap().0.id, first.id);
+    cleanup(app, root);
+}
+
+#[test]
+fn deferred_history_saves_current_execute_undo_redo_state() {
+    let (mut app, root) = fixture();
+    app.set_autosave(false);
+    for i in 0..20 {
+        app.add_text(format!("entry {i}"), Point::new(0., i as f32 * 200.));
+    }
+    app.undo();
+    app.undo();
+    app.redo();
+    assert!(app.session().history_needs_save);
+    app.save();
+    assert!(!app.session().history_needs_save);
+    app.persistence.flush().unwrap();
+    let reader = Store::open_reader(&app.database).unwrap();
+    assert_eq!(
+        reader.load(app.active).unwrap().unwrap(),
+        app.session().document
+    );
+    assert_eq!(
+        serde_json::to_value(reader.history(app.active).unwrap()).unwrap(),
+        serde_json::to_value(&app.session().history).unwrap()
+    );
+    drop(reader);
+    app.undo();
+    assert!(app.session().history_needs_save);
+    app.set_autosave(true);
+    assert!(!app.session().history_needs_save);
+    app.persistence.flush().unwrap();
+    let reader = Store::open_reader(&app.database).unwrap();
+    assert_eq!(
+        reader.load(app.active).unwrap().unwrap(),
+        app.session().document
+    );
+    assert_eq!(
+        serde_json::to_value(reader.history(app.active).unwrap()).unwrap(),
+        serde_json::to_value(&app.session().history).unwrap()
+    );
+    drop(reader);
+    cleanup(app, root);
+}
+
+#[test]
+fn sparse_selection_commands_follow_page_order_and_ignore_unknown_ids() {
+    let (mut app, root) = fixture();
+    for i in 0..6 {
+        app.add_text(format!("entry {i}"), Point::new(0., i as f32 * 200.));
+    }
+    let order = app.page().order.clone();
+    app.session_mut().selection = HashSet::from([order[5], order[1], Id::new_v4()]);
+    let changes = app.object_changes(&app.session().selection, |_| None);
+    assert_eq!(changes.len(), 2);
+    assert!(matches!(&changes[0], Change::Object { id, index: 1, .. } if *id == order[1]));
+    assert!(matches!(&changes[1], Change::Object { id, index: 5, .. } if *id == order[5]));
+    app.delete_selection();
+    assert_eq!(
+        app.page().order,
+        vec![order[0], order[2], order[3], order[4]]
+    );
+    app.undo();
+    assert_eq!(app.page().order, order);
+    ranks(&app);
+    cleanup(app, root);
+}
+
+#[test]
+fn indexed_handwriting_replacement_keeps_disjoint_annotations() {
+    let (mut app, root) = fixture();
+    let mut sources = Vec::new();
+    for x in [10., 500.] {
+        let mut builder = StrokeBuilder::new(PenStyle::default());
+        builder.push(StrokePoint::new(Point::new(x, 10.), 0.5, 0));
+        builder.push(StrokePoint::new(Point::new(x + 20., 20.), 0.5, 16));
+        let object = Arc::new(Object::Stroke(builder.finish().unwrap()));
+        sources.push(object.clone());
+        app.commit(
+            "Ink",
+            vec![Change::Object {
+                page: app.page().id,
+                id: object.id(),
+                before: None,
+                after: Some(object),
+                index: app.page().order.len(),
+            }],
+        );
+    }
+    for (i, object) in sources.iter().enumerate() {
+        app.recognition_review = Some(RecognitionReview {
+            kind: RecognitionKind::Text,
+            text: String::new(),
+            note: app.active,
+            page: app.page().id,
+            bounds: object.bounds(),
+            sources: vec![object.clone()],
+            pdf_source: None,
+        });
+        app.keep_ink_and_index(format!("entry {i}")).unwrap();
+    }
+    let object = sources[0].clone();
+    app.recognition_review = Some(RecognitionReview {
+        kind: RecognitionKind::Text,
+        text: String::new(),
+        note: app.active,
+        page: app.page().id,
+        bounds: object.bounds(),
+        sources: vec![object],
+        pdf_source: None,
+    });
+    app.keep_ink_and_index("replacement".into()).unwrap();
+    assert_eq!(app.page().ink_text.len(), 2);
+    assert!(app.page().text().contains("replacement"));
+    assert!(app.page().text().contains("entry 1"));
+    assert!(!app.page().text().contains("entry 0"));
+    app.undo();
+    assert!(app.page().text().contains("entry 0"));
+    cleanup(app, root);
+}

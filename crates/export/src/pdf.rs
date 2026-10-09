@@ -30,9 +30,7 @@ fn resources(doc: &Pdf, id: lopdf::ObjectId) -> Dictionary {
 pub fn export(doc: &Document, assets: &Path, path: &Path) -> Result<()> {
     let mut annotations = krilla::Document::new();
     for page in &doc.pages {
-        let mut layer = page.clone();
-        layer.properties.pdf = None;
-        let svg = page_svg(&layer, assets, page.properties.pdf.is_none())?;
+        let svg = page_svg(page, assets, page.properties.pdf.is_none())?;
         let tree = resvg::usvg::Tree::from_str(&svg, &svg_options())?;
         let size =
             krilla::geom::Size::from_wh(tree.size().width() * 0.75, tree.size().height() * 0.75)
@@ -75,8 +73,15 @@ pub fn export(doc: &Document, assets: &Path, path: &Path) -> Result<()> {
         }
         source.renumber_objects_with(output.max_id + 1);
         let pages = source.get_pages();
+        let requested: std::collections::HashSet<_> = doc
+            .pages
+            .iter()
+            .filter_map(|page| page.properties.pdf.as_ref())
+            .filter(|candidate| candidate.asset == background.asset)
+            .filter_map(|candidate| pages.get(&candidate.page).copied())
+            .collect();
         // Inherited attributes must become local before reparenting page trees.
-        for id in pages.values() {
+        for id in &requested {
             for key in [
                 b"Resources".as_slice(),
                 b"MediaBox",
@@ -162,7 +167,7 @@ pub fn export(doc: &Document, assets: &Path, path: &Path) -> Result<()> {
                 fields.extend(array.iter().cloned());
             }
         }
-        for id in pages.values() {
+        for id in &requested {
             templates.insert(
                 *id,
                 (

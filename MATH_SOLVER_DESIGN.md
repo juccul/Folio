@@ -31,7 +31,7 @@ The Rust controller (`crates/app/src/math_solver.rs`) runs an independent bounde
 
 Install with `scripts/math-solver-requirements.txt` and `scripts/setup-math-solver.py`. The prepared workspace pack uses the existing CPU runtime and retains installed license notices. Recognition precision is selected by its own pack; solver installation does not select BF16/INT8. Math pack lookup: `FOLIO_MATH_CONFIG`, data directory, portable directory, then development fallback. Python runtime paths must be updated if moved.
 
-Equation `math_link` metadata uses document format 3, with legacy fields defaulting to absent. Database schema 4 is set transactionally when a linked result/definition is saved; ordinary databases stay at schema 3 until then. Older readers reject schema 4 rather than dropping dependencies. Copy/paste and note duplication remap sources; a pasted calculation without its handwriting source detaches the watched region.
+Equation `math_link` metadata uses document format 3, with legacy fields defaulting to absent. Math links originally introduced database schema 4. The current writer upgrades every database transactionally to schema 6, which also supports reviewed handwriting and indexed search-row locators. Older readers reject the upgraded schema rather than dropping dependencies. Copy/paste and note duplication remap sources; a pasted calculation without its handwriting source detaches the watched region.
 
 ## Verification
 

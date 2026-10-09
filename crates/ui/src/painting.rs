@@ -7,6 +7,7 @@ use folio_document::{
 };
 use gpui::{prelude::*, *};
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     sync::Arc,
 };
@@ -35,6 +36,39 @@ struct PaperKey {
 struct CachedPaper {
     key: PaperKey,
     paths: Vec<(Path<Pixels>, Rgba)>,
+}
+#[derive(Clone, Copy, PartialEq)]
+struct ActivePathKey {
+    id: Id,
+    len: usize,
+    last: Option<PathPoint>,
+}
+#[derive(Default)]
+struct ActivePathCache {
+    key: Option<ActivePathKey>,
+    path: Option<Path<Pixels>>,
+}
+impl ActivePathCache {
+    fn path(&mut self, id: Id, points: &[PathPoint]) -> Option<&Path<Pixels>> {
+        // StrokeBuilder appends points or adjusts only the final radius.
+        // Include the final sample so stationary pressure changes invalidate.
+        let key = ActivePathKey {
+            id,
+            len: points.len(),
+            last: points.last().copied(),
+        };
+        if self.key != Some(key) {
+            self.path = ink_path(&folio_ink::outline(points));
+            self.key = Some(key);
+        }
+        self.path.as_ref()
+    }
+}
+struct CachedText {
+    object: Arc<Object>,
+    key: super::text_render::LayoutKey,
+    layout: super::text_render::Layout,
+    width: f32,
 }
 struct CachedPath {
     object: Arc<Object>,
@@ -65,7 +99,7 @@ struct CachedRaster {
 }
 #[derive(Default)]
 pub struct Painter {
-    text_layouts: HashMap<Id, (folio_document::TextBlock, super::text_render::Layout)>,
+    text_layouts: HashMap<Id, CachedText>,
     pages: HashMap<Id, Box<Painter>>,
     index: SpatialIndex,
     index_revision: Option<u64>,
@@ -82,6 +116,7 @@ pub struct Painter {
     page: Option<Id>,
     active_id: Option<Id>,
     active_chunks: Vec<Path<Pixels>>,
+    active_path: ActivePathCache,
     appearance: Option<CanvasTheme>,
     graph_palette: Option<graph::Palette>,
     colors: HashMap<u32, u32>,
@@ -175,6 +210,25 @@ fn selection_overlay(
 fn gpui_bounds(r: Rect) -> Bounds<Pixels> {
     Bounds::new(point_px(r.min), size(px(r.width()), px(r.height())))
 }
+fn visible_page_range(
+    stack: &PageStack,
+    viewport: Viewport,
+    active: usize,
+    width: f32,
+    height: f32,
+) -> std::ops::Range<usize> {
+    let visible = viewport.visible(width, height);
+    let origin = stack.frame(active).min;
+    let minimum = visible.min.y + origin.y;
+    let maximum = visible.max.y + origin.y;
+    let start = stack
+        .pages
+        .partition_point(|(_, rect)| rect.max.y < minimum);
+    let end = stack
+        .pages
+        .partition_point(|(_, rect)| rect.min.y <= maximum);
+    start..end.max(start)
+}
 impl Painter {
     fn display_color(&mut self, color: u32, theme: CanvasTheme) -> u32 {
         *self.colors.entry(color).or_insert_with(|| theme.ink(color))
@@ -192,18 +246,25 @@ impl Painter {
         let viewport = session.viewport;
         let width = f32::from(bounds.size.width);
         let height = f32::from(bounds.size.height);
-        let frames = if let Some(stack) = PageStack::new(&session.document.pages, active) {
-            stack
-                .pages
+        let stack = PageStack::new(&session.document.pages, active);
+        let frames = if let Some(stack) = &stack {
+            let range = visible_page_range(stack, viewport, active, width, height);
+            let mut frames = stack.pages[range]
                 .iter()
                 .filter_map(|(index, rect)| {
                     let local = stack.viewport(viewport, active, *index);
                     let visible = local.visible(width, height);
-                    (*index == active
-                        || visible.intersects(Rect::new(0., 0., rect.width(), rect.height())))
-                    .then_some((*index, local))
+                    visible
+                        .intersects(Rect::new(0., 0., rect.width(), rect.height()))
+                        .then_some((*index, local))
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            // Selection/input overlays belong to the active page even when
+            // a scroll places its paper outside the visible range.
+            if !frames.iter().any(|(index, _)| *index == active) {
+                frames.push((active, viewport));
+            }
+            frames
         } else {
             vec![(active, viewport)]
         };
@@ -248,7 +309,7 @@ impl Painter {
         // until a page is painted starts both Poppler and PNG decoding too late
         // for continuous scrolling; the paper flashes empty in the meantime.
         let mut nearby = frames.iter().map(|(index, _)| *index).collect::<Vec<_>>();
-        if let Some(stack) = PageStack::new(&session.document.pages, active) {
+        if let Some(stack) = &stack {
             let first = nearby.iter().copied().min().unwrap_or(active);
             let last = nearby.iter().copied().max().unwrap_or(active);
             for distance in 1..=3 {
@@ -317,6 +378,8 @@ impl Painter {
             painter.paint_page(controller, index, viewport, bounds, editing, window, cx);
         }
     }
+    // GPUI painting needs both window/context and the complete page/viewport state.
+    #[allow(clippy::too_many_arguments)]
     fn paint_page(
         &mut self,
         controller: &mut Controller,
@@ -328,6 +391,11 @@ impl Painter {
         cx: &mut Context<NotesView>,
     ) {
         let active = page_index == controller.session().page;
+        if active && !matches!(controller.interaction, Some(Interaction::Ink { .. })) {
+            self.active_id = None;
+            self.active_chunks.clear();
+            self.active_path = ActivePathCache::default();
+        }
         let page_id = controller.session().document.pages[page_index].id;
         self.page = Some(page_id);
         let visible = viewport.visible(f32::from(bounds.size.width), f32::from(bounds.size.height));
@@ -500,25 +568,51 @@ impl Painter {
                         }
                     }
                     Object::Text(text) => {
-                        let text = if active {
-                            controller.preview_text(text)
+                        // Dragging/rotating changes only the paint transform. A
+                        // resized frame changes wrapping and needs preview reflow.
+                        let resizing = active
+                            && selection.contains(&text.id)
+                            && matches!(controller.interaction, Some(Interaction::Resize { .. }));
+                        let text = if resizing {
+                            Cow::Owned(controller.preview_text(text))
                         } else {
-                            text.clone()
+                            Cow::Borrowed(text)
                         };
                         let color = self.display_color(text.color.rgb(), canvas_theme);
-                        if self
-                            .text_layouts
-                            .get(&text.id)
-                            .is_none_or(|(cached, _)| cached != &text)
-                        {
+                        let valid = self.text_layouts.get(&text.id).is_some_and(|cached| {
+                            (Arc::ptr_eq(&cached.object, object)
+                                && cached.width == text.rect.width())
+                                || cached.key.matches(&text)
+                        });
+                        if !valid {
                             let layout = super::text_render::layout(&text, color, window);
-                            self.text_layouts.insert(text.id, (text.clone(), layout));
+                            self.text_layouts.insert(
+                                text.id,
+                                CachedText {
+                                    object: object.clone(),
+                                    key: super::text_render::LayoutKey::new(&text),
+                                    layout,
+                                    width: text.rect.width(),
+                                },
+                            );
+                        } else if let Some(cached) = self.text_layouts.get_mut(&text.id) {
+                            cached.object = object.clone();
                         }
-                        let layout = &self.text_layouts[&text.id].1;
+                        let movement = if resizing {
+                            Transform::default()
+                        } else {
+                            movement
+                        };
                         let transform = world
+                            .compose(movement)
                             .compose(text.transform)
                             .compose(Transform::translate(text.rect.min.x, text.rect.min.y));
-                        layout.paint(transform, color, text.underline, window);
+                        self.text_layouts[&text.id].layout.paint(
+                            transform,
+                            color,
+                            text.underline,
+                            window,
+                        );
                     }
                     Object::Shape(s) => {
                         let color = self.display_color(s.style.color.rgb(), canvas_theme);
@@ -663,8 +757,14 @@ impl Painter {
                             let points = builder.path();
 
                             if builder.style().opacity < 1. {
-                                if let Some(path) = ink_path(&folio_ink::outline(points)) {
-                                    window.paint_path(path.transformed(coefficients(world)), color);
+                                // Translucent strokes still use one compound
+                                // fill to preserve opacity at joins/retraces.
+                                // Repaints without new geometry reuse tessellation.
+                                if let Some(path) = self.active_path.path(builder.id(), points) {
+                                    window.paint_path(
+                                        path.clone().transformed(coefficients(world)),
+                                        color,
+                                    );
                                 }
                             } else {
                                 const CHUNK: usize = 256;
@@ -990,6 +1090,9 @@ fn paper_paths(key: &PaperKey) -> Vec<(Path<Pixels>, Rgba)> {
     if key.paper == Paper::Dots {
         let mut builder = PathBuilder::fill();
         let mut has_dots = false;
+        // Dot geometry is identical across the grid. Compute the offsets once
+        // rather than allocating and evaluating trig for every visible dot.
+        let offsets = folio_ink::circle(DocPoint::new(0., 0.), zoom.max(0.7), 8);
         for x in x0..=x1 {
             for y in y0..=y1 {
                 let p = DocPoint::new(
@@ -997,10 +1100,13 @@ fn paper_paths(key: &PaperKey) -> Vec<(Path<Pixels>, Rgba)> {
                     y as f32 * spacing + spacing / 2.,
                 );
                 if page.contains(p) && clip.contains(p) {
-                    let points = folio_ink::circle(world.apply(p), zoom.max(0.7), 8);
-                    builder.move_to(point_px(points[0]));
-                    for p in points.iter().skip(1) {
-                        builder.line_to(point_px(*p));
+                    let center = world.apply(p);
+                    let translated = |offset: &DocPoint| {
+                        point_px(DocPoint::new(center.x + offset.x, center.y + offset.y))
+                    };
+                    builder.move_to(translated(&offsets[0]));
+                    for offset in offsets.iter().skip(1) {
+                        builder.line_to(translated(offset));
                     }
                     builder.close();
                     has_dots = true;
@@ -1024,6 +1130,129 @@ fn gpu_transform(t: Transform) -> gpui::TransformationMatrix {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    fn translucent_live_path_cache_invalidates_append_pressure_and_identity() {
+        let id = Id::new_v4();
+        let mut points = vec![PathPoint {
+            position: DocPoint::new(10., 20.),
+            radius: 2.,
+        }];
+        let mut cache = ActivePathCache::default();
+        assert!(cache.path(id, &points).is_some());
+        let first = cache.key;
+        assert!(cache.path(id, &points).is_some());
+        assert!(cache.key == first);
+        points[0].radius = 3.;
+        assert!(cache.path(id, &points).is_some());
+        assert!(cache.key != first);
+        let pressure = cache.key;
+        points.push(PathPoint {
+            position: DocPoint::new(20., 20.),
+            radius: 3.,
+        });
+        assert!(cache.path(id, &points).is_some());
+        assert!(cache.key != pressure);
+        let appended = cache.key;
+        assert!(cache.path(Id::new_v4(), &points).is_some());
+        assert!(cache.key != appended);
+        assert!(cache.path(id, &[]).is_none());
+    }
+    #[::core::prelude::v1::test]
+    #[ignore = "manual device-free performance measurement"]
+    fn benchmark_translucent_live_path_repaints() {
+        let id = Id::new_v4();
+        let points = (0..12000)
+            .map(|i| PathPoint {
+                position: DocPoint::new(i as f32 * 1.2, (i as f32 * 0.025).sin() * 25.),
+                radius: 2. + (i as f32 * 0.015).sin() * 0.5,
+            })
+            .collect::<Vec<_>>();
+        let world = Transform::translate(50., 60.);
+        let frames = 100;
+        let start = std::time::Instant::now();
+        for _ in 0..frames {
+            std::hint::black_box(
+                ink_path(&folio_ink::outline(&points))
+                    .unwrap()
+                    .transformed(coefficients(world)),
+            );
+        }
+        let before = start.elapsed();
+        let mut cache = ActivePathCache::default();
+        let start = std::time::Instant::now();
+        for _ in 0..frames {
+            std::hint::black_box(
+                cache
+                    .path(id, &points)
+                    .unwrap()
+                    .clone()
+                    .transformed(coefficients(world)),
+            );
+        }
+        let after = start.elapsed();
+        println!(
+            "12,000-point translucent unchanged repaint, {frames} frames: baseline={before:?}, cached={after:?}"
+        );
+    }
+    #[::core::prelude::v1::test]
+    fn binary_page_candidates_match_full_scan_across_pan_zoom_and_rotation() {
+        let mut pages = (0..250)
+            .map(|i| {
+                let mut page = folio_document::Page::new();
+                page.properties.infinite = false;
+                page.properties.width = 400. + (i % 5) as f32 * 80.;
+                page.properties.height = 400. + (i % 7) as f32 * 120.;
+                page
+            })
+            .collect::<Vec<_>>();
+        pages[10].properties.infinite = true;
+        for active in [0, 9, 11, 100, 249] {
+            let stack = PageStack::new(&pages, active).unwrap();
+            for zoom in [0.1, 0.5, 1., 3.] {
+                for rotation in [0., 0.3, -1.2, std::f32::consts::PI] {
+                    for y in [-2500., 0., 400., 5000.] {
+                        let viewport = Viewport {
+                            zoom,
+                            rotation,
+                            pan: DocPoint::new(80., y),
+                        };
+                        let actual = visible_page_range(&stack, viewport, active, 900., 700.);
+                        let expected = stack
+                            .pages
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(position, (index, rect))| {
+                                let local = stack.viewport(viewport, active, *index);
+                                local
+                                    .visible(900., 700.)
+                                    .intersects(Rect::new(0., 0., rect.width(), rect.height()))
+                                    .then_some(position)
+                            })
+                            .collect::<Vec<_>>();
+                        assert!(
+                            expected.iter().all(|position| actual.contains(position)),
+                            "missed visible page"
+                        );
+                        let filtered = stack.pages[actual]
+                            .iter()
+                            .filter_map(|(index, rect)| {
+                                let local = stack.viewport(viewport, active, *index);
+                                local
+                                    .visible(900., 700.)
+                                    .intersects(Rect::new(0., 0., rect.width(), rect.height()))
+                                    .then_some(*index)
+                            })
+                            .collect::<Vec<_>>();
+                        let expected = expected
+                            .into_iter()
+                            .map(|position| stack.pages[position].0)
+                            .collect::<Vec<_>>();
+                        assert_eq!(filtered, expected);
+                    }
+                }
+            }
+        }
+    }
     #[::core::prelude::v1::test]
     fn selection_rotation_handle_tracks_drag_without_a_release_jump_at_any_zoom() {
         let bounds = Rect::new(100., 150., 90., 40.);

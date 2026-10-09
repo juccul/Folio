@@ -64,7 +64,9 @@ def main():
                     for i in range(node.get_child_count()):yield from walk(node.get_child_at_index(i))
                 def controls():
                     while GLib.MainContext.default().iteration(False):pass
-                    return [n for n in walk(target) if n.get_role() in [Atspi.Role.PUSH_BUTTON,Atspi.Role.PUSH_BUTTON_MENU]]
+                    # Native radio, switch, and tab controls expose the same Action
+                    # interface as buttons. Preserve their correct semantic roles.
+                    return [n for n in walk(target) if n.get_role() in [Atspi.Role.PUSH_BUTTON,Atspi.Role.PUSH_BUTTON_MENU,Atspi.Role.RADIO_BUTTON,Atspi.Role.CHECK_BOX,Atspi.Role.TOGGLE_BUTTON,Atspi.Role.PAGE_TAB,Atspi.Role.LIST_ITEM,Atspi.Role.TREE_ITEM]]
                 def click(label, prefix=False):
                     buttons=controls()
                     item=next((n for n in buttons if (n.get_name().startswith(label) if prefix else n.get_name()==label)),None)
@@ -102,39 +104,41 @@ def main():
                         with sqlite3.connect(Path(root)/'notes.sqlite3') as db:assert db.execute('SELECT count(*) FROM objects').fetchone()[0]==initial_objects, 'Library shortcuts edited hidden content'
                     click('Open Reading list');capture('editor-tabs')
                     client.resize(980,760);capture('editor-compact');client.resize(1320,860)
-                    click('Library ·',True);click('Settings');click('Dark appearance',True)
+                    click('Library ·',True);click('Settings');click('Appearance');click('Dark appearance',True)
                     if args.virtual_display:client.key('Escape')
                     capture('library-dark');click('Open Field notes');capture('editor-dark');click('Library ·',True)
                 if args.polish:
                     click('Documents');click('Open Field notes')
                     client.key('a',4);time.sleep(.2)
-                    assert any(n.get_name()=='Duplicate' for n in controls()), 'Select-all must expose editing controls'
+                    assert any(n.get_name()=='Copy' for n in controls()), 'Select-all must expose editing controls'
                     click('Settings')
-                    assert not any(n.get_name() in {'Undo','Redo','Delete','Duplicate','Add page'} for n in controls()), 'Background controls leaked through the settings overlay'
+                    assert not any(n.get_name() in {'Undo','Redo','Delete','Copy','Cut','Add page'} for n in controls()), 'Background controls leaked through the settings overlay'
                     client.key('Delete');client.key('z',4)
                     for _ in range(8):client.key('Tab')
                     with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
                         assert db.execute('SELECT count(*) FROM objects').fetchone()[0]==initial_objects, 'Settings shortcuts edited the document'
-                    click('Reduce motion: Off');click('Done')
-                    assert any(n.get_name()=='Duplicate' for n in controls()), 'Closing settings lost the selection'
-                    click('Size');client.key('a',4)
+                    click('Accessibility');click('Reduce motion: Off');click('Close settings')
+                    assert any(n.get_name()=='Copy' for n in controls()), 'Closing settings lost the selection'
+                    size_label=next((n.get_name() for n in controls() if n.get_name().endswith(' pt')),None)
+                    assert size_label, 'Missing selected-text font-size control'
+                    click(size_label);client.key('a',4)
                     for char in 'nan':client.key(char)
                     click('Save')
                     assert any(n.get_role()==Atspi.Role.ENTRY and n.get_name()=='Font size' for n in walk(target)), 'Invalid size closed its dialog'
-                    assert not any(n.get_name() in {'Duplicate','Undo','Settings'} for n in controls()), 'Background controls leaked through a dialog'
+                    assert not any(n.get_name() in {'Copy','Cut','Undo','Settings'} for n in controls()), 'Background controls leaked through a dialog'
                     client.key('a',4)
                     for char in '24':client.key(char)
                     click('Save')
                     assert not any(n.get_role()==Atspi.Role.ENTRY for n in walk(target)), 'Correcting an invalid value must work immediately'
                     client.key('z',4);time.sleep(.2)
                     click('Document actions');client.key('Escape');time.sleep(.2)
-                    assert any(n.get_name()=='Duplicate' for n in controls()), 'Closing a menu lost the selection'
+                    assert any(n.get_name()=='Copy' for n in controls()), 'Closing a menu lost the selection'
                     client.key('Escape');time.sleep(.2)
-                    assert not any(n.get_name()=='Duplicate' for n in controls()), 'Escape on the canvas must still clear the selection'
+                    assert not any(n.get_name()=='Copy' for n in controls()), 'Escape on the canvas must still clear the selection'
                     click('Library ·',True);click('Keyboard shortcuts and help')
                     help_controls={n.get_name() for n in controls()}
-                    assert {'Got it','Open starter notebook','Start input check'}.issubset(help_controls)
-                    assert not help_controls-{'Got it','Open starter notebook','Start input check','Minimize window','Maximize window','Restore window','Close window'}, f'Help leaked background controls: {help_controls}'
+                    assert {'Got it','Open starter document','Start input check'}.issubset(help_controls)
+                    assert not help_controls-{'Got it','Open starter document','Start input check','Minimize window','Maximize window','Restore window','Close window'}, f'Help leaked background controls: {help_controls}'
                     client.key('Escape')
                     with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
                         prefs=json.loads(db.execute("SELECT data FROM settings WHERE key='preferences'").fetchone()[0])
@@ -152,16 +156,16 @@ def main():
                     assert any(n.get_name()=='Manage reading archive' for n in controls()), [n.get_name() for n in controls()]
                     click('Manage reading archive');click('Add to favorites')
                     click('Manage reading archive');click('Edit tags…');rename_dialog('reference, papers')
-                    click('Manage reading archive');click('Move to folder…');click('Move to Projects')
+                    click('Manage reading archive');click('Move to folder…');click('Projects');click('Move')
                     click('Manage reading archive');click('Duplicate')
                     assert any(n.get_name()=='Manage reading archive (copy)' for n in controls())
                     click('Manage reading archive');click('Move to trash');click('Trash')
                     click('Manage reading archive');click('Restore document');click('Documents')
                     click('Open Field notes');click('Open or create a document · Ctrl+T')
                     click('Open reading archive');assert not any(n.get_role()==Atspi.Role.ENTRY for n in walk(target))
-                    click('Open or create a document · Ctrl+T');click('＋  Create new document');client.key('a',4)
-                    for char in 'untitled note':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
-                    click('Create notebook')
+                    click('Open or create a document · Ctrl+T');click('＋  Create new document')
+                    assert not any(n.get_role()==Atspi.Role.ENTRY for n in walk(target)), 'Quick creation unexpectedly opened a setup dialog'
+                    click('Rename document');rename_dialog('untitled note')
                     assert any(n.get_name()=='Open untitled note' for n in controls())
                     click('Library ·',True)
                     with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
@@ -184,13 +188,13 @@ def main():
                         with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
                             return db.execute('SELECT * FROM objects ORDER BY id').fetchall()
                     objects_before=snapshot_objects()
-                    click('Open Field notes');click('Settings');capture('settings-dark')
-                    click('Paper follows appearance: On');click('Done');capture('editor-dark-white-paper')
+                    click('Open Field notes');click('Settings');click('Appearance');capture('settings-dark')
+                    click('Paper follows appearance: On');click('Close settings');capture('editor-dark-white-paper')
                     assert preferences()['appearance']['canvas_follows_theme'] is False
-                    click('Settings');click('Custom paper color');edit_hex('fdf5e6');click('Done');capture('editor-dark-custom-paper')
+                    click('Settings');click('Appearance');click('Custom paper color');edit_hex('fdf5e6');click('Close settings');capture('editor-dark-custom-paper')
                     assert preferences()['appearance']['canvas_color']=={'r':253,'g':245,'b':230}
-                    click('Settings');click('Paper follows appearance: Off')
-                    click('Customize colors');click('Customize Primary');edit_hex('ff8844')
+                    click('Settings');click('Appearance');click('Paper follows appearance: Off')
+                    click('Edit colors…');click('Customize Primary');edit_hex('ff8844')
                     click('Customize Borders');edit_hex('ffffff33');capture('custom-colors-dark')
                     assert preferences()['appearance']['dark']['primary']==int('ff8844ff',16)
                     assert preferences()['appearance']['dark']['border']==int('ffffff33',16)
@@ -200,36 +204,36 @@ def main():
                     click('Customize Background');edit_hex('xyz');capture('invalid-theme-color')
                     assert any(n.get_name()=='Save' for n in controls()), 'Invalid color must keep the dialog open'
                     edit_hex('ffffff')
-                    click('+');assert preferences()['appearance']['radius']==12
+                    click('Increase corner radius');assert preferences()['appearance']['radius']==12
                     capture('custom-colors-light')
-                    click('Reset appearance');click('Done');capture('editor-light-reset')
+                    click('Reset appearance');click('Close settings');capture('editor-light-reset')
                     prefs=preferences()['appearance']
                     assert prefs['light']=={} and prefs['dark']=={} and prefs['canvas_follows_theme'] and prefs['radius']==10
                     assert snapshot_objects()==objects_before,'Appearance controls changed document objects'
-                    click('Settings');click('Dark appearance');click('Done');capture('editor-dark-reset');click('Library ·',True)
+                    click('Settings');click('Appearance');click('Dark appearance');click('Close settings');capture('editor-dark-reset');click('Library ·',True)
                     print('APPEARANCE_OK: light/dark customization, alpha, validation, radius, fixed/custom/themed paper, reset, document preservation')
-                click('New document')
+                click('New document with options…')
                 for char in 'New notebook':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
-                click('Create notebook')
+                click('Create document')
                 buttons=controls()
                 assert any(n.get_name()=='Undo' for n in buttons), 'Editor controls must follow notebook creation'
-                undo=next(n for n in buttons if n.get_name()=='Undo');assert undo.get_action_iface().get_n_actions()>0
+                undo=next(n for n in buttons if n.get_name()=='Undo')
+                assert not undo.get_state_set().contains(Atspi.StateType.ENABLED), 'Empty-document Undo must be disabled'
+                undo_action=undo.get_action_iface()
+                assert undo_action is None or undo_action.get_n_actions()==0, 'Disabled Undo must not offer native actions'
                 if args.shortcuts:
+                    os.environ['GDK_BACKEND']='x11' # This check runs on the explicitly requested private X11 display.
                     gi.require_version('Gtk','3.0')
                     from gi.repository import Gtk,Gdk
                     assert Gtk.init_check([])[0], 'No private GTK display for clipboard verification'
                     client.key('n',4);time.sleep(.5)
-                    with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
-                        assert db.execute('SELECT count(*) FROM notes').fetchone()[0]==initial_notes+1, 'Opening setup created a document'
-                    client.key('Escape');client.key('n',4)
-                    for char in 'Shortcut notebook':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
-                    click('Create notebook')
+                    assert not any(n.get_role()==Atspi.Role.ENTRY for n in walk(target)), 'Ctrl+N must create immediately without setup'
                     with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
                         assert db.execute('SELECT count(*) FROM notes').fetchone()[0]==initial_notes+2, 'Ctrl+N did not create exactly one document'
                         objects_before=list(db.execute('SELECT id,data FROM objects ORDER BY id'))
                     client.key('f',4);client.key('a',4)
                     for char in 'pel':client.key(char)
-                    assert any(n.get_role()==Atspi.Role.ENTRY and n.get_name()=='Search your notes' for n in walk(target)), 'Typing tool shortcuts closed the search field'
+                    assert any(n.get_role()==Atspi.Role.ENTRY and n.get_name()=='Search your documents' for n in walk(target)), 'Typing tool shortcuts closed the search field'
                     client.key('a',4);client.key('c',4)
                     clipboard=Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
                     assert clipboard.wait_for_text()=='pel', 'Tool shortcut letters did not reach the focused field'

@@ -86,7 +86,7 @@ def main():
                 def controls():
                     while GLib.MainContext.default().iteration(False):
                         pass
-                    return [n for n in walk(target) if n.get_role() in [Atspi.Role.PUSH_BUTTON, Atspi.Role.PUSH_BUTTON_MENU]]
+                    return [n for n in walk(target) if n.get_role() in [Atspi.Role.PUSH_BUTTON, Atspi.Role.PUSH_BUTTON_MENU, Atspi.Role.TOGGLE_BUTTON, Atspi.Role.RADIO_BUTTON, Atspi.Role.CHECK_BOX, Atspi.Role.PAGE_TAB, Atspi.Role.LIST_ITEM, Atspi.Role.TREE_ITEM]]
                 def wait(label):
                     for _ in range(100):
                         item = next((n for n in controls() if n.get_name() == label), None)
@@ -102,7 +102,12 @@ def main():
                     for char in text:
                         client.key('space' if char == ' ' else char)
                 def action(label):
-                    click('Document actions'); click(label)
+                    click('Document actions')
+                    if label == 'Index page handwriting…':
+                        click('Math and handwriting ›')
+                    elif label in {'Name page bookmark…', 'Duplicate current page', 'Use current page as cover', 'Move page to document…', 'Save page as template…', 'Add page from template…'}:
+                        click('Current page ›')
+                    click(label)
                 def capture(name):
                     time.sleep(1.)  # Allow asynchronous text/thumbnail raster jobs to settle.
                     subprocess.run([sys.executable, 'scripts/capture-x11.py', str(args.output / f'{name}.png'),
@@ -113,6 +118,13 @@ def main():
                         assert len({pixels[i:i+3] for i in range(0, len(pixels), 3)}) > 40, name
                 def pages(identifier):
                     return rows('SELECT id,header FROM pages WHERE note_id=? ORDER BY position', (identifier,))
+                def wait_page_counts(expected):
+                    for _ in range(100):
+                        actual = {identifier: len(pages(identifier)) for identifier in expected}
+                        if actual == expected:
+                            return
+                        time.sleep(.1)
+                    assert actual == expected, (actual, expected)
                 def metadata(title):
                     return next(json.loads(row[0]) for row in rows('SELECT metadata FROM notes')
                                 if json.loads(row[0])['title'] == title)
@@ -132,7 +144,7 @@ def main():
                 time.sleep(.4); capture('indexed-highlight')
                 assert not any(n.get_name() == 'Cancel' for n in controls())
 
-                click('Keyboard shortcuts and help'); click('Open starter notebook')
+                click('Keyboard shortcuts and help'); click('Open starter document')
                 tutorial = metadata('Welcome to Folio')['id']
                 assert len(pages(tutorial)) == 4
                 capture('starter-notebook')
@@ -142,10 +154,10 @@ def main():
                 assert len(pages(tutorial)) == 5
                 action('Use current page as cover')
                 assert metadata('Welcome to Folio')['cover_page'] in {p[0] for p in pages(tutorial)}
-                action('Move page to notebook…'); capture('move-page-picker'); click('Field notes')
+                action('Move page to document…'); capture('move-page-picker'); click('Field notes')
                 assert len(pages(tutorial)) == 4 and len(pages(note)) == original_pages + 1, (len(pages(tutorial)), len(pages(note)))
                 client.key('z', 4)
-                assert len(pages(tutorial)) == 5 and len(pages(note)) == original_pages + 1
+                wait_page_counts({tutorial: 5, note: original_pages + 1})
 
                 action('Save page as template…'); enter('practice page'); click('Save')
                 for _ in range(100):
@@ -160,8 +172,8 @@ def main():
                         break
                     time.sleep(.1)
                 assert len(pages(tutorial)) == 6
-                client.key('z', 4); assert len(pages(tutorial)) == 5
-                client.key('z', 5); assert len(pages(tutorial)) == 6
+                client.key('z', 4); wait_page_counts({tutorial: 5})
+                client.key('z', 5); wait_page_counts({tutorial: 6})
                 action('Add page from template…'); click('Rename…'); enter('reusable'); click('Save')
                 action('Add page from template…'); click('Remove'); click('Close')
                 assert not json.loads(rows("SELECT data FROM settings WHERE key='preferences'")[0][0])['templates']
@@ -171,9 +183,9 @@ def main():
                 click('Stop check'); wait('Resume check'); click('Reset check'); wait('Stop check')
                 click('Close check')
                 assert not any(n.get_name() == 'Save input report…' for n in controls())
-                click('Settings')
-                wait('Back up library…'); wait('Restore backup to a new library…')
-                capture('backup-controls'); click('Done')
+                click('Settings'); click('Library')
+                wait('Back up library…'); wait('Restore backup…')
+                capture('backup-controls'); click('Close settings')
                 client.key('s', 4)
                 print('NOTEBOOK_WORKFLOWS_OK: reviewed ink index/search, starter, bookmarks, duplicate/move/undo, cover, template lifecycle, input-check controls, backup controls', flush=True)
                 print('Excluded: physical input, real OCR accuracy, OS file-dialog export/restore (archive roundtrip covered by Rust tests)', flush=True)

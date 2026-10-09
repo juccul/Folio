@@ -105,15 +105,18 @@ impl Controller {
     }
     pub fn folder_tree(&self) -> Vec<(Notebook, usize)> {
         let mut ordered: Vec<_> = self.notebooks.iter().collect();
-        ordered.sort_by_key(|n| (n.name.to_lowercase(), n.name.clone(), n.id));
-        let roots: Vec<_> = ordered
-            .iter()
-            .filter(|n| {
-                n.parent.is_none() || !self.notebooks.iter().any(|p| Some(p.id) == n.parent)
-            })
-            .map(|n| n.id)
-            .collect();
-        let mut result = Vec::new();
+        ordered.sort_by_cached_key(|n| (n.name.to_lowercase(), n.name.clone(), n.id));
+        let folders: HashMap<_, _> = self.notebooks.iter().map(|n| (n.id, n)).collect();
+        let mut children: HashMap<Id, Vec<Id>> = HashMap::new();
+        let mut roots = Vec::new();
+        for folder in &ordered {
+            if let Some(parent) = folder.parent.filter(|id| folders.contains_key(id)) {
+                children.entry(parent).or_default().push(folder.id);
+            } else {
+                roots.push(folder.id);
+            }
+        }
+        let mut result = Vec::with_capacity(ordered.len());
         let mut seen = HashSet::new();
         // Orphans and invalid cycles remain visible instead of disappearing.
         for root in roots.into_iter().chain(ordered.iter().map(|n| n.id)) {
@@ -122,17 +125,13 @@ impl Controller {
                 if !seen.insert(id) {
                     continue;
                 }
-                let Some(folder) = self.notebooks.iter().find(|n| n.id == id) else {
+                let Some(folder) = folders.get(&id) else {
                     continue;
                 };
-                result.push((folder.clone(), depth));
-                stack.extend(
-                    ordered
-                        .iter()
-                        .rev()
-                        .filter(|n| n.parent == Some(id))
-                        .map(|n| (n.id, depth + 1)),
-                );
+                result.push(((*folder).clone(), depth));
+                if let Some(children) = children.get(&id) {
+                    stack.extend(children.iter().rev().map(|id| (*id, depth + 1)));
+                }
             }
         }
         result
@@ -141,6 +140,55 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn large_folder_tree_retains_orphans_cycles_and_depth_order() {
+        let root = std::env::temp_dir().join(format!("folio-large-tree-{}", Id::new_v4()));
+        let mut app = Controller::open(root.clone()).unwrap();
+        let ids: Vec<_> = (0..1000).map(|_| Id::new_v4()).collect();
+        app.notebooks = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| Notebook {
+                id: *id,
+                name: format!("Folder {i:04}"),
+                parent: if i == 0 { None } else { Some(ids[i - 1]) },
+            })
+            .collect();
+        let orphan = Id::new_v4();
+        let cycle = Id::new_v4();
+        app.notebooks.push(Notebook {
+            id: orphan,
+            name: "Orphan".into(),
+            parent: Some(Id::new_v4()),
+        });
+        app.notebooks.push(Notebook {
+            id: cycle,
+            name: "Cycle".into(),
+            parent: Some(cycle),
+        });
+        let tree = app.folder_tree();
+        assert_eq!(tree.len(), 1002);
+        assert_eq!(
+            tree.iter()
+                .map(|(folder, _)| folder.id)
+                .collect::<HashSet<_>>()
+                .len(),
+            1002
+        );
+        for (i, id) in ids.iter().enumerate() {
+            assert_eq!((tree[i].0.id, tree[i].1), (*id, i));
+        }
+        assert!(
+            tree.iter()
+                .any(|(folder, depth)| folder.id == orphan && *depth == 0)
+        );
+        assert!(
+            tree.iter()
+                .any(|(folder, depth)| folder.id == cycle && *depth == 0)
+        );
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn shuffled_folders_form_an_ordered_tree_with_complete_paths() {
         let mut a =

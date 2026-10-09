@@ -5,6 +5,7 @@ use super::{
 use folio_app::Tool;
 use folio_document::{Id, Object, Point as DocPoint, Rect, Transform};
 use gpui::{prelude::*, *};
+use std::sync::Arc;
 
 pub struct Editor {
     pub note: Id,
@@ -86,23 +87,25 @@ impl NotesView {
             && selected
             && !self.library_open
             && self.controller.tool == Tool::Lasso;
-        let text = self
-            .controller
-            .page()
-            .objects
-            .get(&editor.id)
-            .and_then(|o| {
-                if let Object::Text(t) = o.as_ref() {
-                    Some(t.clone())
-                } else {
-                    None
-                }
-            });
+        let source = self.controller.page().objects.get(&editor.id).cloned();
+        let text = source.as_ref().and_then(|source| {
+            let Object::Text(text) = source.as_ref() else {
+                return None;
+            };
+            let cached = editor
+                .field
+                .read(cx)
+                .inline
+                .as_ref()
+                .filter(|style| Arc::ptr_eq(&style.source, source));
+            Some(cached.map_or_else(|| Arc::new(text.clone()), |style| style.text.clone()))
+        });
         if !valid || text.is_none() {
             self.inline_text = None;
             return None;
         }
         let text = text.unwrap();
+        let source = source.unwrap();
         let bounds = self.canvas_bounds?;
         let viewport = self.controller.session().viewport;
         let local = viewport
@@ -152,6 +155,7 @@ impl NotesView {
             field.theme = theme;
             field.inline = Some(InlineStyle {
                 text,
+                source,
                 transform,
                 mask: bounds,
                 color,
@@ -203,7 +207,7 @@ impl NotesView {
     pub(super) fn text_formatting_bar(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let text = self.controller.session().selection.iter().find_map(|id| {
             match self.controller.page().objects.get(id)?.as_ref() {
-                Object::Text(t) => Some(t.clone()),
+                Object::Text(t) => Some(t),
                 _ => None,
             }
         })?;

@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::Read,
+    io::{BufWriter, Read, Write},
     path::{Component, Path},
 };
 const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -316,11 +316,11 @@ pub fn export_notebook(
         }
     }
     let data = stage.0.join("document.json");
-    fs::write(
-        &data,
-        serde_json::to_vec(&document).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    // Stream large notebooks instead of holding a second complete JSON payload.
+    let mut output = BufWriter::new(File::create(&data).map_err(|e| e.to_string())?);
+    serde_json::to_writer(&mut output, &document).map_err(|e| e.to_string())?;
+    output.flush().map_err(|e| e.to_string())?;
+    drop(output);
     let mut files = BTreeMap::from([("document.json".into(), data)]);
     for name in references(&document) {
         let path = folio_export::asset_path(assets, &name).map_err(|e| e.to_string())?;

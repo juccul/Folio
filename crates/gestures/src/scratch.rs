@@ -5,7 +5,14 @@ use folio_document::*;
 pub struct Scratch {
     pub bounds: Rect,
     pub confidence: f32,
-    passes: Vec<Vec<Point>>,
+    segments: Vec<ScratchSegment>,
+}
+
+#[derive(Clone, Debug)]
+struct ScratchSegment {
+    a: Point,
+    b: Point,
+    bounds: Rect,
 }
 
 /// Repeated broad passes through the same corridor, in any orientation. Turning points use distance
@@ -14,7 +21,7 @@ pub fn scratch(points: &[StrokePoint]) -> Option<Scratch> {
     if points.len() < 4 || points.last()?.timestamp.saturating_sub(points[0].timestamp) > 4500 {
         return None;
     }
-    let positions = geometry::clean(&points.iter().map(|p| p.position()).collect::<Vec<_>>())?;
+    let positions = geometry::clean_iter(points.iter().map(|p| p.position()))?;
     let bounds = Rect::from_points(positions.iter().copied());
     let path = geometry::resample(&positions, 192);
     let length = geometry::length(&positions);
@@ -60,7 +67,7 @@ fn scratch_on_axis(path: &[Point], bounds: Rect, length: f32, axis: Point) -> Op
     let passes: Vec<_> = turns
         .windows(2)
         .filter(|t| (projection[t[1]] - projection[t[0]]).abs() >= span * 0.40)
-        .map(|t| path[t[0]..=t[1]].to_vec())
+        .map(|t| &path[t[0]..=t[1]])
         .collect();
     let spread = perpendicular
         .iter()
@@ -95,7 +102,16 @@ fn scratch_on_axis(path: &[Point], bounds: Rect, length: f32, axis: Point) -> Op
     Some(Scratch {
         bounds,
         confidence: 0.85 + passes.len().min(7) as f32 * 0.02,
-        passes,
+        segments: passes
+            .iter()
+            .flat_map(|pass| {
+                pass.windows(2).map(|pair| ScratchSegment {
+                    a: pair[0],
+                    b: pair[1],
+                    bounds: Rect::from_points([pair[0], pair[1]]).expand(2.),
+                })
+            })
+            .collect(),
     })
 }
 
@@ -107,44 +123,43 @@ impl Scratch {
         if !self.bounds.expand(3.).intersects(object.bounds()) {
             return false;
         }
-        let ink: Vec<(Point, f32)> = match object {
-            Object::Stroke(s) => s
-                .display_path()
-                .iter()
-                .map(|p| {
-                    (
-                        s.transform.apply(p.position),
-                        p.radius * s.transform.scale(),
-                    )
-                })
-                .collect(),
-            Object::Shape(s) if !s.source_strokes.is_empty() => s
-                .vertices
-                .iter()
-                .map(|&p| {
-                    (
-                        s.transform.apply(p),
-                        s.style.width * 0.5 * s.transform.scale(),
-                    )
-                })
-                .collect(),
-            _ => return false,
+        match object {
+            Object::Stroke(s) => {
+                let scale = s.transform.scale();
+                self.erases_path(
+                    s.display_path()
+                        .iter()
+                        .map(|p| (s.transform.apply(p.position), p.radius * scale)),
+                )
+            }
+            Object::Shape(s) if !s.source_strokes.is_empty() => {
+                let radius = s.style.width * 0.5 * s.transform.scale();
+                self.erases_path(s.vertices.iter().map(|&p| (s.transform.apply(p), radius)))
+            }
+            _ => false,
+        }
+    }
+    fn erases_path(&self, points: impl Iterator<Item = (Point, f32)>) -> bool {
+        let mut points = points.peekable();
+        let Some(mut previous) = points.next() else {
+            return false;
         };
-        for pass in &self.passes {
-            let intersects = pass.windows(2).any(|p| {
-                if ink.len() == 1 {
-                    return folio_ink::segment_distance(ink[0].0, p[0], p[1]) <= ink[0].1 + 2.;
-                }
-                let bounds = Rect::from_points([p[0], p[1]]).expand(2.);
-                ink.windows(2).any(|s| {
-                    let radius = s[0].1.max(s[1].1);
-                    bounds.intersects(Rect::from_points([s[0].0, s[1].0]).expand(radius))
-                        && geometry::segment_distance(p[0], p[1], s[0].0, s[1].0) <= radius + 2.
-                })
+        if points.peek().is_none() {
+            return self.segments.iter().any(|segment| {
+                folio_ink::segment_distance(previous.0, segment.a, segment.b) <= previous.1 + 2.
             });
-            if intersects {
+        }
+        for next in points {
+            let radius = previous.1.max(next.1);
+            let bounds = Rect::from_points([previous.0, next.0]).expand(radius);
+            if self.segments.iter().any(|segment| {
+                segment.bounds.intersects(bounds)
+                    && geometry::segment_distance(segment.a, segment.b, previous.0, next.0)
+                        <= radius + 2.
+            }) {
                 return true;
             }
+            previous = next;
         }
         false
     }

@@ -472,6 +472,9 @@ pub struct Equation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub math_link: Option<MathLink>,
 }
+// Pages and commands store objects behind Arc. Boxing the largest variant
+// would add a second allocation and indirection to each equation object.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Object {
     Stroke(InkStroke),
@@ -722,28 +725,38 @@ impl Page {
             .copied()
             .collect()
     }
-    pub fn text(&self) -> String {
-        let mut text = self
-            .ordered_objects()
-            .map(|o| o.searchable_text().to_owned())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>();
-        if !self.ink_text.is_empty() {
-            let hidden = self.hidden_sources();
-            text.extend(
+    /// Searchable content in display order without cloning individual strings.
+    pub fn text_fragments(&self) -> impl Iterator<Item = &str> {
+        let hidden = if self.ink_text.is_empty() {
+            std::collections::HashSet::new()
+        } else {
+            self.hidden_sources()
+        };
+        self.ordered_objects()
+            .map(|object| object.searchable_text())
+            .filter(|text| !text.is_empty())
+            .chain(
                 self.ink_text
                     .iter()
-                    .filter(|entry| {
+                    .filter(move |entry| {
                         !entry.stale
                             && entry
                                 .sources
                                 .iter()
                                 .all(|id| self.objects.contains_key(id) && !hidden.contains(id))
                     })
-                    .map(|entry| entry.text.clone()),
-            );
+                    .map(|entry| entry.text.as_str()),
+            )
+    }
+    pub fn text(&self) -> String {
+        let mut text = String::new();
+        for (index, fragment) in self.text_fragments().enumerate() {
+            if index > 0 {
+                text.push('\n');
+            }
+            text.push_str(fragment);
         }
-        text.join("\n")
+        text
     }
 }
 impl Default for Page {
