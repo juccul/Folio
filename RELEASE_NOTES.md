@@ -1,5 +1,12 @@
 # Folio 0.1.4
 
+The 0.1.3 and 0.1.4 Flatpak packages were reissued with a repair for first-click
+updates under Flatpak's default polling interval. Update now starts its
+transaction immediately, includes first-use authorization, and verifies the
+actual deployed commit before offering and performing a restart. Windows
+packages retain their original bytes. See UPDATES.md for same-version replacement
+and the retained original source.
+
 - Replaced the RGB channel sliders with a standard saturation/brightness color box and rainbow hue slider. Ink, text, paper, new-document paper and theme colors use the same picker. Square swatches, recent colors and exact hex entry remain available.
 - Color controls support mouse dragging and keyboard adjustment. Hue stays selected while choosing white, gray or black. Transparent theme borders and input colors retain their opacity and show a checkerboard alpha control.
 - Added System appearance, which follows your device at startup and when the theme changes. Explicit Light and Dark overrides and separate custom palettes remain available. Existing profiles retain their previous preference; new profiles follow System.

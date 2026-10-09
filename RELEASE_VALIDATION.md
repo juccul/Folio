@@ -1,5 +1,31 @@
 # Folio 0.1.4 release validation
 
+## Flatpak updater repair
+
+The original update fixture used a one-second portal polling interval and a
+preapproved update permission. That omitted the first-use path on a default
+desktop. An independent reproduction with the default portal produced the exact
+45-second timeout; changing only polling to one second bypassed it.
+
+The repair directly starts the explicitly requested transaction. Ten private
+D-Bus contract tests cover absent/stale availability, progress queued before the
+method reply, authorization failure, already-deployed updates, mismatched commits,
+bounded metadata and cancellation. A read-only latest-deployment Spawn checks the
+commit before Ready and before restart. A signed metadata repair test restricts
+same-version changes to an unstaged Flatpak commit with unchanged Windows fields.
+Twenty-two updater tests and strict all-target updater Clippy passed.
+
+The release gate is an isolated native UI update from repaired 0.1.3 to repaired
+0.1.4 with the default real Flatpak portal, no polling override and no permission
+pregrant. It must click Update, approve the first-use dialog, reach Restart to
+update, back up, restart and preserve the fixture library. Final evidence and
+hashes are recorded under artifacts/update-hotfix. The local installation is
+patched to repaired 0.1.3 so its owner can repeat that upgrade themselves.
+
+Windows binaries are not changed by this Linux repair. Their original complete
+corresponding source remains available separately; repaired source is provided
+for the updated Flatpak packages. The previous validation record follows.
+
 The release includes the standard HSV color box, automatic system theme detection,
 zoom-independent circle-selection checks, held-circle priority, dialog Escape
 handling and Windows version-resource fixes since 0.1.3.
