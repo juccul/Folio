@@ -1,3 +1,29 @@
+# Folio 0.1.4 release validation
+
+The release includes the standard HSV color box, automatic system theme detection,
+zoom-independent circle-selection checks, held-circle priority, dialog Escape
+handling and Windows version-resource fixes since 0.1.3.
+
+## Local source checks
+
+- 308 workspace Rust tests passed; four existing optional/OCR tests were ignored.
+- HSV conversion round-trips 4,096 RGB colors with alpha intact and checks box
+  corners and grayscale hue preservation.
+- Strict UI/desktop all-target Clippy and formatting passed.
+- Native color-picker verification uses an isolated Xvfb and D-Bus demo session
+  with real mouse input and keyboard controls. It covers Save/Cancel, draft-only
+  changes, grayscale hue memory, transparency and ink/text/paper/theme persistence.
+- All packaging and upgrade verification uses disposable installations and fixture
+  libraries. The user's installed 0.1.3 and notes remain separate.
+
+Final native, Windows installer, Flatpak runtime and update verification reports
+and package hashes are saved under `artifacts/release-0.1.4` during release assembly.
+The complete corresponding source uses the release version and pinned runtime
+sources. The release retains the Ed25519 update key and GPG Flatpak signing key;
+private keys are kept outside source and release archives.
+
+The following record is retained for the previous release.
+
 # Folio 0.1.3 release validation
 
 The source repository and release downloads are public at

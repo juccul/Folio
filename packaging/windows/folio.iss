@@ -2,7 +2,7 @@
   #error Define PayloadDir as the portable package directory.
 #endif
 #ifndef FolioVersion
-  #define FolioVersion "0.1.3"
+  #define FolioVersion "0.1.4"
 #endif
 [Setup]
 AppId={{A8A523AB-784B-4AC1-9D4C-B0D9B378AA62}

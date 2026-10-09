@@ -1,3 +1,16 @@
+# Folio 0.1.4
+
+- Replaced the RGB channel sliders with a standard saturation/brightness color box and rainbow hue slider. Ink, text, paper, new-document paper and theme colors use the same picker. Square swatches, recent colors and exact hex entry remain available.
+- Color controls support mouse dragging and keyboard adjustment. Hue stays selected while choosing white, gray or black. Transparent theme borders and input colors retain their opacity and show a checkerboard alpha control.
+- Added System appearance, which follows your device at startup and when the theme changes. Explicit Light and Dark overrides and separate custom palettes remain available. Existing profiles retain their previous preference; new profiles follow System.
+- Fixed circle-selection minimum sizes at high zoom and made held circles take priority over overlapping scratch gestures. Circle to select must be enabled in Writing settings; circle the ink and briefly hold at the endpoint.
+- Fixed Escape dismissal for Move page and Page templates dialogs, and preserved scroll access to settings and dialog controls on smaller windows.
+- Fixed Windows numeric version resources and added verified setup EXE output to the platform build workflow.
+
+Windows x64 installer and portable ZIP, Linux x86_64 Flatpak and complete corresponding source are published together. Existing 0.1.3 installations can use the Update notice; downloads begin only after clicking Update and installation finishes through Restart to update. Signed update metadata and the existing Flatpak signing channel are retained.
+
+Database schema remains 6 and document format remains 4. See [UPDATES.md](UPDATES.md) for manual installation and recovery and [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) for verification.
+
 # Folio 0.1.3
 
 - Added an update notification to the right of the title bar, immediately before the window controls, whenever a newer stable release is available.
