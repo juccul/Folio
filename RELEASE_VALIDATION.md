@@ -9,10 +9,18 @@ handling and Windows version-resource fixes since 0.1.3.
 - 308 workspace Rust tests passed; four existing optional/OCR tests were ignored.
 - HSV conversion round-trips 4,096 RGB colors with alpha intact and checks box
   corners and grayscale hue preservation.
-- Strict UI/desktop all-target Clippy and formatting passed.
+- Strict workspace/all-target Clippy and formatting passed.
 - Native color-picker verification uses an isolated Xvfb and D-Bus demo session
-  with real mouse input and keyboard controls. It covers Save/Cancel, draft-only
-  changes, grayscale hue memory, transparency and ink/text/paper/theme persistence.
+  with real mouse input and keyboard controls. Both Light and Dark passed all
+  checks: Save/Cancel, draft-only changes, pointer focus, Enter confirmation,
+  drag clamping/release, grayscale hue memory, transparency, ink/text/paper/theme
+  persistence and undo preservation. Twenty screenshots were captured and the
+  footer was verified at 1000 × 620.
+- Native circle checks passed at 100% and 800% zoom and with overlapping scratch
+  detection, including live hold, move, undo/redo and durable close.
+- Native dialog/Escape isolation and system-theme portal checks passed, including
+  live changes, manual overrides, dialog lifecycle and saved preferences.
+- Seven Windows updater recovery tests and the math protocol test passed.
 - All packaging and upgrade verification uses disposable installations and fixture
   libraries. The user's installed 0.1.3 and notes remain separate.
 
