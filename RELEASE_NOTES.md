@@ -6,6 +6,8 @@
 - Fixed circle-selection minimum sizes at high zoom and made held circles take priority over overlapping scratch gestures. Circle to select must be enabled in Writing settings; circle the ink and briefly hold at the endpoint.
 - Fixed Escape dismissal for Move page and Page templates dialogs, and preserved scroll access to settings and dialog controls on smaller windows.
 - Fixed Windows numeric version resources and added verified setup EXE output to the platform build workflow.
+- Reduced Windows portable package entries from 4,520 to 660 while retaining every math dependency and original license notice. The published 0.1.3 portable updater prepared the compact package in 19.7 seconds instead of 53.3 seconds in the Windows VM.
+- Windows update preparation now follows verified work progress instead of failing after 30 seconds. Folio stays open until preparation completes; stalled or failed helpers stop without replacing the working installation.
 
 Windows x64 installer and portable ZIP, Linux x86_64 Flatpak and complete corresponding source are published together. Existing 0.1.3 installations can use the Update notice; downloads begin only after clicking Update and installation finishes through Restart to update. Signed update metadata and the existing Flatpak signing channel are retained.
 

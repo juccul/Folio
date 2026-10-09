@@ -6,7 +6,7 @@ handling and Windows version-resource fixes since 0.1.3.
 
 ## Local source checks
 
-- 308 workspace Rust tests passed; four existing optional/OCR tests were ignored.
+- 312 workspace Rust tests passed; four existing optional/OCR tests were ignored.
 - HSV conversion round-trips 4,096 RGB colors with alpha intact and checks box
   corners and grayscale hue preservation.
 - Strict workspace/all-target Clippy and formatting passed.
@@ -20,7 +20,21 @@ handling and Windows version-resource fixes since 0.1.3.
   detection, including live hold, move, undo/redo and durable close.
 - Native dialog/Escape isolation and system-theme portal checks passed, including
   live changes, manual overrides, dialog lifecycle and saved preferences.
-- Seven Windows updater recovery tests and the math protocol test passed.
+- Ten Windows updater recovery/progress tests and the math protocol test passed.
+- Four Rust readiness tests cover work lasting longer than thirty seconds,
+  missing/repeated progress, the preparation ceiling and bounded protocol parsing.
+- Three packaging tests and 21 actual ZIP-import math regressions passed. All
+  pinned math wheel members and original license bytes remain available. Windows
+  portable ZIP entries dropped from 4,520 to 660.
+- The exact published 0.1.3 portable helper prepared the compact prototype in
+  19.684 seconds, versus 53.31 seconds for the original layout. Its actual restart
+  reopened the same library with all notes, pages, saved objects and six explicit
+  preferences intact. The old thirty-second limit remains in published 0.1.3;
+  0.1.4 follows real preparation progress and still stops stalled helpers safely.
+- Windows native mouse selection saved the expected RGB color. Native UI,
+  synthetic Windows Ink pressure/tilt, offline math/PDF, manual upgrade and
+  uninstall checks passed on the preceding final-picker payload. The final
+  updater/package payload is verified separately before publication.
 - All packaging and upgrade verification uses disposable installations and fixture
   libraries. The user's installed 0.1.3 and notes remain separate.
 

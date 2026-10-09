@@ -1,6 +1,6 @@
 # Folio updates
 
-Folio 0.1.3 checks a small signed release manifest at startup and every ten minutes.
+Folio 0.1.3 and later check a small signed release manifest at startup and every ten minutes.
 A newer stable version appears at the right of the title bar, immediately before
 the window controls. Clicking **Update** starts the download. When verification
 finishes, the button becomes **Restart to update**. There are no automatic
@@ -26,6 +26,18 @@ It checks the resulting executable against the signed release and relaunches the
 same library. The previous payload is retained beside the installation for recovery.
 If installation fails, the helper restores that payload and reopens Folio.
 
+Starting with 0.1.4, Folio follows actual package hashing, extraction and
+verification progress during preparation. It permits slow storage to finish while
+the app remains open, stops a helper after two minutes without progress, and has
+a thirty-minute preparation ceiling. The portable package stores pure-Python math
+dependencies in a standard importable ZIP and preserves license originals in a
+separate archive with searchable full notices, reducing installation file writes.
+
+The published 0.1.3 updater has a fixed thirty-second preparation deadline. The
+compact 0.1.4 package passed that deadline in the Windows VM. If a slower device
+still reports that the helper did not become ready, Folio stays open; use the
+manual portable installation below to reach 0.1.4 and gain progress-aware updates.
+
 Keep libraries outside the program directory. Portable updates replace the entire
 program directory; keep personal files outside it too. Custom installation and
 library paths, including Unicode and spaces, are supported. A complete package
@@ -33,7 +45,7 @@ is required: copying only `folio.exe` omits the embedded Python update helper,
 PDF tools and math runtime. Update logs and the retained-payload path are under
 `Folio/updates/job-*/` in local application data.
 
-To update 0.1.2 manually, close all Folio windows and run the 0.1.3 setup EXE.
+To update manually, close all Folio windows and run the latest setup EXE.
 Use the same installation directory. Do not uninstall with a third-party cleaner
 or remove your library directory. The installer never removes note libraries.
 For portable installations, extract into a new folder and open the same library
