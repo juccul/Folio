@@ -12,8 +12,8 @@
   <launchable type="desktop-id">io.github.folio.Notes.desktop</launchable>
   <supports><control>pointing</control><control>keyboard</control></supports>
   <releases>
-    <release version="0.1.0" date="2026-10-10">
-      <description><p>Fresh release containing all current notebook, color picker, system theme and verified updater features, with Windows titlebar controls and Linux resizing fixes. Existing installations need one manual replacement to start the new version sequence; libraries retain the current format.</p></description>
+    <release version="0.1.1" date="2026-10-10">
+      <description><p>Compact writing tools, simpler pen settings and user presets, accurate color selection, theme-aware default ink, folder menus and drag-and-drop, refined tabs and corrected cached update offers.</p></description>
     </release>
   </releases>
   <content_rating type="oars-1.1"/>

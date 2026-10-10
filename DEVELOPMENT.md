@@ -1,8 +1,8 @@
 # Development status — Folio 0.1.1
 
-Updated 2026-10-07. Folio is a runnable Rust/GPUI Linux desktop application. Production certification still requires physical tablets and additional desktop/distribution sessions; synthetic events and CPU benchmarks do not establish hardware-to-display latency.
+Updated 2026-10-10. Folio is a runnable Rust/GPUI Linux and Windows desktop application. Production certification still requires physical tablets and additional desktop/distribution sessions; synthetic events and CPU benchmarks do not establish hardware-to-display latency.
 
-Version 0.1.1 adds Windows 11 x64 builds, a portable package and a per-user installer. See `WINDOWS.md` for Windows Ink support and validation limits. The earlier public version reset was 0.1.0. Historical sections below retain their original internal development build numbers. This release includes Vulkan Q8 OCR with verified first-use downloads, along with test and runtime-payload cleanup.
+Version 0.1.1 includes compact writing tools, focused pen settings, user-defined presets, exact color picker rendering, theme-aware default ink, optional hue-preserving readability, folder menus and drag-and-drop, refined tabs and corrected cached update offers. Windows setup/portable and signed Flatpak packages share the same release source. See `WINDOWS.md` for Windows Ink support and validation limits. Historical sections below retain their original internal development build numbers.
 
 ## Continuous integration
 
