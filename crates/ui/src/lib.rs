@@ -525,6 +525,7 @@ impl NotesView {
         if self.equation_draft.take().is_some() {
             self.controller.cancel_equation_render();
         }
+        self.clear_color_picker(window);
         self.modal = None;
         self.notebook_setup = None;
         self.subscriptions.clear();
@@ -697,8 +698,7 @@ impl NotesView {
             |this, _, _: &Submitted, window, cx| this.submit_modal(window, cx),
         ));
         self.modal_error = None;
-        self.color_drag = None;
-        self.color_picker = None;
+        self.clear_color_picker(window);
         self.modal = Some((modal, field));
         cx.notify();
     }
