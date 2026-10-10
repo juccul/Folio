@@ -7,6 +7,12 @@ finishes, the button becomes **Restart to update**. There are no automatic
 package downloads or automatic restarts. Settings → Updates provides a manual
 check and failure details.
 
+Cached offers stay hidden at startup until a fresh signed manifest confirms them.
+If the published version is no newer than the running app, Folio clears the offer
+and any pending restart target, then stores the current metadata. Staged packages
+and recovery files remain available for recovery. A failed check reports its error
+without changing the saved metadata.
+
 Restart finishes the current text edit, saves every open document and workspace,
 and creates a `before-update-VERSION-UUID.foliobackup` in the current library.
 A failed save or backup keeps Folio open. Imports, recognition, equations and
@@ -92,11 +98,10 @@ remote in the same user or system installation. Keep your library and app data.
 The reset uses `updates/v2/` under Folio's application-data directory for signed
 metadata, packages and helper jobs. Old `updates/release.json`, staged packages
 and recovery jobs remain untouched and are never imported into the new update
-sequence. This prevents a cached retired 0.1.4 release from blocking future 0.1.1
-updates or offering deleted downloads. No cache deletion or manual metadata reset
-is required after installing the new 0.1.0. Later releases keep this namespace and
-must increase the version; signature verification and downgrade protection remain
-in place.
+sequence. A successful signed check also replaces obsolete metadata in the active
+namespace, including offers retained across a Flatpak reinstall. Later releases
+keep this namespace and must increase the version; signature verification and
+downgrade protection remain in place.
 
 ## Publishing future releases
 

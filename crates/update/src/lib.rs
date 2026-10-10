@@ -4,6 +4,8 @@ mod download;
 pub mod flatpak;
 pub mod manifest;
 mod windows;
+#[cfg(test)]
+mod worker_tests;
 
 use manifest::{Channel, Release};
 use reqwest::blocking::Client;
@@ -260,6 +262,7 @@ fn client() -> Result<Client, String> {
 fn read_manifest(client: &Client, channel: &Channel) -> Result<Vec<u8>, String> {
     let response = client
         .get(channel.manifest_url())
+        .header(reqwest::header::CACHE_CONTROL, "no-cache")
         .timeout(Duration::from_secs(30))
         .send()
         .map_err(|e| e.to_string())?
@@ -289,6 +292,45 @@ fn accepts_flatpak_repair(
         && previous.windows_binary_sha256 == candidate.windows_binary_sha256
         && previous.flatpak_commit != candidate.flatpak_commit
 }
+// Only freshly verified channel metadata can authorize an offer. A current
+// channel withdraws an obsolete cached offer, including a staged restart.
+fn checked_offer(
+    current: &str,
+    candidate: &Release,
+    previous: Option<&Release>,
+    backend: Backend,
+    ready: bool,
+) -> Result<bool, String> {
+    if !candidate.newer_than(current)? {
+        return Ok(false);
+    }
+    if let Some(previous) = previous {
+        let ordering = semver::Version::parse(&candidate.version)
+            .map_err(|e| e.to_string())?
+            .cmp(&semver::Version::parse(&previous.version).map_err(|e| e.to_string())?);
+        if ordering.is_lt() {
+            return Err("The update channel returned an older update than the verified cache. Try checking again later".into());
+        }
+        if ordering.is_eq()
+            && previous != candidate
+            && !accepts_flatpak_repair(backend, ready, previous, candidate)
+        {
+            return Err("The published release changed without increasing its version. Waiting for a new immutable release".into());
+        }
+    }
+    Ok(true)
+}
+fn store_manifest(metadata: &Path, bytes: &[u8]) -> Result<(), String> {
+    let partial = metadata.with_extension(format!("{}.tmp", std::process::id()));
+    fs::write(&partial, bytes).map_err(|e| e.to_string())?;
+    folio_platform::publish_file(&partial, metadata).map_err(|e| e.to_string())
+}
+struct WorkerConfig {
+    backend: Backend,
+    channel: Channel,
+    cache: PathBuf,
+    current: &'static str,
+}
 fn worker(
     commands: Receiver<Command>,
     events: Sender<Event>,
@@ -297,23 +339,45 @@ fn worker(
 ) -> Result<(), String> {
     let client = client()?;
     let channel = Channel::bundled();
-    let cache = cache_dir();
+    let fetch_channel = channel.clone();
+    let fetch_client = client.clone();
+    worker_session(
+        commands,
+        events,
+        cancel,
+        WorkerConfig {
+            backend,
+            channel,
+            cache: cache_dir(),
+            current: env!("CARGO_PKG_VERSION"),
+        },
+        client,
+        || read_manifest(&fetch_client, &fetch_channel),
+    )
+}
+fn worker_session(
+    commands: Receiver<Command>,
+    events: Sender<Event>,
+    cancel: Arc<AtomicBool>,
+    config: WorkerConfig,
+    client: Client,
+    mut fetch_manifest: impl FnMut() -> Result<Vec<u8>, String>,
+) -> Result<(), String> {
+    let WorkerConfig {
+        backend,
+        channel,
+        cache,
+        current,
+    } = config;
     fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
     let metadata = cache.join("release.json");
-    let mut release = cached_release(&cache, &channel, env!("CARGO_PKG_VERSION"));
+    let mut release = cached_release(&cache, &channel, current);
     let mut ready = false;
     if let Some(r) = &release {
         ready = backend != Backend::Flatpak
             && download::verified(&package_path(&cache, backend, r), backend.asset(r));
-        let _ = events.send(Event::State(if ready {
-            State::Ready {
-                version: r.version.clone(),
-            }
-        } else {
-            State::Available {
-                version: r.version.clone(),
-            }
-        }));
+        // Do not display cached offers until the channel confirms them. The
+        // referenced release may have been withdrawn since the last session.
     }
     let mut next_check = Instant::now();
     #[cfg(target_os = "linux")]
@@ -333,28 +397,26 @@ fn worker(
         }
         match command {
             Command::Check => {
-                match read_manifest(&client, &channel)
+                match fetch_manifest()
                     .and_then(|bytes| manifest::verify(&bytes, &channel).map(|r| (bytes, r)))
                 {
                     Ok((bytes, candidate)) => {
-                        let _ = events.send(Event::CheckError(None));
                         next_check = Instant::now() + Duration::from_secs(10 * 60);
-                        if candidate.newer_than(env!("CARGO_PKG_VERSION"))? {
-                            if let Some(previous) = &release {
-                                let ordering = semver::Version::parse(&candidate.version)
-                                    .unwrap()
-                                    .cmp(&semver::Version::parse(&previous.version).unwrap());
-                                if ordering.is_lt() {
-                                    continue;
-                                }
-                                if ordering.is_eq()
-                                    && previous != &candidate
-                                    && !accepts_flatpak_repair(backend, ready, previous, &candidate)
-                                {
-                                    let _ = events.send(Event::CheckError(Some("The published release changed without increasing its version. Waiting for a new immutable release".into())));
-                                    continue;
-                                }
+                        let offer = match checked_offer(
+                            current,
+                            &candidate,
+                            release.as_ref(),
+                            backend,
+                            ready,
+                        ) {
+                            Ok(offer) => offer,
+                            Err(error) => {
+                                let _ = events.send(Event::CheckError(Some(error)));
+                                continue;
                             }
+                        };
+                        let _ = events.send(Event::CheckError(None));
+                        if offer {
                             if release.as_ref().is_none_or(|r| r != &candidate) {
                                 #[cfg(target_os = "linux")]
                                 {
@@ -365,24 +427,32 @@ fn worker(
                                         &package_path(&cache, backend, &candidate),
                                         backend.asset(&candidate),
                                     );
-                                let _ = events.send(Event::State(if ready {
-                                    State::Ready {
-                                        version: candidate.version.clone(),
-                                    }
-                                } else {
-                                    State::Available {
-                                        version: candidate.version.clone(),
-                                    }
-                                }));
-                                release = Some(candidate);
                             }
-                            let partial =
-                                metadata.with_extension(format!("{}.tmp", std::process::id()));
-                            if fs::write(&partial, bytes).is_ok() {
-                                let _ = folio_platform::publish_file(&partial, &metadata);
+                            let _ = events.send(Event::State(if ready {
+                                State::Ready {
+                                    version: candidate.version.clone(),
+                                }
+                            } else {
+                                State::Available {
+                                    version: candidate.version.clone(),
+                                }
+                            }));
+                            release = Some(candidate);
+                        } else {
+                            release = None;
+                            ready = false;
+                            #[cfg(target_os = "linux")]
+                            {
+                                flatpak_ready = None;
                             }
-                        } else if release.is_none() {
                             let _ = events.send(Event::State(State::Current));
+                        }
+                        // Persist current metadata too, so an obsolete offer cannot
+                        // return on restart. Preserve staged packages/recovery jobs.
+                        if let Err(error) = store_manifest(&metadata, &bytes) {
+                            let _ = events.send(Event::CheckError(Some(format!(
+                                "Could not save the checked update metadata: {error}"
+                            ))));
                         }
                     }
                     Err(error) => {
@@ -394,7 +464,10 @@ fn worker(
                 }
             }
             Command::Download => {
-                let Some(r) = &release else { continue };
+                let Some(r) = &release else {
+                    let _ = events.send(Event::State(State::Current));
+                    continue;
+                };
                 if ready {
                     continue;
                 }
@@ -448,7 +521,10 @@ fn worker(
                 }));
             }
             Command::Restart(data) => {
-                let Some(r) = &release else { continue };
+                let Some(r) = &release else {
+                    let _ = events.send(Event::State(State::Current));
+                    continue;
+                };
                 if !ready {
                     continue;
                 }
