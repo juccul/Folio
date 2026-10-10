@@ -45,8 +45,9 @@ library. Do not merge files into a running installation.
 
 A 0.1.3 client that cached the previous signed 0.1.4 manifest may report that the
 published release changed without increasing its version. Manual installation
-of reissued 0.1.4 is the simplest recovery. To repeat the 0.1.3 update test, close
-every Folio window, rename only `%LOCALAPPDATA%\Folio\updates\release.json`, then
+of reissued 0.1.4 is the simplest recovery. To repeat the 0.1.3 update test, first
+manually install reissued 0.1.3, close every Folio window, rename only
+`%LOCALAPPDATA%\Folio\updates\release.json`, then
 reopen and check for updates. Preserve the library and the rest of `updates`,
 which can contain recovery jobs. An already staged old package does not include
 the Windows repair.
