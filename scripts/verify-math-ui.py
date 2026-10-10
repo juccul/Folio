@@ -137,7 +137,9 @@ def main():
                 assert any(n.get_name()=='Font size' and n.get_role()==Atspi.Role.ENTRY for n in nodes()),'Invalid input closed the dialog'
                 subprocess.run([sys.executable,'scripts/capture-x11.py',str(args.output/'validation.png'),'--pid',str(app.pid),'--virtual-display-root'],check=True)
                 fill('Font size','20');click('Save');click('Solve')
+                click('Lasso · L');client.key('a',4);time.sleep(.3)
                 labels=[n.get_name() for n in nodes()]
+                assert {'Cut','Copy','Delete','Solve'}.issubset(labels),'Math solver hides the selection popup'
                 assert 'Real' not in labels and 'Define variable' not in labels
                 assert 'Next mathematical line' not in labels and 'Graph x range' not in labels
                 if args.edge_cases:
@@ -312,7 +314,7 @@ def main():
                     for label in ('Apply changes','Cancel editing','Copy LaTeX'):
                         x,y,w,h=bounds(label);assert x>=0 and y>=0 and x+w<=980 and y+h<=760,f'{label} is clipped'
                     subprocess.run([sys.executable,'scripts/capture-x11.py',str(args.output/'latex-compact.png'),'--pid',str(app.pid),'--virtual-display-root'],check=True)
-                result={'native_solver':True,'dialog_validation_persists':True,'progressive_disclosure':True,'pinned_problem_and_actions':True,
+                result={'native_solver':True,'selection_actions_with_solver':True,'dialog_validation_persists':True,'progressive_disclosure':True,'pinned_problem_and_actions':True,
                     'guided_learning':True,'bidirectional_guide':True,'working_examples':True,'clear_add_options':True,'keyboard_submit':True,'compact_layout':True,'hidden_range_independent':True,'source_preserved':True,'worked_solution_undo_redo':True,
                     'rendered_steps':True,'next_step_check':True,'page_variable':True,'live_result':True,
                     'graph':True,'word_problem_review':True,'private_display':True}

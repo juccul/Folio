@@ -3223,7 +3223,6 @@ impl Render for NotesView {
         if !self.library_open
             && !self.controller.read_only()
             && !self.controller.session().selection.is_empty()
-            && self.controller.math_session.is_none()
             && self.inline_text.is_none()
         {
             center = center.child(self.selection_toolbar(cx));
