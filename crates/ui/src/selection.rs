@@ -51,7 +51,8 @@ impl NotesView {
         let label = label.into();
         let theme = Theme::new(&self.controller.settings);
         let kind = match id.as_ref() {
-            "solve-selection" | "recognize-math" => Icon::Math,
+            "solve-selection" => Icon::Calculator,
+            "recognize-math" => Icon::Math,
             "index-handwriting" => Icon::Search,
             "recognize-text" | "review-recognition" => Icon::Text,
             "cancel-recognition" => Icon::Close,

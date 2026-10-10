@@ -65,6 +65,7 @@ define_icons! {
     Copy => "Copy.svg",
     Cut => "Cut.svg",
     Math => "Math.svg",
+    Calculator => "Calculator.svg",
     Crop => "Crop.svg",
     Paste => "Paste.svg",
     More => "More.svg",
