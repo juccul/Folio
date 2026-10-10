@@ -6,6 +6,7 @@ This fresh distribution includes all current Folio features and replaces the ret
 - Standard color box selector, automatic system appearance, library folders, favorites, tabs, templates and recovery.
 - User-initiated, signed updates with download progress, restart and a library backup before installation.
 - Fixed Windows Home and Update clicks, and maximize/restore behavior.
+- Native Wayland by default on Wayland sessions, including GNOME; X11 remains available with `FOLIO_FORCE_X11=1`.
 - Improved Linux window resizing; validation details are included with the published release.
 - A new updater cache sequence prevents retired release metadata from blocking future updates; existing recovery files remain intact.
 

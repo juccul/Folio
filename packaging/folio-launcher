@@ -1,13 +1,9 @@
 #!/bin/sh
 set -eu
 folio_bundle_root=$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
-# Temporary GNOME compatibility mode after a confirmed tablet-proximity crash.
-# This changes only this process's backend, never GNOME/device configuration.
-case "${XDG_CURRENT_DESKTOP:-}" in
-    *GNOME*)
-        if [ "${FOLIO_NATIVE_WAYLAND:-0}" != 1 ]; then
-            export WAYLAND_DISPLAY=
-        fi
-        ;;
-esac
+# GPUI selects native Wayland when the session provides it, otherwise X11.
+# An explicit fallback changes only Folio's backend for this launch.
+if [ "${FOLIO_FORCE_X11:-0}" = 1 ]; then
+    export WAYLAND_DISPLAY=
+fi
 exec "$folio_bundle_root/bin/folio-native" "$@"
