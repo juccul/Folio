@@ -407,8 +407,21 @@ impl Controller {
         std::fs::create_dir_all(&assets).map_err(|e| e.to_string())?;
         let database = data_dir.join("notes.sqlite3");
         let store = Store::open(&database).map_err(|e| e.to_string())?;
-        let mut settings: Settings = store
-            .setting("preferences")
+        let mut preferences: Option<serde_json::Value> =
+            store.setting("preferences").map_err(|e| e.to_string())?;
+        if let Some(profile) = preferences.as_mut().and_then(|value| value.as_object_mut())
+            && !profile.contains_key("default_pen")
+            && !profile.contains_key("theme_default_ink_tools")
+        {
+            profile.insert(
+                "theme_default_ink_tools".into(),
+                serde_json::to_value(Settings::default().theme_default_ink_tools)
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        let mut settings: Settings = preferences
+            .map(serde_json::from_value)
+            .transpose()
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
         settings.normalize();
@@ -461,7 +474,7 @@ impl Controller {
         };
         sessions.insert(active, session);
         let style = settings.default_pen.clone();
-        let controller = Self {
+        let mut controller = Self {
             recognition_for_index: false,
             restored_library: None,
             library_previews: HashMap::new(),
@@ -546,6 +559,7 @@ impl Controller {
             last_retry: Instant::now(),
             search_generation: 0,
         };
+        controller.refresh_default_ink();
         Ok(controller)
     }
     pub fn session(&self) -> &Session {
@@ -1201,6 +1215,9 @@ impl Controller {
         self.pending_text = None;
     }
     pub fn set_color(&mut self, color: Color) {
+        self.settings
+            .theme_default_ink_tools
+            .retain(|tool| *tool != self.style.tool);
         self.style.color = color;
         self.settings.recent_colors.retain(|c| *c != color);
         self.settings.recent_colors.insert(0, color);
@@ -1211,6 +1228,11 @@ impl Controller {
         if style == self.style {
             return;
         }
+        if style.tool == self.style.tool && style.color != self.style.color {
+            self.settings
+                .theme_default_ink_tools
+                .retain(|tool| *tool != style.tool);
+        }
         self.settings
             .tool_styles
             .retain(|s| s.tool != self.style.tool);
@@ -1219,6 +1241,7 @@ impl Controller {
         self.store_settings();
     }
     pub fn store_settings(&mut self) {
+        self.refresh_default_ink();
         self.settings.default_pen = self.style.clone();
         self.settings
             .tool_styles

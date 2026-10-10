@@ -65,6 +65,10 @@ pub struct Settings {
     pub appearance: crate::appearance::Appearance,
     pub ui_scale: f32,
     pub default_pen: PenStyle,
+    /// Tools whose unchosen ink color follows the paper. Older saved profiles
+    /// omit this list and retain their exact colors, including neutral colors.
+    #[serde(default)]
+    pub theme_default_ink_tools: Vec<InkTool>,
     #[serde(default, skip_serializing)]
     pub presets: Vec<PenStyle>,
     pub pen_presets: Vec<PenPreset>,
@@ -230,6 +234,12 @@ impl Default for Settings {
             appearance: Default::default(),
             ui_scale: 1.,
             default_pen: PenStyle::default(),
+            theme_default_ink_tools: vec![
+                InkTool::Ballpoint,
+                InkTool::Fountain,
+                InkTool::Pencil,
+                InkTool::Marker,
+            ],
             pen_presets: vec![],
             tool_styles: vec![],
             presets: vec![

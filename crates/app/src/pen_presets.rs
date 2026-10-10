@@ -4,7 +4,7 @@ impl Controller {
         if self.style.tool == tool {
             return;
         }
-        let style = self
+        let mut style = self
             .settings
             .tool_styles
             .iter()
@@ -21,6 +21,9 @@ impl Controller {
                 tool,
                 ..Default::default()
             });
+        if self.settings.theme_default_ink_tools.contains(&tool) {
+            style.color = self.theme_default_ink_color();
+        }
         self.set_style(style);
         self.set_tool(Tool::Pen);
     }
@@ -120,8 +123,12 @@ impl Controller {
             .find(|p| p.id == id)
             .map(|p| p.style.clone())
         {
+            self.settings
+                .theme_default_ink_tools
+                .retain(|tool| *tool != style.tool);
             self.set_style(style);
             self.set_tool(Tool::Pen);
+            self.store_settings();
         }
     }
 }

@@ -190,7 +190,7 @@ impl Default for Appearance {
             radius: 10.,
             canvas_follows_theme: true,
             canvas_color: None,
-            adapt_ink: true,
+            adapt_ink: false,
         }
     }
 }
@@ -226,9 +226,224 @@ impl Appearance {
         }
     }
 }
+impl crate::Controller {
+    /// Update only untouched tool colors. Presets, chosen colors and document
+    /// objects remain independent of appearance and paper changes.
+    pub fn refresh_default_ink(&mut self) -> bool {
+        // Existing integrations also edit the public style directly. A color
+        // change relative to the last stored tool is an explicit choice too.
+        if self.style.tool == self.settings.default_pen.tool
+            && self.style.color != self.settings.default_pen.color
+        {
+            self.settings
+                .theme_default_ink_tools
+                .retain(|tool| *tool != self.style.tool);
+        }
+        if self.settings.theme_default_ink_tools.is_empty() {
+            return false;
+        }
+        let color = self.theme_default_ink_color();
+        let mut changed = false;
+        for style in &mut self.settings.tool_styles {
+            if self.settings.theme_default_ink_tools.contains(&style.tool) && style.color != color {
+                style.color = color;
+                changed = true;
+            }
+        }
+        if self
+            .settings
+            .theme_default_ink_tools
+            .contains(&self.style.tool)
+            && self.style.color != color
+        {
+            self.style.color = color;
+            changed = true;
+        }
+        if self
+            .settings
+            .theme_default_ink_tools
+            .contains(&self.settings.default_pen.tool)
+        {
+            self.settings.default_pen.color = color;
+        }
+        changed
+    }
+
+    pub(crate) fn theme_default_ink_color(&self) -> Color {
+        let properties = &self.page().properties;
+        let paper = if properties.pdf.is_some() {
+            0xffffff
+        } else if let Some(color) = properties.color {
+            color.rgb()
+        } else if self.settings.appearance.canvas_follows_theme {
+            self.settings
+                .appearance
+                .color(self.settings.dark, ThemeToken::Background)
+                .rgb()
+        } else {
+            self.settings
+                .appearance
+                .canvas_color
+                .map_or(0xffffff, |color| color.rgb())
+        };
+        let [r, g, b] = [16, 8, 0].map(|shift| {
+            let channel = ((paper >> shift) & 255) as f32 / 255.;
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        Color::from_rgb(if luminance < 0.179 {
+            0xffffff
+        } else {
+            0x171717
+        })
+    }
+
+    pub fn set_theme(&mut self, dark: bool) -> bool {
+        let changed = self.settings.dark != dark;
+        self.settings.dark = dark;
+        let ink_changed = self.refresh_default_ink();
+        if changed || ink_changed {
+            self.store_settings();
+        }
+        changed || ink_changed
+    }
+
+    pub fn apply_system_theme(&mut self, dark: bool) -> bool {
+        if !self.settings.follow_system_theme {
+            return false;
+        }
+        self.set_theme(dark)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn theme_app() -> crate::Controller {
+        crate::Controller::open(
+            std::env::temp_dir().join(format!("folio-theme-ink-{}", folio_document::Id::new_v4())),
+        )
+        .unwrap()
+    }
+
+    fn remove_theme_app(mut app: crate::Controller) {
+        app.flush().unwrap();
+        let root = app.data_dir.clone();
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn untouched_ink_follows_manual_and_system_theme_without_recoloring_content() {
+        let mut app = theme_app();
+        assert!(!app.settings.appearance.adapt_ink);
+        assert_eq!(app.style.color.rgb(), 0x171717);
+        app.add_text("Original text".into(), folio_document::Point::new(40., 40.));
+        let original = app.page().objects.clone();
+        let mut width = app.style.clone();
+        width.width = 6.;
+        app.set_style(width);
+        assert!(app.set_theme(true));
+        assert_eq!(app.style.color.rgb(), 0xffffff);
+        assert_eq!(app.style.width, 6.);
+        assert!(app.apply_system_theme(false));
+        assert_eq!(app.style.color.rgb(), 0x171717);
+        app.settings.follow_system_theme = false;
+        assert!(!app.apply_system_theme(true));
+        assert_eq!(app.page().objects, original);
+        remove_theme_app(app);
+    }
+
+    #[test]
+    fn explicit_colors_and_presets_are_preserved_even_when_they_match_defaults() {
+        let mut app = theme_app();
+        app.set_color(Color::from_rgb(0x171717));
+        app.set_theme(true);
+        assert_eq!(app.style.color.rgb(), 0x171717);
+        app.set_ink_tool(folio_document::InkTool::Fountain);
+        assert_eq!(app.style.color.rgb(), 0xffffff);
+        let preset = app.save_named_preset("White preset".into()).unwrap();
+        app.apply_preset(preset);
+        app.set_theme(false);
+        assert_eq!(app.style.color.rgb(), 0xffffff);
+        app.set_ink_tool(folio_document::InkTool::Ballpoint);
+        assert_eq!(app.style.color.rgb(), 0x171717);
+        app.set_ink_tool(folio_document::InkTool::Highlighter);
+        assert_eq!(app.style.color.rgb(), 0xecc75c);
+        app.set_theme(true);
+        assert_eq!(app.style.color.rgb(), 0xecc75c);
+        remove_theme_app(app);
+    }
+
+    #[test]
+    fn theme_default_ink_uses_fixed_and_page_paper_contrast() {
+        let mut app = theme_app();
+        app.set_theme(true);
+        app.settings.appearance.canvas_follows_theme = false;
+        app.refresh_default_ink();
+        assert_eq!(app.style.color.rgb(), 0x171717);
+        app.settings.appearance.canvas_color = Some(Color::from_rgb(0x111111));
+        app.refresh_default_ink();
+        assert_eq!(app.style.color.rgb(), 0xffffff);
+        app.session_mut().page_mut().properties.color = Some(Color::from_rgb(0xffffff));
+        app.refresh_default_ink();
+        assert_eq!(app.style.color.rgb(), 0x171717);
+        app.session_mut().page_mut().properties.color = Some(Color::from_rgb(0x111111));
+        app.session_mut().page_mut().properties.pdf = Some(folio_document::PdfBackground {
+            asset: "page.pdf".into(),
+            page: 0,
+            preview_asset: None,
+        });
+        app.refresh_default_ink();
+        assert_eq!(app.style.color.rgb(), 0x171717);
+        remove_theme_app(app);
+    }
+
+    #[test]
+    fn legacy_saved_pen_is_preserved_and_unset_pen_gets_theme_defaults() {
+        for saved_pen in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "folio-theme-migration-{}",
+                folio_document::Id::new_v4()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let mut profile = serde_json::json!({"dark": true});
+            if saved_pen {
+                profile["default_pen"] =
+                    serde_json::to_value(folio_document::PenStyle::default()).unwrap();
+                profile["appearance"] = serde_json::json!({"adapt_ink": true});
+            }
+            let store = folio_storage::Store::open(root.join("notes.sqlite3")).unwrap();
+            store
+                .save_setting("preferences", &profile.to_string())
+                .unwrap();
+            drop(store);
+            let mut app = crate::Controller::open(root.clone()).unwrap();
+            assert_eq!(app.settings.appearance.adapt_ink, saved_pen);
+            assert_eq!(
+                app.style.color,
+                if saved_pen {
+                    Color::INK
+                } else {
+                    Color::from_rgb(0xffffff)
+                }
+            );
+            app.set_theme(false);
+            let chosen = app.style.color;
+            app.store_settings();
+            app.flush().unwrap();
+            drop(app);
+            let app = crate::Controller::open(root).unwrap();
+            assert_eq!(app.style.color, chosen);
+            assert_eq!(app.settings.theme_default_ink_tools.is_empty(), saved_pen);
+            remove_theme_app(app);
+        }
+    }
     #[test]
     fn individual_colors_match_full_palettes_and_mode_overrides() {
         let mut appearance = Appearance::default();
