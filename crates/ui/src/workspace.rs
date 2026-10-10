@@ -1248,15 +1248,22 @@ impl NotesView {
             .items_center()
             .gap_1();
         tabs = tabs.child(
-            self.icon_button(
-                "tab-library",
-                "Library · Ctrl+Shift+L",
-                Icon::Library,
-                self.library_open,
-                cx,
-                |this, _, _| this.show_library(),
-            )
-            .h(rems(2.125)),
+            div()
+                // Let the button register its click before stopping the press at
+                // this wrapper. Windows' native move loop otherwise steals release.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .child(
+                    self.icon_button(
+                        "tab-library",
+                        "Library · Ctrl+Shift+L",
+                        Icon::Library,
+                        self.library_open,
+                        cx,
+                        |this, _, _| this.show_library(),
+                    )
+                    .h(rems(2.125)),
+                ),
         );
         for id in self.open_tabs.clone() {
             let Some(n) = self.controller.notes.iter().find(|n| n.id == id) else {
