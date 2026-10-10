@@ -34,7 +34,6 @@ impl NotesView {
         let theme = Theme::new(&self.controller.settings);
         div()
             .flex_shrink_0()
-            .mb(px(3.))
             // Keep every update state (including disabled progress notices) out of
             // the title bar's native move/menu handlers without swallowing clicks.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -177,6 +176,7 @@ impl NotesView {
         };
     }
     pub fn update_smoke_verify(&self, phase: u8) -> Result<(), String> {
+        self.titlebar_smoke_verify_geometry()?;
         let label = match phase {
             0 => "Update · 0.1.1",
             1 => "Downloading 42%",

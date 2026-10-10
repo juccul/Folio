@@ -285,7 +285,8 @@ impl NotesView {
             cx,
             action,
         )
-        .size(px(36.))
+        .size(rems(2.25))
+        .min_h_0()
         .p_0()
         .bg(rgb(super::theme::mix(
             if active {
@@ -1240,9 +1241,14 @@ impl NotesView {
             .overflow_x_scroll()
             .flex()
             .items_center()
-            .gap_1();
+            .h_full()
+            .gap_0();
         tabs = tabs.child(
             div()
+                .relative()
+                .h_full()
+                .flex()
+                .items_center()
                 // Let the button register its click before stopping the press at
                 // this wrapper. Windows' native move loop otherwise steals release.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1256,8 +1262,30 @@ impl NotesView {
                         cx,
                         |this, _, _| this.show_library(),
                     )
-                    .h(rems(2.125)),
-                ),
+                    .w(rems(2.25))
+                    .h(rems(2.))
+                    .min_h_0()
+                    .border_0()
+                    .rounded_none()
+                    .bg(rgb(if self.library_open {
+                        theme.chrome_active
+                    } else {
+                        theme.chrome
+                    }))
+                    .focus(move |s| s.bg(rgb(theme.selected)))
+                    .hover(move |s| s.bg(rgb(theme.chrome_active))),
+                )
+                .when(self.library_open, |tab| {
+                    tab.child(
+                        div()
+                            .absolute()
+                            .bottom_0()
+                            .left_0()
+                            .right_0()
+                            .h(px(2.))
+                            .bg(rgb(theme.accent)),
+                    )
+                }),
         );
         for id in self.open_tabs.clone() {
             let Some(n) = self.controller.notes.iter().find(|n| n.id == id) else {
@@ -1285,13 +1313,11 @@ impl NotesView {
                 );
             tabs = tabs.child(
                 div()
-                    .h(rems(2.125))
+                    .relative()
+                    .h_full()
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .rounded_t_md()
-                    .border_b_2()
-                    .border_color(if selected { rgb(theme.accent) } else { rgba(0) })
                     .bg(rgb(if selected {
                         theme.chrome_active
                     } else {
@@ -1310,13 +1336,20 @@ impl NotesView {
                             cx,
                             move |this, _, _| this.open_note(id),
                         )
-                        .h_full()
+                        .h(rems(2.))
+                        .min_h_0()
+                        .pl_3()
+                        .pr_2()
+                        .py_0()
+                        .border_0()
+                        .rounded_none()
                         .bg(rgb(if selected {
                             theme.chrome_active
                         } else {
                             theme.chrome
                         }))
                         .text_color(rgb(theme.ink))
+                        .focus(move |s| s.bg(rgb(theme.selected)))
                         .hover(move |s| s.bg(rgb(theme.chrome_active)))
                         .on_drag(drag, |drag, position, _, cx| {
                             cx.new(|_| {
@@ -1344,25 +1377,40 @@ impl NotesView {
                             cx,
                             move |this, w, cx| this.close_document_tab(id, w, cx),
                         )
-                        .size(rems(1.75))
-                        .p_1()
-                        .mr_2()
+                        .size(rems(2.))
+                        .min_h_0()
+                        .p_0()
+                        .mr_1()
+                        .border_0()
+                        .rounded_none()
                         .bg(rgb(if selected {
                             theme.chrome_active
                         } else {
                             theme.chrome
                         }))
+                        .focus(move |s| s.bg(rgb(theme.selected)))
                         .hover(move |s| s.bg(rgb(theme.chrome_active))),
-                    ),
+                    )
+                    .when(selected, |tab| {
+                        tab.child(
+                            div()
+                                .absolute()
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .h(px(2.))
+                                .bg(rgb(theme.accent)),
+                        )
+                    }),
             );
         }
         div()
             .h(rems(2.5))
             .flex_shrink_0()
             .flex()
-            .items_end()
-            .gap_3()
-            .px_3()
+            .items_center()
+            .gap_1()
+            .px_2()
             .bg(rgb(theme.chrome))
             .border_b_1()
             .border_color(theme.border)
@@ -1372,7 +1420,6 @@ impl NotesView {
                     .flex()
                     .items_center()
                     .flex_shrink_0()
-                    .mb(px(3.))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                     .child(
@@ -1384,7 +1431,13 @@ impl NotesView {
                             cx,
                             |this, w, cx| this.modal(Modal::OpenDocument, w, cx),
                         )
-                        .size(rems(1.875)),
+                        .size(rems(2.))
+                        .min_h_0()
+                        .border_0()
+                        .rounded_none()
+                        .bg(rgb(theme.chrome))
+                        .focus(move |s| s.bg(rgb(theme.selected)))
+                        .hover(move |s| s.bg(rgb(theme.chrome_active))),
                     ),
             )
             .child(super::titlebar::drag_region())
@@ -1392,7 +1445,6 @@ impl NotesView {
             .child(
                 self.window_controls(window, cx)
                     .flex_shrink_0()
-                    .mb(px(3.))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation()),
             )
@@ -1404,10 +1456,10 @@ impl NotesView {
         div()
             .h(rems(3.0))
             .flex_shrink_0()
-            .px_3()
+            .px_2()
             .flex()
             .items_center()
-            .gap_2()
+            .gap_1()
             .bg(rgb(theme.chrome))
             .child(self.chrome_button(
                 "toggle-pages",
@@ -1440,6 +1492,10 @@ impl NotesView {
                     cx,
                     |this, w, cx| this.modal(Modal::Rename, w, cx),
                 )
+                .h(rems(2.25))
+                .min_h_0()
+                .px_2()
+                .py_0()
                 .bg(rgb(theme.chrome))
                 .text_color(rgb(theme.ink))
                 .hover(move |s| s.bg(rgb(theme.chrome_active))),

@@ -12,6 +12,42 @@ impl NotesView {
         Ok(())
     }
 
+    /// Validate rendered control geometry, including the native edge inset.
+    /// This runs in the native pointer fixture, rather than asserting style calls.
+    pub(super) fn titlebar_smoke_verify_geometry(&self) -> Result<(), String> {
+        let home = self
+            .accessibility
+            .control_bounds("Library · Ctrl+Shift+L")
+            .ok_or("The title bar Home button is missing")?;
+        let center = (home.y0 + home.y1) / 2.;
+        let height = 40. * self.controller.settings.ui_scale as f64;
+        for label in [
+            "Open or create a document · Ctrl+T",
+            "Minimize window",
+            "Maximize window",
+            "Restore window",
+            "Close window",
+        ] {
+            if let Some(bounds) = self.accessibility.control_bounds(label)
+                && ((bounds.y0 + bounds.y1) / 2. - center).abs() > 1.
+            {
+                return Err(format!(
+                    "Title bar control is not vertically centered: {label}"
+                ));
+            }
+        }
+        let label = format!("Open {}", self.controller.session().document.metadata.title);
+        if let Some(tab) = self.accessibility.control_bounds(&label)
+            && ((tab.y0 + tab.y1) / 2. - center).abs() > 1.
+        {
+            return Err("The document tab is not aligned with the title bar controls".into());
+        }
+        if home.y1 - home.y0 >= height {
+            return Err("The Home hitbox is not inset within the fixed-height title bar".into());
+        }
+        Ok(())
+    }
+
     pub(super) fn window_controls(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
         let capabilities = window.window_controls();
@@ -29,6 +65,7 @@ impl NotesView {
                 )
                 .w(px(34.))
                 .h(px(30.))
+                .min_h(px(30.))
                 .p_0()
                 .flex_shrink_0()
                 .bg(rgb(theme.chrome)),
@@ -61,6 +98,7 @@ impl NotesView {
                 )
                 .w(px(34.))
                 .h(px(30.))
+                .min_h(px(30.))
                 .p_0()
                 .flex_shrink_0()
                 .bg(rgb(theme.chrome)),
@@ -87,6 +125,7 @@ impl NotesView {
             )
             .w(px(34.))
             .h(px(30.))
+            .min_h(px(30.))
             .p_0()
             .flex_shrink_0()
             .bg(rgb(theme.chrome)),
