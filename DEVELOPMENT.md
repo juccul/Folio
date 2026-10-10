@@ -21,6 +21,10 @@ covered. To use the same limit locally, run
 Updater, packaging, math protocol and Rust checks have separate CI steps so the
 failing check is visible directly in the run summary.
 
+## Compact editor toolbar
+
+The editor uses one 44 px row below the unchanged 40 px document tabs at 1× UI scale. Page thumbnails/search and document actions/settings sit in separate 36 px outlined groups; editing tools use the base background with individual selection highlights. Rename remains available in Document actions. Below 1100 logical pixels, stroke width and color controls are available through Pen settings; eraser modes and sizes use the same popover. The tool area can scroll horizontally at larger UI scales without expanding the header. Read-only documents keep page navigation and document actions without editing controls.
+
 ## Optimization and edge-case audit
 
 The 2026-10-05 audit fixes reader/write contention and inconsistent loads, export-dialog targets, save acknowledgements and failed-flush recovery, selection reversal, tab overflow, malformed geometry/preferences and definite-integral domains. It adds indexed linked-math bookkeeping and faster database reader setup. Validation is under `artifacts/validation/optimization-pass`.

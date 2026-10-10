@@ -267,7 +267,7 @@ impl NotesView {
         .rounded(px(theme.radius))
         .tooltip(move |_, cx| cx.new(|_| Hint(hint.clone(), theme)).into())
     }
-    fn chrome_button(
+    fn editor_button(
         &self,
         id: &'static str,
         label: &'static str,
@@ -277,34 +277,75 @@ impl NotesView {
         action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
+        let resting = if active {
+            super::theme::mix(theme.selected, theme.ink, 0.06)
+        } else {
+            theme.chrome
+        };
         self.control(
             id,
             label,
-            icon(kind, theme.ink).into_any_element(),
+            icon(kind, theme.ink).size(rems(1.25)).into_any_element(),
             active,
             cx,
             action,
         )
-        .size(rems(2.25))
+        .w(rems(2.125))
+        .h(rems(1.875))
         .min_h_0()
+        .flex_shrink_0()
         .p_0()
+        .rounded(rems(theme.radius.min(7.) / 16.))
         .bg(rgb(super::theme::mix(
-            if active {
-                theme.chrome_active
-            } else {
-                theme.chrome
-            },
-            theme.chrome_active,
+            resting,
+            theme.selected,
             self.motion.borrow().hover_value(id),
         )))
         .tooltip(move |_, cx| cx.new(|_| Hint(label.into(), theme)).into())
     }
-    fn separator(&self) -> Div {
+    fn editor_separator(&self) -> Div {
+        let theme = Theme::new(&self.controller.settings);
         div()
             .w(px(1.))
-            .h(px(24.))
-            .mx_2()
-            .bg(Theme::new(&self.controller.settings).border)
+            .h(rems(1.125))
+            .mx(rems(0.3125))
+            .flex_shrink_0()
+            .bg(rgb(super::theme::mix(theme.chrome, theme.ink, 0.16)))
+    }
+    fn page_controls_group(&self) -> Div {
+        let theme = Theme::new(&self.controller.settings);
+        div()
+            .h(rems(2.25))
+            .px(rems(0.25))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(rems(0.1875))
+            .rounded(rems(theme.radius.min(9.) / 16.))
+            .bg(rgb(super::theme::mix(theme.chrome, theme.ink, 0.045)))
+            .border_1()
+            .border_color(rgb(super::theme::mix(theme.chrome, theme.ink, 0.125)))
+    }
+    fn page_control_button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        kind: Icon,
+        active: bool,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> Stateful<Div> {
+        let theme = Theme::new(&self.controller.settings);
+        self.editor_button(id, label, kind, active, cx, action)
+            .bg(rgb(super::theme::mix(
+                if active {
+                    theme.selected
+                } else {
+                    super::theme::mix(theme.chrome, theme.ink, 0.045)
+                },
+                theme.selected,
+                self.motion.borrow().hover_value(id),
+            )))
     }
     pub(super) fn library_sidebar(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
@@ -1366,19 +1407,9 @@ impl NotesView {
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation()),
             )
     }
-    pub(super) fn header(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = Theme::new(&self.controller.settings);
-        let favorite = self.controller.session().document.metadata.favorite;
-        let title = self.controller.session().document.metadata.title.clone();
-        div()
-            .h(rems(3.0))
-            .flex_shrink_0()
-            .px_2()
-            .flex()
-            .items_center()
-            .gap_1()
-            .bg(rgb(theme.chrome))
-            .child(self.chrome_button(
+    fn page_navigation(&self, cx: &mut Context<Self>) -> Div {
+        self.page_controls_group()
+            .child(self.page_control_button(
                 "toggle-pages",
                 "Page thumbnails · Ctrl+Shift+P",
                 Icon::Sidebar,
@@ -1386,7 +1417,7 @@ impl NotesView {
                 cx,
                 |this, _, _| this.pages_open = !this.pages_open,
             ))
-            .child(self.chrome_button(
+            .child(self.page_control_button(
                 "search",
                 "Search · Ctrl+F",
                 Icon::Search,
@@ -1394,31 +1425,11 @@ impl NotesView {
                 cx,
                 |this, w, cx| this.modal(Modal::Search, w, cx),
             ))
-            .child(
-                self.control(
-                    "note-title",
-                    "Rename document",
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(div().max_w(px(320.)).truncate().child(title))
-                        .child(icon(Icon::Down, theme.muted))
-                        .into_any_element(),
-                    false,
-                    cx,
-                    |this, w, cx| this.modal(Modal::Rename, w, cx),
-                )
-                .h(rems(2.25))
-                .min_h_0()
-                .px_2()
-                .py_0()
-                .bg(rgb(theme.chrome))
-                .text_color(rgb(theme.ink))
-                .hover(move |s| s.bg(rgb(theme.chrome_active))),
-            )
-            .child(div().flex_1())
-            .child(self.chrome_button(
+    }
+    fn page_actions(&self, cx: &mut Context<Self>) -> Div {
+        let favorite = self.controller.session().document.metadata.favorite;
+        self.page_controls_group()
+            .child(self.page_control_button(
                 "favorite-note",
                 if favorite {
                     "Remove document from favorites"
@@ -1434,7 +1445,7 @@ impl NotesView {
                 cx,
                 |this, _, _| this.controller.metadata(|m| m.favorite = !m.favorite),
             ))
-            .child(self.chrome_button(
+            .child(self.page_control_button(
                 "header-add-page",
                 "Add page",
                 Icon::Plus,
@@ -1442,7 +1453,7 @@ impl NotesView {
                 cx,
                 |this, _, _| this.controller.add_page(),
             ))
-            .child(self.chrome_button(
+            .child(self.page_control_button(
                 "export",
                 "Export document",
                 Icon::Export,
@@ -1454,7 +1465,7 @@ impl NotesView {
                     this.pen_settings = false;
                 },
             ))
-            .child(self.chrome_button(
+            .child(self.page_control_button(
                 "more",
                 "Document actions",
                 Icon::More,
@@ -1467,7 +1478,8 @@ impl NotesView {
                     this.pen_settings = false;
                 },
             ))
-            .child(self.chrome_button(
+            .child(self.editor_separator().h(rems(1.25)).mx(rems(0.375)))
+            .child(self.page_control_button(
                 "editor-settings",
                 "Settings",
                 Icon::Settings,
@@ -1520,9 +1532,9 @@ impl NotesView {
         }
         row
     }
-    pub(super) fn toolbar(&mut self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn editing_tools(&mut self, compact: bool, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
-        let mut tools = div().flex().flex_wrap().min_w_0().items_center().gap_1();
+        let mut tools = div().flex().flex_shrink_0().items_center().gap(rems(0.125));
         let pen_icon = match self.controller.style.tool {
             InkTool::Pencil => Icon::Pencil,
             InkTool::Marker => Icon::Marker,
@@ -1546,7 +1558,7 @@ impl NotesView {
                 && !(tool == Tool::Pen && self.controller.style.tool == InkTool::Highlighter);
             tools =
                 tools.child(
-                    self.icon_button(id, label, kind, active, cx, move |this, _, _| {
+                    self.editor_button(id, label, kind, active, cx, move |this, _, _| {
                         if tool == Tool::Pen && this.controller.style.tool == InkTool::Highlighter {
                             this.controller
                                 .set_style(this.writing_style.take().unwrap_or_default());
@@ -1558,7 +1570,7 @@ impl NotesView {
             if tool == Tool::Pen {
                 let selected = self.controller.tool == Tool::Pen
                     && self.controller.style.tool == InkTool::Highlighter;
-                tools = tools.child(self.icon_button(
+                tools = tools.child(self.editor_button(
                     "highlighter",
                     "Highlighter",
                     Icon::Highlighter,
@@ -1588,7 +1600,7 @@ impl NotesView {
                 ));
             }
         }
-        tools = tools.child(self.icon_button(
+        tools = tools.child(self.editor_button(
             "toolbar-image",
             "Insert image or PDF",
             Icon::Image,
@@ -1596,8 +1608,8 @@ impl NotesView {
             cx,
             |this, _, cx| this.import(cx),
         ));
-        let mut colors = div().flex().items_center().gap_2();
-        if self.controller.tool != Tool::Eraser {
+        let mut colors = div().flex().flex_shrink_0().items_center().gap(rems(0.125));
+        if !compact && self.controller.tool != Tool::Eraser {
             for c in [0x273448, 0x3265a8, 0xc6605c, 0x55917e] {
                 let selected = self.controller.style.color.rgb() == c;
                 colors = colors.child(
@@ -1613,20 +1625,18 @@ impl NotesView {
                         cx,
                         move |this, _, _| this.controller.set_color(Color::from_rgb(c)),
                     )
-                    .size(rems(1.875))
+                    .size(rems(1.75))
+                    .min_h_0()
+                    .flex_shrink_0()
                     .p_0()
                     .rounded_full()
                     .border_2()
-                    .border_color(rgb(if selected {
-                        theme.accent
-                    } else {
-                        theme.surface
-                    }))
-                    .bg(rgb(theme.surface)),
+                    .border_color(rgb(if selected { theme.accent } else { theme.chrome }))
+                    .bg(rgb(theme.chrome)),
                 );
             }
             colors = colors.child(
-                self.icon_button(
+                self.editor_button(
                     "custom-color",
                     "Custom ink color",
                     Icon::Plus,
@@ -1634,11 +1644,11 @@ impl NotesView {
                     cx,
                     |this, w, cx| this.modal(Modal::Color, w, cx),
                 )
-                .size(rems(1.875)),
+                .h(rems(1.875)),
             );
         }
-        let mut widths = div().flex().items_center().gap_1();
-        if self.controller.tool != Tool::Eraser {
+        let mut widths = div().flex().flex_shrink_0().items_center().gap(rems(0.125));
+        if !compact && self.controller.tool != Tool::Eraser {
             let highlighter = self.controller.style.tool == InkTool::Highlighter;
             for (i, width) in if highlighter {
                 [10., 20., 30.]
@@ -1667,20 +1677,30 @@ impl NotesView {
                             this.controller.set_style(style);
                         },
                     )
-                    .size(rems(2.0))
-                    .p_0(),
+                    .w(rems(1.75))
+                    .h(rems(2.))
+                    .min_h_0()
+                    .flex_shrink_0()
+                    .p_0()
+                    .rounded(rems(theme.radius.min(7.) / 16.))
+                    .bg(rgb(super::theme::mix(
+                        if selected {
+                            super::theme::mix(theme.selected, theme.ink, 0.06)
+                        } else {
+                            theme.chrome
+                        },
+                        theme.selected,
+                        self.motion.borrow().hover_value(&format!("width-{i}")),
+                    ))),
                 );
             }
         }
-        let compact =
-            f32::from(window.viewport_size().width) / self.controller.settings.ui_scale < 1100.;
-        let primary = div()
+        let history = div()
             .flex()
-            .flex_wrap()
+            .flex_shrink_0()
             .items_center()
-            .gap_1()
-            .when(compact, |row| row.w_full())
-            .child(self.icon_button(
+            .gap(rems(0.125))
+            .child(self.editor_button(
                 "undo",
                 "Undo · Ctrl+Z",
                 Icon::Undo,
@@ -1688,23 +1708,31 @@ impl NotesView {
                 cx,
                 |this, _, _| this.controller.undo(),
             ))
-            .child(self.icon_button(
+            .child(self.editor_button(
                 "redo",
                 "Redo · Ctrl+Shift+Z",
                 Icon::Redo,
                 false,
                 cx,
                 |this, _, _| this.controller.redo(),
-            ))
-            .child(self.separator())
+            ));
+        let primary = div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(rems(0.25))
+            .child(history)
+            .child(self.editor_separator())
             .child(tools);
-        let mut options = div().flex().flex_wrap().items_center().gap_1();
-        if self.controller.tool == Tool::Eraser {
-            options = options.child(self.eraser_controls("toolbar", cx));
-        } else {
-            options = options.child(widths).child(self.separator()).child(colors);
+        let mut options = div().flex().flex_shrink_0().items_center().gap(rems(0.25));
+        // Eraser modes and sizes remain in the pen-options popover.
+        if !compact && self.controller.tool != Tool::Eraser {
+            options = options
+                .child(widths)
+                .child(self.editor_separator())
+                .child(colors);
         }
-        options = options.child(self.icon_button(
+        options = options.child(self.editor_button(
             "pen-options",
             if self.controller.tool == Tool::Eraser {
                 "Eraser modes and size"
@@ -1721,21 +1749,47 @@ impl NotesView {
             },
         ));
         div()
-            .id("writing-toolbar")
-            .min_h(rems(3.25))
-            .py_1()
-            .flex_shrink_0()
-            .px_4()
+            .id("editing-tools")
+            .flex_1()
+            .min_w_0()
+            .h(rems(2.25))
+            .px(rems(0.3125))
             .flex()
-            .flex_wrap()
             .items_center()
-            .gap_1()
-            .bg(rgb(theme.surface))
-            .border_b_1()
-            .border_color(theme.border)
+            .gap(rems(0.25))
+            .overflow_x_scroll()
             .child(primary)
             .child(div().flex_1())
             .child(options)
+    }
+    pub(super) fn editor_header(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let theme = Theme::new(&self.controller.settings);
+        let navigation = self.page_navigation(cx);
+        let editing = if self.controller.read_only() {
+            div().id("editing-tools").flex_1()
+        } else {
+            let compact =
+                f32::from(window.viewport_size().width) / self.controller.settings.ui_scale < 1100.;
+            self.editing_tools(compact, cx)
+        };
+        div()
+            .id("writing-toolbar")
+            .h(rems(2.75))
+            .flex_shrink_0()
+            .px(rems(0.625))
+            .flex()
+            .items_center()
+            .gap(rems(0.625))
+            .bg(rgb(theme.chrome))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(navigation)
+            .child(editing)
+            .child(self.page_actions(cx))
     }
     pub(super) fn pages_panel(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);

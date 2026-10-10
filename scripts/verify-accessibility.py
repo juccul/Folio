@@ -226,7 +226,7 @@ def main():
                     click('Open reading archive');assert not any(n.get_role()==Atspi.Role.ENTRY for n in walk(target))
                     click('Open or create a document · Ctrl+T');click('＋  Create new document')
                     assert not any(n.get_role()==Atspi.Role.ENTRY for n in walk(target)), 'Quick creation unexpectedly opened a setup dialog'
-                    click('Rename document');rename_dialog('untitled note')
+                    click('Document actions');click('Rename document');rename_dialog('untitled note')
                     assert any(n.get_name()=='Open untitled note' for n in controls())
                     click('Library ·',True)
                     with sqlite3.connect(Path(root)/'notes.sqlite3') as db:

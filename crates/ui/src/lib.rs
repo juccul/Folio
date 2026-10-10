@@ -3442,8 +3442,7 @@ impl Render for NotesView {
                     })),
             );
         } else {
-            let header = self.header(cx);
-            let toolbar = (!self.controller.read_only()).then(|| self.toolbar(window, cx));
+            let header = self.editor_header(window, cx);
             let formatting = if self.controller.read_only() {
                 None
             } else {
@@ -3585,7 +3584,6 @@ impl Render for NotesView {
                     .flex()
                     .flex_col()
                     .child(header)
-                    .children(toolbar)
                     .children(trash_notice)
                     .children(import_notice)
                     .children(stale_index_notice)
