@@ -59,6 +59,13 @@ impl NotesView {
             )
     }
     pub(super) fn update_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.titlebar_smoke {
+            if self.updater.state.can_download() {
+                self.update_smoke_phase(1);
+                cx.notify();
+            }
+            return;
+        }
         if self.update_preparing {
             return;
         }

@@ -82,7 +82,8 @@ actions!(
         PreviousTab,
         Export,
         FocusNext,
-        FocusPrevious
+        FocusPrevious,
+        ResetTitlebarSmoke
     ]
 );
 #[derive(Clone)]
@@ -191,6 +192,7 @@ impl MoreSection {
 }
 pub struct NotesView {
     updater: folio_update::Updater,
+    titlebar_smoke: bool,
     update_preparing: bool,
     region_selection: Option<region::Selection>,
     pub controller: Controller,
@@ -248,7 +250,25 @@ pub struct NotesView {
     accessibility: std::rc::Rc<accessibility::Accessibility>,
 }
 impl NotesView {
-    pub fn new(mut controller: Controller, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(controller: Controller, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_with_titlebar_fixture(controller, window, cx, false)
+    }
+    /// Isolated real-pointer fixture: no update worker or installed update cache is opened.
+    pub fn new_titlebar_smoke(
+        controller: Controller,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::new_with_titlebar_fixture(controller, window, cx, true);
+        view.update_smoke_phase(0);
+        view
+    }
+    fn new_with_titlebar_fixture(
+        mut controller: Controller,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        titlebar_smoke: bool,
+    ) -> Self {
         controller.settings.apply_system_theme(matches!(
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
@@ -321,7 +341,12 @@ impl NotesView {
             workspace.library_open = true;
         }
         Self {
-            updater: folio_update::Updater::new(),
+            updater: if titlebar_smoke {
+                folio_update::Updater::disabled()
+            } else {
+                folio_update::Updater::new()
+            },
+            titlebar_smoke,
             update_preparing: false,
             region_selection: None,
             controller,
@@ -434,6 +459,9 @@ impl NotesView {
             KeyBinding::new("ctrl-shift-tab", PreviousTab, Some("Folio && !FolioDialog")),
             KeyBinding::new("ctrl-shift-e", Export, Some("Folio && !FolioField")),
         ]);
+    }
+    pub fn titlebar_smoke_bindings(cx: &mut App) {
+        cx.bind_keys([KeyBinding::new("ctrl-alt-u", ResetTitlebarSmoke, None)]);
     }
     fn blocking_overlay(&self) -> bool {
         self.update_preparing
@@ -3237,6 +3265,13 @@ impl Render for NotesView {
             .on_action(cx.listener(|this, _: &Save, _, cx| {
                 this.controller.save();
                 cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ResetTitlebarSmoke, _, cx| {
+                if this.titlebar_smoke {
+                    this.update_smoke_phase(0);
+                    this.show_editor();
+                    cx.notify();
+                }
             }))
             .on_action(cx.listener(|_, _: &FocusNext, w, _| w.focus_next()))
             .on_action(cx.listener(|_, _: &FocusPrevious, w, _| w.focus_prev()))

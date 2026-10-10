@@ -12,7 +12,7 @@ fn main() -> anyhow::Result<()> {
     }
     if args.iter().any(|s| s == "--help" || s == "-h") {
         println!(
-            "Folio — offline vector handwriting\n\nUsage: folio [--data-dir PATH] [--new-note] [--open-note UUID] [--recover] [--smoke-test] [PDF/IMAGE…]\n\nData: FOLIO_DATA_DIR or the platform's local application-data directory\nP/E/L/H/T/S: tools · Ctrl+S: save · Ctrl+F: search · Ctrl+0: fit"
+            "Folio — offline vector handwriting\n\nUsage: folio [--data-dir PATH] [--new-note] [--open-note UUID] [--recover] [--smoke-test] [--smoke-titlebar] [PDF/IMAGE…]\n\nData: FOLIO_DATA_DIR or the platform's local application-data directory\n--smoke-titlebar: isolated pointer fixture; requires an explicit, empty --data-dir. Ctrl+Alt+U resets its simulated update.\nP/E/L/H/T/S: tools · Ctrl+S: save · Ctrl+F: search · Ctrl+0: fit"
         );
         return Ok(());
     }
@@ -20,6 +20,8 @@ fn main() -> anyhow::Result<()> {
     let mut explicit_path = std::env::var_os("FOLIO_DATA_DIR").is_some();
     let mut files = vec![];
     let mut smoke = false;
+    let mut titlebar_smoke = false;
+    let mut explicit_cli_path = false;
     let mut new_note = false;
     let mut open_note = None;
     let mut recover = false;
@@ -28,6 +30,7 @@ fn main() -> anyhow::Result<()> {
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--data-dir" => {
+                explicit_cli_path = true;
                 explicit_path = true;
                 data_dir = PathBuf::from(
                     args.next()
@@ -42,12 +45,29 @@ fn main() -> anyhow::Result<()> {
                 )
             }
             "--smoke-test" => smoke = true,
+            "--smoke-titlebar" => titlebar_smoke = true,
             "--new-note" => new_note = true,
             "--recover" => recover = true,
             "--restart-after-update" => restart_after_update = true,
             value if value.starts_with('-') => anyhow::bail!("Unknown option: {value}"),
             value => files.push(PathBuf::from(value)),
         }
+    }
+    if titlebar_smoke {
+        anyhow::ensure!(
+            explicit_cli_path,
+            "--smoke-titlebar requires an explicit --data-dir"
+        );
+        anyhow::ensure!(
+            !smoke
+                && !new_note
+                && open_note.is_none()
+                && !recover
+                && !restart_after_update
+                && files.is_empty(),
+            "--smoke-titlebar cannot be combined with other startup actions"
+        );
+        validate_titlebar_fixture_directory(&data_dir)?;
     }
     if recover {
         let report = folio_storage::recovery::recover(&data_dir)?;
@@ -108,7 +128,7 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
     };
-    if new_note {
+    if new_note || titlebar_smoke {
         controller.create_note();
     }
     if let Some(id) = open_note {
@@ -117,12 +137,20 @@ fn main() -> anyhow::Result<()> {
         }
         controller.switch_note(id);
     }
-    let open_editor = smoke || new_note || open_note.is_some() || !files.is_empty();
+    let open_editor =
+        smoke || titlebar_smoke || new_note || open_note.is_some() || !files.is_empty();
+    if titlebar_smoke {
+        println!(
+            "FOLIO_TITLEBAR_FIXTURE: simulated updates only; library {}",
+            data_dir.display()
+        );
+    }
     for file in files {
         controller.import_as_note(file);
     }
     Application::new().with_assets(folio_ui::IconAssets).run(move |cx| {
         NotesView::bindings(cx);
+        if titlebar_smoke { NotesView::titlebar_smoke_bindings(cx); }
         let bounds = Bounds::centered(None, size(px(1320.), px(860.)), cx);
         let window = cx.open_window(WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -132,7 +160,11 @@ fn main() -> anyhow::Result<()> {
             window_min_size: Some(size(px(1000.), px(620.))),
             ..Default::default()
         }, |window,cx|cx.new(|cx| {
-            let mut view=NotesView::new(controller,window,cx);
+            let mut view=if titlebar_smoke {
+                NotesView::new_titlebar_smoke(controller,window,cx)
+            } else {
+                NotesView::new(controller,window,cx)
+            };
             if open_editor { view.show_editor(); }
             view
         })).expect("Open GPUI window");
@@ -239,4 +271,51 @@ fn main() -> anyhow::Result<()> {
         }
     });
     Ok(())
+}
+
+fn validate_titlebar_fixture_directory(path: &std::path::Path) -> anyhow::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            anyhow::ensure!(
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "--smoke-titlebar requires a fresh directory, not a file or symlink"
+            );
+            anyhow::ensure!(
+                std::fs::read_dir(path)?.next().is_none(),
+                "--smoke-titlebar refuses an existing library or nonempty directory"
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod titlebar_fixture_tests {
+    use super::validate_titlebar_fixture_directory;
+
+    #[test]
+    fn fixture_rejects_existing_content_before_opening_a_library() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "folio-titlebar-fixture-{}-{unique}",
+            std::process::id()
+        ));
+        assert!(validate_titlebar_fixture_directory(&directory).is_ok());
+        std::fs::create_dir(&directory).unwrap();
+        assert!(validate_titlebar_fixture_directory(&directory).is_ok());
+        let library = directory.join("notes.sqlite3");
+        std::fs::write(&library, b"existing library remains untouched").unwrap();
+        assert!(validate_titlebar_fixture_directory(&directory).is_err());
+        assert!(validate_titlebar_fixture_directory(&library).is_err());
+        assert_eq!(
+            std::fs::read(&library).unwrap(),
+            b"existing library remains untouched"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
