@@ -33,10 +33,23 @@ a thirty-minute preparation ceiling. The portable package stores pure-Python mat
 dependencies in a standard importable ZIP and preserves license originals in a
 separate archive with searchable full notices, reducing installation file writes.
 
-The published 0.1.3 updater has a fixed thirty-second preparation deadline. The
-compact 0.1.4 package passed that deadline in the Windows VM. If a slower device
-still reports that the helper did not become ready, Folio stays open; use the
-manual portable installation below to reach 0.1.4 and gain progress-aware updates.
+The Windows 0.1.3 and 0.1.4 packages were reissued on 2026-10-10 to fix mouse
+clicks on Home and Update entering the native titlebar move loop. Reissued 0.1.3
+also includes progress-aware preparation; original 0.1.3 builds retain their
+thirty-second deadline. Flatpak packages and repository commits were retained.
+
+An installed 0.1.4 receives no same-version update notification. Close all Folio
+windows and run the reissued setup EXE using the existing installation directory,
+or extract the complete portable ZIP into a new folder and open the existing
+library. Do not merge files into a running installation.
+
+A 0.1.3 client that cached the previous signed 0.1.4 manifest may report that the
+published release changed without increasing its version. Manual installation
+of reissued 0.1.4 is the simplest recovery. To repeat the 0.1.3 update test, close
+every Folio window, rename only `%LOCALAPPDATA%\Folio\updates\release.json`, then
+reopen and check for updates. Preserve the library and the rest of `updates`,
+which can contain recovery jobs. An already staged old package does not include
+the Windows repair.
 
 Keep libraries outside the program directory. Portable updates replace the entire
 program directory; keep personal files outside it too. Custom installation and
@@ -103,13 +116,21 @@ For a system installation, use `flatpak install --system --reinstall PATH.flatpa
 for a user installation, use `flatpak install --user --reinstall PATH.flatpak`.
 Neither command deletes the app's library.
 
-The release pages identify the reissued Flatpak/source/metadata files. Windows
-packages are unchanged, with their original corresponding source retained as
-`folio-VERSION-original-source.tar.gz`. Original source tags are retained as
-`vVERSION-original`. The repaired client accepts a signed same-version change
-only to the Flatpak commit, while no deployment has been staged and every
-Windows payload remains identical. An already verified restart target stays
-pinned. This repair is an exception; future hotfixes should increase the version.
+The release pages identify each platform's reissued files. The original source
+remains available as `folio-VERSION-original-source.tar.gz`, with original tags
+`vVERSION-original`. `folio-VERSION-source.tar.gz` and `vVERSION` identify the
+Flatpak repair. The Windows titlebar backports have their own complete
+`folio-VERSION-windows-source.tar.gz` archives and `vVERSION-windows-hotfix` tags.
+
+The repaired client accepts a signed same-version change only to the Flatpak
+commit, while no deployment has been staged and every Windows payload remains
+identical. The later Windows reissue therefore can also show a metadata warning
+on a Flatpak client with the old manifest cached. Its retained Flatpak target is
+unchanged; the host software manager or Flatpak CLI can update it normally. If
+needed, close Folio and rename only
+`~/.var/app/io.github.folio.Notes/data/folio/updates/release.json` before reopening.
+An already verified restart target stays pinned. These explicitly requested
+same-version repairs are exceptions; future hotfixes should increase the version.
 
 The public source and release repository is `https://github.com/juccul/Folio`.
 Installed apps read its releases anonymously. The signed Flatpak remote is
