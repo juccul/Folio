@@ -242,7 +242,7 @@ fn main() -> anyhow::Result<()> {
                         }
                         rendered.map_err(anyhow::Error::msg)?;
                         if phase < 2 {
-                            let label = if phase == 0 { "Update · 0.1.4" } else { "Downloading 42%" };
+                            let label = if phase == 0 { "Update · 0.1.1" } else { "Downloading 42%" };
                             let events=window.update(cx,|view,_,_|view.navigation_smoke_click(label,false))?.map_err(anyhow::Error::msg)?;
                             for event in events {
                                 cx.update_window(window.into(),|_,window,cx|{window.dispatch_input_event(event,cx);})?;

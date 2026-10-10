@@ -130,7 +130,8 @@ Back up those keys securely; losing them breaks updates for installed clients.
 5. Upload packages and corresponding source to the distribution release. Publish
    the Flatpak remote first; publish the signed manifest last and mark that release
    latest only once every asset is reachable. Check anonymous access to each URL.
-6. Verify a disposable old installation can discover, download, restart and retain
+6. Verify a disposable previous installation from the new version sequence can
+   discover, download, restart and retain
    its library through both platform paths. Record the exact hashes and limitations
    under ignored `artifacts/validation/` and summarize them in the release description.
 

@@ -164,21 +164,21 @@ impl NotesView {
         self.updater = folio_update::Updater::disabled();
         self.updater.state = match phase {
             0 => State::Available {
-                version: "0.1.4".into(),
+                version: "0.1.1".into(),
             },
             1 => State::Downloading {
-                version: "0.1.4".into(),
+                version: "0.1.1".into(),
                 percent: 42,
             },
             2 => State::Ready {
-                version: "0.1.4".into(),
+                version: "0.1.1".into(),
             },
             _ => State::Current,
         };
     }
     pub fn update_smoke_verify(&self, phase: u8) -> Result<(), String> {
         let label = match phase {
-            0 => "Update · 0.1.4",
+            0 => "Update · 0.1.1",
             1 => "Downloading 42%",
             2 => "Restart to update",
             _ => return Ok(()),

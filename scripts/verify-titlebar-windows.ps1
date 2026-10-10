@@ -250,7 +250,7 @@ try{
  $handle=[IntPtr]$window.Current.NativeWindowHandle
  $environment=@{binary_sha256=$binaryHash;owned_pid=$app.Id;owned_hwnd=$handle.ToInt64();dpi=[FolioTitlebarPointerV4]::GetDpiForWindow($handle);screen_width=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width;screen_height=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height;fixture_data_dir=$data;locations=$Locations;window_states=$WindowStates;hover_ms=$HoverMilliseconds;press_ms=$PressMilliseconds;network_or_install_actions=$false;updater_cache_access=$false;preexisting_folio_processes_allowed=$true}
  $environment|ConvertTo-Json -Depth 5|Set-Content (Join-Path $Output 'environment.json') -Encoding UTF8
- $available='Update '+[char]0xB7+' 0.1.4';$homeLabel='Library '+[char]0xB7+' Ctrl+Shift+L'
+ $available='Update '+[char]0xB7+' 0.1.1';$homeLabel='Library '+[char]0xB7+' Ctrl+Shift+L'
  $null=Node $window $available 10
  # Regression gate: empty chrome must still drag and double-click maximize/
  # restore after removing broad titlebar handlers. Only the owned fixture moves.
