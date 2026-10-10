@@ -22,6 +22,36 @@ pub struct PenPreset {
     pub name: String,
     pub style: PenStyle,
 }
+
+const INK_TOOLS: [InkTool; 5] = [
+    InkTool::Ballpoint,
+    InkTool::Fountain,
+    InkTool::Pencil,
+    InkTool::Marker,
+    InkTool::Highlighter,
+];
+
+pub(crate) fn default_ink_style(tool: InkTool) -> PenStyle {
+    let mut style = PenStyle {
+        tool,
+        ..Default::default()
+    };
+    match tool {
+        InkTool::Ballpoint => {}
+        InkTool::Fountain => style.width = 4.,
+        InkTool::Pencil => {
+            style.width = 2.;
+            style.opacity = 0.8;
+        }
+        InkTool::Marker => style.width = 7.,
+        InkTool::Highlighter => {
+            style.width = 20.;
+            style.opacity = 0.3;
+            style.color = Color::from_rgb(0xecc75c);
+        }
+    }
+    style
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkspacePreferences {
@@ -72,6 +102,9 @@ pub struct Settings {
     #[serde(default, skip_serializing)]
     pub presets: Vec<PenStyle>,
     pub pen_presets: Vec<PenPreset>,
+    /// One-time removal of unchanged, automatically generated legacy presets.
+    #[serde(default)]
+    pub user_pen_presets_only: bool,
     pub tool_styles: Vec<PenStyle>,
     pub paper: Paper,
     pub default_page: Option<PageProperties>,
@@ -168,7 +201,19 @@ impl Settings {
         for style in &mut self.tool_styles {
             normalize_pen(style);
         }
+        if !self.user_pen_presets_only {
+            self.pen_presets.retain(|preset| {
+                !INK_TOOLS.iter().enumerate().any(|(index, tool)| {
+                    preset.name == format!("{tool:?} {}", index + 1)
+                        && preset.style == default_ink_style(*tool)
+                })
+            });
+            self.user_pen_presets_only = true;
+        }
         for style in std::mem::take(&mut self.presets) {
+            if style == default_ink_style(style.tool) {
+                continue;
+            }
             if !self.pen_presets.iter().any(|p| p.style == style) {
                 let name = format!("{:?} {}", style.tool, self.pen_presets.len() + 1);
                 self.pen_presets.push(PenPreset {
@@ -241,33 +286,9 @@ impl Default for Settings {
                 InkTool::Marker,
             ],
             pen_presets: vec![],
-            tool_styles: vec![],
-            presets: vec![
-                PenStyle::default(),
-                PenStyle {
-                    tool: InkTool::Fountain,
-                    width: 4.,
-                    ..Default::default()
-                },
-                PenStyle {
-                    tool: InkTool::Pencil,
-                    width: 2.,
-                    opacity: 0.8,
-                    ..Default::default()
-                },
-                PenStyle {
-                    tool: InkTool::Marker,
-                    width: 7.,
-                    ..Default::default()
-                },
-                PenStyle {
-                    tool: InkTool::Highlighter,
-                    width: 20.,
-                    opacity: 0.3,
-                    color: Color::from_rgb(0xecc75c),
-                    ..Default::default()
-                },
-            ],
+            user_pen_presets_only: true,
+            tool_styles: INK_TOOLS.into_iter().map(default_ink_style).collect(),
+            presets: vec![],
             paper: Paper::Ruled,
             default_page: None,
             pad_buttons: vec![
@@ -328,8 +349,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_pen_types_do_not_create_saved_presets() {
+        let mut settings = Settings::default();
+        settings.normalize();
+        assert!(settings.presets.is_empty());
+        assert!(settings.pen_presets.is_empty());
+        for tool in INK_TOOLS {
+            assert!(settings.tool_styles.contains(&default_ink_style(tool)));
+        }
+    }
+
+    #[test]
+    fn generated_presets_are_removed_once_without_losing_user_presets() {
+        let mut presets: Vec<_> = INK_TOOLS
+            .into_iter()
+            .enumerate()
+            .map(|(index, tool)| PenPreset {
+                id: Id::new_v4(),
+                name: format!("{tool:?} {}", index + 1),
+                style: default_ink_style(tool),
+            })
+            .collect();
+        presets[1].name = "My fountain".into();
+        presets[2].style.width = 5.;
+        let user_ids = [presets[1].id, presets[2].id];
+        let mut settings: Settings = serde_json::from_value(serde_json::json!({
+            "pen_presets": presets,
+            "presets": INK_TOOLS.into_iter().map(default_ink_style).collect::<Vec<_>>()
+        }))
+        .unwrap();
+        settings.normalize();
+        assert_eq!(settings.pen_presets.len(), 2);
+        assert_eq!(settings.pen_presets[0].id, user_ids[0]);
+        assert_eq!(settings.pen_presets[1].id, user_ids[1]);
+        // A user can deliberately save a default style/name after migration.
+        let id = Id::new_v4();
+        settings.pen_presets.push(PenPreset {
+            id,
+            name: "Ballpoint 1".into(),
+            style: default_ink_style(InkTool::Ballpoint),
+        });
+        let mut reopened: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        reopened.normalize();
+        assert_eq!(reopened.pen_presets.len(), 3);
+        assert!(reopened.pen_presets.iter().any(|preset| preset.id == id));
+    }
+
+    #[test]
     fn legacy_presets_migrate_once_without_resurrecting_deleted_defaults() {
-        let style = PenStyle::default();
+        let style = PenStyle {
+            width: 9.,
+            ..Default::default()
+        };
         let mut settings: Settings =
             serde_json::from_value(serde_json::json!({"presets":[style,style]})).unwrap();
         settings.normalize();
@@ -357,7 +429,11 @@ mod tests {
         };
         settings.default_pen.width = f32::NAN;
         settings.default_pen.opacity = -1.;
-        settings.presets[0].pressure_gamma = f32::INFINITY;
+        settings.presets.push(PenStyle {
+            width: 9.,
+            pressure_gamma: f32::INFINITY,
+            ..Default::default()
+        });
         settings.normalize();
         assert_eq!(settings.ui_scale, 1.);
         assert_eq!(settings.cursor_size, 4.);

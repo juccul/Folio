@@ -10,17 +10,7 @@ impl Controller {
             .iter()
             .find(|s| s.tool == tool)
             .cloned()
-            .or_else(|| {
-                self.settings
-                    .pen_presets
-                    .iter()
-                    .find(|p| p.style.tool == tool)
-                    .map(|p| p.style.clone())
-            })
-            .unwrap_or_else(|| PenStyle {
-                tool,
-                ..Default::default()
-            });
+            .unwrap_or_else(|| settings::default_ink_style(tool));
         if self.settings.theme_default_ink_tools.contains(&tool) {
             style.color = self.theme_default_ink_color();
         }
