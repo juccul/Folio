@@ -32,24 +32,31 @@ impl NotesView {
             }
         };
         let theme = Theme::new(&self.controller.settings);
-        div().flex_shrink_0().mb(px(3.)).child(
-            self.control(
-                "app-update",
-                label.clone(),
-                div().text_xs().child(label).into_any_element(),
-                false,
-                cx,
-                |this, window, cx| this.update_action(window, cx),
-            )
-            .h(px(30.))
-            .min_h(px(30.))
-            .px_3()
-            .py_0()
+        div()
             .flex_shrink_0()
-            .bg(rgb(theme.selected))
-            .text_color(rgb(theme.accent))
-            .tooltip(move |_, cx| cx.new(|_| Hint(detail.clone().into(), theme)).into()),
-        )
+            .mb(px(3.))
+            // Keep every update state (including disabled progress notices) out of
+            // the title bar's native move/menu handlers without swallowing clicks.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .child(
+                self.control(
+                    "app-update",
+                    label.clone(),
+                    div().text_xs().child(label).into_any_element(),
+                    false,
+                    cx,
+                    |this, window, cx| this.update_action(window, cx),
+                )
+                .h(px(30.))
+                .min_h(px(30.))
+                .px_3()
+                .py_0()
+                .flex_shrink_0()
+                .bg(rgb(theme.selected))
+                .text_color(rgb(theme.accent))
+                .tooltip(move |_, cx| cx.new(|_| Hint(detail.clone().into(), theme)).into()),
+            )
     }
     pub(super) fn update_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.update_preparing {
