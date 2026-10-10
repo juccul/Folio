@@ -118,6 +118,9 @@ fn paint_picker_texture(
         height: (f32::from(bounds.size.height) * scale).ceil().max(1.) as u32,
     };
     if texture.as_ref().is_none_or(|texture| texture.key != key) {
+        if let Some(previous) = texture.take() {
+            let _ = window.drop_image(previous.image);
+        }
         let buffer = image::RgbaImage::from_raw(key.width, key.height, picker_pixels(key)).unwrap();
         *texture = Some(PickerTexture {
             key,
@@ -167,6 +170,17 @@ pub(super) fn checkerboard(bounds: Bounds<Pixels>, window: &mut Window) {
 }
 
 impl NotesView {
+    pub(super) fn clear_color_picker(&mut self, window: &mut Window) {
+        self.color_drag = None;
+        if let Some(state) = self.color_picker.take() {
+            for texture in state.textures.borrow_mut().iter_mut() {
+                if let Some(texture) = texture.take() {
+                    let _ = window.drop_image(texture.image);
+                }
+            }
+        }
+    }
+
     fn picker_hsv(&mut self, field: &Entity<Field>, color: ThemeColor) -> Hsv {
         match &mut self.color_picker {
             Some(state) if state.field == field.entity_id() => {
