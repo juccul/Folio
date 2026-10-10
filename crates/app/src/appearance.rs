@@ -138,16 +138,16 @@ fn defaults(dark: bool) -> BTreeMap<ThemeToken, ThemeColor> {
         [
             (Background, gray(0.145)),
             (Foreground, gray(0.985)),
-            (Card, gray(0.205)),
-            (Popover, gray(0.205)),
+            (Card, ThemeColor::opaque(0x0d0d0d)),
+            (Popover, ThemeColor::opaque(0x0d0d0d)),
             (Primary, gray(0.922)),
-            (PrimaryForeground, gray(0.205)),
+            (PrimaryForeground, ThemeColor::opaque(0x0d0d0d)),
             (Secondary, gray(0.269)),
             (MutedForeground, gray(0.708)),
-            (Border, oklch(1., 0., 0., 0.10)),
+            (Border, ThemeColor(0xffffff0d)),
             (Input, oklch(1., 0., 0., 0.15)),
             (Ring, gray(0.556)),
-            (Sidebar, gray(0.205)),
+            (Sidebar, ThemeColor::opaque(0x0d0d0d)),
             (SidebarPrimary, oklch(0.488, 0.243, 264.376, 1.)),
             (Destructive, oklch(0.704, 0.191, 22.216, 1.)),
         ]
@@ -258,7 +258,15 @@ mod tests {
         assert_eq!(light[&ThemeToken::Primary].hex(), "#171717");
         assert_eq!(light[&ThemeToken::Secondary].hex(), "#f5f5f5");
         assert_eq!(dark[&ThemeToken::Foreground].hex(), "#fafafa");
-        assert_eq!(dark[&ThemeToken::Border].hex(), "#ffffff1a");
+        for token in [
+            ThemeToken::Card,
+            ThemeToken::Popover,
+            ThemeToken::PrimaryForeground,
+            ThemeToken::Sidebar,
+        ] {
+            assert_eq!(dark[&token].hex(), "#0d0d0d");
+        }
+        assert_eq!(dark[&ThemeToken::Border].hex(), "#ffffff0d");
         assert_eq!(dark[&ThemeToken::Input].hex(), "#ffffff26");
     }
     #[test]
