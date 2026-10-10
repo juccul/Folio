@@ -1184,7 +1184,7 @@ impl NotesView {
             .flex()
             .items_center()
             .h_full()
-            .gap_0();
+            .gap_1();
         tabs = tabs.child(
             div()
                 .relative()
@@ -1205,10 +1205,11 @@ impl NotesView {
                         |this, _, _| this.show_library(),
                     )
                     .w(rems(2.25))
-                    .h(rems(2.))
+                    .p_0()
+                    .h(rems(1.75))
                     .min_h_0()
                     .border_0()
-                    .rounded_none()
+                    .rounded(rems(0.5))
                     .bg(rgb(if self.library_open {
                         theme.chrome_active
                     } else {
@@ -1216,18 +1217,7 @@ impl NotesView {
                     }))
                     .focus(move |s| s.bg(rgb(theme.selected)))
                     .hover(move |s| s.bg(rgb(theme.chrome_active))),
-                )
-                .when(self.library_open, |tab| {
-                    tab.child(
-                        div()
-                            .absolute()
-                            .bottom_0()
-                            .left_0()
-                            .right_0()
-                            .h(px(2.))
-                            .bg(rgb(theme.accent)),
-                    )
-                }),
+                ),
         );
         for id in self.open_tabs.clone() {
             let Some(n) = self.controller.notes.iter().find(|n| n.id == id) else {
@@ -1255,8 +1245,11 @@ impl NotesView {
                 );
             tabs = tabs.child(
                 div()
+                    .id(SharedString::from(format!("tab-surface-{id}")))
                     .relative()
-                    .h_full()
+                    .h(rems(1.75))
+                    .rounded(rems(0.5))
+                    .hover(move |s| s.bg(rgb(theme.chrome_active)))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
@@ -1278,21 +1271,17 @@ impl NotesView {
                             cx,
                             move |this, _, _| this.open_note(id),
                         )
-                        .h(rems(2.))
+                        .h(rems(1.75))
                         .min_h_0()
-                        .pl_3()
-                        .pr_2()
+                        .pl_2()
+                        .pr_1()
                         .py_0()
                         .border_0()
-                        .rounded_none()
-                        .bg(rgb(if selected {
-                            theme.chrome_active
-                        } else {
-                            theme.chrome
-                        }))
+                        .rounded(rems(0.5))
+                        .bg(transparent_black())
                         .text_color(rgb(theme.ink))
                         .focus(move |s| s.bg(rgb(theme.selected)))
-                        .hover(move |s| s.bg(rgb(theme.chrome_active)))
+                        .hover(|s| s.bg(transparent_black()))
                         .on_drag(drag, |drag, position, _, cx| {
                             cx.new(|_| {
                                 let mut drag = drag.clone();
@@ -1319,31 +1308,16 @@ impl NotesView {
                             cx,
                             move |this, w, cx| this.close_document_tab(id, w, cx),
                         )
-                        .size(rems(2.))
+                        .size(rems(1.5))
                         .min_h_0()
                         .p_0()
                         .mr_1()
                         .border_0()
-                        .rounded_none()
-                        .bg(rgb(if selected {
-                            theme.chrome_active
-                        } else {
-                            theme.chrome
-                        }))
+                        .rounded(rems(0.5))
+                        .bg(transparent_black())
                         .focus(move |s| s.bg(rgb(theme.selected)))
-                        .hover(move |s| s.bg(rgb(theme.chrome_active))),
-                    )
-                    .when(selected, |tab| {
-                        tab.child(
-                            div()
-                                .absolute()
-                                .bottom_0()
-                                .left_0()
-                                .right_0()
-                                .h(px(2.))
-                                .bg(rgb(theme.accent)),
-                        )
-                    }),
+                        .hover(|s| s.bg(transparent_black())),
+                    ),
             );
         }
         div()
@@ -1373,10 +1347,11 @@ impl NotesView {
                             cx,
                             |this, w, cx| this.modal(Modal::OpenDocument, w, cx),
                         )
-                        .size(rems(2.))
+                        .size(rems(1.75))
+                        .p_0()
                         .min_h_0()
                         .border_0()
-                        .rounded_none()
+                        .rounded(rems(0.5))
                         .bg(rgb(theme.chrome))
                         .focus(move |s| s.bg(rgb(theme.selected)))
                         .hover(move |s| s.bg(rgb(theme.chrome_active))),
