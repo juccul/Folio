@@ -49,6 +49,17 @@ impl Hsv {
         let [r, g, b] = channels.map(|c| ((c + m).clamp(0., 1.) * 255.).round() as u32);
         ThemeColor((r << 24) | (g << 16) | (b << 8) | alpha as u32)
     }
+
+    fn saturation_row(self, value: f32) -> [ThemeColor; 2] {
+        [0., 1.].map(|saturation| {
+            Self {
+                hue: self.hue,
+                saturation,
+                value,
+            }
+            .color(255)
+        })
+    }
 }
 
 pub(super) struct PickerState {
@@ -76,7 +87,7 @@ fn marker(bounds: Bounds<Pixels>, window: &mut Window) {
     ));
 }
 
-fn checkerboard(bounds: Bounds<Pixels>, window: &mut Window) {
+pub(super) fn checkerboard(bounds: Bounds<Pixels>, window: &mut Window) {
     window.paint_quad(fill(bounds, rgb(0xffffff)));
     let tile = 8.;
     for row in 0..(f32::from(bounds.size.height) / tile).ceil() as usize {
@@ -90,6 +101,34 @@ fn checkerboard(bounds: Bounds<Pixels>, window: &mut Window) {
                 window.paint_quad(fill(Bounds::new(origin, size), rgb(0xd2d2d2)));
             }
         }
+    }
+}
+
+fn saturation_value_box(bounds: Bounds<Pixels>, hsv: Hsv, window: &mut Window) {
+    // GPUI composites translucent layers in linear light. Layering white and
+    // black over a hue therefore does not match the sRGB HSV color that is
+    // selected at the same point. Opaque sRGB rows keep the visible plane and
+    // selection in the same color space, independent of the selected S/V.
+    let rows = (f32::from(bounds.size.height) * window.scale_factor())
+        .ceil()
+        .max(1.) as usize;
+    let row_height = bounds.size.height / rows as f32;
+    for row in 0..rows {
+        let value = 1. - (row as f32 + 0.5) / rows as f32;
+        let [white, hue] = hsv.saturation_row(value);
+        let part = Bounds::new(
+            bounds.origin + point(px(0.), row_height * row as f32),
+            size(bounds.size.width, row_height),
+        );
+        window.paint_quad(fill(
+            part,
+            linear_gradient(
+                90.,
+                linear_color_stop(rgba(white.0), 0.),
+                linear_color_stop(rgba(hue.0), 1.),
+            )
+            .color_space(ColorSpace::Srgb),
+        ));
     }
 }
 
@@ -154,29 +193,7 @@ impl NotesView {
                 move |b, _, window, _| {
                     match channel {
                         0 => {
-                            let hue = Hsv {
-                                hue: hsv.hue,
-                                saturation: 1.,
-                                value: 1.,
-                            }
-                            .color(255);
-                            window.paint_quad(fill(b, rgba(hue.0)));
-                            window.paint_quad(fill(
-                                b,
-                                linear_gradient(
-                                    90.,
-                                    linear_color_stop(rgba(0xffffffff), 0.),
-                                    linear_color_stop(rgba(0xffffff00), 1.),
-                                ),
-                            ));
-                            window.paint_quad(fill(
-                                b,
-                                linear_gradient(
-                                    180.,
-                                    linear_color_stop(rgba(0x00000000), 0.),
-                                    linear_color_stop(rgba(0x000000ff), 1.),
-                                ),
-                            ));
+                            saturation_value_box(b, hsv, window);
                             let center = b.origin
                                 + point(
                                     b.size.width * hsv.saturation,
@@ -203,7 +220,8 @@ impl NotesView {
                                         90.,
                                         linear_color_stop(rgb(colors[i]), 0.),
                                         linear_color_stop(rgb(colors[i + 1]), 1.),
-                                    ),
+                                    )
+                                    .color_space(ColorSpace::Srgb),
                                 ));
                             }
                             marker(
@@ -529,5 +547,40 @@ mod tests {
             .rgb(),
             0
         );
+    }
+
+    #[test]
+    fn saturation_value_plane_matches_selected_srgb_and_keeps_fixed_hue() {
+        for hue in [0., 0.1, 1. / 3., 0.58, 2. / 3., 0.91] {
+            let initial = Hsv {
+                hue,
+                saturation: 0.15,
+                value: 0.9,
+            };
+            let dragged = Hsv {
+                saturation: 0.95,
+                value: 0.03,
+                ..initial
+            };
+            for value in [0., 0.1, 0.25, 0.5, 0.8, 1.] {
+                let row = initial.saturation_row(value);
+                assert_eq!(row, dragged.saturation_row(value));
+                for saturation in [0., 0.1, 0.25, 0.5, 0.8, 1.] {
+                    let selected = Hsv {
+                        hue,
+                        saturation,
+                        value,
+                    }
+                    .color(255);
+                    for shift in [24, 16, 8] {
+                        let left = ((row[0].0 >> shift) & 255) as f32;
+                        let right = ((row[1].0 >> shift) & 255) as f32;
+                        let painted = (left + (right - left) * saturation).round();
+                        let selected = ((selected.0 >> shift) & 255) as f32;
+                        assert!((painted - selected).abs() <= 1.);
+                    }
+                }
+            }
+        }
     }
 }
