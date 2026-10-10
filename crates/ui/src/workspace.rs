@@ -200,6 +200,7 @@ impl NotesView {
     /// Open a document without changing its model or viewport.
     pub fn show_editor(&mut self) {
         self.document_menu = None;
+        self.folder_menu = None;
         self.library_open = false;
         let id = self.controller.active;
         self.controller.mark_note_opened(id);
@@ -213,6 +214,7 @@ impl NotesView {
             self.open_tabs.push(id);
         }
         self.document_menu = None;
+        self.folder_menu = None;
         self.library_open = false;
         self.more_open = false;
         self.export_open = false;
@@ -221,6 +223,7 @@ impl NotesView {
     pub(super) fn show_library(&mut self) {
         self.controller.finish();
         self.document_menu = None;
+        self.folder_menu = None;
         self.library_open = true;
         self.canvas_bounds = None;
         self.more_open = false;
@@ -344,7 +347,14 @@ impl NotesView {
                     theme.selected
                 } else {
                     theme.sidebar
-                })),
+                }))
+                .hover(move |s| s.bg(rgb(theme.selected)))
+                .when(filter == NoteFilter::All, |s| {
+                    self.folder_drop_target(s, None, cx).tooltip(move |_, cx| {
+                        cx.new(|_| Hint("Drop here to move to the top level".into(), theme))
+                            .into()
+                    })
+                }),
             );
         }
         let mut folders = div()
@@ -374,64 +384,110 @@ impl NotesView {
                 collapsed_depth = Some(depth);
             }
             let active = matches!(self.controller.filter, NoteFilter::Notebook(folder) | NoteFilter::NotebookTrash(folder) if folder == id);
+            let name = n.name.clone();
+            let drag = super::folder_menu::LibraryDrag {
+                item: super::folder_menu::LibraryItem::Folder(id),
+                title: name.clone(),
+                theme,
+                position: Point::default(),
+            };
             let content = div()
                 .flex()
                 .min_w_0()
                 .items_center()
                 .gap_3()
                 .child(icon(Icon::Folder, theme.muted))
-                .child(div().min_w_0().truncate().child(n.name.clone()));
-            folders = folders.child(
-                div()
-                    .flex()
-                    .flex_shrink_0()
-                    .min_h(rems(2.75))
-                    .items_center()
-                    .pl(px(depth as f32 * 12.))
-                    .child(if branch {
-                        self.control(
-                            format!("toggle-folder-{id}"),
-                            format!("{} {path}", if collapsed { "Expand" } else { "Collapse" }),
-                            div()
-                                .child(if collapsed { "▸" } else { "▾" })
-                                .into_any_element(),
-                            !collapsed,
-                            cx,
-                            move |this, _, _| {
-                                let folders = &mut this.controller.settings.collapsed_folders;
-                                if folders.contains(&id) {
-                                    folders.retain(|f| *f != id);
-                                } else {
-                                    folders.push(id);
-                                }
-                                this.controller.store_settings();
-                            },
-                        )
-                        .size(px(24.))
-                        .p_0()
-                        .into_any_element()
-                    } else {
-                        div().w(px(24.)).into_any_element()
+                .child(div().min_w_0().truncate().child(name));
+            let open = self
+                .control(
+                    format!("folder-{id}"),
+                    path.clone(),
+                    content.into_any_element(),
+                    active,
+                    cx,
+                    move |this, _, _| this.controller.filter = NoteFilter::Notebook(id),
+                )
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .justify_start()
+                .rounded_none()
+                .bg(transparent_black())
+                .on_drag(drag, |drag, position, _, cx| {
+                    cx.new(|_| {
+                        let mut drag = drag.clone();
+                        drag.position = position;
+                        drag
                     })
-                    .child(
-                        self.control(
-                            format!("folder-{id}"),
-                            path,
-                            content.into_any_element(),
-                            active,
-                            cx,
-                            move |this, _, _| this.controller.filter = NoteFilter::Notebook(id),
-                        )
-                        .flex_1()
-                        .min_w_0()
-                        .justify_start()
-                        .bg(rgb(if active {
-                            theme.selected
-                        } else {
-                            theme.sidebar
-                        })),
-                    ),
-            );
+                });
+            let row = div()
+                .id(SharedString::from(format!("folder-row-{id}")))
+                .flex()
+                .flex_shrink_0()
+                .h(rems(2.75))
+                .items_center()
+                .ml(px(depth as f32 * 12.))
+                .rounded(px(theme.radius))
+                .bg(rgb(if active {
+                    theme.selected
+                } else {
+                    theme.sidebar
+                }))
+                .hover(move |s| s.bg(rgb(theme.selected)))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, w, cx| {
+                        this.open_folder_menu(id, event.position, w, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(if branch {
+                    self.control(
+                        format!("toggle-folder-{id}"),
+                        format!("{} {path}", if collapsed { "Expand" } else { "Collapse" }),
+                        div()
+                            .child(if collapsed { "▸" } else { "▾" })
+                            .into_any_element(),
+                        !collapsed,
+                        cx,
+                        move |this, _, cx| {
+                            let folders = &mut this.controller.settings.collapsed_folders;
+                            if folders.contains(&id) {
+                                folders.retain(|f| *f != id);
+                            } else {
+                                folders.push(id);
+                            }
+                            this.controller.store_settings();
+                            cx.stop_propagation();
+                        },
+                    )
+                    .size(px(24.))
+                    .p_0()
+                    .bg(transparent_black())
+                    .into_any_element()
+                } else {
+                    div().w(px(24.)).into_any_element()
+                })
+                .child(open)
+                .child(
+                    self.icon_button(
+                        format!("manage-folder-{id}"),
+                        format!("Manage folder {path}"),
+                        Icon::More,
+                        false,
+                        cx,
+                        move |this, w, cx| {
+                            this.open_folder_menu(id, w.mouse_position(), w, cx);
+                            cx.stop_propagation();
+                        },
+                    )
+                    .size(rems(1.75))
+                    .min_h(rems(1.75))
+                    .mr_1()
+                    .bg(transparent_black())
+                    .hover(move |s| s.bg(rgb(theme.surface))),
+                );
+            folders = folders.child(self.folder_drop_target(row, Some(id), cx));
         }
         if self.controller.notebooks.is_empty() {
             folders = folders.child(
@@ -442,84 +498,6 @@ impl NotesView {
                     .text_color(rgb(theme.muted))
                     .child("Keep related documents together."),
             );
-        }
-        if let NoteFilter::Notebook(id) | NoteFilter::NotebookTrash(id) = self.controller.filter {
-            folders = folders
-                .child(
-                    self.button(
-                        format!("rename-notebook-{id}"),
-                        "Rename folder…",
-                        false,
-                        cx,
-                        move |this, w, cx| this.modal(Modal::RenameNotebook(id), w, cx),
-                    )
-                    .text_xs()
-                    .justify_start(),
-                )
-                .child(
-                    self.button(
-                        format!("child-notebook-{id}"),
-                        "New subfolder…",
-                        false,
-                        cx,
-                        move |this, w, cx| this.modal(Modal::Notebook(Some(id)), w, cx),
-                    )
-                    .text_xs()
-                    .justify_start(),
-                )
-                .child(
-                    self.button(
-                        "move-folder",
-                        "Move folder…",
-                        false,
-                        cx,
-                        move |this, w, cx| this.modal(Modal::MoveNotebook(id), w, cx),
-                    )
-                    .text_xs()
-                    .justify_start()
-                    .bg(rgb(theme.sidebar)),
-                )
-                .child(
-                    self.button(
-                        "delete-folder",
-                        "Delete empty folder",
-                        false,
-                        cx,
-                        move |this, _, _| {
-                            if let Err(e) = this.controller.delete_empty_notebook(id) {
-                                this.controller.error = Some(e);
-                            }
-                        },
-                    )
-                    .text_xs()
-                    .justify_start()
-                    .bg(rgb(theme.sidebar)),
-                );
-            if let Some(reason) = self.controller.folder_deletion_reason(id) {
-                folders = folders.child(
-                    div()
-                        .p_2()
-                        .text_xs()
-                        .text_color(rgb(theme.muted))
-                        .child(reason),
-                );
-            }
-            let (_, trashed, _) = self.controller.folder_contents(id);
-            if trashed > 0 {
-                folders = folders.child(
-                    self.button(
-                        "view-folder-trash",
-                        format!("View {trashed} in Trash"),
-                        false,
-                        cx,
-                        move |this, _, _| {
-                            this.controller.filter = NoteFilter::NotebookTrash(id);
-                        },
-                    )
-                    .text_xs()
-                    .justify_start(),
-                );
-            }
         }
         div()
             .w(rems(13.5))
@@ -555,15 +533,7 @@ impl NotesView {
                             Icon::Plus,
                             false,
                             cx,
-                            |this, w, cx| {
-                                let parent =
-                                    if let NoteFilter::Notebook(id) = this.controller.filter {
-                                        Some(id)
-                                    } else {
-                                        None
-                                    };
-                                this.modal(Modal::Notebook(parent), w, cx)
-                            },
+                            |this, w, cx| this.modal(Modal::Notebook(None), w, cx),
                         )
                         .size(rems(1.875))
                         .bg(rgb(theme.sidebar)),
@@ -625,6 +595,12 @@ impl NotesView {
             .when(!list_view, |s| s.flex_wrap().gap_6());
         for n in notes {
             let id = n.id;
+            let drag = super::folder_menu::LibraryDrag {
+                item: super::folder_menu::LibraryItem::Document(id),
+                title: n.title.clone(),
+                theme,
+                position: Point::default(),
+            };
             let session_pages = self
                 .controller
                 .sessions
@@ -777,7 +753,16 @@ impl NotesView {
                             .rounded_none()
                             .bg(transparent_black())
                             .hover(move |s| s.bg(rgb(theme.sidebar)))
-                            .on_mouse_down(MouseButton::Right, context_menu),
+                            .on_mouse_down(MouseButton::Right, context_menu)
+                            .when(!n.trashed, |s| {
+                                s.on_drag(drag, |drag, position, _, cx| {
+                                    cx.new(|_| {
+                                        let mut drag = drag.clone();
+                                        drag.position = position;
+                                        drag
+                                    })
+                                })
+                            }),
                         )
                         .child(favorite)
                         .child(menu),
@@ -842,7 +827,16 @@ impl NotesView {
                             .p_3()
                             .bg(transparent_black())
                             .hover(move |s| s.bg(rgb(theme.sidebar)))
-                            .on_mouse_down(MouseButton::Right, context_menu),
+                            .on_mouse_down(MouseButton::Right, context_menu)
+                            .when(!n.trashed, |s| {
+                                s.on_drag(drag, |drag, position, _, cx| {
+                                    cx.new(|_| {
+                                        let mut drag = drag.clone();
+                                        drag.position = position;
+                                        drag
+                                    })
+                                })
+                            }),
                         )
                         .child(
                             div()

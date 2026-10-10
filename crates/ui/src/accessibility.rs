@@ -138,7 +138,10 @@ fn semantics(key: &str) -> Semantics {
             toggle: false,
         };
     }
-    if key.starts_with("folder-") && !key.starts_with("folder-destination-") {
+    if key
+        .strip_prefix("folder-")
+        .is_some_and(|id| Id::parse_str(id).is_ok())
+    {
         return Semantics {
             role: Role::TreeItem,
             group: Some((21, "Folders", Role::Tree)),
@@ -539,8 +542,7 @@ impl Accessibility {
                 control.enabled,
             );
             if control.key == "delete-folder"
-                && let NoteFilter::Notebook(id) | NoteFilter::NotebookTrash(id) =
-                    view.controller.filter
+                && let Some((id, _)) = view.folder_menu
                 && let Some(reason) = view.controller.folder_deletion_reason(id)
             {
                 node.set_description(reason);
@@ -924,6 +926,11 @@ mod tests {
         let tab = semantic_node(&format!("tab-{}", Id::new_v4()), "Document", true, true);
         assert_eq!(tab.role(), Role::Tab);
         assert_eq!(tab.is_selected(), Some(true));
+        assert_eq!(semantics("folder-menu-rename").role, Role::Button);
+        assert_eq!(
+            semantics(&format!("folder-{}", Id::new_v4())).role,
+            Role::TreeItem
+        );
         let radio = semantic_node("eraser", "Eraser", false, true);
         assert_eq!(radio.role(), Role::RadioButton);
         assert_eq!(radio.toggled(), Some(accesskit::Toggled::False));

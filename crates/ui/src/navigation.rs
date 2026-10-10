@@ -96,6 +96,7 @@ impl NotesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.folder_menu = None;
         self.document_menu = Some((id, at));
         self.document_menu_folders = false;
         self.focus.focus(window);

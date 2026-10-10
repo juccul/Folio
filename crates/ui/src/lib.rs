@@ -9,6 +9,7 @@ mod appearance;
 mod canvas_menu;
 mod color_picker;
 mod field;
+mod folder_menu;
 mod graph;
 mod help;
 mod icons;
@@ -237,6 +238,7 @@ pub struct NotesView {
     tab_target: Option<(Id, usize, Pixels, f32)>,
     document_menu: Option<(Id, Point<Pixels>)>,
     document_menu_folders: bool,
+    folder_menu: Option<(Id, Point<Pixels>)>,
     canvas_menu: Option<canvas_menu::CanvasMenu>,
     thumbnails: workspace::Thumbnails,
     writing_style: Option<folio_document::PenStyle>,
@@ -391,6 +393,7 @@ impl NotesView {
             tab_target: None,
             document_menu: None,
             document_menu_folders: false,
+            folder_menu: None,
             canvas_menu: None,
             thumbnails: workspace::Thumbnails::default(),
             writing_style: None,
@@ -468,6 +471,7 @@ impl NotesView {
             || self.modal.is_some()
             || self.controller.recognition_setup_needed()
             || self.document_menu.is_some()
+            || self.folder_menu.is_some()
             || self.canvas_menu.is_some()
             || self.settings_open
             || self.help_open
@@ -488,6 +492,7 @@ impl NotesView {
         self.focus.focus(window);
     }
     fn dismiss_popovers(&mut self) {
+        self.folder_menu = None;
         self.canvas_menu = None;
         self.sort_open = false;
         self.more_open = false;
@@ -536,6 +541,7 @@ impl NotesView {
         };
         self.controller.finish();
         self.document_menu = None;
+        self.folder_menu = None;
         self.more_open = false;
         self.pen_settings = false;
         self.notebook_setup = None;
@@ -1546,12 +1552,9 @@ impl NotesView {
                 }
                 "update-check" => !self.updater.state.busy(),
                 "canvas-paste" => self.canvas_menu.is_some_and(|menu| menu.can_paste),
-                "delete-folder" => match self.controller.filter {
-                    NoteFilter::Notebook(id) | NoteFilter::NotebookTrash(id) => {
-                        self.controller.folder_deletion_reason(id).is_none()
-                    }
-                    _ => false,
-                },
+                "delete-folder" => self
+                    .folder_menu
+                    .is_some_and(|(id, _)| self.controller.folder_deletion_reason(id).is_none()),
                 key if key.starts_with("folder-destination-") => {
                     let destination = key
                         .strip_prefix("folder-destination-")
@@ -2996,7 +2999,8 @@ impl Render for NotesView {
                 motion.panel(
                     "menu-motion",
                     self.document_menu
-                        .map(|(id, _)| format!("{id}-{}", self.document_menu_folders)),
+                        .map(|(id, _)| format!("{id}-{}", self.document_menu_folders))
+                        .or_else(|| self.folder_menu.map(|(id, _)| format!("folder-{id}"))),
                     reduced,
                 ),
                 motion.panel(
@@ -3323,6 +3327,7 @@ impl Render for NotesView {
                         || this.pen_settings
                         || this.export_open
                         || this.document_menu.is_some()
+                        || this.folder_menu.is_some()
                         || this.canvas_menu.is_some()
                         || this.controller.error.is_some();
                     if !dismissing_ui && this.controller.math_session.is_some() {
@@ -3659,6 +3664,22 @@ impl Render for NotesView {
                     .absolute()
                     .inset_0()
                     .child(self.document_menu_panel(window, cx))
+                    .opacity(menu_alpha),
+            );
+        }
+        if self.folder_menu.is_some() {
+            self.building_overlay = self.modal.is_none()
+                && !self.settings_open
+                && !self.help_open
+                && self.controller.error.is_none();
+            if self.building_overlay {
+                self.accessibility.begin();
+            }
+            body = body.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(self.folder_menu_panel(window, cx))
                     .opacity(menu_alpha),
             );
         }
