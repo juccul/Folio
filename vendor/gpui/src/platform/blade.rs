@@ -3,6 +3,7 @@ mod apple_compat;
 mod blade_atlas;
 mod blade_context;
 mod blade_renderer;
+mod resize;
 
 #[cfg(target_os = "macos")]
 pub(crate) use apple_compat::*;

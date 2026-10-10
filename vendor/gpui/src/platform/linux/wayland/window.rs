@@ -96,6 +96,7 @@ pub struct WaylandWindowState {
     display: Option<(ObjectId, Output)>,
     globals: Globals,
     renderer: BladeRenderer,
+    drawable_size_dirty: bool,
     bounds: Bounds<Pixels>,
     scale: f32,
     input_handler: Option<PlatformInputHandler>,
@@ -171,6 +172,7 @@ impl WaylandWindowState {
             outputs: HashMap::default(),
             display: None,
             renderer,
+            drawable_size_dirty: false,
             bounds: options.bounds,
             scale: 1.0,
             input_handler: None,
@@ -711,8 +713,10 @@ impl WaylandWindowStatePtr {
             if let Some(scale) = scale {
                 state.scale = scale;
             }
-            let device_bounds = state.bounds.to_device_pixels(state.scale);
-            state.renderer.update_drawable_size(device_bounds.size);
+            // Configure and scale events can arrive before the next frame.
+            // Keep the presented swapchain alive until its replacement will be
+            // drawn, and allocate only for the final size consumed by that frame.
+            state.drawable_size_dirty = true;
             (state.bounds.size, state.scale)
         };
 
@@ -1046,6 +1050,11 @@ impl PlatformWindow for WaylandWindow {
 
     fn draw(&self, scene: &Scene) {
         let mut state = self.borrow_mut();
+        if state.drawable_size_dirty {
+            let device_bounds = state.bounds.to_device_pixels(state.scale);
+            state.renderer.update_drawable_size(device_bounds.size);
+            state.drawable_size_dirty = false;
+        }
         state.renderer.draw(scene);
     }
 

@@ -1,6 +1,7 @@
 // Doing `if let` gives you nice scoping with passes/encoders
 #![allow(irrefutable_let_patterns)]
 
+use super::resize::path_target_extent;
 use super::{BladeAtlas, BladeContext};
 use crate::{
     Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point, PolychromeSprite,
@@ -338,6 +339,7 @@ pub struct BladeRenderer {
     core_video_texture_cache: CVMetalTextureCache,
     path_intermediate_texture: gpu::Texture,
     path_intermediate_texture_view: gpu::TextureView,
+    path_intermediate_size: gpu::Extent,
     path_intermediate_msaa_texture: Option<gpu::Texture>,
     path_intermediate_msaa_texture_view: Option<gpu::TextureView>,
     rendering_parameters: RenderingParameters,
@@ -385,19 +387,25 @@ impl BladeRenderer {
             ..Default::default()
         });
 
+        let path_size = path_target_extent([config.size.width, config.size.height], [0, 0]);
+        let path_intermediate_size = gpu::Extent {
+            width: path_size[0],
+            height: path_size[1],
+            depth: 1,
+        };
         let (path_intermediate_texture, path_intermediate_texture_view) =
             create_path_intermediate_texture(
                 &context.gpu,
                 surface.info().format,
-                config.size.width,
-                config.size.height,
+                path_intermediate_size.width,
+                path_intermediate_size.height,
             );
         let (path_intermediate_msaa_texture, path_intermediate_msaa_texture_view) =
             create_msaa_texture_if_needed(
                 &context.gpu,
                 surface.info().format,
-                config.size.width,
-                config.size.height,
+                path_intermediate_size.width,
+                path_intermediate_size.height,
                 rendering_parameters.path_sample_count,
             )
             .unzip();
@@ -424,6 +432,7 @@ impl BladeRenderer {
             core_video_texture_cache,
             path_intermediate_texture,
             path_intermediate_texture_view,
+            path_intermediate_size,
             path_intermediate_msaa_texture,
             path_intermediate_msaa_texture_view,
             rendering_parameters,
@@ -479,6 +488,26 @@ impl BladeRenderer {
             self.surface_config.size = gpu_size;
             self.gpu
                 .reconfigure_surface(&mut self.surface, self.surface_config);
+            let path_size = path_target_extent(
+                [gpu_size.width, gpu_size.height],
+                [
+                    self.path_intermediate_size.width,
+                    self.path_intermediate_size.height,
+                ],
+            );
+            if path_size
+                == [
+                    self.path_intermediate_size.width,
+                    self.path_intermediate_size.height,
+                ]
+            {
+                return;
+            }
+            self.path_intermediate_size = gpu::Extent {
+                width: path_size[0],
+                height: path_size[1],
+                depth: 1,
+            };
             self.gpu.destroy_texture(self.path_intermediate_texture);
             self.gpu
                 .destroy_texture_view(self.path_intermediate_texture_view);
@@ -492,8 +521,8 @@ impl BladeRenderer {
                 create_path_intermediate_texture(
                     &self.gpu,
                     self.surface.info().format,
-                    gpu_size.width,
-                    gpu_size.height,
+                    self.path_intermediate_size.width,
+                    self.path_intermediate_size.height,
                 );
             self.path_intermediate_texture = path_intermediate_texture;
             self.path_intermediate_texture_view = path_intermediate_texture_view;
@@ -501,8 +530,8 @@ impl BladeRenderer {
                 create_msaa_texture_if_needed(
                     &self.gpu,
                     self.surface.info().format,
-                    gpu_size.width,
-                    gpu_size.height,
+                    self.path_intermediate_size.width,
+                    self.path_intermediate_size.height,
                     self.rendering_parameters.path_sample_count,
                 )
                 .unzip();
@@ -709,8 +738,8 @@ impl BladeRenderer {
                     drop(pass);
                     self.draw_paths_to_intermediate(
                         paths,
-                        self.surface_config.size.width as f32,
-                        self.surface_config.size.height as f32,
+                        self.path_intermediate_size.width as f32,
+                        self.path_intermediate_size.height as f32,
                     );
                     pass = self.command_encoder.render(
                         "main",
