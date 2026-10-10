@@ -16,6 +16,8 @@ from ui_x11 import Client
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
+    parser.add_argument('--timeout', type=float, default=90,
+                        help='Allow software rendering on slow virtual displays (seconds)')
     args = parser.parse_args()
     if os.environ.get('FOLIO_VIRTUAL_DISPLAY') != '1' or os.environ.get('WAYLAND_DISPLAY'):
         parser.error('Use only an isolated X11 test display with FOLIO_VIRTUAL_DISPLAY=1')
@@ -30,7 +32,7 @@ def main():
                 if app.poll() is not None:
                     break
                 client.wake_virtual_window()
-            return app.wait(timeout=30)
+            return app.wait(timeout=args.timeout)
         finally:
             if client is not None:
                 client.close()

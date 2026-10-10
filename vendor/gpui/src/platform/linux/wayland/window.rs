@@ -110,6 +110,7 @@ pub struct WaylandWindowState {
     active: bool,
     hovered: bool,
     in_progress_configure: Option<InProgressConfigure>,
+    pending_configure: Option<(u32, InProgressConfigure)>,
     resize_throttle: bool,
     in_progress_window_controls: Option<WindowControls>,
     window_controls: WindowControls,
@@ -180,6 +181,7 @@ impl WaylandWindowState {
             tiling: Tiling::default(),
             window_bounds: options.bounds,
             in_progress_configure: None,
+            pending_configure: None,
             resize_throttle: false,
             client,
             appearance,
@@ -355,8 +357,14 @@ impl WaylandWindowStatePtr {
 
     pub fn frame(&self) {
         let mut state = self.state.borrow_mut();
-        state.surface.frame(&state.globals.qh, state.surface.id());
         state.resize_throttle = false;
+        let pending_configure = state.pending_configure.take();
+        drop(state);
+        if let Some((serial, configure)) = pending_configure {
+            self.apply_configure(serial, Some(configure));
+        }
+        let state = self.state.borrow();
+        state.surface.frame(&state.globals.qh, state.surface.id());
         drop(state);
 
         let mut cb = self.callbacks.borrow_mut();
@@ -367,75 +375,94 @@ impl WaylandWindowStatePtr {
 
     pub fn handle_xdg_surface_event(&self, event: xdg_surface::Event) {
         if let xdg_surface::Event::Configure { serial } = event {
-            {
+            let configure = {
                 let mut state = self.state.borrow_mut();
-                if let Some(window_controls) = state.in_progress_window_controls.take() {
-                    state.window_controls = window_controls;
+                state.in_progress_configure.take().or_else(|| {
+                    state
+                        .pending_configure
+                        .take()
+                        .map(|(_, configure)| configure)
+                })
+            };
+            self.apply_configure(serial, configure);
+        }
+    }
 
-                    drop(state);
-                    let mut callbacks = self.callbacks.borrow_mut();
-                    if let Some(appearance_changed) = callbacks.appearance_changed.as_mut() {
-                        appearance_changed();
-                    }
-                }
-            }
-            {
-                let mut state = self.state.borrow_mut();
-
-                if let Some(mut configure) = state.in_progress_configure.take() {
-                    let got_unmaximized = state.maximized && !configure.maximized;
-                    state.fullscreen = configure.fullscreen;
-                    state.maximized = configure.maximized;
-                    state.tiling = configure.tiling;
-                    // Limit interactive resizes to once per vblank
-                    if configure.resizing && state.resize_throttle {
-                        return;
-                    } else if configure.resizing {
-                        state.resize_throttle = true;
-                    }
-                    if !configure.fullscreen && !configure.maximized {
-                        configure.size = if got_unmaximized {
-                            Some(state.window_bounds.size)
-                        } else {
-                            compute_outer_size(state.inset(), configure.size, state.tiling)
-                        };
-                        if let Some(size) = configure.size {
-                            state.window_bounds = Bounds {
-                                origin: Point::default(),
-                                size,
-                            };
-                        }
-                    }
-                    drop(state);
-                    if let Some(size) = configure.size {
-                        self.resize(size);
-                    }
-                }
-            }
+    fn apply_configure(&self, serial: u32, configure: Option<InProgressConfigure>) {
+        {
             let mut state = self.state.borrow_mut();
-            state.xdg_surface.ack_configure(serial);
+            state.pending_configure = None;
+            if let Some(window_controls) = state.in_progress_window_controls.take() {
+                state.window_controls = window_controls;
 
-            let window_geometry = inset_by_tiling(
-                state.bounds.map_origin(|_| px(0.0)),
-                state.inset(),
-                state.tiling,
-            )
-            .map(|v| v.0 as i32)
-            .map_size(|v| if v <= 0 { 1 } else { v });
-
-            state.xdg_surface.set_window_geometry(
-                window_geometry.origin.x,
-                window_geometry.origin.y,
-                window_geometry.size.width,
-                window_geometry.size.height,
-            );
-
-            let request_frame_callback = !state.acknowledged_first_configure;
-            if request_frame_callback {
-                state.acknowledged_first_configure = true;
                 drop(state);
-                self.frame();
+                let mut callbacks = self.callbacks.borrow_mut();
+                if let Some(appearance_changed) = callbacks.appearance_changed.as_mut() {
+                    appearance_changed();
+                }
             }
+        }
+        {
+            let mut state = self.state.borrow_mut();
+
+            if let Some(mut configure) = configure {
+                // Keep the newest throttled size and its serial together.
+                // Apply and acknowledge it at the next frame even if no
+                // further configure arrives when the pointer stops moving.
+                if configure.resizing && state.resize_throttle {
+                    state.pending_configure = Some((serial, configure));
+                    return;
+                }
+                let got_unmaximized = state.maximized && !configure.maximized;
+                state.fullscreen = configure.fullscreen;
+                state.maximized = configure.maximized;
+                state.tiling = configure.tiling;
+                // Limit interactive resizes to once per vblank
+                if configure.resizing {
+                    state.resize_throttle = true;
+                }
+                if !configure.fullscreen && !configure.maximized {
+                    configure.size = if got_unmaximized {
+                        Some(state.window_bounds.size)
+                    } else {
+                        compute_outer_size(state.inset(), configure.size, state.tiling)
+                    };
+                    if let Some(size) = configure.size {
+                        state.window_bounds = Bounds {
+                            origin: Point::default(),
+                            size,
+                        };
+                    }
+                }
+                drop(state);
+                if let Some(size) = configure.size {
+                    self.resize(size);
+                }
+            }
+        }
+        let mut state = self.state.borrow_mut();
+        state.xdg_surface.ack_configure(serial);
+
+        let window_geometry = inset_by_tiling(
+            state.bounds.map_origin(|_| px(0.0)),
+            state.inset(),
+            state.tiling,
+        )
+        .map(|v| v.0 as i32)
+        .map_size(|v| if v <= 0 { 1 } else { v });
+
+        state.xdg_surface.set_window_geometry(
+            window_geometry.origin.x,
+            window_geometry.origin.y,
+            window_geometry.size.width,
+            window_geometry.size.height,
+        );
+
+        let request_frame_callback = !state.acknowledged_first_configure;
+        if request_frame_callback {
+            state.acknowledged_first_configure = true;
+            drop(state);
+            self.frame();
         }
     }
 

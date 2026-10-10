@@ -255,6 +255,8 @@ pub struct X11WindowState {
     x_root_window: xproto::Window,
     pub(crate) counter_id: sync::Counter,
     pub(crate) last_sync_counter: Option<sync::Int64>,
+    pending_sync_counter: Option<sync::Int64>,
+    drawable_size_dirty: bool,
     bounds: Bounds<Pixels>,
     scale_factor: f32,
     renderer: BladeRenderer,
@@ -692,6 +694,8 @@ impl X11WindowState {
                 edge_constraints: None,
                 counter_id: sync_request_counter,
                 last_sync_counter: None,
+                pending_sync_counter: None,
+                drawable_size_dirty: false,
             })
         });
 
@@ -1090,19 +1094,18 @@ impl X11WindowStatePtr {
                 state.bounds = bounds;
             }
 
-            let gpu_size = query_render_extent(&self.xcb, self.x_window)?;
-            if true {
-                state.renderer.update_drawable_size(size(
-                    DevicePixels(gpu_size.width as i32),
-                    DevicePixels(gpu_size.height as i32),
-                ));
+            if is_resize {
+                // Configure events can arrive faster than frames. Defer the
+                // geometry round trip and swapchain recreation until drawing,
+                // so intermediate sizes never wait on the GPU or allocate.
+                state.drawable_size_dirty = true;
                 resize_args = Some((state.content_size(), state.scale_factor));
             }
             if let Some(value) = state.last_sync_counter.take() {
-                check_reply(
-                    || "X11 sync SetCounter failed.",
-                    sync::set_counter(&self.xcb, state.counter_id, value),
-                )?;
+                // The WM must retain the previous frame until the resized one
+                // has been rendered, rather than exposing an empty swapchain.
+                state.pending_sync_counter = Some(value);
+                resize_args = Some((state.content_size(), state.scale_factor));
             }
         }
 
@@ -1472,7 +1475,25 @@ impl PlatformWindow for X11Window {
 
     fn draw(&self, scene: &Scene) {
         let mut inner = self.0.state.borrow_mut();
+        if inner.drawable_size_dirty {
+            let Some(gpu_size) = query_render_extent(&self.0.xcb, self.0.x_window).log_err() else {
+                return;
+            };
+            inner.renderer.update_drawable_size(size(
+                DevicePixels(gpu_size.width as i32),
+                DevicePixels(gpu_size.height as i32),
+            ));
+            inner.drawable_size_dirty = false;
+        }
         inner.renderer.draw(scene);
+        if let Some(value) = inner.pending_sync_counter.take() {
+            inner.renderer.wait_for_gpu();
+            check_reply(
+                || "X11 sync SetCounter after drawing failed.",
+                sync::set_counter(&self.0.xcb, inner.counter_id, value),
+            )
+            .log_err();
+        }
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
