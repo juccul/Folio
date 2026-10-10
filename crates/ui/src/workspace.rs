@@ -950,80 +950,21 @@ impl NotesView {
         .flex_1()
         .min_h_0();
         if count == 0 {
-            let (heading, message, symbol) = match self.controller.filter {
-                NoteFilter::Trash | NoteFilter::NotebookTrash(_) => (
-                    "Trash is empty",
-                    "Deleted documents appear here. You can restore them whenever you need.",
-                    Icon::Trash,
-                ),
-                NoteFilter::Favorites => (
-                    "Keep your favorites close",
-                    "Use the star on a document to find it here.",
-                    Icon::Star,
-                ),
-                NoteFilter::Recent => (
-                    "Your recent documents",
-                    "Open a document to add it to this collection.",
-                    Icon::Book,
-                ),
-                NoteFilter::Notebook(_) => (
-                    "A fresh start",
-                    "Create a document in this folder to begin writing.",
-                    Icon::Book,
-                ),
-                NoteFilter::All => (
-                    "Space for your next idea",
-                    "Create a document or import a PDF to begin.",
-                    Icon::Book,
-                ),
-            };
-            let mut empty = div()
-                .py_6()
-                .mb_4()
-                .when(compact, |empty| empty.py_2().mb_0())
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(icon(symbol, theme.muted))
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(heading),
-                )
-                .child(div().text_sm().text_color(rgb(theme.muted)).child(message));
-            if self.controller.filter == NoteFilter::All {
-                empty = empty.child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .mt_3()
-                        .child(self.button(
-                            "start-writing",
-                            "Start writing",
-                            true,
-                            cx,
-                            |this, w, cx| this.new_notebook(w, cx),
-                        ))
-                        .child(self.button(
-                            "try-sample",
-                            "Try the sample notebook",
-                            false,
-                            cx,
-                            |this, w, cx| {
-                                this.controller.create_starter_notebook();
-                                this.show_editor();
-                                this.fit();
-                                this.focus.focus(w);
-                                cx.notify();
-                            },
-                        )),
-                );
-            }
-            shelf = shelf.child(empty);
+            shelf = shelf.child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_3xl()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(theme.muted))
+                    .child("No documents"),
+            );
+        } else {
+            shelf = shelf.child(list);
         }
-        shelf = shelf.child(list);
         let breadcrumb = if let NoteFilter::Notebook(id) = self.controller.filter {
             let mut row = div()
                 .id("folder-breadcrumb")
