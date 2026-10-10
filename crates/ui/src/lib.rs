@@ -1818,14 +1818,36 @@ impl NotesView {
                 }
             }))
     }
-    fn popover(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn popover(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = Theme::new(&self.controller.settings);
+        let anchor_key = if self.pen_settings {
+            if self.controller.tool == Tool::Eraser {
+                "eraser"
+            } else {
+                "pen-options"
+            }
+        } else {
+            "more"
+        };
+        let anchor = self.accessibility.control_bounds_for_key(anchor_key);
+        let viewport = window.viewport_size();
+        let margin = 8.;
+        let width = (286. * self.controller.settings.ui_scale)
+            .min((f32::from(viewport.width) - margin * 2.).max(1.));
+        let x = anchor
+            .map_or(f32::from(viewport.width) - width - margin, |r| r.x0 as f32)
+            .clamp(
+                margin,
+                (f32::from(viewport.width) - width - margin).max(margin),
+            );
+        let toolbar_bottom = anchor.map_or(84., |r| r.y1 as f32);
+        let y = (toolbar_bottom + 4.).min((f32::from(viewport.height) - margin - 1.).max(margin));
         let mut panel = div()
             .occlude()
             .absolute()
-            .right_4()
-            .top_2()
-            .w(px(286.))
+            .left(px(x))
+            .top(px(y))
+            .w(px(width))
             .p_3()
             .rounded(px(theme.radius))
             .border_1()
@@ -1833,23 +1855,27 @@ impl NotesView {
             .bg(rgb(theme.popover))
             .shadow_sm()
             .id("editor-popover")
-            .max_h(px(self
-                .canvas_bounds
-                .map_or(440., |b| {
-                    f32::from(b.size.height) / self.controller.settings.ui_scale - 24.
-                })
-                .max(120.)))
+            .max_h(px((f32::from(viewport.height) - y - 40.).max(1.)))
             .overflow_y_scroll()
-            .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+            .on_mouse_down_out(cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                 // Toolbar anchors handle their own toggles. Closing first would
                 // make the same click immediately reopen the popover.
                 if this
-                    .canvas_bounds
-                    .is_some_and(|b| event.position.y >= b.top())
+                    .accessibility
+                    .control_bounds_for_key(anchor_key)
+                    .is_some_and(|r| {
+                        let x = f32::from(event.position.x) as f64;
+                        let y = f32::from(event.position.y) as f64;
+                        x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1
+                    })
                 {
-                    this.dismiss_popovers();
-                    cx.notify();
+                    return;
                 }
+                this.dismiss_popovers();
+                if f32::from(event.position.y) >= toolbar_bottom {
+                    cx.stop_propagation();
+                }
+                cx.notify();
             }))
             .flex()
             .flex_col()
@@ -2769,6 +2795,7 @@ fn this_region(controller: &mut Controller, values: &[f32]) -> Result<(), String
 }
 impl Render for NotesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.controller.refresh_default_ink();
         if self.equation_draft.is_some()
             && let Some(result) = self.controller.equation_result.take()
         {
@@ -2795,7 +2822,6 @@ impl Render for NotesView {
                         field.read(cx).focus.focus(window);
                     }
                 }
-        self.controller.refresh_default_ink();
             }
         }
         self.cancel_region_after_navigation();
@@ -3161,15 +3187,6 @@ impl Render for NotesView {
             && self.inline_text.is_none()
         {
             center = center.child(self.selection_toolbar(cx));
-        }
-        if !self.library_open && (self.more_open || self.pen_settings || self.export_open) {
-            center = center.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(self.popover(cx))
-                    .opacity(popover_alpha),
-            );
         }
         let mut root = div()
             .id("folio-root")
@@ -3755,6 +3772,18 @@ impl Render for NotesView {
             );
         }
         root = root.child(body).children(canvas_overlay);
+        if !self.library_open
+            && !self.blocking_overlay()
+            && (self.more_open || self.pen_settings || self.export_open)
+        {
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(self.popover(window, cx))
+                    .opacity(popover_alpha),
+            );
+        }
         if self.tool_menu.is_some() && !self.library_open && !self.blocking_overlay() {
             root = root.child(
                 div()
