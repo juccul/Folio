@@ -2096,6 +2096,11 @@ impl NotesView {
                         self.controller.style.tool == tool,
                         cx,
                         move |this, _, _| {
+                            if tool == InkTool::Highlighter
+                                && this.controller.style.tool != InkTool::Highlighter
+                            {
+                                this.writing_style = Some(this.controller.style.clone());
+                            }
                             this.controller.set_ink_tool(tool);
                         },
                     )
@@ -2148,7 +2153,7 @@ impl NotesView {
             }
             panel = panel.child(
                 self.button(
-                    "custom-color",
+                    "pen-custom-color",
                     "Custom color…",
                     false,
                     cx,

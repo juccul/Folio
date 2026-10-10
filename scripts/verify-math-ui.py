@@ -137,7 +137,7 @@ def main():
                 assert any(n.get_name()=='Font size' and n.get_role()==Atspi.Role.ENTRY for n in nodes()),'Invalid input closed the dialog'
                 subprocess.run([sys.executable,'scripts/capture-x11.py',str(args.output/'validation.png'),'--pid',str(app.pid),'--virtual-display-root'],check=True)
                 fill('Font size','20');click('Save');click('Solve')
-                click('Lasso · L');client.key('a',4);time.sleep(.3)
+                click('Select · L');client.key('a',4);time.sleep(.3)
                 labels=[n.get_name() for n in nodes()]
                 assert {'Cut','Copy','Delete','Solve'}.issubset(labels),'Math solver hides the selection popup'
                 assert 'Real' not in labels and 'Define variable' not in labels

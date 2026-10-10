@@ -199,6 +199,7 @@ impl Render for PageDrag {
 impl NotesView {
     /// Open a document without changing its model or viewport.
     pub fn show_editor(&mut self) {
+        self.tool_menu = None;
         self.document_menu = None;
         self.folder_menu = None;
         self.library_open = false;
@@ -213,6 +214,7 @@ impl NotesView {
         if !self.open_tabs.contains(&id) {
             self.open_tabs.push(id);
         }
+        self.tool_menu = None;
         self.document_menu = None;
         self.folder_menu = None;
         self.library_open = false;
@@ -222,6 +224,7 @@ impl NotesView {
     }
     pub(super) fn show_library(&mut self) {
         self.controller.finish();
+        self.tool_menu = None;
         self.document_menu = None;
         self.folder_menu = None;
         self.library_open = true;
@@ -241,6 +244,13 @@ impl NotesView {
         self.fit();
         self.focus.focus(window);
         cx.notify();
+    }
+    fn toolbar_hints_enabled(&self) -> bool {
+        !self.blocking_overlay()
+            && self.tool_menu.is_none()
+            && !self.pen_settings
+            && !self.more_open
+            && !self.export_open
     }
     fn icon_button(
         &self,
@@ -265,7 +275,9 @@ impl NotesView {
         .size(rems(2.375))
         .p_0()
         .rounded(px(theme.radius))
-        .tooltip(move |_, cx| cx.new(|_| Hint(hint.clone(), theme)).into())
+        .when(self.toolbar_hints_enabled(), |button| {
+            button.tooltip(move |_, cx| cx.new(|_| Hint(hint.clone(), theme)).into())
+        })
     }
     fn editor_button(
         &self,
@@ -281,6 +293,11 @@ impl NotesView {
             super::theme::mix(theme.selected, theme.ink, 0.06)
         } else {
             theme.chrome
+        };
+        let hint = if id == "eraser" {
+            "Eraser · E · Click again for modes and size"
+        } else {
+            label
         };
         self.control(
             id,
@@ -301,7 +318,9 @@ impl NotesView {
             theme.selected,
             self.motion.borrow().hover_value(id),
         )))
-        .tooltip(move |_, cx| cx.new(|_| Hint(label.into(), theme)).into())
+        .when(self.toolbar_hints_enabled(), |button| {
+            button.tooltip(move |_, cx| cx.new(|_| Hint(hint.into(), theme)).into())
+        })
     }
     fn editor_separator(&self) -> Div {
         let theme = Theme::new(&self.controller.settings);
@@ -1454,18 +1473,6 @@ impl NotesView {
                 |this, _, _| this.controller.add_page(),
             ))
             .child(self.page_control_button(
-                "export",
-                "Export document",
-                Icon::Export,
-                self.export_open,
-                cx,
-                |this, _, _| {
-                    this.export_open = !this.export_open;
-                    this.more_open = false;
-                    this.pen_settings = false;
-                },
-            ))
-            .child(self.page_control_button(
                 "more",
                 "Document actions",
                 Icon::More,
@@ -1532,169 +1539,189 @@ impl NotesView {
         }
         row
     }
+    fn editor_setting_button(
+        &self,
+        id: &'static str,
+        label: impl Into<SharedString>,
+        content: AnyElement,
+        active: bool,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> Stateful<Div> {
+        let theme = Theme::new(&self.controller.settings);
+        let label = label.into();
+        let hint = label.clone();
+        self.control(id, label, content, active, cx, action)
+            .h(rems(1.875))
+            .min_h_0()
+            .flex_shrink_0()
+            .px_2()
+            .py_0()
+            .rounded(rems(theme.radius.min(7.) / 16.))
+            .border_1()
+            .border_color(theme.border)
+            .bg(rgb(if active { theme.selected } else { theme.chrome }))
+            .hover(move |s| s.bg(rgb(theme.selected)))
+            .when(self.toolbar_hints_enabled(), |button| {
+                button.tooltip(move |_, cx| cx.new(|_| Hint(hint.clone(), theme)).into())
+            })
+    }
     fn editing_tools(&mut self, compact: bool, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
-        let mut tools = div().flex().flex_shrink_0().items_center().gap(rems(0.125));
+        if matches!(self.controller.tool, Tool::Lasso | Tool::Rectangle) {
+            self.selection_tool = self.controller.tool;
+        }
         let pen_icon = match self.controller.style.tool {
             InkTool::Pencil => Icon::Pencil,
             InkTool::Marker => Icon::Marker,
+            InkTool::Highlighter => Icon::Highlighter,
             _ => Icon::Pen,
         };
+        let selected_pen = self.controller.tool == Tool::Pen;
+        let selected_selection = matches!(self.controller.tool, Tool::Lasso | Tool::Rectangle);
+        let selection_icon = if self.selection_tool == Tool::Rectangle {
+            Icon::Rectangle
+        } else {
+            Icon::Lasso
+        };
+        let mut tools = div().flex().flex_shrink_0().items_center().gap(rems(0.25));
+        tools = tools.child(
+            div()
+                .id("pen-tool-group")
+                .flex()
+                .items_center()
+                .rounded(rems(theme.radius.min(7.) / 16.))
+                .bg(rgb(if selected_pen {
+                    theme.chrome_active
+                } else {
+                    theme.chrome
+                }))
+                .hover(move |s| s.bg(rgb(theme.selected)))
+                .child(
+                    self.editor_button(
+                        "pen",
+                        "Pen · P",
+                        pen_icon,
+                        selected_pen,
+                        cx,
+                        |this, _, _| {
+                            this.dismiss_popovers();
+                            this.region_selection = None;
+                            this.controller.set_tool(Tool::Pen);
+                        },
+                    )
+                    .bg(transparent_black()),
+                )
+                .child(
+                    self.editor_button(
+                        "pen-options",
+                        "Pen settings and presets",
+                        Icon::Down,
+                        self.pen_settings && selected_pen,
+                        cx,
+                        |this, _, _| {
+                            let open = !this.pen_settings || this.controller.tool != Tool::Pen;
+                            this.dismiss_popovers();
+                            this.controller.set_tool(Tool::Pen);
+                            this.pen_settings = open;
+                        },
+                    )
+                    .w(rems(1.25))
+                    .bg(transparent_black()),
+                ),
+        );
+        tools = tools.child(self.editor_button(
+            "eraser",
+            "Eraser · E",
+            Icon::Eraser,
+            self.controller.tool == Tool::Eraser,
+            cx,
+            |this, _, _| {
+                let options = this.controller.tool == Tool::Eraser && !this.pen_settings;
+                this.dismiss_popovers();
+                this.region_selection = None;
+                this.controller.set_tool(Tool::Eraser);
+                this.pen_settings = options;
+            },
+        ));
+        tools = tools.child(
+            div()
+                .id("selection-tool-group")
+                .flex()
+                .items_center()
+                .rounded(rems(theme.radius.min(7.) / 16.))
+                .bg(rgb(if selected_selection {
+                    theme.chrome_active
+                } else {
+                    theme.chrome
+                }))
+                .hover(move |s| s.bg(rgb(theme.selected)))
+                .child(
+                    self.editor_button(
+                        "select-tool",
+                        "Select · L",
+                        selection_icon,
+                        selected_selection,
+                        cx,
+                        |this, _, _| {
+                            this.dismiss_popovers();
+                            this.region_selection = None;
+                            this.controller.set_tool(this.selection_tool);
+                        },
+                    )
+                    .bg(transparent_black()),
+                )
+                .child(
+                    self.editor_button(
+                        "select-options",
+                        "Selection tools",
+                        Icon::Down,
+                        self.tool_menu
+                            .is_some_and(|(menu, _)| menu == ToolMenu::Selection),
+                        cx,
+                        |this, window, cx| this.toggle_tool_menu(ToolMenu::Selection, window, cx),
+                    )
+                    .w(rems(1.25))
+                    .bg(transparent_black()),
+                ),
+        );
         for (id, label, kind, tool) in [
-            ("pen", "Pen · P", pen_icon, Tool::Pen),
-            ("eraser", "Eraser · E", Icon::Eraser, Tool::Eraser),
-            ("lasso", "Lasso · L", Icon::Lasso, Tool::Lasso),
-            (
-                "select-rect",
-                "Rectangular selection",
-                Icon::Rectangle,
-                Tool::Rectangle,
-            ),
-            ("shape", "Shapes · S", Icon::Shapes, Tool::Shape),
             ("text", "Text · T", Icon::Text, Tool::Text),
             ("hand", "Pan · H", Icon::Hand, Tool::Hand),
         ] {
-            let active = self.controller.tool == tool
-                && !(tool == Tool::Pen && self.controller.style.tool == InkTool::Highlighter);
-            tools =
-                tools.child(
-                    self.editor_button(id, label, kind, active, cx, move |this, _, _| {
-                        if tool == Tool::Pen && this.controller.style.tool == InkTool::Highlighter {
-                            this.controller
-                                .set_style(this.writing_style.take().unwrap_or_default());
-                        }
-                        this.region_selection = None;
-                        this.controller.set_tool(tool);
-                    }),
-                );
-            if tool == Tool::Pen {
-                let selected = self.controller.tool == Tool::Pen
-                    && self.controller.style.tool == InkTool::Highlighter;
-                tools = tools.child(self.editor_button(
-                    "highlighter",
-                    "Highlighter",
-                    Icon::Highlighter,
-                    selected,
-                    cx,
-                    |this, _, _| {
-                        if this.controller.style.tool != InkTool::Highlighter {
-                            this.writing_style = Some(this.controller.style.clone());
-                        }
-                        let style = this
-                            .controller
-                            .settings
-                            .tool_styles
-                            .iter()
-                            .find(|s| s.tool == InkTool::Highlighter)
-                            .cloned()
-                            .unwrap_or(folio_document::PenStyle {
-                                tool: InkTool::Highlighter,
-                                width: 20.,
-                                opacity: 0.3,
-                                color: Color::from_rgb(0xecc75c),
-                                ..Default::default()
-                            });
-                        this.controller.set_style(style);
-                        this.controller.set_tool(Tool::Pen);
-                    },
-                ));
-            }
+            tools = tools.child(self.editor_button(
+                id,
+                label,
+                kind,
+                self.controller.tool == tool,
+                cx,
+                move |this, _, _| {
+                    this.dismiss_popovers();
+                    this.region_selection = None;
+                    this.controller.set_tool(tool);
+                },
+            ));
         }
-        tools = tools.child(self.editor_button(
-            "toolbar-image",
-            "Insert image or PDF",
-            Icon::Image,
-            false,
-            cx,
-            |this, _, cx| this.import(cx),
-        ));
-        let mut colors = div().flex().flex_shrink_0().items_center().gap(rems(0.125));
-        if !compact && self.controller.tool != Tool::Eraser {
-            for c in [0x273448, 0x3265a8, 0xc6605c, 0x55917e] {
-                let selected = self.controller.style.color.rgb() == c;
-                colors = colors.child(
-                    self.control(
-                        format!("color-{c}"),
-                        format!("Ink color #{c:06X}"),
-                        div()
-                            .size(px(18.))
-                            .rounded_full()
-                            .bg(rgb(c))
-                            .into_any_element(),
-                        selected,
-                        cx,
-                        move |this, _, _| this.controller.set_color(Color::from_rgb(c)),
-                    )
-                    .size(rems(1.75))
-                    .min_h_0()
-                    .flex_shrink_0()
-                    .p_0()
-                    .rounded_full()
-                    .border_2()
-                    .border_color(rgb(if selected { theme.accent } else { theme.chrome }))
-                    .bg(rgb(theme.chrome)),
-                );
-            }
-            colors = colors.child(
-                self.editor_button(
-                    "custom-color",
-                    "Custom ink color",
-                    Icon::Plus,
-                    false,
-                    cx,
-                    |this, w, cx| this.modal(Modal::Color, w, cx),
-                )
-                .h(rems(1.875)),
-            );
-        }
-        let mut widths = div().flex().flex_shrink_0().items_center().gap(rems(0.125));
-        if !compact && self.controller.tool != Tool::Eraser {
-            let highlighter = self.controller.style.tool == InkTool::Highlighter;
-            for (i, width) in if highlighter {
-                [10., 20., 30.]
-            } else {
-                [1.5, 3., 6.]
-            }
-            .into_iter()
-            .enumerate()
-            {
-                let selected = (self.controller.style.width - width).abs() < 0.1;
-                widths = widths.child(
-                    self.control(
-                        format!("width-{i}"),
-                        format!("Stroke width {:.2} mm", width * 0.2646),
-                        div()
-                            .w(px(17.))
-                            .h(px(1.5 + i as f32 * 1.8))
-                            .rounded_full()
-                            .bg(rgb(theme.ink))
-                            .into_any_element(),
-                        selected,
-                        cx,
-                        move |this, _, _| {
-                            let mut style = this.controller.style.clone();
-                            style.width = width;
-                            this.controller.set_style(style);
-                        },
-                    )
-                    .w(rems(1.75))
-                    .h(rems(2.))
-                    .min_h_0()
-                    .flex_shrink_0()
-                    .p_0()
-                    .rounded(rems(theme.radius.min(7.) / 16.))
-                    .bg(rgb(super::theme::mix(
-                        if selected {
-                            super::theme::mix(theme.selected, theme.ink, 0.06)
-                        } else {
-                            theme.chrome
-                        },
-                        theme.selected,
-                        self.motion.borrow().hover_value(&format!("width-{i}")),
-                    ))),
-                );
-            }
-        }
+        let insert = div()
+            .flex()
+            .items_center()
+            .gap(rems(0.375))
+            .child(icon(Icon::Image, theme.ink).size(rems(1.25)))
+            .when(!compact, |row| row.child("Insert"))
+            .child(icon(Icon::Down, theme.muted).size(rems(0.875)));
+        tools = tools.child(
+            self.editor_setting_button(
+                "insert-options",
+                "Insert",
+                insert.into_any_element(),
+                self.controller.tool == Tool::Shape
+                    || self
+                        .tool_menu
+                        .is_some_and(|(menu, _)| menu == ToolMenu::Insert),
+                cx,
+                |this, window, cx| this.toggle_tool_menu(ToolMenu::Insert, window, cx),
+            ),
+        );
         let history = div()
             .flex()
             .flex_shrink_0()
@@ -1724,30 +1751,51 @@ impl NotesView {
             .child(history)
             .child(self.editor_separator())
             .child(tools);
-        let mut options = div().flex().flex_shrink_0().items_center().gap(rems(0.25));
-        // Eraser modes and sizes remain in the pen-options popover.
-        if !compact && self.controller.tool != Tool::Eraser {
-            options = options
-                .child(widths)
-                .child(self.editor_separator())
-                .child(colors);
+        let mut options = div().flex().flex_shrink_0().items_center().gap(rems(0.5));
+        if matches!(self.controller.tool, Tool::Pen | Tool::Shape) {
+            let width = self.controller.style.width;
+            let width_content = div()
+                .flex()
+                .items_center()
+                .gap(rems(0.375))
+                .child(format!("{width:.1} px"))
+                .child(icon(Icon::Down, theme.muted).size(rems(0.875)));
+            options = options.child(
+                self.editor_setting_button(
+                    "width-options",
+                    format!("Stroke width {width:.1} px"),
+                    width_content.into_any_element(),
+                    self.tool_menu
+                        .is_some_and(|(menu, _)| menu == ToolMenu::Width),
+                    cx,
+                    |this, window, cx| this.toggle_tool_menu(ToolMenu::Width, window, cx),
+                ),
+            );
         }
-        options = options.child(self.editor_button(
-            "pen-options",
-            if self.controller.tool == Tool::Eraser {
-                "Eraser modes and size"
-            } else {
-                "Pen settings and presets"
-            },
-            Icon::Sliders,
-            self.pen_settings,
-            cx,
-            |this, _, _| {
-                this.pen_settings = !this.pen_settings;
-                this.more_open = false;
-                this.export_open = false;
-            },
-        ));
+        if matches!(self.controller.tool, Tool::Pen | Tool::Shape | Tool::Text) {
+            let color = self.controller.style.color.rgb();
+            let color_content = div()
+                .flex()
+                .items_center()
+                .gap(rems(0.375))
+                .child(
+                    div()
+                        .size(rems(1.125))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(rgb(theme.muted))
+                        .bg(rgb(color)),
+                )
+                .child(icon(Icon::Down, theme.muted).size(rems(0.875)));
+            options = options.child(self.editor_setting_button(
+                "custom-color",
+                format!("Ink color #{color:06X}"),
+                color_content.into_any_element(),
+                false,
+                cx,
+                |this, window, cx| this.modal(Modal::Color, window, cx),
+            ));
+        }
         div()
             .id("editing-tools")
             .flex_1()
@@ -1756,7 +1804,7 @@ impl NotesView {
             .px(rems(0.3125))
             .flex()
             .items_center()
-            .gap(rems(0.25))
+            .gap(rems(0.5))
             .overflow_x_scroll()
             .child(primary)
             .child(div().flex_1())
