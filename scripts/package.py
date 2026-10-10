@@ -14,6 +14,10 @@ import tempfile
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
+PROJECT_DOCUMENTS = (
+    'README.md', 'WINDOWS.md', 'UPDATES.md', 'DEVELOPMENT.md',
+    'RELEASE_NOTES.md', 'MATH_SOLVER_DESIGN.md', 'OCR_FIRST_USE.md', 'LICENSES.md',
+)
 
 def add(archive, path, name):
     def filter_file(info):
@@ -47,7 +51,7 @@ def main():
     with tarfile.open(binary_archive, 'w:gz', compresslevel=6) as archive:
         add(archive, binary, f'{binary_name}/bin/folio-native')
         add(archive, ROOT / 'packaging/folio-launcher', f'{binary_name}/bin/folio')
-        for item in ['README.md', 'UPDATES.md', 'DEVELOPMENT.md', 'RECOGNITION_RESEARCH.md', 'MATH_SOLVER_DESIGN.md', 'LICENSE', 'LICENSES.md', 'third_party', 'packaging']:
+        for item in [*PROJECT_DOCUMENTS, 'LICENSE', 'third_party', 'packaging']:
             add(archive, ROOT / item, f'{binary_name}/{item}')
     with tempfile.TemporaryDirectory(prefix='folio-corresponding-source-') as temp:
         vendor = Path(temp) / 'source'
@@ -56,10 +60,10 @@ def main():
         config_path = Path(temp) / 'config.toml'
         config_path.write_text((ROOT / '.cargo/config.toml').read_text() + '\n' + config)
         with tarfile.open(source_archive, 'w:gz', compresslevel=6) as archive:
-            for item in ['Cargo.toml', 'Cargo.lock', 'apps', 'crates', 'vendor', 'scripts', 'packaging', 'third_party', '.github', 'LICENSE']:
+            for item in ['Cargo.toml', 'Cargo.lock', 'apps', 'crates', 'vendor', 'scripts', 'packaging', 'third_party', '.github', '.gitignore', 'LICENSE']:
                 add(archive, ROOT / item, f'{source_name}/{item}')
-            for item in sorted(ROOT.glob('*.md')):
-                add(archive, item, f'{source_name}/{item.name}')
+            for item in ['AGENTS.md', *PROJECT_DOCUMENTS]:
+                add(archive, ROOT / item, f'{source_name}/{item}')
             if args.poppler_source:
                 retained = ROOT / 'third_party/flatpak' / args.poppler_source.name
                 if retained.is_file():

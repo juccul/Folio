@@ -18,7 +18,7 @@ and the retained original source.
 
 Windows x64 installer and portable ZIP, Linux x86_64 Flatpak and complete corresponding source are published together. Existing 0.1.3 installations can use the Update notice; downloads begin only after clicking Update and installation finishes through Restart to update. Signed update metadata and the existing Flatpak signing channel are retained.
 
-Database schema remains 6 and document format remains 4. See [UPDATES.md](UPDATES.md) for manual installation and recovery and [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) for verification.
+Database schema remains 6 and document format remains 4. See [UPDATES.md](UPDATES.md) for manual installation and recovery.
 
 # Folio 0.1.3
 
@@ -34,4 +34,4 @@ See [UPDATES.md](UPDATES.md) for installation and recovery. Version 0.1.2 needs 
 
 Database schema remains 6 and document format remains 4. Keep backups before opening a library with an older version.
 
-Validation results and package hashes are recorded in [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md).
+Keep validation evidence under ignored `artifacts/validation/`; record results and package hashes in the release description.

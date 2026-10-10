@@ -143,7 +143,7 @@ Back up those keys securely; losing them breaks updates for installed clients.
    latest only once every asset is reachable. Check anonymous access to each URL.
 6. Verify a disposable old installation can discover, download, restart and retain
    its library through both platform paths. Record the exact hashes and limitations
-   in `RELEASE_VALIDATION.md`.
+   under ignored `artifacts/validation/` and summarize them in the release description.
 
 No updater can guarantee success on every machine: disk failures, power loss,
 security software, inaccessible drives and host portal policies remain external

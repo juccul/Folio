@@ -6,6 +6,17 @@ on:
 permissions:
   contents: read
 jobs:
+  documentation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Check documentation allowlist
+        run: python scripts/check-documentation.py
+
   windows:
     runs-on: windows-2025
     timeout-minutes: 60

@@ -21,3 +21,18 @@ __pycache__/
 venv/
 .env
 .env.*
+
+# Keep project documentation in the existing guides linked from README.
+# Preserve upstream notices, model attribution, and source documentation.
+*.[mM][dD]
+!/AGENTS.md
+!/README.md
+!/WINDOWS.md
+!/UPDATES.md
+!/LICENSES.md
+!/DEVELOPMENT.md
+!/RELEASE_NOTES.md
+!/MATH_SOLVER_DESIGN.md
+!/OCR_FIRST_USE.md
+!/third_party/**/*.[mM][dD]
+!/vendor/**/*.[mM][dD]
