@@ -3,6 +3,15 @@
 use super::*;
 
 impl NotesView {
+    pub fn titlebar_smoke_verify_home(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        if !self.library_open {
+            return Err("The title bar Home button did not open the library".into());
+        }
+        self.show_editor();
+        cx.notify();
+        Ok(())
+    }
+
     pub(super) fn window_controls(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
         let capabilities = window.window_controls();

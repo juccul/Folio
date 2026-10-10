@@ -146,8 +146,24 @@ fn main() -> anyhow::Result<()> {
                         window.update(cx, |view, _, cx| { view.update_smoke_phase(phase); cx.notify(); })?;
                         cx.background_executor().timer(Duration::from_millis(200)).await;
                         window.update(cx, |view, _, _| view.update_smoke_verify(phase))?.map_err(anyhow::Error::msg)?;
+                        if phase < 2 {
+                            let label = if phase == 0 { "Update · 0.1.4" } else { "Downloading 42%" };
+                            let events=window.update(cx,|view,_,_|view.navigation_smoke_click(label,false))?.map_err(anyhow::Error::msg)?;
+                            for event in events {
+                                cx.update_window(window.into(),|_,window,cx|{window.dispatch_input_event(event,cx);})?;
+                                cx.background_executor().timer(Duration::from_millis(20)).await;
+                            }
+                        }
                     }
                     window.update(cx, |view, _, cx| { view.update_smoke_phase(3); cx.notify(); })?;
+                    cx.background_executor().timer(Duration::from_millis(200)).await;
+                    let events=window.update(cx,|view,_,_|view.navigation_smoke_click("Library · Ctrl+Shift+L",false))?.map_err(anyhow::Error::msg)?;
+                    for event in events {
+                        cx.update_window(window.into(),|_,window,cx|{window.dispatch_input_event(event,cx);})?;
+                        cx.background_executor().timer(Duration::from_millis(20)).await;
+                    }
+                    window.update(cx, |view, _, cx| view.titlebar_smoke_verify_home(cx))?.map_err(anyhow::Error::msg)?;
+                    cx.background_executor().timer(Duration::from_millis(200)).await;
                     let events=window.update(cx,|view,_,_|view.smoke_events())?.map_err(anyhow::Error::msg)?;
                     for event in events {
                         cx.update_window(window.into(),|_,window,cx|{window.dispatch_tablet_event(event,cx);})?;
