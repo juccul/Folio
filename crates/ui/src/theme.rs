@@ -3,7 +3,7 @@ use folio_app::{
     Settings,
     appearance::{ThemeColor, ThemeToken},
 };
-use gpui::{Rgba, rgba};
+use gpui::{Hsla, Rgba, rgb, rgba};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CanvasTheme {
     pub paper: u32,
@@ -20,15 +20,7 @@ impl CanvasTheme {
         if !self.adapt_ink || contrast(color, self.paper) >= minimum {
             return color;
         }
-        let target = self.foreground;
-        let first = if luminance(self.paper) < 0.4 { 15 } else { 1 };
-        for step in first..=20 {
-            let mixed = mix(color, target, step as f32 / 20.);
-            if contrast(mixed, self.paper) >= 4.5 {
-                return mixed;
-            }
-        }
-        target
+        readable_ink(color, self.paper, minimum)
     }
     pub fn preview_pixels(self, bgra: &[u8]) -> Vec<u8> {
         let mut output = bgra.to_vec();
@@ -50,6 +42,59 @@ impl CanvasTheme {
         }
         output
     }
+}
+/// Change only lightness, preserving hue and saturation. Search both directions
+/// and choose the closest RGB result that meets the requested contrast.
+fn readable_ink(color: u32, paper: u32, minimum: f32) -> u32 {
+    let source: Hsla = rgb(color).into();
+    let at_lightness = |lightness| {
+        let value = Hsla {
+            l: lightness,
+            ..source
+        }
+        .to_rgb();
+        let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u32;
+        (channel(value.r) << 16) | (channel(value.g) << 8) | channel(value.b)
+    };
+    let distance = |candidate: u32| {
+        [16, 8, 0]
+            .into_iter()
+            .map(|shift| {
+                let delta = ((candidate >> shift) & 255) as i32 - ((color >> shift) & 255) as i32;
+                delta * delta
+            })
+            .sum::<i32>()
+    };
+    [0., 1.]
+        .into_iter()
+        .filter_map(|end| {
+            let mut candidate = at_lightness(end);
+            if contrast(candidate, paper) < minimum {
+                return None;
+            }
+            let (mut low, mut high) = (0., 1.);
+            for _ in 0..18 {
+                let amount = (low + high) / 2.;
+                let next = at_lightness(source.l + (end - source.l) * amount);
+                if contrast(next, paper) >= minimum {
+                    high = amount;
+                    candidate = next;
+                } else {
+                    low = amount;
+                }
+            }
+            Some(candidate)
+        })
+        .min_by_key(|candidate| distance(*candidate))
+        // Use the better endpoint if the caller asks for a contrast ratio that
+        // is unattainable on the selected paper.
+        .unwrap_or_else(|| {
+            if contrast(0xffffff, paper) > contrast(0, paper) {
+                0xffffff
+            } else {
+                0
+            }
+        })
 }
 #[derive(Clone, Copy)]
 pub struct Theme {
@@ -210,7 +255,9 @@ mod tests {
     use super::*;
     #[test]
     fn document_paper_colors_apply_to_canvas_and_graphs_without_affecting_other_notes() {
-        let theme = Theme::new(&Settings::default());
+        let mut settings = Settings::default();
+        settings.appearance.adapt_ink = true;
+        let theme = Theme::new(&settings);
         let mut properties = folio_document::PageProperties::default();
         for paper in [0xffffff, 0xfff7e6, 0x202124, 0x0e0e0e] {
             properties.color = Some(folio_document::Color::from_rgb(paper));
@@ -260,9 +307,10 @@ mod tests {
             dark: true,
             ..Default::default()
         };
+        settings.appearance.adapt_ink = true;
         let theme = Theme::new(&settings);
         assert_eq!(theme.canvas.paper, 0x0a0a0a);
-        assert!(contrast(theme.canvas.ink(0x2b3934), theme.canvas.paper) >= 4.5);
+        assert!(contrast(theme.canvas.ink(0x2b3934), theme.canvas.paper) >= 3.);
         assert_eq!(theme.canvas.ink(0xffffff), 0xffffff);
         settings.appearance.canvas_follows_theme = false;
         let fixed = Theme::new(&settings);
@@ -274,10 +322,11 @@ mod tests {
     }
     #[test]
     fn text_preview_alpha_and_colored_image_source_are_preserved() {
-        let settings = Settings {
+        let mut settings = Settings {
             dark: true,
             ..Default::default()
         };
+        settings.appearance.adapt_ink = true;
         let input = [0, 0, 0, 255, 43, 57, 52, 128, 0, 0, 0, 0];
         let output = Theme::new(&settings).canvas.preview_pixels(&input);
         assert_eq!([output[3], output[7], output[11]], [255, 128, 0]);
@@ -293,6 +342,7 @@ mod tests {
     #[test]
     fn custom_mid_gray_paper_chooses_a_readable_foreground() {
         let mut settings = Settings::default();
+        settings.appearance.adapt_ink = true;
         settings.appearance.canvas_follows_theme = false;
         settings.appearance.canvas_color = Some(folio_document::Color::from_rgb(0x808080));
         let paper = Theme::new(&settings).canvas;
@@ -302,5 +352,42 @@ mod tests {
         let text = paper.preview_pixels(&[255, 255, 255, 255]);
         let color = ((text[2] as u32) << 16) | ((text[1] as u32) << 8) | text[0] as u32;
         assert!(contrast(color, paper.paper) >= 4.5);
+    }
+    #[test]
+    fn optional_ink_adjustment_preserves_color_and_only_changes_low_contrast_ink() {
+        for paper in [0x0a0a0a, 0xffffff, 0x808080, 0xfff7e6] {
+            let palette = CanvasTheme {
+                paper,
+                grid: 0,
+                dots: 0,
+                foreground: 0,
+                adapt_ink: true,
+            };
+            for color in [
+                0x2b3934, 0x340000, 0x003400, 0x000034, 0x55917e, 0xc6605c, 0x3265a8,
+            ] {
+                let adjusted = palette.ink(color);
+                assert!(
+                    contrast(adjusted, paper) >= 3.,
+                    "{color:06x} on {paper:06x}"
+                );
+                if contrast(color, paper) >= 3. {
+                    assert_eq!(adjusted, color);
+                }
+                let before: Hsla = rgb(color).into();
+                let after: Hsla = rgb(adjusted).into();
+                let hue_delta = (before.h - after.h).abs();
+                assert!(hue_delta.min(1. - hue_delta) < 0.015);
+                assert!((before.s - after.s).abs() < 0.025);
+                assert_eq!(
+                    CanvasTheme {
+                        adapt_ink: false,
+                        ..palette
+                    }
+                    .ink(color),
+                    color
+                );
+            }
+        }
     }
 }

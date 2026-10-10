@@ -205,7 +205,9 @@ mod tests {
         let mut page = Page::new();
         page.properties.color = Some(Color::from_rgb(0x000000));
         let original = page.clone();
-        let theme = Theme::new(&folio_app::Settings::default());
+        let mut settings = folio_app::Settings::default();
+        settings.appearance.adapt_ink = true;
+        let theme = Theme::new(&settings);
         apply(&mut page, theme, Appearance::Print);
         assert_eq!(page.properties.color, Some(Color::from_rgb(0xffffff)));
         assert_eq!(original.properties.color, Some(Color::from_rgb(0)));

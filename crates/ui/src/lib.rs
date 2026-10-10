@@ -278,14 +278,14 @@ impl NotesView {
         cx: &mut Context<Self>,
         titlebar_smoke: bool,
     ) -> Self {
-        controller.settings.apply_system_theme(matches!(
+        controller.apply_system_theme(matches!(
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ));
         let entity = cx.entity().downgrade();
         let appearance_subscription = window.observe_window_appearance(move |window, cx| {
             let _ = entity.update(cx, |view, cx| {
-                if view.controller.settings.apply_system_theme(matches!(
+                if view.controller.apply_system_theme(matches!(
                     window.appearance(),
                     WindowAppearance::Dark | WindowAppearance::VibrantDark
                 )) {
@@ -2795,6 +2795,7 @@ impl Render for NotesView {
                         field.read(cx).focus.focus(window);
                     }
                 }
+        self.controller.refresh_default_ink();
             }
         }
         self.cancel_region_after_navigation();

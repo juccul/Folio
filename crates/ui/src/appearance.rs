@@ -38,9 +38,9 @@ impl NotesView {
                     move |this, window, _| {
                         this.controller.settings.follow_system_theme = value.is_none();
                         if let Some(dark) = value {
-                            this.controller.settings.dark = dark;
+                            this.controller.set_theme(dark);
                         } else {
-                            this.controller.settings.apply_system_theme(matches!(
+                            this.controller.apply_system_theme(matches!(
                                 window.appearance(),
                                 WindowAppearance::Dark | WindowAppearance::VibrantDark
                             ));
