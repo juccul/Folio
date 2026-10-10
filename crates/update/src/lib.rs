@@ -222,7 +222,19 @@ impl Drop for Updater {
 }
 fn cache_dir() -> PathBuf {
     // Keep packages outside custom libraries and outside the installation being replaced.
-    folio_platform::default_data_dir().join("updates")
+    cache_dir_at(&folio_platform::default_data_dir())
+}
+fn cache_dir_at(data: &Path) -> PathBuf {
+    // The 0.1.0 distribution reset starts a new version sequence. Legacy metadata
+    // may pin 0.1.4 and its deleted assets; retain it for recovery but never load it
+    // into this sequence. Keep this namespace stable for subsequent releases.
+    data.join("updates").join("v2")
+}
+fn cached_release(cache: &Path, channel: &Channel, current: &str) -> Option<Release> {
+    fs::read(cache.join("release.json"))
+        .ok()
+        .and_then(|bytes| manifest::verify(&bytes, channel).ok())
+        .filter(|release| release.newer_than(current).unwrap_or(false))
 }
 fn package_path(cache: &Path, backend: Backend, release: &Release) -> PathBuf {
     cache.join(format!(
@@ -288,10 +300,7 @@ fn worker(
     let cache = cache_dir();
     fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
     let metadata = cache.join("release.json");
-    let mut release = fs::read(&metadata)
-        .ok()
-        .and_then(|b| manifest::verify(&b, &channel).ok())
-        .filter(|r| r.newer_than(env!("CARGO_PKG_VERSION")).unwrap_or(false));
+    let mut release = cached_release(&cache, &channel, env!("CARGO_PKG_VERSION"));
     let mut ready = false;
     if let Some(r) = &release {
         ready = backend != Backend::Flatpak
@@ -501,6 +510,82 @@ fn worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use ring::{
+        rand::SystemRandom,
+        signature::{Ed25519KeyPair, KeyPair},
+    };
+
+    #[test]
+    fn reset_ignores_legacy_signed_cache_without_removing_recovery_files() {
+        let data = tempfile::tempdir().unwrap();
+        let legacy = data.path().join("updates");
+        let current = cache_dir_at(data.path());
+        let key = Ed25519KeyPair::from_pkcs8(
+            Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
+                .unwrap()
+                .as_ref(),
+        )
+        .unwrap();
+        let channel = Channel {
+            repository: "example/Folio".into(),
+            public_key: STANDARD.encode(key.public_key().as_ref()),
+        };
+        let signed = |version: &str| {
+            let mut release = release();
+            release.version = version.into();
+            for (asset, suffix) in [
+                (&mut release.windows_installer, "windows-x64-setup.exe"),
+                (&mut release.windows_portable, "windows-x64.zip"),
+            ] {
+                asset.url = format!(
+                    "https://github.com/{}/releases/download/v{version}/folio-{version}-{suffix}",
+                    channel.repository
+                );
+                asset.size = 4096;
+            }
+            let payload = serde_json::to_vec(&release).unwrap();
+            serde_json::to_vec(&manifest::Envelope {
+                signature: STANDARD.encode(key.sign(&payload).as_ref()),
+                payload: STANDARD.encode(payload),
+            })
+            .unwrap()
+        };
+        fs::create_dir_all(legacy.join("job-existing")).unwrap();
+        let original = signed("0.1.4");
+        fs::write(legacy.join("release.json"), &original).unwrap();
+        fs::write(legacy.join("job-existing/intent.json"), b"recovery").unwrap();
+        fs::write(legacy.join("folio-0.1.4.exe"), b"staged package").unwrap();
+        assert_eq!(
+            cached_release(&legacy, &channel, "0.1.0").unwrap().version,
+            "0.1.4"
+        );
+        assert!(cached_release(&current, &channel, "0.1.0").is_none());
+
+        fs::create_dir_all(&current).unwrap();
+        fs::write(current.join("release.json"), signed("0.1.0")).unwrap();
+        assert!(cached_release(&current, &channel, "0.1.0").is_none());
+        fs::write(current.join("release.json"), signed("0.1.1")).unwrap();
+        assert_eq!(
+            cached_release(&current, &channel, "0.1.0").unwrap().version,
+            "0.1.1"
+        );
+        assert!(cached_release(&current, &channel, "0.1.1").is_none());
+        assert!(cached_release(&current, &channel, "0.1.2").is_none());
+        fs::write(current.join("release.json"), b"invalid metadata").unwrap();
+        assert!(cached_release(&current, &channel, "0.1.0").is_none());
+
+        assert_eq!(fs::read(legacy.join("release.json")).unwrap(), original);
+        assert_eq!(
+            fs::read(legacy.join("job-existing/intent.json")).unwrap(),
+            b"recovery"
+        );
+        assert_eq!(
+            fs::read(legacy.join("folio-0.1.4.exe")).unwrap(),
+            b"staged package"
+        );
+    }
+
     fn release() -> Release {
         let asset = manifest::Asset {
             url: "https://github.com/juccul/Folio/releases/download/v0.1.4/package".into(),
