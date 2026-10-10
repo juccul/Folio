@@ -1372,13 +1372,6 @@ impl NotesView {
             .bg(rgb(theme.chrome))
             .border_b_1()
             .border_color(theme.border)
-            .on_mouse_down(MouseButton::Left, super::titlebar::background_press)
-            .on_mouse_down(MouseButton::Right, |event, window, cx| {
-                if window.window_controls().window_menu {
-                    window.show_window_menu(event.position);
-                }
-                cx.stop_propagation();
-            })
             .child(tabs)
             .child(
                 div()
@@ -1400,7 +1393,7 @@ impl NotesView {
                         .size(rems(1.875)),
                     ),
             )
-            .child(div().flex_1().h_full())
+            .child(super::titlebar::drag_region())
             .child(self.update_notice(cx))
             .child(
                 self.window_controls(window, cx)

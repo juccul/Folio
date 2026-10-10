@@ -141,7 +141,24 @@ fn window_icon(kind: Icon, color: u32) -> impl IntoElement {
     .flex_shrink_0()
 }
 
-pub(super) fn background_press(event: &MouseDownEvent, window: &mut Window, cx: &mut App) {
+pub(super) fn drag_region() -> impl IntoElement {
+    // Keep native move/menu handlers on empty chrome only. On Windows the
+    // native move loop can consume mouse-up before a button receives it;
+    // a handler on the whole row therefore interferes with child clicks.
+    div()
+        .id("titlebar-drag-region")
+        .flex_1()
+        .h_full()
+        .on_mouse_down(MouseButton::Left, background_press)
+        .on_mouse_down(MouseButton::Right, |event, window, cx| {
+            if window.window_controls().window_menu {
+                window.show_window_menu(event.position);
+            }
+            cx.stop_propagation();
+        })
+}
+
+fn background_press(event: &MouseDownEvent, window: &mut Window, cx: &mut App) {
     if event.click_count == 2 && window.window_controls().maximize {
         window.zoom_window();
         window.refresh();
