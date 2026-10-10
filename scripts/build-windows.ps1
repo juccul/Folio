@@ -1,7 +1,9 @@
 param(
     [switch]$DebugBuild,
     [switch]$Check,
-    [switch]$Test
+    [switch]$Test,
+    [ValidateRange(0, 256)]
+    [int]$TestThreads = 0
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -45,7 +47,11 @@ function Invoke-Cargo {
 Push-Location $root
 try {
     if ($Check) { Invoke-Cargo check --locked --workspace --all-targets --target x86_64-pc-windows-msvc }
-    elseif ($Test) { Invoke-Cargo test --locked --workspace --target x86_64-pc-windows-msvc }
+    elseif ($Test) {
+        $testArgs = @('test', '--locked', '--workspace', '--target', 'x86_64-pc-windows-msvc')
+        if ($TestThreads -gt 0) { $testArgs += @('--', "--test-threads=$TestThreads") }
+        Invoke-Cargo @testArgs
+    }
     elseif ($DebugBuild) { Invoke-Cargo build --locked -p folio --target x86_64-pc-windows-msvc }
     else { Invoke-Cargo build --locked --release -p folio --target x86_64-pc-windows-msvc }
 } finally { Pop-Location }

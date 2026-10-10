@@ -4,6 +4,23 @@ Updated 2026-10-07. Folio is a runnable Rust/GPUI Linux desktop application. Pro
 
 Version 0.1.1 adds Windows 11 x64 builds, a portable package and a per-user installer. See `WINDOWS.md` for Windows Ink support and validation limits. The earlier public version reset was 0.1.0. Historical sections below retain their original internal development build numbers. This release includes Vulkan Q8 OCR with verified first-use downloads, along with test and runtime-payload cleanup.
 
+## Continuous integration
+
+The `Linux and Windows` workflow tests every branch push, pull request and tag,
+and can be started manually with `workflow_dispatch`.
+New pushes cancel superseded runs on the same branch,
+and pull request updates cancel superseded runs for that pull request. Release
+tag builds and manually started builds are not cancelled by branch updates.
+
+Rust tests run with two test threads in CI to limit contention between each
+controller's storage and rendering workers. Asynchronous worker behavior remains
+covered. To use the same limit locally, run
+`cargo test --locked --workspace -- --test-threads=2` on Linux or
+`./scripts/build-windows.ps1 -Test -TestThreads 2` on Windows. Omitting
+`-TestThreads` preserves Cargo's default parallelism for local Windows builds.
+Updater, packaging, math protocol and Rust checks have separate CI steps so the
+failing check is visible directly in the run summary.
+
 ## Optimization and edge-case audit
 
 The 2026-10-05 audit fixes reader/write contention and inconsistent loads, export-dialog targets, save acknowledgements and failed-flush recovery, selection reversal, tab overflow, malformed geometry/preferences and definite-integral domains. It adds indexed linked-math bookkeeping and faster database reader setup. Validation is under `artifacts/validation/optimization-pass`.

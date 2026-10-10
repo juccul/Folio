@@ -5,6 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
 jobs:
   documentation:
     runs-on: ubuntu-24.04
@@ -33,7 +36,11 @@ jobs:
       - name: Verify compact Windows packaging
         run: python scripts/test_windows_packaging.py
       - name: Install Rust
-        run: rustup toolchain install stable --profile minimal; rustup default stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+          rustup default stable
+          if ($LASTEXITCODE -ne 0) { throw 'Selecting the Rust toolchain failed.' }
       - name: Prepare offline tools
         run: |
           python scripts/package-windows.py --runtime-only --output artifacts/tools
@@ -41,10 +48,11 @@ jobs:
           "FOLIO_MATH_CONFIG=$package/math-solver/pack.json" >> $env:GITHUB_ENV
           "$package/pdf/bin" >> $env:GITHUB_PATH
           python scripts/verify-windows-runtime.py --package $package --output artifacts/runtime.json
-      - name: Check and test
-        run: |
-          ./scripts/build-windows.ps1 -Check
-          ./scripts/build-windows.ps1 -Test
+      - name: Check Rust targets
+        run: ./scripts/build-windows.ps1 -Check
+      - name: Test Rust workspace
+        # Controller tests each start storage/rendering workers of their own.
+        run: ./scripts/build-windows.ps1 -Test -TestThreads 2
       - name: Find installer compiler
         run: |
           $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
@@ -80,6 +88,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+      - name: Verify updater recovery
+        run: python scripts/test_windows_update_worker.py
+      - name: Verify compact Windows packaging
+        run: python scripts/test_windows_packaging.py
       - name: Install native libraries and offline math
         run: |
           sudo apt-get update
@@ -87,11 +99,11 @@ jobs:
           python -m pip install -r scripts/math-solver-requirements.txt
           python scripts/setup-math-solver.py
           echo "FOLIO_MATH_CONFIG=$PWD/artifacts/math-solver/pack.json" >> "$GITHUB_ENV"
-      - name: Install Rust and test
+      - name: Verify math worker protocol
+        run: python scripts/test_math_worker_protocol.py
+      - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-          cargo test --locked --workspace
-          python scripts/test_math_worker_protocol.py
-          python scripts/test_windows_update_worker.py
-          python scripts/test_windows_packaging.py
+      - name: Test Rust workspace
+        run: cargo test --locked --workspace -- --test-threads=2

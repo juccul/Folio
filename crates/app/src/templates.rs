@@ -76,16 +76,27 @@ mod tests {
         let template = app.settings.templates[0].clone();
         app.add_template_page(template.id).unwrap();
         assert!(app.pending_imports.contains_key(&target));
-        for _ in 0..12 {
+        app.create_note();
+        let unpinned = app.active;
+        app.trim_caches();
+        for _ in 0..11 {
             app.create_note();
+            app.trim_caches();
         }
-        app.flush().unwrap();
+        // Wait only for existing autosaves. A controller flush needlessly
+        // rewrites every session and can time out on a busy Windows runner.
+        app.persistence.flush().unwrap();
         // Make the persistence receipts current without accepting worker results.
         while let Ok(receipt) = app.persistence.receipts.try_recv() {
             assert!(receipt.result.is_ok());
             app.saved = app.saved.max(receipt.sequence);
         }
         app.trim_caches();
+        assert_eq!(app.sessions.len(), 8, "Cache pressure was not exercised");
+        assert!(
+            !app.sessions.contains_key(&unpinned),
+            "An unpinned old note should have been evicted"
+        );
         assert!(
             app.sessions.contains_key(&target),
             "Pending template target was evicted"
