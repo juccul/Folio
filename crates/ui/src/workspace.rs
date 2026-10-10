@@ -471,10 +471,10 @@ impl NotesView {
                 })
                 .child(open)
                 .child(
-                    self.icon_button(
+                    self.control(
                         format!("manage-folder-{id}"),
                         format!("Manage folder {path}"),
-                        Icon::More,
+                        icon(Icon::More, theme.ink).into_any_element(),
                         false,
                         cx,
                         move |this, w, cx| {
@@ -484,6 +484,7 @@ impl NotesView {
                     )
                     .size(rems(1.75))
                     .min_h(rems(1.75))
+                    .p_0()
                     .mr_1()
                     .bg(transparent_black())
                     .hover(move |s| s.bg(rgb(theme.surface))),
