@@ -104,9 +104,19 @@ def main():
                 with Image.open(args.output / 'settled.png') as image:
                     assert image.size == (1180, 740), image.size
                     assert len(image.getcolors(image.width * image.height)) > 10, 'Settled frame is blank'
+                    # Deferring swapchain recreation must not make GPUI lay out
+                    # the previous drawable size. Newly exposed right/bottom
+                    # client pixels must contain the app background, rather than
+                    # the transparent-black clear outside a stale root layout.
+                    edge_probes = [(image.width - 16, 100), (image.width - 16, image.height - 16),
+                                   (100, image.height - 16)]
+                    assert all(sum(image.getpixel(point)[:3]) > 10 for point in edge_probes), (
+                        'Resized layout did not cover the final client extent',
+                        [(point, image.getpixel(point)) for point in edge_probes])
                 result = {'ack_waits_for_render': True, 'rendered_resize_acknowledged': True,
                           'burst_events': 201, 'final_size': [1180, 740],
                           'responsive_after_burst': True, 'burst_and_capture_seconds': time.monotonic() - started}
+                result['layout_covers_final_client_extent'] = True
                 (args.output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
                 print(json.dumps(result))
             finally:

@@ -440,12 +440,28 @@ impl BladeRenderer {
     }
 
     pub(crate) fn wait_for_gpu(&mut self) {
-        if let Some(last_sp) = self.last_sync_point.take()
-            && !self.gpu.wait_for(&last_sp, MAX_FRAME_TIME_MS)
-        {
+        if let Some(last_sp) = self.last_sync_point.take() {
+            Self::wait_for_sync_point(&self.gpu, &last_sp);
+        }
+    }
+
+    #[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "x11"))]
+    pub(crate) fn wait_for_last_frame_on_background(
+        &self,
+        executor: &crate::BackgroundExecutor,
+    ) -> Option<crate::Task<()>> {
+        let sync_point = self.last_sync_point.clone()?;
+        let gpu = Arc::clone(&self.gpu);
+        Some(executor.spawn(async move {
+            Self::wait_for_sync_point(&gpu, &sync_point);
+        }))
+    }
+
+    fn wait_for_sync_point(gpu: &gpu::Context, sync_point: &gpu::SyncPoint) {
+        if !gpu.wait_for(sync_point, MAX_FRAME_TIME_MS) {
             log::error!("GPU hung");
             #[cfg(target_os = "linux")]
-            if self.gpu.device_information().driver_name == "radv" {
+            if gpu.device_information().driver_name == "radv" {
                 log::error!(
                     "there's a known bug with amdgpu/radv, try setting ZED_PATH_SAMPLE_COUNT=0 as a workaround"
                 );
@@ -453,11 +469,8 @@ impl BladeRenderer {
                     "if that helps you're running into https://github.com/zed-industries/zed/issues/26143"
                 );
             }
-            log::error!(
-                "your device information is: {:?}",
-                self.gpu.device_information()
-            );
-            while !self.gpu.wait_for(&last_sp, MAX_FRAME_TIME_MS) {}
+            log::error!("your device information is: {:?}", gpu.device_information());
+            while !gpu.wait_for(sync_point, MAX_FRAME_TIME_MS) {}
         }
     }
 

@@ -10,11 +10,14 @@ import tempfile
 def main():
     root = Path(__file__).resolve().parents[1]
     policy = root / 'vendor/gpui/src/platform/blade/resize.rs'
+    acknowledgement = root / 'vendor/gpui/src/platform/linux/x11/resize_ack.rs'
     with tempfile.TemporaryDirectory(prefix='folio-renderer-resize-') as temporary:
         directory = Path(temporary)
         wrapper = directory / 'resize_tests.rs'
         wrapper.write_text(
-            '#[path = ' + json.dumps(str(policy), ensure_ascii=False) + ']\nmod resize;\n',
+            '#[path = ' + json.dumps(str(policy), ensure_ascii=False) + ']\nmod resize;\n'
+            '#[path = ' + json.dumps(str(acknowledgement), ensure_ascii=False)
+            + ']\nmod resize_ack;\n',
             encoding='utf-8',
         )
         executable = directory / ('resize_tests.exe' if os.name == 'nt' else 'resize_tests')

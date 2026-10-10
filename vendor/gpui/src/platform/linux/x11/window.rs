@@ -3,11 +3,12 @@ use x11rb::connection::RequestConnection;
 
 use crate::platform::blade::{BladeContext, BladeRenderer, BladeSurfaceConfig};
 use crate::{
-    AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, GpuSpecs, Modifiers,
-    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
-    Point, PromptButton, PromptLevel, RequestFrameOptions, ResizeEdge, ScaledPixels, Scene, Size,
-    Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
-    WindowDecorations, WindowKind, WindowParams, X11ClientStatePtr, px, size,
+    AnyWindowHandle, BackgroundExecutor, Bounds, Decorations, DevicePixels, ForegroundExecutor,
+    GpuSpecs, Modifiers, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
+    PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions,
+    ResizeEdge, ScaledPixels, Scene, Size, Tiling, WindowAppearance, WindowBackgroundAppearance,
+    WindowBounds, WindowControlArea, WindowDecorations, WindowKind, WindowParams,
+    X11ClientStatePtr, px, size,
 };
 
 use blade_graphics as gpu;
@@ -28,10 +29,10 @@ use x11rb::{
 };
 
 use std::{
-    cell::RefCell, ffi::c_void, fmt::Display, num::NonZeroU32, ops::Div, ptr::NonNull, rc::Rc,
-    sync::Arc,
+    cell::RefCell, ffi::c_void, fmt::Display, num::NonZeroU32, ptr::NonNull, rc::Rc, sync::Arc,
 };
 
+use super::resize_ack::ResizeAcknowledgement;
 use super::{X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES};
 
 x11rb::atom_manager! {
@@ -251,11 +252,13 @@ pub struct X11WindowState {
     pub destroyed: bool,
     client: X11ClientStatePtr,
     executor: ForegroundExecutor,
+    background_executor: BackgroundExecutor,
     atoms: XcbAtoms,
     x_root_window: xproto::Window,
     pub(crate) counter_id: sync::Counter,
     pub(crate) last_sync_counter: Option<sync::Int64>,
     pending_sync_counter: Option<sync::Int64>,
+    resize_acknowledgement: ResizeAcknowledgement,
     drawable_size_dirty: bool,
     bounds: Bounds<Pixels>,
     scale_factor: f32,
@@ -387,6 +390,7 @@ impl X11WindowState {
         handle: AnyWindowHandle,
         client: X11ClientStatePtr,
         executor: ForegroundExecutor,
+        background_executor: BackgroundExecutor,
         gpu_context: &BladeContext,
         params: WindowParams,
         xcb: &Rc<XCBConnection>,
@@ -671,6 +675,7 @@ impl X11WindowState {
             Ok(Self {
                 client,
                 executor,
+                background_executor,
                 display,
                 x_root_window: visual_set.root,
                 bounds: bounds.to_pixels(scale_factor),
@@ -695,6 +700,7 @@ impl X11WindowState {
                 counter_id: sync_request_counter,
                 last_sync_counter: None,
                 pending_sync_counter: None,
+                resize_acknowledgement: ResizeAcknowledgement::default(),
                 drawable_size_dirty: false,
             })
         });
@@ -711,11 +717,9 @@ impl X11WindowState {
     }
 
     fn content_size(&self) -> Size<Pixels> {
-        let size = self.renderer.viewport_size();
-        Size {
-            width: size.width.into(),
-            height: size.height.into(),
-        }
+        // Layout must consume the newest ConfigureNotify dimensions even while
+        // the renderer retains the previously presented swapchain until draw.
+        self.bounds.size
     }
 }
 
@@ -768,6 +772,7 @@ impl X11Window {
         handle: AnyWindowHandle,
         client: X11ClientStatePtr,
         executor: ForegroundExecutor,
+        background_executor: BackgroundExecutor,
         gpu_context: &BladeContext,
         params: WindowParams,
         xcb: &Rc<XCBConnection>,
@@ -784,6 +789,7 @@ impl X11Window {
                 handle,
                 client,
                 executor,
+                background_executor,
                 gpu_context,
                 params,
                 xcb,
@@ -1195,12 +1201,7 @@ impl PlatformWindow for X11Window {
     }
 
     fn content_size(&self) -> Size<Pixels> {
-        // We divide by the scale factor here because this value is queried to determine how much to draw,
-        // but it will be multiplied later by the scale to adjust for scaling.
-        let state = self.0.state.borrow();
-        state
-            .content_size()
-            .map(|size| size.div(state.scale_factor))
+        self.0.state.borrow().content_size()
     }
 
     fn resize(&mut self, size: Size<Pixels>) {
@@ -1487,12 +1488,37 @@ impl PlatformWindow for X11Window {
         }
         inner.renderer.draw(scene);
         if let Some(value) = inner.pending_sync_counter.take() {
-            inner.renderer.wait_for_gpu();
-            check_reply(
-                || "X11 sync SetCounter after drawing failed.",
-                sync::set_counter(&self.0.xcb, inner.counter_id, value),
-            )
-            .log_err();
+            // The WM still waits for the resized pixels to finish rendering,
+            // but that GPU wait must not block input dispatch on the GUI thread.
+            let Some(completion) = inner
+                .renderer
+                .wait_for_last_frame_on_background(&inner.background_executor)
+            else {
+                inner.pending_sync_counter = Some(value);
+                return;
+            };
+            let generation = inner.resize_acknowledgement.submitted();
+            let executor = inner.executor.clone();
+            let state = Rc::downgrade(&self.0.state);
+            let xcb = self.0.xcb.clone();
+            drop(inner);
+            executor
+                .spawn(async move {
+                    completion.await;
+                    let Some(state) = state.upgrade() else {
+                        return;
+                    };
+                    let state = state.borrow();
+                    if state.destroyed || !state.resize_acknowledgement.is_current(generation) {
+                        return;
+                    }
+                    check_reply(
+                        || "X11 sync SetCounter after GPU completion failed.",
+                        sync::set_counter(&xcb, state.counter_id, value),
+                    )
+                    .log_err();
+                })
+                .detach();
         }
     }
 
