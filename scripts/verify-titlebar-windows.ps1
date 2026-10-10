@@ -27,22 +27,33 @@ if(Test-Path -LiteralPath $manifestPath){
 $Output=[IO.Path]::GetFullPath($Output)
 if(Test-Path -LiteralPath $Output){throw 'Use a fresh evidence directory.'}
 New-Item -ItemType Directory -Path $Output -Force|Out-Null
-$runRoot=Join-Path ([IO.Path]::GetTempPath()) ('FolioTitlebarPointerV2-'+[guid]::NewGuid().ToString())
+$runRoot=Join-Path ([IO.Path]::GetTempPath()) ('FolioTitlebarPointerV4-'+[guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $runRoot|Out-Null
 $data=Join-Path $runRoot 'fixture-library'
+$script:inputTraces=@()
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,System.Drawing
-if(-not ('FolioTitlebarPointerV2' -as [type])){
+if(-not ('FolioTitlebarPointerV4' -as [type])){
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 using System.Threading;
-public static class FolioTitlebarPointerV2 {
+using System.Diagnostics;
+public static class FolioTitlebarPointerV4 {
  [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint flags);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd,int command);
  [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hwnd);
  [DllImport("user32.dll",SetLastError=true)] public static extern bool SetWindowPos(IntPtr hwnd,IntPtr after,int x,int y,int width,int height,uint flags);
+ [StructLayout(LayoutKind.Sequential)] public struct NativePoint { public int X; public int Y; }
+ public sealed class PointerSample {
+  public string Phase; public double ElapsedMs; public bool CursorReadSucceeded;
+  public int CursorX; public int CursorY; public int CursorReadError;
+  public long TargetHwnd; public uint TargetPid; public long ForegroundHwnd;
+  public bool PressIssued; public string InputRefusal;
+ }
+ [DllImport("user32.dll",SetLastError=true)] static extern bool GetCursorPos(out NativePoint point);
+ [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(NativePoint point);
  [DllImport("user32.dll")] static extern bool SetCursorPos(int x,int y);
  [DllImport("user32.dll")] static extern void mouse_event(uint flags,uint x,uint y,uint data,UIntPtr extra);
  [DllImport("user32.dll")] static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr extra);
@@ -52,10 +63,38 @@ public static class FolioTitlebarPointerV2 {
  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint process);
  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
  public static void Move(int x,int y){if(!SetCursorPos(x,y))throw new Exception("SetCursorPos failed");}
- public static void Click(int x,int y,int hover,int press,bool right){
-  Move(x,y); if(hover>0)Thread.Sleep(hover);
-  mouse_event(right?8u:2u,0,0,0,UIntPtr.Zero);
-  Thread.Sleep(press); mouse_event(right?16u:4u,0,0,0,UIntPtr.Zero);
+ static PointerSample Sample(string phase,Stopwatch clock){
+  var sample=new PointerSample { Phase=phase,ElapsedMs=clock.Elapsed.TotalMilliseconds };
+  NativePoint point;sample.CursorReadSucceeded=GetCursorPos(out point);
+  if(!sample.CursorReadSucceeded){sample.CursorReadError=Marshal.GetLastWin32Error();return sample;}
+  sample.CursorX=point.X;sample.CursorY=point.Y;
+  IntPtr target=WindowFromPoint(point);sample.TargetHwnd=target.ToInt64();
+  uint owner=0;if(target!=IntPtr.Zero)GetWindowThreadProcessId(target,out owner);
+  sample.TargetPid=owner;sample.ForegroundHwnd=GetForegroundWindow().ToInt64();
+  return sample;
+ }
+ static void SleepUntil(Stopwatch clock,int deadlineMilliseconds){
+  int remaining=deadlineMilliseconds-(int)clock.ElapsedMilliseconds;
+  if(remaining>0)Thread.Sleep(remaining);
+ }
+ public static PointerSample[] Click(int x,int y,int hover,int press,bool right,uint expectedOwner=0){
+  Move(x,y);if(hover>0)Thread.Sleep(hover);
+  var clock=Stopwatch.StartNew();var samples=new PointerSample[4];
+  // Read-only snapshots add no hover delay or hit-test query. Use a single
+  // press deadline, so sampling does not add sleeps to the requested hold.
+  samples[0]=Sample("before-down",clock);
+  if(!samples[0].CursorReadSucceeded || samples[0].CursorX!=x || samples[0].CursorY!=y || (expectedOwner!=0 && samples[0].TargetPid!=expectedOwner)){
+   samples[0].InputRefusal="Cursor or target ownership mismatch before mouse-down; no button input was sent.";
+   return samples;
+  }
+  mouse_event(right?8u:2u,0,0,0,UIntPtr.Zero);samples[0].PressIssued=true;clock.Restart();
+  try{
+   SleepUntil(clock,press/2);samples[1]=Sample("mid-held",clock);
+   SleepUntil(clock,press);samples[2]=Sample("before-release",clock);
+  }finally{mouse_event(right?16u:4u,0,0,0,UIntPtr.Zero);}
+  samples[3]=Sample("after-release",clock);
+  for(int i=1;i<samples.Length;i++)if(samples[i]!=null)samples[i].PressIssued=true;
+  return samples;
  }
  public static void Drag(int x,int y,int dx,int dy){
   Move(x,y);Thread.Sleep(100);mouse_event(2,0,0,0,UIntPtr.Zero);
@@ -76,8 +115,20 @@ public static class FolioTitlebarPointerV2 {
   return false;
  }
  public static void ResetUpdate(){
-  keybd_event(0x11,0,0,UIntPtr.Zero);keybd_event(0x12,0,0,UIntPtr.Zero);keybd_event(0x55,0,0,UIntPtr.Zero);
-  Thread.Sleep(30);keybd_event(0x55,0,2,UIntPtr.Zero);keybd_event(0x12,0,2,UIntPtr.Zero);keybd_event(0x11,0,2,UIntPtr.Zero);
+  // Fixture setup only: allow the guest input queue to observe each modifier
+  // before U is dispatched. Staging this setup chord allows native modifier
+  // events to be processed even when the VM is under load.
+  // This is one chord, never a retry; measured mouse timing is unchanged.
+  bool ctrl=false,alt=false,u=false;
+  try{
+   keybd_event(0x11,0,0,UIntPtr.Zero);ctrl=true;Thread.Sleep(30);
+   keybd_event(0x12,0,0,UIntPtr.Zero);alt=true;Thread.Sleep(30);
+   keybd_event(0x55,0,0,UIntPtr.Zero);u=true;Thread.Sleep(100);
+  }finally{
+   if(u){keybd_event(0x55,0,2,UIntPtr.Zero);Thread.Sleep(30);}
+   if(alt){keybd_event(0x12,0,2,UIntPtr.Zero);Thread.Sleep(30);}
+   if(ctrl){keybd_event(0x11,0,2,UIntPtr.Zero);}
+  }
  }
  public static void Escape(){keybd_event(0x1b,0,0,UIntPtr.Zero);Thread.Sleep(30);keybd_event(0x1b,0,2,UIntPtr.Zero);}
 }
@@ -100,12 +151,12 @@ function Owned-Window($process){
 function Focus-Owned($window,$process){
  if($window.Current.ProcessId -ne $process.Id){throw 'Window ownership changed.'}
  $handle=[IntPtr]$window.Current.NativeWindowHandle
- [FolioTitlebarPointerV2]::SetForegroundWindow($handle)|Out-Null
+ [FolioTitlebarPointerV4]::SetForegroundWindow($handle)|Out-Null
  Start-Sleep -Milliseconds 100
- if([FolioTitlebarPointerV2]::GetForegroundWindow() -ne $handle){throw 'Owned fixture could not gain foreground focus; do not send input.'}
+ if([FolioTitlebarPointerV4]::GetForegroundWindow() -ne $handle){throw 'Owned fixture could not gain foreground focus; do not send input.'}
 }
 function Bounds($window){$r=$window.Current.BoundingRectangle;return @{X=$r.X;Y=$r.Y;Width=$r.Width;Height=$r.Height}}
-function Check-Bounds($before,$after){foreach($key in @('X','Y','Width','Height')){if([Math]::Abs($before[$key]-$after[$key]) -gt 2){throw ('Control press unexpectedly moved/resized/maximized fixture: '+$key)}}}
+function Check-Bounds($before,$after){foreach($key in @('X','Y','Width','Height')){if([Math]::Abs($before[$key]-$after[$key]) -gt 2){throw ('Control press unexpectedly moved/resized/maximized fixture: '+$key+'; before='+($before|ConvertTo-Json -Compress)+'; after='+($after|ConvertTo-Json -Compress))}}}
 function Point-For($node,[string]$location){
  $r=$node.Current.BoundingRectangle
  if($r.Width -lt 8 -or $r.Height -lt 8 -or $node.Current.IsOffscreen){throw 'Pointer target is not visible or too small.'}
@@ -130,14 +181,34 @@ function Click-Target($window,$process,$node,[string]$location,[int]$hover,[int]
  $r=$window.Current.BoundingRectangle
  # Start outside the titlebar before every sweep, without a preparatory hover
  # at the actual target or WM_NCHITTEST query that might prime a stale hit map.
- [FolioTitlebarPointerV2]::Move([int]($r.X+$r.Width/2),[int]($r.Y+$r.Height/2))
+ [FolioTitlebarPointerV4]::Move([int]($r.X+$r.Width/2),[int]($r.Y+$r.Height/2))
  Start-Sleep -Milliseconds 100
  $point=Point-For $node $location
- [FolioTitlebarPointerV2]::Click($point.X,$point.Y,$hover,$press,$right)
+ $point.window_bounds_before=Bounds $window
+ $point.control_name_before=$node.Current.Name
+ $point.cursor_samples=@([FolioTitlebarPointerV4]::Click($point.X,$point.Y,$hover,$press,$right,[uint32]$process.Id))
+ $point.owned_pid=$process.Id
+ $point.owned_hwnd=[int64]$window.Current.NativeWindowHandle
  Start-Sleep -Milliseconds 150
  # Diagnostic queried AFTER physical press: it cannot improve pre-click state.
- $point.hit_test_after_press=[FolioTitlebarPointerV2]::HitTest([IntPtr]$window.Current.NativeWindowHandle,$point.X,$point.Y)
- $point.native_system_menu=[FolioTitlebarPointerV2]::HasNativeMenu([uint32]$process.Id)
+ $point.hit_test_after_press=[FolioTitlebarPointerV4]::HitTest([IntPtr]$window.Current.NativeWindowHandle,$point.X,$point.Y)
+ $point.native_system_menu=[FolioTitlebarPointerV4]::HasNativeMenu([uint32]$process.Id)
+ $point.cursor_mismatch=$false;$point.cursor_mismatch_phases=@()
+ foreach($sample in $point.cursor_samples){
+  if(!$sample){continue}
+  # A maximize/restore click can put the old pointer outside the moved window.
+  # Ownership is required before-down; coordinates must remain requested while
+  # held. After-release is diagnostic and cannot invalidate a custom-window move.
+  if(($sample.Phase -ne 'after-release' -and (!$sample.CursorReadSucceeded -or $sample.CursorX -ne $point.X -or $sample.CursorY -ne $point.Y)) -or ($sample.Phase -eq 'before-down' -and $sample.TargetPid -ne [uint32]$process.Id)){
+   $point.cursor_mismatch=$true;$point.cursor_mismatch_phases+= $sample.Phase
+  }
+  if($sample.InputRefusal){$point.input_refusal=$sample.InputRefusal}
+ }
+ $point.window_bounds_after=Bounds $window
+ # Independent append-only trace survives a case exception before this return.
+ $script:inputTraces+=@{utc=[DateTime]::UtcNow.ToString('o');control_name=$point.control_name_before;location=$location;hover_ms=$hover;press_ms=$press;right_press=$right;point=$point}
+ $script:inputTraces|ConvertTo-Json -Depth 10|Set-Content (Join-Path $Output 'input-trace.json') -Encoding UTF8
+ if($point.cursor_mismatch){throw ('Invalid pointer input: requested '+$point.X+','+$point.Y+'; mismatch at '+($point.cursor_mismatch_phases -join ',')+'. Retained input-trace.json; this case cannot establish app success.')}
  return $point
 }
 function Blank-Point($window,[string]$availableLabel){
@@ -156,7 +227,7 @@ function Wait-Zoomed($window,$process,[bool]$expected,[string]$action){
  $hwnd=[IntPtr]$window.Current.NativeWindowHandle
  do{
   $process.Refresh();if($process.HasExited){throw ('Owned fixture exited while waiting for '+$action)}
-  $actual=[FolioTitlebarPointerV2]::IsZoomed($hwnd)
+  $actual=[FolioTitlebarPointerV4]::IsZoomed($hwnd)
   if($actual -eq $expected){return @{expected_zoomed=$expected;actual_zoomed=$actual;elapsed_ms=$clock.ElapsedMilliseconds;one_pointer_action_only=$true}}
   Start-Sleep -Milliseconds 50
  }while([DateTime]::UtcNow -lt $deadline)
@@ -164,20 +235,20 @@ function Wait-Zoomed($window,$process,[bool]$expected,[string]$action){
 }
 function Restore-Owned-Bounds($window,$process,$before){
  Focus-Owned $window $process;$hwnd=[IntPtr]$window.Current.NativeWindowHandle
- [FolioTitlebarPointerV2]::ShowWindow($hwnd,9)|Out-Null
+ [FolioTitlebarPointerV4]::ShowWindow($hwnd,9)|Out-Null
  Start-Sleep -Milliseconds 250
- if(![FolioTitlebarPointerV2]::SetWindowPos($hwnd,[IntPtr]::Zero,[int]$before.X,[int]$before.Y,[int]$before.Width,[int]$before.Height,0x14)){throw 'Cannot restore owned fixture bounds after blank titlebar test.'}
+ if(![FolioTitlebarPointerV4]::SetWindowPos($hwnd,[IntPtr]::Zero,[int]$before.X,[int]$before.Y,[int]$before.Width,[int]$before.Height,0x14)){throw 'Cannot restore owned fixture bounds after blank titlebar test.'}
  Start-Sleep -Milliseconds 350
  Check-Bounds $before (Bounds $window)
 }
 Add-Type -AssemblyName System.Windows.Forms
 $app=$null;$results=@();$failed=0;$blankPassed=$false;$windowControlsPassed=$false
-$null=[FolioTitlebarPointerV2]::SetThreadExecutionState(2147483651)
+$null=[FolioTitlebarPointerV4]::SetThreadExecutionState(2147483651)
 try{
  $app=Start-Process -FilePath $binary -ArgumentList @('--data-dir',('"'+$data+'"'),'--smoke-titlebar') -PassThru -RedirectStandardOutput (Join-Path $Output 'fixture.stdout') -RedirectStandardError (Join-Path $Output 'fixture.stderr')
  $null=$app.Handle;$window=Owned-Window $app
  $handle=[IntPtr]$window.Current.NativeWindowHandle
- $environment=@{binary_sha256=$binaryHash;owned_pid=$app.Id;owned_hwnd=$handle.ToInt64();dpi=[FolioTitlebarPointerV2]::GetDpiForWindow($handle);screen_width=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width;screen_height=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height;fixture_data_dir=$data;locations=$Locations;window_states=$WindowStates;hover_ms=$HoverMilliseconds;press_ms=$PressMilliseconds;network_or_install_actions=$false;updater_cache_access=$false;preexisting_folio_processes_allowed=$true}
+ $environment=@{binary_sha256=$binaryHash;owned_pid=$app.Id;owned_hwnd=$handle.ToInt64();dpi=[FolioTitlebarPointerV4]::GetDpiForWindow($handle);screen_width=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width;screen_height=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height;fixture_data_dir=$data;locations=$Locations;window_states=$WindowStates;hover_ms=$HoverMilliseconds;press_ms=$PressMilliseconds;network_or_install_actions=$false;updater_cache_access=$false;preexisting_folio_processes_allowed=$true}
  $environment|ConvertTo-Json -Depth 5|Set-Content (Join-Path $Output 'environment.json') -Encoding UTF8
  $available='Update '+[char]0xB7+' 0.1.4';$homeLabel='Library '+[char]0xB7+' Ctrl+Shift+L'
  $null=Node $window $available 10
@@ -187,24 +258,24 @@ try{
  $blankOriginal=$null
  try{
   Focus-Owned $window $app
-  [FolioTitlebarPointerV2]::ShowWindow($handle,9)|Out-Null;Start-Sleep -Milliseconds 500
+  [FolioTitlebarPointerV4]::ShowWindow($handle,9)|Out-Null;Start-Sleep -Milliseconds 500
   $blankOriginal=Bounds $window;$point=Blank-Point $window $available
   $blank.initial_bounds=$blankOriginal;$blank.drag_pointer=$point
   Capture $window 'blank-titlebar-before-drag.png'
-  [FolioTitlebarPointerV2]::Drag($point.X,$point.Y,24,18)
+  [FolioTitlebarPointerV4]::Drag($point.X,$point.Y,24,18)
   $dragAfter=Bounds $window;$blank.drag_after_bounds=$dragAfter
   $dx=$dragAfter.X-$blankOriginal.X;$dy=$dragAfter.Y-$blankOriginal.Y
   if([Math]::Abs($dx-24) -gt 4 -or [Math]::Abs($dy-18) -gt 4){throw ('Blank titlebar drag did not move the fixture by24,18px: actual '+$dx+','+$dy)}
-  if([Math]::Abs($dragAfter.Width-$blankOriginal.Width) -gt 2 -or [Math]::Abs($dragAfter.Height-$blankOriginal.Height) -gt 2 -or [FolioTitlebarPointerV2]::IsZoomed($handle)){throw 'Blank titlebar drag resized or maximized the fixture.'}
+  if([Math]::Abs($dragAfter.Width-$blankOriginal.Width) -gt 2 -or [Math]::Abs($dragAfter.Height-$blankOriginal.Height) -gt 2 -or [FolioTitlebarPointerV4]::IsZoomed($handle)){throw 'Blank titlebar drag resized or maximized the fixture.'}
   $blank.drag_passed=$true;Capture $window 'blank-titlebar-dragged.png'
   Restore-Owned-Bounds $window $app $blankOriginal
   $point=Blank-Point $window $available;$blank.double_click_restored_pointer=$point
-  [FolioTitlebarPointerV2]::DoubleClick($point.X,$point.Y)
+  [FolioTitlebarPointerV4]::DoubleClick($point.X,$point.Y)
   $blank.maximize_wait=Wait-Zoomed $window $app $true 'Blank titlebar double-click maximize'
   $null=Node $window 'Restore window' 5
   $blank.double_click_maximize_passed=$true;Capture $window 'blank-titlebar-double-click-maximized.png'
   $point=Blank-Point $window $available;$blank.double_click_maximized_pointer=$point
-  [FolioTitlebarPointerV2]::DoubleClick($point.X,$point.Y)
+  [FolioTitlebarPointerV4]::DoubleClick($point.X,$point.Y)
   $blank.restore_wait=Wait-Zoomed $window $app $false 'Blank titlebar double-click restore'
   $null=Node $window 'Maximize window' 5
   $blank.double_click_restore_passed=$true;Capture $window 'blank-titlebar-double-click-restored.png'
@@ -221,7 +292,7 @@ try{
  $customControls=@{maximize_passed=$false;restore_passed=$false};$customOriginal=$null
  try{
   Focus-Owned $window $app
-  [FolioTitlebarPointerV2]::ShowWindow($handle,9)|Out-Null
+  [FolioTitlebarPointerV4]::ShowWindow($handle,9)|Out-Null
   $null=Wait-Zoomed $window $app $false 'Custom-control gate setup';Start-Sleep -Milliseconds 300
   $customOriginal=Bounds $window
   $customControls.initial_bounds=$customOriginal
@@ -247,16 +318,16 @@ try{
  }
  foreach($state in $WindowStates){
   Focus-Owned $window $app
-  switch($state){'restored'{[FolioTitlebarPointerV2]::ShowWindow($handle,9)|Out-Null};'maximized'{[FolioTitlebarPointerV2]::ShowWindow($handle,3)|Out-Null};default{throw ('Unknown window state: '+$state)}}
+  switch($state){'restored'{[FolioTitlebarPointerV4]::ShowWindow($handle,9)|Out-Null};'maximized'{[FolioTitlebarPointerV4]::ShowWindow($handle,3)|Out-Null};default{throw ('Unknown window state: '+$state)}}
   Start-Sleep -Milliseconds 700
-  if([FolioTitlebarPointerV2]::IsZoomed($handle) -ne ($state -eq 'maximized')){throw 'Requested window state was not applied.'}
+  if([FolioTitlebarPointerV4]::IsZoomed($handle) -ne ($state -eq 'maximized')){throw 'Requested window state was not applied.'}
   Capture $window ($state+'-available.png')
   foreach($location in $Locations){foreach($hover in $HoverMilliseconds){foreach($press in $PressMilliseconds){
    $caseName=$state+'-'+$location+'-hover'+$hover+'-press'+$press
    $case=@{case=$caseName;window_state=$state;target_location=$location;hover_ms=$hover;press_ms=$press;home_passed=$false;update_passed=$false;disabled_progress_passed=$false}
    try{
     Focus-Owned $window $app
-    [FolioTitlebarPointerV2]::ResetUpdate();$null=Node $window $available 5
+    [FolioTitlebarPointerV4]::ResetUpdate();$null=Node $window $available 5
     # Select the already-created fixture tab through the real pointer; don't
     # create notes or invoke callbacks as a navigation shortcut.
     $tab=Node $window ('Open '+$FixtureNote) 5
@@ -276,12 +347,12 @@ try{
    }catch{
     $case.home_error=$_.Exception.Message
     try{Capture $window ($caseName+'-home-failure.png');Names $window|ConvertTo-Json -Depth 3|Set-Content (Join-Path $Output ($caseName+'-home-accessible-names.json')) -Encoding UTF8}catch{$case.home_diagnostic_error=$_.Exception.Message}
-    try{Focus-Owned $window $app;[FolioTitlebarPointerV2]::Escape()}catch{}
+    try{Focus-Owned $window $app;[FolioTitlebarPointerV4]::Escape()}catch{}
    }
    # Update is an independent gate even when Home failed. Reset is fixture-only;
    # the failed Home result remains retained and can never become a pass.
    try{
-    Focus-Owned $window $app;[FolioTitlebarPointerV2]::ResetUpdate()
+    Focus-Owned $window $app;[FolioTitlebarPointerV4]::ResetUpdate()
     $null=Node $window $available 5;$before=Bounds $window
     $case.update_pointer=Click-Target $window $app (Node $window $available) $location $hover $press
     $progress=Node $window 'Downloading 42%' 3
@@ -302,7 +373,7 @@ try{
     try{Capture $window ($caseName+'-update-failure.png');Names $window|ConvertTo-Json -Depth 3|Set-Content (Join-Path $Output ($caseName+'-update-accessible-names.json')) -Encoding UTF8}catch{$case.update_diagnostic_error=$_.Exception.Message}
     # Release a native menu only in the focused owned window. No retry can turn
     # this failed case into a pass; every failure remains in results.
-    try{Focus-Owned $window $app;[FolioTitlebarPointerV2]::Escape()}catch{}
+    try{Focus-Owned $window $app;[FolioTitlebarPointerV4]::Escape()}catch{}
    }
    if($case.home_error -or $case.update_error){$failed++}
    $results+=$case
@@ -323,6 +394,6 @@ try{
 finally{
  if($app -and !$app.HasExited){$app.CloseMainWindow()|Out-Null;if(!$app.WaitForExit(10000)){$app.Kill();$app.WaitForExit()}}
  @{only_owned_process_targeted=$true;updater_cache_never_accessed=$true;installed_application_never_modified=$true;disposable_library_only=$true}|ConvertTo-Json|Set-Content (Join-Path $Output 'cleanup.json') -Encoding UTF8
- $null=[FolioTitlebarPointerV2]::SetThreadExecutionState(2147483648)
+ $null=[FolioTitlebarPointerV4]::SetThreadExecutionState(2147483648)
  if($runRoot.StartsWith([IO.Path]::GetTempPath())){Remove-Item -LiteralPath $runRoot -Recurse -Force}
 }
