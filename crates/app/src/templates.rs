@@ -92,6 +92,10 @@ mod tests {
         );
         settle(&mut app);
         assert!(!app.pending_imports.contains_key(&target));
+        assert_eq!(app.sessions[&target].document.pages.len(), 2);
+        // Worker completion queues autosave on the separate persistence worker.
+        // Wait for that queued write without issuing a new controller save.
+        app.persistence.flush().unwrap();
         let stored = Store::open_reader(&app.database)
             .unwrap()
             .load(target)
