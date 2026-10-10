@@ -20,6 +20,12 @@ def main():
     parser.add_argument('--source', type=Path, default=ROOT/'vendor/gpui/src/platform/linux/wayland/client/tablet.rs')
     args = parser.parse_args()
     source = args.source.read_text()
+    # Child objects inherit the negotiated tablet-manager version. Newer
+    # dependency metadata can also describe events unavailable at that version.
+    client = (ROOT/'vendor/gpui/src/platform/linux/wayland/client.rs').read_text()
+    binding = re.search(r'tablet_manager:\s*globals\.bind\(&qh,\s*1\.\.=(\d+),\s*\(\)\)', client)
+    assert binding, 'Expected an explicit tablet-manager protocol version cap'
+    tablet_version = int(binding.group(1))
     registrations = re.findall(
         r'event_created_child!\(\s*WaylandClientStatePtr\s*,\s*([^,]+),\s*(\[.*?\])\s*\);',
         source, re.S)
@@ -34,6 +40,7 @@ def main():
             event_created_child!(State, {parent}, {mapping});
         }}''')
         checks.append(f'''for (opcode, message) in <{parent} as Proxy>::interface().events.iter().enumerate() {{
+            if message.since > {tablet_version} {{ continue; }}
             if let Some(child) = message.child_interface {{
                 let _ = <State as Dispatch<{parent}, ()>>::event_created_child(opcode as u16, &queue.handle());
                 println!("CHILD_OK: {{}}.{{}} opcode={{opcode}} → {{}}", <{parent} as Proxy>::interface().name, message.name, child.name);
