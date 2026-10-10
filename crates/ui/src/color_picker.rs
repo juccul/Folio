@@ -384,6 +384,8 @@ impl NotesView {
                 .p_0()
                 .overflow_hidden()
                 .rounded(px(4.))
+                // Color tracks must retain their exact pixels while pressed.
+                .active(|style| style.opacity(1.))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, window, cx| {
