@@ -144,8 +144,13 @@ fn main() -> anyhow::Result<()> {
                 let result: anyhow::Result<()> = (async {
                     for phase in 0..3 {
                         window.update(cx, |view, _, cx| { view.update_smoke_phase(phase); cx.notify(); })?;
-                        cx.background_executor().timer(Duration::from_millis(200)).await;
-                        window.update(cx, |view, _, _| view.update_smoke_verify(phase))?.map_err(anyhow::Error::msg)?;
+                        let mut rendered=Err("Update notice did not settle".to_owned());
+                        for _ in 0..100 {
+                            cx.background_executor().timer(Duration::from_millis(50)).await;
+                            rendered=window.update(cx, |view, _, _| view.update_smoke_verify(phase))?;
+                            if rendered.is_ok() { break; }
+                        }
+                        rendered.map_err(anyhow::Error::msg)?;
 
                     }
                     window.update(cx, |view, _, cx| { view.update_smoke_phase(3); cx.notify(); })?;
@@ -197,8 +202,13 @@ fn main() -> anyhow::Result<()> {
                     window.update(cx,|view,_,_|view.region_smoke_verify())?.map_err(anyhow::Error::msg)?;
                     for phase in 0..2 {
                         window.update(cx, |view, _, cx| { view.update_smoke_phase(phase); cx.notify(); })?;
-                        cx.background_executor().timer(Duration::from_millis(200)).await;
-                        window.update(cx, |view, _, _| view.update_smoke_verify(phase))?.map_err(anyhow::Error::msg)?;
+                        let mut rendered=Err("Update notice did not settle".to_owned());
+                        for _ in 0..100 {
+                            cx.background_executor().timer(Duration::from_millis(50)).await;
+                            rendered=window.update(cx, |view, _, _| view.update_smoke_verify(phase))?;
+                            if rendered.is_ok() { break; }
+                        }
+                        rendered.map_err(anyhow::Error::msg)?;
                         if phase < 2 {
                             let label = if phase == 0 { "Update · 0.1.4" } else { "Downloading 42%" };
                             let events=window.update(cx,|view,_,_|view.navigation_smoke_click(label,false))?.map_err(anyhow::Error::msg)?;
