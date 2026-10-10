@@ -788,7 +788,12 @@ impl PlatformWindow for WindowsWindow {
     fn zoom(&self) {
         unsafe {
             if IsWindowVisible(self.0.hwnd).as_bool() {
-                ShowWindowAsync(self.0.hwnd, SW_MAXIMIZE).ok().log_err();
+                let command = if IsZoomed(self.0.hwnd).as_bool() {
+                    SW_RESTORE
+                } else {
+                    SW_MAXIMIZE
+                };
+                ShowWindowAsync(self.0.hwnd, command).ok().log_err();
             } else if let Some(status) = self.0.state.borrow_mut().initial_placement.as_mut() {
                 status.state = WindowOpenState::Maximized;
             }
