@@ -1,7 +1,11 @@
 //! Shared HSV color box edits a draft; Save/Cancel keep existing semantics.
 use super::*;
 use folio_app::appearance::ThemeColor;
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Hsv {
@@ -49,23 +53,81 @@ impl Hsv {
         let [r, g, b] = channels.map(|c| ((c + m).clamp(0., 1.) * 255.).round() as u32);
         ThemeColor((r << 24) | (g << 16) | (b << 8) | alpha as u32)
     }
-
-    fn saturation_row(self, value: f32) -> [ThemeColor; 2] {
-        [0., 1.].map(|saturation| {
-            Self {
-                hue: self.hue,
-                saturation,
-                value,
-            }
-            .color(255)
-        })
-    }
 }
 
 pub(super) struct PickerState {
     field: EntityId,
     color: ThemeColor,
     hsv: Hsv,
+    textures: Rc<RefCell<[Option<PickerTexture>; 2]>>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct TextureKey {
+    hue: Option<f32>,
+    width: u32,
+    height: u32,
+}
+
+struct PickerTexture {
+    key: TextureKey,
+    image: Arc<RenderImage>,
+}
+
+fn picker_pixels(key: TextureKey) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity(key.width as usize * key.height as usize * 4);
+    for row in 0..key.height {
+        for col in 0..key.width {
+            let x = (col as f32 + 0.5) / key.width as f32;
+            let hsv = match key.hue {
+                Some(hue) => Hsv {
+                    hue,
+                    saturation: x,
+                    value: 1. - (row as f32 + 0.5) / key.height as f32,
+                },
+                None => Hsv {
+                    hue: x,
+                    saturation: 1.,
+                    value: 1.,
+                },
+            };
+            let color = hsv.color(255).0;
+            // RenderImage accepts straight BGRA bytes without gradient color
+            // space interpolation, so its pixels match the selected RGB.
+            pixels.extend_from_slice(&[
+                (color >> 8) as u8,
+                (color >> 16) as u8,
+                (color >> 24) as u8,
+                255,
+            ]);
+        }
+    }
+    pixels
+}
+
+fn paint_picker_texture(
+    bounds: Bounds<Pixels>,
+    hue: Option<f32>,
+    texture: &mut Option<PickerTexture>,
+    window: &mut Window,
+) {
+    let scale = window.scale_factor();
+    let key = TextureKey {
+        hue,
+        width: (f32::from(bounds.size.width) * scale).ceil().max(1.) as u32,
+        height: (f32::from(bounds.size.height) * scale).ceil().max(1.) as u32,
+    };
+    if texture.as_ref().is_none_or(|texture| texture.key != key) {
+        let buffer = image::RgbaImage::from_raw(key.width, key.height, picker_pixels(key)).unwrap();
+        *texture = Some(PickerTexture {
+            key,
+            image: Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
+                buffer
+            )])),
+        });
+    }
+    let image = texture.as_ref().unwrap().image.clone();
+    let _ = window.paint_image(bounds, Corners::default(), image, 0, false);
 }
 
 fn marker(bounds: Bounds<Pixels>, window: &mut Window) {
@@ -104,34 +166,6 @@ pub(super) fn checkerboard(bounds: Bounds<Pixels>, window: &mut Window) {
     }
 }
 
-fn saturation_value_box(bounds: Bounds<Pixels>, hsv: Hsv, window: &mut Window) {
-    // GPUI composites translucent layers in linear light. Layering white and
-    // black over a hue therefore does not match the sRGB HSV color that is
-    // selected at the same point. Opaque sRGB rows keep the visible plane and
-    // selection in the same color space, independent of the selected S/V.
-    let rows = (f32::from(bounds.size.height) * window.scale_factor())
-        .ceil()
-        .max(1.) as usize;
-    let row_height = bounds.size.height / rows as f32;
-    for row in 0..rows {
-        let value = 1. - (row as f32 + 0.5) / rows as f32;
-        let [white, hue] = hsv.saturation_row(value);
-        let part = Bounds::new(
-            bounds.origin + point(px(0.), row_height * row as f32),
-            size(bounds.size.width, row_height),
-        );
-        window.paint_quad(fill(
-            part,
-            linear_gradient(
-                90.,
-                linear_color_stop(rgba(white.0), 0.),
-                linear_color_stop(rgba(hue.0), 1.),
-            )
-            .color_space(ColorSpace::Srgb),
-        ));
-    }
-}
-
 impl NotesView {
     fn picker_hsv(&mut self, field: &Entity<Field>, color: ThemeColor) -> Hsv {
         match &mut self.color_picker {
@@ -148,6 +182,7 @@ impl NotesView {
                     field: field.entity_id(),
                     color,
                     hsv,
+                    textures: Rc::new(RefCell::new([None, None])),
                 });
                 hsv
             }
@@ -162,11 +197,20 @@ impl NotesView {
         cx: &mut Context<Self>,
     ) {
         let color = hsv.color(alpha);
-        self.color_picker = Some(PickerState {
-            field: field.entity_id(),
-            color,
-            hsv,
-        });
+        match &mut self.color_picker {
+            Some(state) if state.field == field.entity_id() => {
+                state.color = color;
+                state.hsv = hsv;
+            }
+            _ => {
+                self.color_picker = Some(PickerState {
+                    field: field.entity_id(),
+                    color,
+                    hsv,
+                    textures: Rc::new(RefCell::new([None, None])),
+                })
+            }
+        }
         field.update(cx, |f, cx| f.set_content(color.hex(), cx));
         // A hue change at white/black has no RGB change but must repaint the box.
         cx.notify();
@@ -182,18 +226,25 @@ impl NotesView {
         let color = ThemeColor::parse(&field.read(cx).content)
             .unwrap_or(ThemeColor::opaque(theme.canvas.paper));
         let hsv = self.picker_hsv(&field, color);
+        let textures = self.color_picker.as_ref().unwrap().textures.clone();
         let mut picker = div().flex().flex_col().gap_3();
         for channel in 0..if opacity { 3 } else { 2 } {
             let bounds = Rc::new(Cell::new(Bounds::default()));
             let measured = bounds.clone();
             let entity = cx.entity();
             let drag_field = field.clone();
+            let textures = textures.clone();
             let track = canvas(
                 move |b, _, _| measured.set(b),
                 move |b, _, window, _| {
                     match channel {
                         0 => {
-                            saturation_value_box(b, hsv, window);
+                            paint_picker_texture(
+                                b,
+                                Some(hsv.hue),
+                                &mut textures.borrow_mut()[0],
+                                window,
+                            );
                             let center = b.origin
                                 + point(
                                     b.size.width * hsv.saturation,
@@ -205,25 +256,7 @@ impl NotesView {
                             );
                         }
                         1 => {
-                            let colors = [
-                                0xff0000, 0xffff00, 0x00ff00, 0x00ffff, 0x0000ff, 0xff00ff,
-                                0xff0000,
-                            ];
-                            for i in 0..6 {
-                                let part = Bounds::new(
-                                    b.origin + point(b.size.width * (i as f32 / 6.), px(0.)),
-                                    size(b.size.width / 6. + px(0.5), b.size.height),
-                                );
-                                window.paint_quad(fill(
-                                    part,
-                                    linear_gradient(
-                                        90.,
-                                        linear_color_stop(rgb(colors[i]), 0.),
-                                        linear_color_stop(rgb(colors[i + 1]), 1.),
-                                    )
-                                    .color_space(ColorSpace::Srgb),
-                                ));
-                            }
+                            paint_picker_texture(b, None, &mut textures.borrow_mut()[1], window);
                             marker(
                                 Bounds::new(
                                     point(
@@ -501,7 +534,7 @@ impl NotesView {
 
 #[cfg(test)]
 mod tests {
-    use super::Hsv;
+    use super::{Hsv, TextureKey, picker_pixels};
     use folio_app::appearance::ThemeColor;
 
     #[test]
@@ -550,37 +583,49 @@ mod tests {
     }
 
     #[test]
-    fn saturation_value_plane_matches_selected_srgb_and_keeps_fixed_hue() {
-        for hue in [0., 0.1, 1. / 3., 0.58, 2. / 3., 0.91] {
-            let initial = Hsv {
-                hue,
-                saturation: 0.15,
-                value: 0.9,
-            };
-            let dragged = Hsv {
-                saturation: 0.95,
-                value: 0.03,
-                ..initial
-            };
-            for value in [0., 0.1, 0.25, 0.5, 0.8, 1.] {
-                let row = initial.saturation_row(value);
-                assert_eq!(row, dragged.saturation_row(value));
-                for saturation in [0., 0.1, 0.25, 0.5, 0.8, 1.] {
-                    let selected = Hsv {
-                        hue,
-                        saturation,
-                        value,
-                    }
-                    .color(255);
-                    for shift in [24, 16, 8] {
-                        let left = ((row[0].0 >> shift) & 255) as f32;
-                        let right = ((row[1].0 >> shift) & 255) as f32;
-                        let painted = (left + (right - left) * saturation).round();
-                        let selected = ((selected.0 >> shift) & 255) as f32;
-                        assert!((painted - selected).abs() <= 1.);
-                    }
+    fn saturation_value_bitmap_has_exact_opaque_bgra_at_selected_positions() {
+        let key = TextureKey {
+            hue: Some(2. / 3.),
+            width: 100,
+            height: 100,
+        };
+        let pixels = picker_pixels(key);
+        // This pale blue was visibly too saturated with GPU gradients: the
+        // red/green channels became about 122 instead of their selected 159.
+        let index = (22 * key.width as usize + 19) * 4;
+        assert_eq!(&pixels[index..index + 4], &[198, 159, 159, 255]);
+        for row in 0..key.height {
+            for col in 0..key.width {
+                let selected = Hsv {
+                    hue: key.hue.unwrap(),
+                    saturation: (col as f32 + 0.5) / key.width as f32,
+                    value: 1. - (row as f32 + 0.5) / key.height as f32,
                 }
+                .color(255)
+                .0;
+                let index = ((row * key.width + col) * 4) as usize;
+                assert_eq!(
+                    &pixels[index..index + 4],
+                    &[
+                        (selected >> 8) as u8,
+                        (selected >> 16) as u8,
+                        (selected >> 24) as u8,
+                        255,
+                    ]
+                );
             }
         }
+    }
+
+    #[test]
+    fn hue_bitmap_is_constant_vertically_and_keeps_srgb_secondary_colors() {
+        let pixels = picker_pixels(TextureKey {
+            hue: None,
+            width: 12,
+            height: 2,
+        });
+        assert_eq!(&pixels[..48], &pixels[48..]);
+        // 15 degrees is orange, not the gamma-darkened red of the gradient.
+        assert_eq!(&pixels[..4], &[0, 64, 255, 255]);
     }
 }
