@@ -1,5 +1,5 @@
 use super::*;
-fn sample(style: &folio_document::PenStyle, theme: Theme) -> Div {
+fn sample(style: &folio_document::PenStyle) -> Div {
     let mut builder = folio_ink::StrokeBuilder::new(style.clone());
     for i in 0..=24 {
         let t = i as f32 / 24.;
@@ -20,20 +20,20 @@ fn sample(style: &folio_document::PenStyle, theme: Theme) -> Div {
         }
     }
     let path = path.build().ok();
-    let mut color = rgb(theme.canvas.ink(style.color.rgb()));
+    let mut color = rgb(style.color.rgb());
     color.a = style.opacity;
     div()
         .w_full()
-        .h(rems(2.5))
+        .h(rems(2.))
         .overflow_hidden()
         .rounded_sm()
-        .bg(rgb(theme.canvas.paper))
         .child(
             canvas(
                 |_, _, _| (),
                 move |bounds, _, window, _| {
-                    if let Some(path) = &path {
-                        window.with_content_mask(Some(ContentMask { bounds }), |w| {
+                    window.with_content_mask(Some(ContentMask { bounds }), |w| {
+                        super::color_picker::checkerboard(bounds, w);
+                        if let Some(path) = &path {
                             w.paint_path(
                                 path.clone().transformed([
                                     f32::from(bounds.size.width) / 160.,
@@ -45,53 +45,167 @@ fn sample(style: &folio_document::PenStyle, theme: Theme) -> Div {
                                 ]),
                                 color,
                             )
-                        });
-                    }
+                        }
+                    });
                 },
             )
             .size_full(),
         )
 }
 impl NotesView {
-    pub(super) fn preset_controls(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn compact_preset_row(
+        &self,
+        preset: &folio_app::PenPreset,
+        active: bool,
+        close: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
-        let mut list = div().flex().flex_col().gap_3();
-        for preset in self.controller.settings.pen_presets.clone() {
-            let id = preset.id;
-            let active = self.controller.style == preset.style;
-            let content = div()
+        let id = preset.id;
+        let hint: SharedString = format!(
+            "{:?} · {:.1} px · {}",
+            preset.style.tool,
+            preset.style.width,
+            preset.style.color.hex()
+        )
+        .into();
+        self.control(
+            format!("preset-{id}"),
+            format!(
+                "{} preset {}",
+                if close { "Use" } else { "Manage" },
+                preset.name
+            ),
+            div()
                 .w_full()
+                .min_w_0()
                 .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().text_xs().child(preset.name.clone()))
-                .child(sample(&preset.style, theme))
-                .child(div().text_xs().text_color(rgb(theme.muted)).child(format!(
-                    "{:?} · {:.2} mm · {}",
-                    preset.style.tool,
-                    preset.style.width * 25.4 / 96.,
-                    preset.style.color.hex()
-                )));
-            list = list
+                .items_center()
+                .gap_2()
                 .child(
-                    self.control(
-                        format!("preset-{id}"),
-                        format!("Use preset {}", preset.name),
-                        content.into_any_element(),
-                        active,
-                        cx,
-                        move |this, _, _| {
-                            this.controller.apply_preset(id);
-                            this.region_selection = None;
-                        },
-                    )
-                    .w_full(),
+                    div()
+                        .size(rems(1.))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(rgb(preset.style.color.rgb())),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(preset.name.clone()),
+                )
+                .child(if active {
+                    icon(Icon::Check, theme.ink).into_any_element()
+                } else {
+                    div().size(rems(1.125)).into_any_element()
+                })
+                .into_any_element(),
+            active,
+            cx,
+            move |this, window, _| {
+                if close {
+                    this.apply_pen_preset(id);
+                    this.dismiss_popovers();
+                    this.focus.focus(window);
+                } else {
+                    this.pen_preset_target = Some(id);
+                }
+            },
+        )
+        .w_full()
+        .justify_start()
+        .min_h_0()
+        .py_1()
+        .px_2()
+        .tooltip(move |_, cx| {
+            cx.new(|_| super::workspace::Hint(hint.clone(), theme))
+                .into()
+        })
+    }
+
+    pub(super) fn preset_controls(&mut self, cx: &mut Context<Self>) -> Div {
+        let theme = Theme::new(&self.controller.settings);
+        let presets = self.controller.settings.pen_presets.clone();
+        if self
+            .pen_preset_target
+            .is_none_or(|id| !presets.iter().any(|preset| preset.id == id))
+        {
+            self.pen_preset_target = presets
+                .iter()
+                .find(|preset| preset.style == self.controller.style)
+                .or_else(|| presets.first())
+                .map(|preset| preset.id);
+        }
+        let mut panel = div().flex().flex_col().gap_2();
+        if presets.is_empty() {
+            return panel.child(
+                div()
+                    .px_2()
+                    .py_2()
+                    .text_sm()
+                    .text_color(rgb(theme.muted))
+                    .child("Save a pen you use often to find it here."),
+            );
+        }
+        let mut list = div()
+            .id("pen-preset-list")
+            .w_full()
+            .max_h(rems(7.5))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_1();
+        for preset in &presets {
+            list = list.child(self.compact_preset_row(
+                preset,
+                Some(preset.id) == self.pen_preset_target,
+                false,
+                cx,
+            ));
+        }
+        panel = panel.child(list);
+        if let Some(preset) = presets
+            .iter()
+            .find(|preset| Some(preset.id) == self.pen_preset_target)
+        {
+            let id = preset.id;
+            panel = panel
+                .child(sample(&preset.style))
+                .child(
+                    div()
+                        .px_2()
+                        .text_xs()
+                        .text_color(rgb(theme.muted))
+                        .child(format!(
+                            "{:?} · {:.1} px · {}",
+                            preset.style.tool,
+                            preset.style.width,
+                            preset.style.color.hex()
+                        )),
                 )
                 .child(
                     div()
                         .flex()
-                        .flex_wrap()
                         .gap_1()
+                        .child(
+                            self.control(
+                                format!("preset-use-{id}"),
+                                format!("Use preset {}", preset.name),
+                                div().child("Use").into_any_element(),
+                                self.controller.style == preset.style,
+                                cx,
+                                move |this, _, _| this.apply_pen_preset(id),
+                            )
+                            .flex_1()
+                            .min_h_0()
+                            .text_xs()
+                            .px_2()
+                            .py_1(),
+                        )
                         .child(
                             self.button(
                                 format!("preset-update-{id}"),
@@ -99,13 +213,16 @@ impl NotesView {
                                 false,
                                 cx,
                                 move |this, _, _| {
-                                    if let Err(e) = this.controller.update_preset(id) {
-                                        this.controller.error = Some(e);
+                                    if let Err(error) = this.controller.update_preset(id) {
+                                        this.controller.error = Some(error);
                                     }
                                 },
                             )
+                            .flex_1()
+                            .min_h_0()
                             .text_xs()
-                            .px_2(),
+                            .px_2()
+                            .py_1(),
                         )
                         .child(
                             self.button(
@@ -115,8 +232,11 @@ impl NotesView {
                                 cx,
                                 move |this, w, cx| this.modal(Modal::RenamePreset(id), w, cx),
                             )
+                            .flex_1()
+                            .min_h_0()
                             .text_xs()
-                            .px_2(),
+                            .px_2()
+                            .py_1(),
                         )
                         .child(
                             self.button(
@@ -124,13 +244,26 @@ impl NotesView {
                                 "Delete",
                                 false,
                                 cx,
-                                move |this, _, _| this.controller.delete_preset(id),
+                                move |this, _, _| {
+                                    this.controller.delete_preset(id);
+                                    this.pen_preset_target = None;
+                                },
                             )
+                            .flex_1()
+                            .min_h_0()
                             .text_xs()
-                            .px_2(),
+                            .px_2()
+                            .py_1(),
                         ),
+                )
+                .child(
+                    div()
+                        .px_2()
+                        .text_xs()
+                        .text_color(rgb(theme.muted))
+                        .child("Update uses the current pen."),
                 );
         }
-        list.child(div().text_xs().text_color(rgb(theme.muted)).child("Update replaces a preset with the current pen. Deleting a preset keeps your current pen settings."))
+        panel
     }
 }

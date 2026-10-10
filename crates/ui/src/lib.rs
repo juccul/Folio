@@ -24,6 +24,7 @@ mod notebook_setup;
 mod ocr_setup;
 mod page_size;
 mod painting;
+mod pen_menu;
 mod pen_presets;
 mod portable;
 mod region;
@@ -223,6 +224,8 @@ pub struct NotesView {
     attention_error: Option<String>,
     attention_setup: bool,
     pen_settings: bool,
+    pen_menu_section: pen_menu::Section,
+    pen_preset_target: Option<Id>,
     tool_menu: Option<(ToolMenu, Point<Pixels>)>,
     selection_tool: Tool,
     more_open: bool,
@@ -380,6 +383,8 @@ impl NotesView {
             attention_error: None,
             attention_setup: false,
             pen_settings: false,
+            pen_menu_section: pen_menu::Section::default(),
+            pen_preset_target: None,
             tool_menu: None,
             selection_tool: Tool::Lasso,
             more_open: false,
@@ -498,6 +503,7 @@ impl NotesView {
         self.focus.focus(window);
     }
     fn dismiss_popovers(&mut self) {
+        self.pen_menu_section = pen_menu::Section::Pen;
         self.tool_menu = None;
         self.folder_menu = None;
         self.canvas_menu = None;
@@ -2075,121 +2081,7 @@ impl NotesView {
                 .child(self.eraser_controls("popover",cx))
                 .child(div().text_xs().child("Whole stroke and Ink segments erase handwriting only. Whole object also deletes text, images, equations, and shapes. Undo restores erased content."));
         } else if self.pen_settings {
-            panel = panel.child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Your pen"),
-            );
-            let mut tools = div().flex().flex_wrap().gap_1();
-            for (id, label, tool) in [
-                ("ballpoint", "Ballpoint", InkTool::Ballpoint),
-                ("fountain", "Fountain", InkTool::Fountain),
-                ("pencil", "Pencil", InkTool::Pencil),
-                ("marker", "Marker", InkTool::Marker),
-                ("highlighter", "Highlighter", InkTool::Highlighter),
-            ] {
-                tools = tools.child(
-                    self.button(
-                        format!("pen-type-{id}"),
-                        label,
-                        self.controller.style.tool == tool,
-                        cx,
-                        move |this, _, _| {
-                            if tool == InkTool::Highlighter
-                                && this.controller.style.tool != InkTool::Highlighter
-                            {
-                                this.writing_style = Some(this.controller.style.clone());
-                            }
-                            this.controller.set_ink_tool(tool);
-                        },
-                    )
-                    .text_xs()
-                    .px_2(),
-                );
-            }
-            panel = panel.child(tools);
-            for (label, kind, value) in [
-                ("Width", 0, self.controller.style.width),
-                ("Opacity", 1, self.controller.style.opacity),
-                ("Stabilization", 2, self.controller.style.stabilization),
-                ("Pressure curve", 3, self.controller.style.pressure_gamma),
-            ] {
-                panel = panel.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .text_sm()
-                        .child(label)
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .child(
-                                    self.button(
-                                        format!("minus-{kind}"),
-                                        "−",
-                                        false,
-                                        cx,
-                                        move |this, _, _| adjust_pen(this, kind, -1.),
-                                    )
-                                    .px_2(),
-                                )
-                                .child(format!("{value:.2}"))
-                                .child(
-                                    self.button(
-                                        format!("plus-{kind}"),
-                                        "＋",
-                                        false,
-                                        cx,
-                                        move |this, _, _| adjust_pen(this, kind, 1.),
-                                    )
-                                    .px_2(),
-                                ),
-                        ),
-                );
-            }
-            panel = panel.child(
-                self.button(
-                    "pen-custom-color",
-                    "Custom color…",
-                    false,
-                    cx,
-                    |this, w, cx| this.modal(Modal::Color, w, cx),
-                )
-                .justify_start(),
-            );
-            panel = panel
-                .child(
-                    self.button(
-                        "save-preset",
-                        "Save current pen as preset…",
-                        false,
-                        cx,
-                        |this, w, cx| this.modal(Modal::SavePreset, w, cx),
-                    )
-                    .justify_start(),
-                )
-                .child(self.preset_controls(cx));
-        }
-        if self.pen_settings && !self.controller.settings.recent_colors.is_empty() {
-            let mut recent = div().flex().gap_1().items_center().child("Recent colors");
-            for color in self.controller.settings.recent_colors.clone() {
-                recent = recent.child(
-                    self.button(
-                        format!("recent-{}", color.rgb()),
-                        "●",
-                        false,
-                        cx,
-                        move |this, _, _| this.controller.set_color(color),
-                    )
-                    .text_color(rgb(color.rgb()))
-                    .px_2(),
-                );
-            }
-            panel = panel.child(recent);
+            panel = panel.child(self.pen_menu(cx));
         }
         panel.id("popover").overflow_y_scroll()
     }
