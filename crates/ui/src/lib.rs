@@ -33,6 +33,8 @@ mod templates;
 mod text_render;
 mod theme;
 mod titlebar;
+mod toolbar_menu;
+use toolbar_menu::ToolMenu;
 mod updates;
 mod validation;
 mod workspace;
@@ -221,6 +223,8 @@ pub struct NotesView {
     attention_error: Option<String>,
     attention_setup: bool,
     pen_settings: bool,
+    tool_menu: Option<(ToolMenu, Point<Pixels>)>,
+    selection_tool: Tool,
     more_open: bool,
     more_section: MoreSection,
     selection_toolbar_size: Size<Pixels>,
@@ -376,6 +380,8 @@ impl NotesView {
             attention_error: None,
             attention_setup: false,
             pen_settings: false,
+            tool_menu: None,
+            selection_tool: Tool::Lasso,
             more_open: false,
             more_section: MoreSection::Document,
             selection_toolbar_size: size(px(600.), px(80.)),
@@ -492,6 +498,7 @@ impl NotesView {
         self.focus.focus(window);
     }
     fn dismiss_popovers(&mut self) {
+        self.tool_menu = None;
         self.folder_menu = None;
         self.canvas_menu = None;
         self.sort_open = false;
@@ -523,6 +530,7 @@ impl NotesView {
         cx.notify();
     }
     fn modal(&mut self, modal: Modal, window: &mut Window, cx: &mut Context<Self>) {
+        self.tool_menu = None;
         self.sort_open = false;
         self.folder_destination = match modal {
             Modal::MoveNotebook(id) => self
@@ -1155,6 +1163,7 @@ impl NotesView {
         self.pen_in_range = !matches!(event.phase, TabletPhase::Leave | TabletPhase::Cancel);
         if self.library_open
             || self.blocking_overlay()
+            || self.tool_menu.is_some()
             || self.modal.is_some()
             || self.settings_open
             || self.help_open
@@ -1226,6 +1235,7 @@ impl NotesView {
     ) {
         if self.library_open
             || self.blocking_overlay()
+            || self.tool_menu.is_some()
             || self.modal.is_some()
             || self.settings_open
             || self.help_open
@@ -1312,6 +1322,7 @@ impl NotesView {
         }
         if self.library_open
             || self.blocking_overlay()
+            || self.tool_menu.is_some()
             || self.controller.loading_note()
             || self.controller.interaction.is_some()
         {
@@ -2008,6 +2019,13 @@ impl NotesView {
                 panel = panel.child(paper);
             }
             if self.more_section == MoreSection::Document {
+                panel = panel.child(
+                    self.button("export", "Export document", false, cx, |this, _, _| {
+                        this.dismiss_popovers();
+                        this.export_open = true;
+                    })
+                    .justify_start(),
+                );
                 panel = panel.child(
                     self.button(
                         "move-document-folder",
@@ -2968,6 +2986,7 @@ impl Render for NotesView {
             menu_alpha,
             help_alpha,
             popover_alpha,
+            tool_menu_alpha,
             pages_alpha,
         ) = {
             let mut motion = self.motion.borrow_mut();
@@ -3018,6 +3037,11 @@ impl Render for NotesView {
                                 self.more_open, self.pen_settings, self.export_open
                             )
                         }),
+                    reduced,
+                ),
+                motion.panel(
+                    "tool-menu-motion",
+                    self.tool_menu.map(|(kind, _)| format!("{kind:?}")),
                     reduced,
                 ),
                 motion.panel(
@@ -3308,6 +3332,11 @@ impl Render for NotesView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Escape, w, cx| {
+                if this.tool_menu.take().is_some() {
+                    this.focus.focus(w);
+                    cx.notify();
+                    return;
+                }
                 if this.region_selection.take().is_some() {
                     this.controller.status = "Region selection cancelled".into();
                     cx.notify();
@@ -3325,6 +3354,7 @@ impl Render for NotesView {
                         || this.more_open
                         || this.pen_settings
                         || this.export_open
+                        || this.tool_menu.is_some()
                         || this.document_menu.is_some()
                         || this.folder_menu.is_some()
                         || this.canvas_menu.is_some()
@@ -3349,6 +3379,7 @@ impl Render for NotesView {
                 }
             }))
             .on_action(cx.listener(|this, _: &Pen, _, cx| {
+                this.dismiss_popovers();
                 if this.controller.style.tool == InkTool::Highlighter {
                     this.controller
                         .set_style(this.writing_style.take().unwrap_or_default());
@@ -3358,26 +3389,31 @@ impl Render for NotesView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Eraser, _, cx| {
+                this.dismiss_popovers();
                 this.region_selection = None;
                 this.controller.set_tool(Tool::Eraser);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Lasso, _, cx| {
+                this.dismiss_popovers();
                 this.region_selection = None;
                 this.controller.set_tool(Tool::Lasso);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Hand, _, cx| {
+                this.dismiss_popovers();
                 this.region_selection = None;
                 this.controller.set_tool(Tool::Hand);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Text, _, cx| {
+                this.dismiss_popovers();
                 this.region_selection = None;
                 this.controller.set_tool(Tool::Text);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Shapes, _, cx| {
+                this.dismiss_popovers();
                 this.region_selection = None;
                 this.controller.set_tool(Tool::Shape);
                 cx.notify();
@@ -3420,8 +3456,12 @@ impl Render for NotesView {
             .on_action(
                 cx.listener(|this, _: &OpenTab, w, cx| this.modal(Modal::OpenDocument, w, cx)),
             )
-            .on_action(cx.listener(|this, _: &Import, _, cx| this.import(cx)))
+            .on_action(cx.listener(|this, _: &Import, _, cx| {
+                this.dismiss_popovers();
+                this.import(cx);
+            }))
             .on_action(cx.listener(|this, _: &Export, _, cx| {
+                this.dismiss_popovers();
                 this.export_open = true;
                 cx.notify();
             }));
@@ -3804,6 +3844,15 @@ impl Render for NotesView {
             );
         }
         root = root.child(body).children(canvas_overlay);
+        if self.tool_menu.is_some() && !self.library_open && !self.blocking_overlay() {
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(self.tool_menu_panel(window, cx))
+                    .opacity(tool_menu_alpha),
+            );
+        }
         if self.update_preparing {
             root = root.child(
                 div()

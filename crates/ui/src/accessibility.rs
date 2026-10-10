@@ -164,13 +164,19 @@ fn semantics(key: &str) -> Semantics {
     if matches!(key, "system-theme" | "light-theme" | "dark-theme") {
         return radio(30, "Appearance");
     }
+    if matches!(key, "lasso" | "select-rect") {
+        return radio(50, "Selection tools");
+    }
     if matches!(
         key,
-        "pen" | "highlighter" | "eraser" | "lasso" | "select-rect" | "shape" | "text" | "hand"
+        "pen" | "highlighter" | "eraser" | "select-tool" | "shape" | "text" | "hand"
     ) {
         return radio(31, "Writing and selection tools");
     }
-    if key.starts_with("width-") {
+    if key
+        .strip_prefix("width-")
+        .is_some_and(|i| i.parse::<usize>().is_ok())
+    {
         return radio(32, "Stroke width");
     }
     if key.starts_with("color-") {
@@ -292,7 +298,9 @@ fn semantic_node(key: &str, label: &str, active: bool, enabled: bool) -> Node {
     ) {
         node.set_selected(active);
     }
-    if key.starts_with("toggle-folder-") {
+    if key.starts_with("toggle-folder-")
+        || matches!(key, "select-options" | "insert-options" | "width-options")
+    {
         node.set_expanded(active);
     }
     if !enabled {
@@ -465,6 +473,10 @@ impl Accessibility {
                 .and_then(|id| Id::parse_str(id).ok());
             id.is_none_or(|id| visible.contains(&id))
         });
+    }
+    pub(super) fn control_bounds_for_key(&self, key: &str) -> Option<accesskit::Rect> {
+        let id = self.controls.borrow().iter().find(|c| c.key == key)?.id;
+        self.bounds.borrow().get(&id).copied()
     }
     pub fn control_bounds(&self, label: &str) -> Option<accesskit::Rect> {
         let id = self.controls.borrow().iter().find(|c| c.label == label)?.id;
@@ -926,6 +938,14 @@ mod tests {
         let tab = semantic_node(&format!("tab-{}", Id::new_v4()), "Document", true, true);
         assert_eq!(tab.role(), Role::Tab);
         assert_eq!(tab.is_selected(), Some(true));
+        assert_eq!(semantics("select-tool").role, Role::RadioButton);
+        assert_ne!(semantics("select-tool").group, semantics("lasso").group);
+        assert_eq!(semantics("lasso").group, semantics("select-rect").group);
+        assert_eq!(semantics("width-options").role, Role::Button);
+        assert_eq!(
+            semantic_node("width-options", "Stroke width", true, true).is_expanded(),
+            Some(true)
+        );
         assert_eq!(semantics("folder-menu-rename").role, Role::Button);
         assert_eq!(
             semantics(&format!("folder-{}", Id::new_v4())).role,
