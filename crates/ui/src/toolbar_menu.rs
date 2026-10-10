@@ -151,9 +151,16 @@ impl NotesView {
             ToolMenu::Insert => {
                 panel = panel
                     .child(
-                        self.button(
+                        self.control(
                             "shape",
                             "Shapes · S",
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(icon(Icon::Shapes, theme.muted))
+                                .child("Shapes · S")
+                                .into_any_element(),
                             self.controller.tool == Tool::Shape,
                             cx,
                             |this, w, _| {
@@ -167,9 +174,16 @@ impl NotesView {
                         .justify_start(),
                     )
                     .child(
-                        self.button(
+                        self.control(
                             "toolbar-image",
                             "Insert image or PDF",
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(icon(Icon::Image, theme.muted))
+                                .child("Insert image or PDF")
+                                .into_any_element(),
                             false,
                             cx,
                             |this, _, cx| {
@@ -181,9 +195,16 @@ impl NotesView {
                         .justify_start(),
                     )
                     .child(
-                        self.button(
+                        self.control(
                             "insert-equation",
                             "Insert LaTeX equation",
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(icon(Icon::Math, theme.muted))
+                                .child("Insert LaTeX equation")
+                                .into_any_element(),
                             false,
                             cx,
                             |this, w, cx| {

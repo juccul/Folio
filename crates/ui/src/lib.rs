@@ -2020,10 +2020,23 @@ impl NotesView {
             }
             if self.more_section == MoreSection::Document {
                 panel = panel.child(
-                    self.button("export", "Export document", false, cx, |this, _, _| {
-                        this.dismiss_popovers();
-                        this.export_open = true;
-                    })
+                    self.control(
+                        "export",
+                        "Export document",
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(icon(Icon::Export, theme.muted))
+                            .child("Export document")
+                            .into_any_element(),
+                        false,
+                        cx,
+                        |this, _, _| {
+                            this.dismiss_popovers();
+                            this.export_open = true;
+                        },
+                    )
                     .justify_start(),
                 );
                 panel = panel.child(
