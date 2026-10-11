@@ -15,6 +15,7 @@ mod help;
 mod icons;
 pub use icons::IconAssets;
 mod export_options;
+mod ink_layers;
 mod inline_text;
 mod library_sort;
 mod math_panel;
@@ -2776,6 +2777,11 @@ impl NotesView {
         self.controller.add_page();
         self.controller.change_page(0);
         self.controller.flush()
+    }
+    /// Diagnostics for the isolated ink-layer example; does not open the updater.
+    pub fn smoke_ink_layers(&mut self, enabled: bool) -> (usize, usize) {
+        self.painter.ink_layer_override = Some(enabled);
+        self.painter.ink_layer_counts()
     }
 }
 fn adjust_pen(this: &mut NotesView, kind: i32, sign: f32) {

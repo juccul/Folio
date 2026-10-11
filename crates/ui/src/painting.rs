@@ -24,6 +24,14 @@ struct VisibleFrame {
     visible: Rect,
     objects: Vec<Arc<Object>>,
     ids: HashSet<Id>,
+    preview_ids: HashSet<Id>,
+}
+struct InkPlan {
+    frame: Arc<VisibleFrame>,
+    excluded: HashSet<Id>,
+    theme: CanvasTheme,
+    density: f32,
+    batches: Arc<Vec<(std::ops::Range<usize>, super::ink_layers::InkBatch)>>,
 }
 #[derive(PartialEq)]
 struct PaperKey {
@@ -74,6 +82,10 @@ struct CachedPath {
     object: Arc<Object>,
     path: Path<Pixels>,
 }
+struct CachedInkLayer {
+    batch: super::ink_layers::InkBatch,
+    image: Arc<RenderImage>,
+}
 #[derive(Clone)]
 struct RasterRequest {
     page: Id,
@@ -99,6 +111,13 @@ struct CachedRaster {
 }
 #[derive(Default)]
 pub struct Painter {
+    pub(super) ink_layer_override: Option<bool>,
+    ink_planner: super::ink_layers::Planner,
+    ink_plan: Option<InkPlan>,
+    ink_layers: HashMap<Id, CachedInkLayer>,
+    ink_pending: HashMap<Id, super::ink_layers::InkBatch>,
+    ink_failed: HashMap<Id, super::ink_layers::InkBatch>,
+    ink_desired: HashMap<Id, super::ink_layers::InkBatch>,
     text_layouts: HashMap<Id, CachedText>,
     pages: HashMap<Id, Box<Painter>>,
     index: SpatialIndex,
@@ -230,6 +249,21 @@ fn visible_page_range(
     start..end.max(start)
 }
 impl Painter {
+    pub(super) fn ink_layer_counts(&self) -> (usize, usize) {
+        self.pages
+            .values()
+            .fold((0, 0), |(layers, strokes), painter| {
+                (
+                    layers + painter.ink_layers.len(),
+                    strokes
+                        + painter
+                            .ink_layers
+                            .values()
+                            .map(|layer| layer.batch.objects.len())
+                            .sum::<usize>(),
+                )
+            })
+    }
     fn display_color(&mut self, color: u32, theme: CanvasTheme) -> u32 {
         *self.colors.entry(color).or_insert_with(|| theme.ink(color))
     }
@@ -371,10 +405,18 @@ impl Painter {
         });
         // Retain only visible pages, so scrolling a long document cannot grow
         // native path/image caches without bound.
-        self.pages.retain(|id, _| ids.contains(id));
+        self.pages.retain(|id, painter| {
+            if ids.contains(id) {
+                true
+            } else {
+                painter.clear_ink_layers(window);
+                false
+            }
+        });
         for (index, viewport) in frames {
             let id = controller.session().document.pages[index].id;
             let painter = self.pages.entry(id).or_default();
+            painter.ink_layer_override = self.ink_layer_override;
             painter.paint_page(controller, index, viewport, bounds, editing, window, cx);
         }
     }
@@ -447,10 +489,15 @@ impl Painter {
                 &self.order_positions
             };
             ordered.sort_unstable_by_key(|id| positions.get(id).copied().unwrap_or(usize::MAX));
-            let objects = ordered
+            let objects: Vec<Arc<Object>> = ordered
                 .iter()
                 .filter_map(|id| page.objects.get(id))
                 .cloned()
+                .collect();
+            let preview_ids = objects
+                .iter()
+                .filter(|object| !matches!(object.as_ref(), Object::Stroke(_) | Object::Shape(_)))
+                .map(|object| object.id())
                 .collect();
             let trim_paths = self.paths.len() > 2048;
             self.paths
@@ -463,16 +510,17 @@ impl Painter {
                 visible,
                 objects,
                 ids,
+                preview_ids,
             }));
         }
         let frame = self.frame.as_ref().unwrap().clone();
-        let preview_ids = frame
-            .ids
-            .iter()
-            .copied()
-            .filter(|id| Some(*id) != editing)
-            .collect();
-        controller.request_page_previews(page_index, &preview_ids);
+        if editing.is_some_and(|id| frame.preview_ids.contains(&id)) {
+            let mut preview_ids = frame.preview_ids.clone();
+            preview_ids.remove(&editing.unwrap());
+            controller.request_page_previews(page_index, &preview_ids);
+        } else {
+            controller.request_page_previews(page_index, &frame.preview_ids);
+        }
         let properties = controller.session().document.pages[page_index]
             .properties
             .clone();
@@ -514,9 +562,73 @@ impl Painter {
             } else {
                 &empty
             };
+        // DirectX still uploads/rasterizes every path triangle on each frame.
+        // Cache consecutive settled strokes as display-only images. Selection,
+        // erasing and edits immediately fall back to original vector objects.
+        let mut ink_plan_changed = false;
+        let ink_batches = if self
+            .ink_layer_override
+            .unwrap_or(cfg!(target_os = "windows"))
+        {
+            let mut excluded = selection.union(erasing).copied().collect::<HashSet<_>>();
+            excluded.extend(editing);
+            let density = viewport.zoom * window.scale_factor();
+            if !self.ink_plan.as_ref().is_some_and(|plan| {
+                Arc::ptr_eq(&plan.frame, &frame)
+                    && plan.excluded == excluded
+                    && plan.theme == canvas_theme
+                    && plan.density == density
+            }) {
+                let batches = Arc::new(self.ink_planner.batches(
+                    &frame.objects,
+                    &excluded,
+                    canvas_theme,
+                    density,
+                ));
+                self.ink_plan = Some(InkPlan {
+                    frame: frame.clone(),
+                    excluded,
+                    theme: canvas_theme,
+                    density,
+                    batches,
+                });
+                ink_plan_changed = true;
+            }
+            self.ink_plan.as_ref().unwrap().batches.clone()
+        } else {
+            ink_plan_changed = self.ink_plan.take().is_some();
+            Arc::new(Vec::new())
+        };
+        self.prepare_ink_layers(&ink_batches, ink_plan_changed, page_id, window, cx);
+        let mut batch_iter = ink_batches.iter().peekable();
+        let mut skip_until = 0;
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             self.paper(&properties, visible, world, window, cx, controller);
-            for object in &frame.objects {
+            for (index, object) in frame.objects.iter().enumerate() {
+                if index < skip_until {
+                    continue;
+                }
+                if batch_iter
+                    .peek()
+                    .is_some_and(|(range, _)| range.start == index)
+                {
+                    let (range, batch) = batch_iter.next().unwrap();
+                    if let Some(layer) = self.ink_layers.get(&batch.id())
+                        && window
+                            .paint_image_transformed(
+                                gpui_bounds(batch.bounds),
+                                Default::default(),
+                                layer.image.clone(),
+                                0,
+                                false,
+                                gpu_transform(world),
+                            )
+                            .is_ok()
+                    {
+                        skip_until = range.end;
+                        continue;
+                    }
+                }
                 if editing == Some(object.id()) {
                     continue;
                 }
@@ -865,6 +977,107 @@ impl Painter {
             }
         });
     }
+    fn clear_ink_layers(&mut self, window: &mut Window) {
+        for (_, layer) in self.ink_layers.drain() {
+            let _ = window.drop_image(layer.image);
+        }
+        self.ink_desired.clear();
+        self.ink_plan = None;
+        self.ink_planner = super::ink_layers::Planner::default();
+    }
+    fn prepare_ink_layers(
+        &mut self,
+        batches: &[(std::ops::Range<usize>, super::ink_layers::InkBatch)],
+        changed: bool,
+        page: Id,
+        window: &mut Window,
+        cx: &mut Context<NotesView>,
+    ) {
+        if changed {
+            self.ink_desired.clear();
+            let mut pixels = 0;
+            for (_, batch) in batches {
+                if pixels + batch.pixels <= super::ink_layers::PIXEL_BUDGET {
+                    pixels += batch.pixels;
+                    self.ink_desired.insert(batch.id(), batch.clone());
+                }
+            }
+            self.ink_layers.retain(|id, layer| {
+                if self
+                    .ink_desired
+                    .get(id)
+                    .is_some_and(|batch| batch.matches(&layer.batch))
+                {
+                    true
+                } else {
+                    let _ = window.drop_image(layer.image.clone());
+                    false
+                }
+            });
+            self.ink_failed.retain(|id, failed| {
+                self.ink_desired
+                    .get(id)
+                    .is_some_and(|batch| batch.matches(failed))
+            });
+        }
+        for (_, batch) in batches {
+            let id = batch.id();
+            if self.ink_pending.len() >= 2 {
+                break;
+            }
+            if !self.ink_desired.contains_key(&id)
+                || self.ink_layers.contains_key(&id)
+                || self.ink_pending.contains_key(&id)
+                || self.ink_failed.contains_key(&id)
+            {
+                continue;
+            }
+            self.ink_pending.insert(id, batch.clone());
+            let request = batch.clone();
+            let work = request.clone();
+            let task = cx
+                .background_executor()
+                .spawn(async move { super::ink_layers::raster(&work) });
+            cx.spawn(async move |view, cx| {
+                let image = task.await;
+                let _ = view.update(cx, |view, cx| {
+                    let Some(painter) = view.painter.pages.get_mut(&page) else {
+                        return;
+                    };
+                    if !painter
+                        .ink_pending
+                        .get(&id)
+                        .is_some_and(|batch| batch.matches(&request))
+                    {
+                        return;
+                    }
+                    painter.ink_pending.remove(&id);
+                    if painter
+                        .ink_desired
+                        .get(&id)
+                        .is_some_and(|batch| batch.matches(&request))
+                    {
+                        if let Some(image) = image {
+                            for object in &request.objects {
+                                painter.paths.remove(&object.id());
+                            }
+                            painter.ink_layers.insert(
+                                id,
+                                CachedInkLayer {
+                                    batch: request,
+                                    image,
+                                },
+                            );
+                        } else {
+                            painter.ink_failed.insert(id, request);
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
     fn request_raster(
         &mut self,
         id: Id,
@@ -1130,6 +1343,66 @@ fn gpu_transform(t: Transform) -> gpui::TransformationMatrix {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    #[ignore = "manual device-free scene preparation benchmark; not GPU frame latency"]
+    fn benchmark_dense_saved_ink_scene_preparation() {
+        let theme = Theme::new(&folio_app::Settings::default()).canvas;
+        for count in [256, 1024, 4096] {
+            let objects = (0..count)
+                .map(|i| {
+                    let mut builder =
+                        folio_ink::StrokeBuilder::new(folio_document::PenStyle::default());
+                    for j in 0..48 {
+                        builder.push(folio_document::StrokePoint::new(
+                            DocPoint::new(
+                                (i % 32) as f32 * 20. + j as f32 * 0.25,
+                                (i / 32) as f32 * 10. + (j as f32 * 0.2).sin() * 3.,
+                            ),
+                            0.7,
+                            j * 8,
+                        ));
+                    }
+                    Arc::new(Object::Stroke(builder.finish().unwrap()))
+                })
+                .collect::<Vec<_>>();
+            let paths = objects
+                .iter()
+                .map(|o| {
+                    let Object::Stroke(s) = o.as_ref() else {
+                        unreachable!()
+                    };
+                    ink_path(&folio_ink::outline(s.display_path())).unwrap()
+                })
+                .collect::<Vec<_>>();
+            let batches = super::super::ink_layers::batches(&objects, &HashSet::new(), theme, 1.);
+            let world = Transform::translate(30., 50.);
+            let frames = 100;
+            let start = std::time::Instant::now();
+            for _ in 0..frames {
+                for path in &paths {
+                    std::hint::black_box(path.clone().transformed(coefficients(world)).scale(1.));
+                }
+            }
+            let before = start.elapsed();
+            let start = std::time::Instant::now();
+            for _ in 0..frames {
+                for (_, batch) in &batches {
+                    std::hint::black_box((gpui_bounds(batch.bounds), gpu_transform(world)));
+                }
+            }
+            let after = start.elapsed();
+            println!(
+                "CPU scene geometry only: strokes={count}, cached_layers={}, frames={frames}, vector_ms={:.3}, cached_ms={:.3}",
+                batches.len(),
+                before.as_secs_f64() * 1000.,
+                after.as_secs_f64() * 1000.
+            );
+            assert_eq!(
+                batches.iter().map(|(range, _)| range.len()).sum::<usize>(),
+                count
+            );
+        }
+    }
     #[::core::prelude::v1::test]
     fn translucent_live_path_cache_invalidates_append_pressure_and_identity() {
         let id = Id::new_v4();
