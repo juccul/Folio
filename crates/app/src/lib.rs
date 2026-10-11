@@ -43,6 +43,7 @@ pub use workers::ExportKind;
 use workers::*;
 const INK_HOLD_DELAY: Duration = Duration::from_millis(550);
 const INK_ENDPOINT_SLOP: f32 = 4.;
+const SHAPE_PREVIEW_SLOP: f32 = 16.;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Pen,
@@ -262,13 +263,21 @@ impl Interaction {
             suppress_tap,
             ..
         } = self
-            && p.distance(*anchor) > INK_ENDPOINT_SLOP / zoom
         {
-            *last_move = Instant::now();
-            *anchor = p;
-            *preview = None;
-            *fit_attempted = false;
-            *suppress_tap = false;
+            // Once snapped, tolerate release drift without relaxing the initial
+            // hold detection. Keep the anchor fixed so slow travel can still exit.
+            let slop = if preview.is_some() {
+                SHAPE_PREVIEW_SLOP
+            } else {
+                INK_ENDPOINT_SLOP
+            };
+            if p.distance(*anchor) * zoom > slop {
+                *last_move = Instant::now();
+                *anchor = p;
+                *preview = None;
+                *fit_attempted = false;
+                *suppress_tap = false;
+            }
         }
     }
 }
@@ -3184,12 +3193,18 @@ impl Controller {
             } else if let Some(Interaction::Ink {
                 preview,
                 fit_attempted,
+                anchor,
                 ..
             }) = &mut self.interaction
             {
                 *fit_attempted = true;
                 if self.settings.hold_shapes {
                     *preview = folio_shapes::fit(&points);
+                    if preview.is_some()
+                        && let Some(endpoint) = points.last()
+                    {
+                        *anchor = *endpoint;
+                    }
                     changed |= preview.is_some();
                 }
             }

@@ -16,11 +16,14 @@ fn event(app: &Controller, p: Point, phase: Phase) -> PenEvent {
     }
 }
 fn begin(app: &mut Controller, vertices: &[Point]) {
+    begin_with_device(app, vertices, Device::Tablet);
+}
+fn begin_with_device(app: &mut Controller, vertices: &[Point], device: Device) {
     let mut first = true;
     for pair in vertices.windows(2) {
         for i in 0..=12 {
             let p = pair[0].lerp(pair[1], i as f32 / 12.);
-            app.pointer(event(
+            let mut input = event(
                 app,
                 p,
                 if first {
@@ -29,7 +32,9 @@ fn begin(app: &mut Controller, vertices: &[Point]) {
                 } else {
                     Phase::Move
                 },
-            ));
+            );
+            input.device = device;
+            app.pointer(input);
         }
     }
 }
@@ -91,6 +96,125 @@ fn pen_hold_survives_endpoint_tremor_at_different_zoom_levels() {
         }
     });
 }
+#[test]
+fn recognized_shape_survives_small_moves_and_release_without_refitting() {
+    for device in [Device::Mouse, Device::Tablet] {
+        for zoom in [0.25, 0.5, 1., 4.] {
+            for vertices in [
+                vec![Point::new(60., 60.), Point::new(180., 180.)],
+                vec![
+                    Point::new(100., 100.),
+                    Point::new(200., 100.),
+                    Point::new(200., 180.),
+                    Point::new(100., 180.),
+                    Point::new(100., 100.),
+                ],
+            ] {
+                with_app(|app| {
+                    app.session_mut().viewport.zoom = zoom;
+                    begin_with_device(app, &vertices, device);
+                    hold(app);
+                    // Recognition must latch the actual endpoint, including the
+                    // small movement tolerated while waiting for the hold.
+                    let end = *vertices.last().unwrap();
+                    let anchor = Point::new(end.x + 3. / zoom, end.y);
+                    let mut input = event(app, anchor, Phase::Move);
+                    input.device = device;
+                    app.pointer(input);
+                    app.tick();
+                    let Some(Interaction::Ink {
+                        preview: Some(fitted),
+                        ..
+                    }) = &app.interaction
+                    else {
+                        panic!("Expected recognized shape");
+                    };
+                    let fitted = fitted.clone();
+                    // Repeated motion travels far in total but remains within
+                    // the fixed endpoint tolerance. It must not change geometry.
+                    for delta in [15., -10., 8., -12.].into_iter().cycle().take(64) {
+                        let p = Point::new(anchor.x + delta / zoom, anchor.y);
+                        let mut input = event(app, p, Phase::Move);
+                        input.device = device;
+                        app.pointer(input);
+                        app.tick();
+                        assert!(matches!(
+                            &app.interaction,
+                            Some(Interaction::Ink { preview: Some(fit), .. })
+                                if fit.kind == fitted.kind && fit.vertices == fitted.vertices
+                        ));
+                    }
+                    let p = Point::new(anchor.x, anchor.y + 12. / zoom);
+                    let mut input = event(app, p, Phase::Up);
+                    input.device = device;
+                    app.pointer(input);
+                    assert_eq!(shapes(app).len(), 1);
+                    assert_eq!(shapes(app)[0].kind, fitted.kind);
+                    assert_eq!(shapes(app)[0].vertices, fitted.vertices);
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn recognized_shape_returns_to_ink_on_large_motion_including_pen_up() {
+    for zoom in [0.25, 0.5, 1., 4.] {
+        for phase in [Phase::Move, Phase::Up] {
+            with_app(|app| {
+                app.session_mut().viewport.zoom = zoom;
+                let end = Point::new(180., 180.);
+                begin(app, &[Point::new(60., 60.), end]);
+                hold(app);
+                app.tick();
+                assert!(matches!(
+                    &app.interaction,
+                    Some(Interaction::Ink {
+                        preview: Some(_),
+                        ..
+                    })
+                ));
+                if phase == Phase::Move {
+                    // Slow travel still cancels: do not move the anchor with
+                    // each small input event once recognition has latched.
+                    for delta in 1..=16 {
+                        let p = Point::new(end.x + delta as f32 / zoom, end.y);
+                        app.pointer(event(app, p, Phase::Move));
+                        assert!(matches!(
+                            &app.interaction,
+                            Some(Interaction::Ink {
+                                preview: Some(_),
+                                ..
+                            })
+                        ));
+                    }
+                }
+                let p = Point::new(end.x + 20. / zoom, end.y);
+                app.pointer(event(app, p, phase));
+                if phase == Phase::Move {
+                    assert!(matches!(
+                        &app.interaction,
+                        Some(Interaction::Ink {
+                            preview: None,
+                            fit_attempted: false,
+                            last_move,
+                            ..
+                        }) if last_move.elapsed() < INK_HOLD_DELAY
+                    ));
+                    finish(app, p);
+                }
+                assert!(shapes(app).is_empty());
+                assert!(
+                    app.page()
+                        .objects
+                        .values()
+                        .any(|o| matches!(o.as_ref(), Object::Stroke(_)))
+                );
+            });
+        }
+    }
+}
+
 #[test]
 fn pen_up_checks_a_hold_even_when_preview_tick_was_missed() {
     with_app(|app| {
