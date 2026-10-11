@@ -96,7 +96,37 @@ fn scratch_on_axis(path: &[Point], bounds: Rect, length: f32, axis: Point) -> Op
                 .any(|previous| (*center - previous).abs() <= span * 0.18)
         })
         .count();
-    if passes.len() < 3 || spread > span * 0.45 && (passes.len() < 4 || revisits < 2) {
+    // A scrub can advance across a word without retracing its x positions.
+    // Require substantially more broad reversals than an ordinary W/M, and
+    // keep adjacent passes close enough to sweep a continuous corridor.
+    let advancing_scrub = passes.len() >= 6
+        && projection
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .sum::<f32>()
+            >= length * 0.9
+        && turns[1..turns.len() - 1]
+            .iter()
+            .filter(|&&i| {
+                let center = path[i];
+                let reach = span * 0.06;
+                let before = path[..i].iter().rev().find(|p| p.distance(center) >= reach);
+                let after = path[i + 1..].iter().find(|p| p.distance(center) >= reach);
+                before.zip(after).is_some_and(|(a, b)| {
+                    let incoming = Point::new(center.x - a.x, center.y - a.y);
+                    let outgoing = Point::new(b.x - center.x, b.y - center.y);
+                    incoming.x * outgoing.x + incoming.y * outgoing.y
+                        < -0.5 * a.distance(center) * b.distance(center)
+                })
+            })
+            .count()
+            >= 4
+        && centers
+            .windows(2)
+            .all(|pair| (pair[1] - pair[0]).abs() <= span * 0.65);
+    if passes.len() < 3
+        || spread > span * 0.45 && !advancing_scrub && (passes.len() < 4 || revisits < 2)
+    {
         return None;
     }
     Some(Scratch {

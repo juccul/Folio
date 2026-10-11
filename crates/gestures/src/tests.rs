@@ -82,7 +82,10 @@ fn handwriting_hooks_strikes_and_tremor_are_not_scratch() {
         oval(1., 40., 20.),
         zigzag(2, 24, 0.),
     ] {
-        assert!(scratch(&samples(&path)).is_none());
+        assert!(
+            scratch(&samples(&path)).is_none(),
+            "unexpected scratch: {path:?}"
+        );
     }
 }
 
@@ -118,6 +121,46 @@ fn short_vertical_scrubs_across_a_wide_word_use_travel_direction() {
             let neighbor = [Point::new(0., 65.), Point::new(80., 65.)].map(|p| transform.apply(p));
             assert!(!gesture.erases(&stroke(&neighbor)));
             // One advancing W has no return passes through the same corridors.
+            assert!(
+                scratch(&samples(
+                    &path[..5]
+                        .iter()
+                        .map(|&p| transform.apply(p))
+                        .collect::<Vec<_>>()
+                ))
+                .is_none()
+            );
+        }
+    }
+}
+
+#[test]
+fn advancing_vertical_scrubs_cross_a_word_without_returning_horizontally() {
+    let path = (0..=10)
+        .map(|i| Point::new(i as f32 * 12., if i % 2 == 0 { 0. } else { 30. }))
+        .collect::<Vec<_>>();
+    for angle in [0., PI * 0.25, PI * 0.5, PI * 0.75] {
+        for subdivisions in [1, 8, 30] {
+            let transform = Transform::around(Point::new(60., 15.), 1., angle);
+            let points = path
+                .windows(2)
+                .flat_map(|pair| {
+                    (0..subdivisions).map(move |i| {
+                        transform.apply(pair[0].lerp(pair[1], i as f32 / subdivisions as f32))
+                    })
+                })
+                .chain(std::iter::once(transform.apply(*path.last().unwrap())))
+                .collect::<Vec<_>>();
+            let mut points = samples(&points);
+            for (i, p) in points.iter_mut().enumerate() {
+                p.timestamp = i as u64 * 3;
+            }
+            let gesture = scratch(&points)
+                .unwrap_or_else(|| panic!("angle={angle} subdivisions={subdivisions}"));
+            let target = [Point::new(0., 15.), Point::new(120., 15.)].map(|p| transform.apply(p));
+            assert!(gesture.erases(&stroke(&target)));
+            let neighbor = [Point::new(0., 50.), Point::new(120., 50.)].map(|p| transform.apply(p));
+            assert!(!gesture.erases(&stroke(&neighbor)));
             assert!(
                 scratch(&samples(
                     &path[..5]

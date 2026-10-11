@@ -635,3 +635,26 @@ fn vertical_scrubbing_across_a_word_erases_as_one_undoable_operation() {
         assert_eq!(app.page().objects.len(), 1);
     });
 }
+
+#[test]
+fn advancing_up_down_scrub_deletes_existing_ink_and_is_undoable() {
+    with_app(|app| {
+        app.settings.scratch_erase = true;
+        draw(app, &[Point::new(100., 110.), Point::new(220., 110.)], 0);
+        let original = app.page().objects.clone();
+        draw(app, &[Point::new(100., 160.), Point::new(220., 160.)], 0);
+        let neighbor = *app.page().order.last().unwrap();
+        let scrub = (0..=10)
+            .map(|i| Point::new(100. + i as f32 * 12., if i % 2 == 0 { 95. } else { 125. }))
+            .collect::<Vec<_>>();
+        draw(app, &scrub, 1000);
+        assert_eq!(app.page().objects.len(), 1);
+        assert!(app.page().objects.contains_key(&neighbor));
+        app.undo();
+        for (id, object) in original {
+            assert_eq!(app.page().objects[&id], object);
+        }
+        app.redo();
+        assert_eq!(app.page().objects.len(), 1);
+    });
+}
