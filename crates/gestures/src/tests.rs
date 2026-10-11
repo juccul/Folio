@@ -251,6 +251,74 @@ fn screenshot_shaped_scrubs_with_unequal_amplitudes_and_tails_are_candidates() {
 }
 
 #[test]
+fn raster_traces_of_reported_large_and_unequal_scrubs_trigger_on_visible_ink() {
+    for (name, csv, multiline) in [
+        (
+            "large rounded scrub",
+            include_str!("../tests/fixtures/large-rounded-scrub.csv"),
+            true,
+        ),
+        (
+            "unequal rounded scrub",
+            include_str!("../tests/fixtures/unequal-rounded-scrub.csv"),
+            false,
+        ),
+    ] {
+        // White/blue centerlines extracted from the actual screenshots and
+        // simplified with <=0.8 px error. Junctions split visible ink chains;
+        // screenshots cannot recover original pen lifts, timestamps or occluded
+        // ink. This validates triggering, not full original-letter ownership.
+        let mut traces = std::collections::BTreeMap::<u32, Vec<Point>>::new();
+        for row in csv.lines().skip(1) {
+            let values = row.split(',').collect::<Vec<_>>();
+            traces
+                .entry(values[0].parse().unwrap())
+                .or_default()
+                .push(Point::new(
+                    values[1].parse().unwrap(),
+                    values[2].parse().unwrap(),
+                ));
+        }
+        let gesture = scratch(&samples(&traces.remove(&0).unwrap())).expect(name);
+        let ink = traces
+            .into_values()
+            .map(|points| {
+                let mut object = stroke(&points);
+                if let Object::Stroke(s) = &mut object {
+                    s.path = points
+                        .into_iter()
+                        .map(|position| PathPoint {
+                            position,
+                            radius: 1.5,
+                        })
+                        .collect::<Vec<_>>()
+                        .into();
+                }
+                object
+            })
+            .collect::<Vec<_>>();
+        let targets = gesture.targets(&ink.iter().collect::<Vec<_>>());
+        assert!(!targets.is_empty(), "{name} did not trigger");
+        if multiline {
+            for (min, max) in [(80., 150.), (170., 240.), (250., 340.)] {
+                assert!(
+                    ink.iter().any(|o| targets.contains(&o.id())
+                        && (min..max).contains(&o.bounds().center().y)),
+                    "{name} missed the line at {min}..{max}"
+                );
+            }
+        } else {
+            assert!(
+                ink.iter()
+                    .filter(|o| o.bounds().min.y >= 235.)
+                    .all(|o| !targets.contains(&o.id())),
+                "{name} reached the untouched bottom line"
+            );
+        }
+    }
+}
+
+#[test]
 fn four_pass_scratch_is_rotation_and_report_rate_independent() {
     for angle in [0., PI * 0.25, PI * 0.5, PI * 0.75] {
         for subdivisions in [1, 4, 24, 80] {

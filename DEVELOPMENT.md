@@ -29,6 +29,10 @@ Deletion uses actual transformed ink against the gesture path and small convex r
 
 Regressions include synthetic approximations of the three reported scribbles, rounded/unequal passes, fragments inside swept gaps, footprint corners and neighboring lines/words, long/slow gestures, sparse/dense reports, mouse/tablet events at multiple zooms, rotated detached marks and undo/redo/reload. These are geometry/controller checks, not physical pen recordings. A repetitive wave deliberately drawn across existing writing remains inherently ambiguous with a scrub; the overlap gate protects empty-space writing and incidental contacts, not every possible handwriting intention.
 
+Two additional fixtures trace the white gesture and visible blue ink directly from reported screenshots: large rounded scrubbing across multiple lines and unequal rounded scrubbing across a single line. Raster centerlines are simplified within 0.8 pixels and visible ink is split at junctions. These verify triggering against screenshot geometry; a screenshot cannot recover pen lifts, timestamps or occluded ink, so they do not establish complete original-letter deletion.
+
+For local testing, close Folio normally and run `cargo run --locked -p folio`, or `cargo run --locked --release -p folio` for the optimized profile. Each command builds and runs its corresponding executable. `target/debug/folio` and `target/release/folio` are separate builds; rebuilding one does not update the other or replace code already running in an open window.
+
 ## Compact editor toolbar
 
 The editor uses one 44 px row below the unchanged 40 px document tabs at 1× UI scale. Page thumbnails/search and document actions/settings sit in separate 36 px outlined groups; editing tools use the base background with individual selection highlights. Rename remains available in Document actions. Below 1100 logical pixels, stroke width and color controls are available through Pen settings; eraser modes and sizes use the same popover. The tool area can scroll horizontally at larger UI scales without expanding the header. Read-only documents keep page navigation and document actions without editing controls.
