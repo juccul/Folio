@@ -43,6 +43,213 @@ fn stroke(points: &[Point]) -> Object {
     Object::Stroke(builder.finish().unwrap())
 }
 
+// Rounded, unequal passes like a hand-drawn scrub, rather than ideal sawteeth.
+fn rounded_scrub() -> Vec<Point> {
+    let corners = [
+        Point::new(0., 28.),
+        Point::new(26., 0.),
+        Point::new(34., 44.),
+        Point::new(72., 8.),
+        Point::new(86., 40.),
+        Point::new(116., 2.),
+        Point::new(136., 48.),
+        Point::new(172., 12.),
+        Point::new(193., 42.),
+        Point::new(231., 0.),
+        Point::new(252., 46.),
+        Point::new(284., 9.),
+        Point::new(300., 38.),
+    ];
+    let mut path = vec![corners[0]];
+    for triple in corners.windows(3) {
+        let a = triple[1].lerp(triple[0], 0.3);
+        let b = triple[1].lerp(triple[2], 0.3);
+        path.push(a);
+        for i in 1..=8 {
+            let t = i as f32 / 8.;
+            path.push(a.lerp(triple[1], t).lerp(triple[1].lerp(b, t), t));
+        }
+    }
+    path.push(*corners.last().unwrap());
+    path
+}
+
+#[test]
+fn rounded_unequal_scrubbing_is_not_required_to_make_sharp_turns() {
+    for angle in [0., PI * 0.25, PI * 0.5, PI * 0.75] {
+        let transform = Transform::around(Point::new(150., 24.), 1., angle);
+        let path = rounded_scrub()
+            .into_iter()
+            .map(|p| transform.apply(p))
+            .collect::<Vec<_>>();
+        assert!(scratch(&samples(&path)).is_some(), "angle={angle}");
+    }
+}
+
+#[test]
+fn long_slow_scrubs_and_dense_reports_have_the_same_targets() {
+    let path = rounded_scrub();
+    let underlying = stroke(&[Point::new(0., 24.), Point::new(300., 24.)]);
+    for subdivisions in [1, 4, 16] {
+        let dense = path
+            .windows(2)
+            .flat_map(|pair| {
+                (0..subdivisions)
+                    .map(move |i| pair[0].lerp(pair[1], i as f32 / subdivisions as f32))
+            })
+            .chain(std::iter::once(*path.last().unwrap()))
+            .collect::<Vec<_>>();
+        for duration in [800, 4000, 15000] {
+            let mut points = samples(&dense);
+            let count = points.len();
+            for (i, sample) in points.iter_mut().enumerate() {
+                sample.timestamp = duration * i as u64 / (count - 1) as u64;
+            }
+            let gesture = scratch(&points).unwrap();
+            assert_eq!(gesture.targets(&[&underlying]), vec![underlying.id()]);
+        }
+    }
+}
+
+#[test]
+fn long_scrub_preserves_coverage_near_every_peak() {
+    let path = (0..=80)
+        .map(|i| Point::new(i as f32 * 18., if i % 2 == 0 { 0. } else { 45. }))
+        .collect::<Vec<_>>();
+    let gesture = scratch(&samples(&path)).unwrap();
+    for i in (1..80).step_by(2) {
+        let fragment = stroke(&[
+            Point::new(i as f32 * 18., 39.),
+            Point::new(i as f32 * 18., 40.),
+        ]);
+        assert!(gesture.erases(&fragment), "missed peak {i}");
+    }
+}
+
+#[test]
+fn flat_exit_tails_cross_ink_without_filling_a_large_empty_wedge() {
+    let mut path = (0..=10)
+        .map(|i| Point::new(i as f32 * 18., if i % 2 == 0 { 0. } else { 45. }))
+        .collect::<Vec<_>>();
+    path.push(Point::new(400., 0.));
+    let gesture = scratch(&samples(&path)).unwrap();
+    assert!(!gesture.erases(&stroke(&[Point::new(250., 12.), Point::new(254., 12.)])));
+    assert!(gesture.erases(&stroke(&[Point::new(250., 0.), Point::new(254., 0.)])));
+    assert!(gesture.erases(&stroke(&[Point::new(162., 9.), Point::new(162., 14.)])));
+}
+
+#[test]
+fn swept_area_includes_ink_between_legs_but_not_the_entire_bounding_box() {
+    let path = (0..=10)
+        .map(|i| Point::new(i as f32 * 18., if i % 2 == 0 { 0. } else { 45. }))
+        .collect::<Vec<_>>();
+    let gesture = scratch(&samples(&path)).unwrap();
+    // Entirely inside the first pair of passes, touching neither white leg.
+    assert!(gesture.erases(&stroke(&[Point::new(18., 10.), Point::new(18., 14.)])));
+    // Inside the global box, but outside the locally swept triangle at the end.
+    assert!(!gesture.erases(&stroke(&[Point::new(1., 38.), Point::new(1., 42.)])));
+    assert!(!gesture.erases(&stroke(&[Point::new(80., 65.), Point::new(90., 65.)])));
+}
+
+#[test]
+fn screenshot_shaped_scrubs_with_unequal_amplitudes_and_tails_are_candidates() {
+    // Approximate the white gesture geometry in the reported screenshots.
+    // These are synthetic fixtures, not captured pointer recordings.
+    for coordinates in [
+        vec![
+            (62., 78.),
+            (98., 42.),
+            (77., 89.),
+            (137., 40.),
+            (133., 79.),
+            (170., 60.),
+            (178., 100.),
+            (215., 57.),
+            (228., 94.),
+            (268., 55.),
+            (260., 88.),
+            (286., 65.),
+            (309., 92.),
+            (348., 61.),
+            (367., 44.),
+            (381., 92.),
+        ],
+        vec![
+            (50., 76.),
+            (102., 47.),
+            (117., 75.),
+            (157., 42.),
+            (180., 78.),
+            (208., 48.),
+            (230., 82.),
+            (278., 51.),
+            (300., 85.),
+            (338., 57.),
+            (365., 82.),
+            (414., 53.),
+            (439., 86.),
+            (492., 50.),
+            (517., 82.),
+            (587., 23.),
+            (590., 75.),
+            (638., 44.),
+            (653., 83.),
+            (723., 43.),
+            (717., 80.),
+            (825., 61.),
+        ],
+        vec![
+            (58., 82.),
+            (82., 51.),
+            (76., 83.),
+            (107., 50.),
+            (99., 80.),
+            (133., 63.),
+            (151., 77.),
+            (203., 38.),
+            (180., 88.),
+            (236., 31.),
+            (209., 84.),
+            (267., 34.),
+            (246., 89.),
+            (300., 39.),
+            (296., 91.),
+            (341., 54.),
+            (363., 79.),
+            (404., 40.),
+            (385., 87.),
+            (438., 48.),
+            (416., 81.),
+            (473., 47.),
+            (447., 93.),
+            (508., 66.),
+            (533., 81.),
+            (590., 37.),
+            (563., 87.),
+            (617., 49.),
+            (641., 74.),
+            (676., 46.),
+            (657., 81.),
+            (710., 44.),
+            (711., 85.),
+            (752., 58.),
+            (740., 96.),
+            (783., 68.),
+        ],
+    ] {
+        let path = coordinates
+            .into_iter()
+            .map(|(x, y)| Point::new(x, y))
+            .collect::<Vec<_>>();
+        let gesture = scratch(&samples(&path)).expect("screenshot-shaped scrub");
+        let underlying = stroke(&[
+            Point::new(path[0].x, 70.),
+            Point::new(path.last().unwrap().x, 70.),
+        ]);
+        assert_eq!(gesture.targets(&[&underlying]), vec![underlying.id()]);
+    }
+}
+
 #[test]
 fn four_pass_scratch_is_rotation_and_report_rate_independent() {
     for angle in [0., PI * 0.25, PI * 0.5, PI * 0.75] {
@@ -75,18 +282,39 @@ fn handwriting_hooks_strikes_and_tremor_are_not_scratch() {
         Point::new(18., 30.),
         Point::new(24., 0.),
     ];
-    for path in [
-        line,
-        jitter,
-        w.to_vec(),
-        oval(1., 40., 20.),
-        zigzag(2, 24, 0.),
-    ] {
+    // A long wave and a rounded scrub have indistinguishable geometry. The
+    // destructive decision now requires repeated crossings of existing ink.
+    let wave = scratch(&samples(&line)).unwrap();
+    assert!(wave.targets(&[]).is_empty());
+    let incidental = stroke(&[Point::new(-5., -20.), Point::new(2., 20.)]);
+    assert!(wave.targets(&[&incidental]).is_empty());
+    for path in [jitter, w.to_vec(), oval(1., 40., 20.), zigzag(2, 24, 0.)] {
         assert!(
             scratch(&samples(&path)).is_none(),
             "unexpected scratch: {path:?}"
         );
     }
+}
+
+#[test]
+fn erase_targets_require_existing_ink_across_passes_and_include_swept_fragments() {
+    let path = (0..=10)
+        .map(|i| Point::new(i as f32 * 18., if i % 2 == 0 { 0. } else { 45. }))
+        .collect::<Vec<_>>();
+    let gesture = scratch(&samples(&path)).unwrap();
+    let body = stroke(&[Point::new(0., 25.), Point::new(180., 25.)]);
+    let fragment = stroke(&[Point::new(18., 10.), Point::new(18., 14.)]);
+    let corner = stroke(&[Point::new(1., 38.), Point::new(1., 42.)]);
+    assert!(gesture.targets(&[&fragment]).is_empty());
+    let targets = gesture.targets(&[&body, &fragment, &corner]);
+    assert!(targets.contains(&body.id()));
+    assert!(targets.contains(&fragment.id()));
+    assert!(!targets.contains(&corner.id()));
+    let mut highlighter = body.clone();
+    if let Object::Stroke(s) = &mut highlighter {
+        s.style.tool = InkTool::Highlighter;
+    }
+    assert!(gesture.targets(&[&highlighter, &fragment]).is_empty());
 }
 
 #[test]
@@ -300,11 +528,11 @@ fn three_pass_uneven_and_circular_scribbles_trigger() {
 #[test]
 fn detached_marks_attach_to_the_crossed_letter_without_spreading_to_neighbors() {
     let gesture = scratch(&samples(&zigzag(3, 12, 0.))).unwrap();
-    let body = Rect::new(40., -5., 3., 30.);
+    let body = stroke(&[Point::new(40., -5.), Point::new(40., 25.)]);
     let dot = stroke(&[Point::new(41., -12.), Point::new(41., -11.)]);
-    assert!(gesture.completes_letter(&dot, &[body]));
+    assert!(gesture.completes_letter(&dot, &[&body]));
     let neighboring_dot = stroke(&[Point::new(57., -12.), Point::new(57., -11.)]);
-    assert!(!gesture.completes_letter(&neighboring_dot, &[body]));
+    assert!(!gesture.completes_letter(&neighboring_dot, &[&body]));
     let another_letter = stroke(&[Point::new(43., -5.), Point::new(45., 25.)]);
-    assert!(!gesture.completes_letter(&another_letter, &[body]));
+    assert!(!gesture.completes_letter(&another_letter, &[&body]));
 }

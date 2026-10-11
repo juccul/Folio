@@ -1630,29 +1630,28 @@ impl Controller {
                         && self.settings.scratch_erase
                         && let Some(gesture) = folio_gestures::scratch(&stroke.raw)
                     {
-                        let mut ids = self
-                            .session()
-                            .index
-                            .query(gesture.bounds.expand(3.))
-                            .into_iter()
-                            .filter(|id| {
-                                self.page()
-                                    .objects
-                                    .get(id)
-                                    .is_some_and(|o| gesture.erases(o))
+                        let candidates = self.session().index.query(gesture.bounds.expand(3.));
+                        let objects = candidates
+                            .iter()
+                            .filter_map(|id| {
+                                self.page().objects.get(id).map(|object| object.as_ref())
                             })
+                            .collect::<Vec<_>>();
+                        let mut ids = gesture
+                            .targets(&objects)
+                            .into_iter()
                             .collect::<HashSet<_>>();
                         let crossed = ids
                             .iter()
                             .filter_map(|id| self.page().objects.get(id))
                             .filter(|o| matches!(o.as_ref(), Object::Stroke(s) if s.style.tool != InkTool::Highlighter))
-                            .map(|o| o.bounds())
+                            .map(|o| o.as_ref())
                             .collect::<Vec<_>>();
                         for body in &crossed {
                             for id in self
                                 .session()
                                 .index
-                                .query(body.expand(body.height() * 0.45))
+                                .query(gesture.letter_search_bounds(body))
                             {
                                 if self.page().objects.get(&id).is_some_and(|o| {
                                     gesture.completes_letter(o, std::slice::from_ref(body))

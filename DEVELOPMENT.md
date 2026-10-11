@@ -1,6 +1,6 @@
 # Development status — Folio 0.1.1
 
-Updated 2026-10-10. Folio is a runnable Rust/GPUI Linux and Windows desktop application. Production certification still requires physical tablets and additional desktop/distribution sessions; synthetic events and CPU benchmarks do not establish hardware-to-display latency.
+Updated 2026-10-11. Folio is a runnable Rust/GPUI Linux and Windows desktop application. Production certification still requires physical tablets and additional desktop/distribution sessions; synthetic events and CPU benchmarks do not establish hardware-to-display latency.
 
 Version 0.1.1 includes compact writing tools, focused pen settings, user-defined presets, exact color picker rendering, theme-aware default ink, optional hue-preserving readability, folder menus and drag-and-drop, refined tabs and corrected cached update offers. Windows setup/portable and signed Flatpak packages share the same release source. See `WINDOWS.md` for Windows Ink support and validation limits. Historical sections below retain their original internal development build numbers.
 
@@ -20,6 +20,14 @@ covered. To use the same limit locally, run
 `-TestThreads` preserves Cargo's default parallelism for local Windows builds.
 Updater, packaging, math protocol and Rust checks have separate CI steps so the
 failing check is visible directly in the run summary.
+
+## Scratch erase — current source
+
+Recognition separates a geometric scrub candidate from the decision to erase. Compact retracing accepts three broad passes with an ink hit; advancing up/down scrubs accept six broad legs and require three legs to cross existing non-highlighter ink. Rounded corners, unequal amplitudes, diagonal travel and slow gestures are supported. Both footprint/travel axes and their perpendiculars are inspected. Bounded arc-length resampling preserves the peaks of long gestures without depending on device report rate.
+
+Deletion uses actual transformed ink against the gesture path and small convex regions between adjacent passes. It fills the gaps between zigzag legs without erasing the whole bounding box. Short legs and exit tails retain their direct crossing coverage. Disconnected dots/crossbars are compared in the word's orientation and attached nonrecursively; rotated long word boxes cannot turn adjacent letters into apparent tiny marks. Typed content, images and standalone equations remain excluded. Held encircle selection takes priority, opt-in defaults stay unchanged, and erase/undo/redo is one operation.
+
+Regressions include synthetic approximations of the three reported scribbles, rounded/unequal passes, fragments inside swept gaps, footprint corners and neighboring lines/words, long/slow gestures, sparse/dense reports, mouse/tablet events at multiple zooms, rotated detached marks and undo/redo/reload. These are geometry/controller checks, not physical pen recordings. A repetitive wave deliberately drawn across existing writing remains inherently ambiguous with a scrub; the overlap gate protects empty-space writing and incidental contacts, not every possible handwriting intention.
 
 ## Compact editor toolbar
 

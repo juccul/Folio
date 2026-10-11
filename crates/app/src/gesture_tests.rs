@@ -658,3 +658,162 @@ fn advancing_up_down_scrub_deletes_existing_ink_and_is_undoable() {
         assert_eq!(app.page().objects.len(), 1);
     });
 }
+
+#[test]
+fn rounded_scrub_erases_the_swept_word_and_fragments_across_devices_and_zoom() {
+    for device in [Device::Mouse, Device::Tablet] {
+        for zoom in [0.5, 1., 3.] {
+            for angle in [0., TAU / 8., TAU / 4.] {
+                with_app(|app| {
+                    app.session_mut().viewport.zoom = zoom;
+                    let transform = Transform::around(Point::new(240., 160.), 1., angle);
+                    let place = |p: Point| transform.apply(Point::new(100. + p.x, 120. + p.y));
+                    let corners = (0..=12)
+                        .map(|i| Point::new(i as f32 * 24., if i % 2 == 0 { 0. } else { 48. }))
+                        .collect::<Vec<_>>();
+                    // Real glyph geometry: a cursive body, a disconnected short
+                    // letter tucked between legs, and its separate dot.
+                    draw(
+                        app,
+                        &[place(Point::new(0., 25.)), place(Point::new(288., 25.))],
+                        0,
+                    );
+                    draw(
+                        app,
+                        &[place(Point::new(24., 9.)), place(Point::new(24., 15.))],
+                        0,
+                    );
+                    draw(
+                        app,
+                        &[place(Point::new(24., 3.)), place(Point::new(24., 4.))],
+                        0,
+                    );
+                    let letters = app.page().objects.clone();
+                    // Nearby words and lines, plus typed content inside the area.
+                    for (a, b) in [
+                        (Point::new(0., 85.), Point::new(288., 85.)),
+                        (Point::new(320., 0.), Point::new(320., 48.)),
+                        (Point::new(0., -40.), Point::new(288., -40.)),
+                    ] {
+                        draw(app, &[place(a), place(b)], 0);
+                    }
+                    app.add_text("Keep typed content".into(), place(Point::new(10., 20.)));
+                    let protected = app
+                        .page()
+                        .objects
+                        .iter()
+                        .filter(|(id, _)| !letters.contains_key(id))
+                        .map(|(&id, object)| (id, object.clone()))
+                        .collect::<std::collections::BTreeMap<_, _>>();
+                    let original = app.page().objects.clone();
+                    app.settings.scratch_erase = true;
+                    let mut scrub = vec![corners[0]];
+                    for triple in corners.windows(3) {
+                        let a = triple[1].lerp(triple[0], 0.25);
+                        let b = triple[1].lerp(triple[2], 0.25);
+                        scrub.push(a);
+                        for i in 1..=6 {
+                            let t = i as f32 / 6.;
+                            scrub.push(a.lerp(triple[1], t).lerp(triple[1].lerp(b, t), t));
+                        }
+                    }
+                    scrub.push(*corners.last().unwrap());
+                    for (i, &p) in scrub.iter().enumerate() {
+                        let phase = if i == 0 {
+                            Phase::Down
+                        } else if i + 1 == scrub.len() {
+                            Phase::Up
+                        } else {
+                            Phase::Move
+                        };
+                        let mut event = frame(app, place(p), phase, 1000 + i as u64 * 90);
+                        event.device = device;
+                        app.pointer(event);
+                    }
+                    let remaining_letters = letters
+                        .keys()
+                        .filter(|id| app.page().objects.contains_key(id))
+                        .map(|id| letters[id].bounds())
+                        .collect::<Vec<_>>();
+                    let lost_neighbors = protected
+                        .keys()
+                        .filter(|id| !app.page().objects.contains_key(id))
+                        .map(|id| protected[id].bounds())
+                        .collect::<Vec<_>>();
+                    assert!(
+                        remaining_letters.is_empty() && lost_neighbors.is_empty(),
+                        "device={device:?} zoom={zoom} angle={angle}: remaining={remaining_letters:?}, lost={lost_neighbors:?}"
+                    );
+                    assert!(app.page().objects == protected);
+                    app.undo();
+                    assert_eq!(app.page().objects, original);
+                    app.redo();
+                    assert_eq!(app.page().objects, protected);
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn advancing_writing_with_only_an_incidental_overlap_remains_ink() {
+    with_app(|app| {
+        draw(app, &[Point::new(90., 100.), Point::new(102., 140.)], 0);
+        let original = app.page().objects.clone();
+        app.settings.scratch_erase = true;
+        let wave = (0..=160)
+            .map(|i| Point::new(100. + i as f32, 120. + (i as f32 * 0.25).sin() * 20.))
+            .collect::<Vec<_>>();
+        draw(app, &wave, 1000);
+        assert_eq!(app.page().objects.len(), 2);
+        for (id, object) in original {
+            assert_eq!(app.page().objects[&id], object);
+        }
+        app.undo();
+        assert_eq!(app.page().objects.len(), 1);
+    });
+}
+
+#[test]
+fn detached_letter_marks_are_found_for_sideways_and_diagonal_words() {
+    for angle in [TAU / 8., TAU / 4., -TAU / 8.] {
+        with_app(|app| {
+            let transform = Transform::around(Point::new(140., 110.), 1., angle);
+            for (a, b) in [
+                (Point::new(105., 90.), Point::new(105., 125.)),
+                (Point::new(105., 80.), Point::new(105., 81.)),
+                (Point::new(140., 90.), Point::new(140., 125.)),
+                (Point::new(132., 98.), Point::new(150., 98.)),
+            ] {
+                draw(app, &[transform.apply(a), transform.apply(b)], 0);
+            }
+            let letters = app.page().objects.clone();
+            draw(
+                app,
+                &[
+                    transform.apply(Point::new(195., 90.)),
+                    transform.apply(Point::new(195., 125.)),
+                ],
+                0,
+            );
+            let neighbor = app.page().ordered_objects().last().unwrap().clone();
+            app.settings.scratch_erase = true;
+            let scrub = [
+                Point::new(80., 98.),
+                Point::new(160., 102.),
+                Point::new(95., 108.),
+                Point::new(145., 114.),
+            ]
+            .map(|p| transform.apply(p));
+            draw(app, &scrub, 1000);
+            assert_eq!(app.page().objects.len(), 1, "angle={angle}");
+            assert_eq!(app.page().objects[&neighbor.id()], neighbor);
+            app.undo();
+            for (id, object) in letters {
+                assert_eq!(app.page().objects[&id], object);
+            }
+            app.redo();
+            assert_eq!(app.page().objects.len(), 1);
+        });
+    }
+}
