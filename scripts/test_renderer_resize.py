@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test the production GPUI resize policy without GPUI's upstream dev dependencies."""
+"""Test GPUI resize and upload lifetimes without upstream dev dependencies."""
 import json
 import os
 from pathlib import Path
@@ -11,13 +11,16 @@ def main():
     root = Path(__file__).resolve().parents[1]
     policy = root / 'vendor/gpui/src/platform/blade/resize.rs'
     acknowledgement = root / 'vendor/gpui/src/platform/linux/x11/resize_ack.rs'
+    uploads = root / 'vendor/gpui/src/platform/blade/upload_pool.rs'
     with tempfile.TemporaryDirectory(prefix='folio-renderer-resize-') as temporary:
         directory = Path(temporary)
         wrapper = directory / 'resize_tests.rs'
         wrapper.write_text(
             '#[path = ' + json.dumps(str(policy), ensure_ascii=False) + ']\nmod resize;\n'
             '#[path = ' + json.dumps(str(acknowledgement), ensure_ascii=False)
-            + ']\nmod resize_ack;\n',
+            + ']\nmod resize_ack;\n'
+            '#[path = ' + json.dumps(str(uploads), ensure_ascii=False)
+            + ']\nmod upload_pool;\n',
             encoding='utf-8',
         )
         executable = directory / ('resize_tests.exe' if os.name == 'nt' else 'resize_tests')

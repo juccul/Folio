@@ -562,14 +562,11 @@ impl Painter {
             } else {
                 &empty
             };
-        // DirectX still uploads/rasterizes every path triangle on each frame.
+        // Native backends upload/rasterize every path triangle on each frame.
         // Cache consecutive settled strokes as display-only images. Selection,
         // erasing and edits immediately fall back to original vector objects.
         let mut ink_plan_changed = false;
-        let ink_batches = if self
-            .ink_layer_override
-            .unwrap_or(cfg!(target_os = "windows"))
-        {
+        let ink_batches = if self.ink_layer_override.unwrap_or(true) {
             let mut excluded = selection.union(erasing).copied().collect::<HashSet<_>>();
             excluded.extend(editing);
             let density = viewport.zoom * window.scale_factor();

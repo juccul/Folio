@@ -2779,8 +2779,8 @@ impl NotesView {
         self.controller.flush()
     }
     /// Diagnostics for the isolated ink-layer example; does not open the updater.
-    pub fn smoke_ink_layers(&mut self, enabled: bool) -> (usize, usize) {
-        self.painter.ink_layer_override = Some(enabled);
+    pub fn smoke_ink_layers(&mut self, enabled: Option<bool>) -> (usize, usize) {
+        self.painter.ink_layer_override = enabled;
         self.painter.ink_layer_counts()
     }
 }

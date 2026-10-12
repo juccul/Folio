@@ -1,10 +1,10 @@
+use super::buffer_belt::{BufferBelt, BufferBeltDescriptor};
 use crate::{
     AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, DevicePixels, PlatformAtlas,
     Point, Size, platform::AtlasTextureList,
 };
 use anyhow::Result;
 use blade_graphics as gpu;
-use blade_util::{BufferBelt, BufferBeltDescriptor};
 use collections::FxHashMap;
 use etagere::BucketedAtlasAllocator;
 use parking_lot::Mutex;
@@ -68,7 +68,8 @@ impl BladeAtlas {
 
     pub fn after_frame(&self, sync_point: &gpu::SyncPoint) {
         let mut lock = self.0.lock();
-        lock.upload_belt.flush(sync_point);
+        let gpu = Arc::clone(&lock.gpu);
+        lock.upload_belt.flush(sync_point, &gpu);
     }
 
     pub fn get_texture_info(&self, id: AtlasTextureId) -> BladeTextureInfo {

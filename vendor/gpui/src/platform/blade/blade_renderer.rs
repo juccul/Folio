@@ -1,6 +1,7 @@
 // Doing `if let` gives you nice scoping with passes/encoders
 #![allow(irrefutable_let_patterns)]
 
+use super::buffer_belt::{BufferBelt, BufferBeltDescriptor};
 use super::resize::path_target_extent;
 use super::{BladeAtlas, BladeContext};
 use crate::{
@@ -8,7 +9,6 @@ use crate::{
     PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, Underline,
 };
 use blade_graphics as gpu;
-use blade_util::{BufferBelt, BufferBeltDescriptor};
 use bytemuck::{Pod, Zeroable};
 #[cfg(target_os = "macos")]
 use media::core_video::CVMetalTextureCache;
@@ -952,7 +952,7 @@ impl BladeRenderer {
         let sync_point = self.gpu.submit(&mut self.command_encoder);
 
         profiling::scope!("finish");
-        self.instance_belt.flush(&sync_point);
+        self.instance_belt.flush(&sync_point, &self.gpu);
         self.atlas.after_frame(&sync_point);
 
         self.wait_for_gpu();
