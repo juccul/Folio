@@ -6,7 +6,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_GUIDES = {
     "AGENTS.md", "README.md", "WINDOWS.md", "UPDATES.md", "LICENSES.md",
-    "DEVELOPMENT.md", "RELEASE_NOTES.md", "MATH_SOLVER_DESIGN.md", "OCR_FIRST_USE.md",
+    "DEVELOPMENT.md", "RELEASE_NOTES.md",
 }
 
 

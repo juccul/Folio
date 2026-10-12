@@ -16,7 +16,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_DOCUMENTS = (
     'README.md', 'WINDOWS.md', 'UPDATES.md', 'DEVELOPMENT.md',
-    'RELEASE_NOTES.md', 'MATH_SOLVER_DESIGN.md', 'OCR_FIRST_USE.md', 'LICENSES.md',
+    'RELEASE_NOTES.md', 'LICENSES.md',
 )
 
 def add(archive, path, name):

@@ -26,7 +26,7 @@ flatpak run io.github.folio.Notes
 
 Updates appear beside the window controls. Click **Update**, then **Restart to update** when ready. See [installation, updates and recovery](UPDATES.md) for existing installations and troubleshooting.
 
-Note taking and math solving work offline. Optional handwriting recognition downloads its model on first use, then runs locally; see [recognition setup](OCR_FIRST_USE.md).
+Note taking and math solving work offline. Optional handwriting recognition downloads its model on first use, then runs locally; see [recognition setup](DEVELOPMENT.md#recognition-setup-and-privacy).
 
 ## Build
 
@@ -41,6 +41,6 @@ cargo build --locked --release -p folio
 
 - [Development status and compatibility](DEVELOPMENT.md)
 - [Release notes](RELEASE_NOTES.md)
-- [Math solver](MATH_SOLVER_DESIGN.md)
+- [Math solver](DEVELOPMENT.md#offline-solving-and-live-math)
 
 Licensed under [GPL-3.0-or-later](LICENSE). Third-party notices are in [LICENSES.md](LICENSES.md).

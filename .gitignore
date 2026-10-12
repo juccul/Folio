@@ -32,7 +32,5 @@ venv/
 !/LICENSES.md
 !/DEVELOPMENT.md
 !/RELEASE_NOTES.md
-!/MATH_SOLVER_DESIGN.md
-!/OCR_FIRST_USE.md
 !/third_party/**/*.[mM][dD]
 !/vendor/**/*.[mM][dD]
