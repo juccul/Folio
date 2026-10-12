@@ -172,22 +172,23 @@ impl Service {
                                 .as_ref()
                                 .unwrap()
                                 .recognize(&request, &context);
-                            if result
+                            while result
                                 .as_ref()
                                 .is_err_and(|error| error.starts_with("OCR runtime unavailable:"))
                                 && native_client.as_ref().unwrap().is_gpu()
                             {
                                 eprintln!(
-                                    "Folio OCR GPU failed: {}; retrying on CPU",
+                                    "Folio OCR GPU failed: {}; reducing GPU memory use",
                                     result.as_ref().unwrap_err()
                                 );
-                                report_progress("GPU OCR failed; retrying on CPU…".into());
+                                report_progress("GPU OCR failed; reducing GPU memory use…".into());
                                 stop_process(&worker_process);
-                                native_client = Some(native::Native::load_cpu(
-                                    &task.pack,
-                                    &mut preparation,
-                                    &context,
-                                )?);
+                                native_client = Some(
+                                    native_client
+                                        .as_ref()
+                                        .unwrap()
+                                        .load_fallback(&mut preparation, &context)?,
+                                );
                                 result = native_client
                                     .as_ref()
                                     .unwrap()

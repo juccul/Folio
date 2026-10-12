@@ -29,7 +29,7 @@ Notes and downloaded OCR assets live under `%LOCALAPPDATA%\Folio`. `--data-dir P
 
 ## Optional OCR
 
-The first recognition request downloads the pinned GLM-OCR Q8 model/vision files and llama.cpp b11457 Windows Vulkan runtime (about 1.47 GB total). Downloads are resumable and checksummed. CPU fallback works when a suitable Vulkan GPU is unavailable; a VirtualBox graphics adapter generally does not provide a usable OCR Vulkan device. Subsequent recognition works offline. Notes, PDFs, and handwriting are processed locally.
+The first recognition request downloads the pinned GLM-OCR Q8 model/vision files and llama.cpp b11457 Windows Vulkan runtime (about 1.47 GB total). Downloads are resumable and checksummed. When full GPU recognition cannot load, Folio tries placing language layers in system RAM while keeping image encoding on the GPU, then GPU image encoding alone, before falling back to CPU-only recognition. CPU fallback also works when a suitable Vulkan GPU is unavailable; a VirtualBox graphics adapter generally does not provide a usable OCR Vulkan device. Subsequent recognition works offline. Notes, PDFs, and handwriting are processed locally.
 
 ## Validation
 

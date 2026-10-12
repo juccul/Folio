@@ -32,6 +32,9 @@ const SERVER_PATH: &str = "llama-b11457/llama-server";
 const SERVER_PATH: &str = "llama-server.exe";
 const MODEL: &str = "GLM-OCR-Q8_0.gguf";
 const VISION: &str = "mmproj-GLM-OCR-Q8_0.gguf";
+// The pinned image encoder can run below the full model's memory requirement.
+// Leave room above its measured ~0.9 GiB peak before considering a GPU.
+const MIN_GPU_FREE_MIB: u64 = 1280;
 const TOTAL: u64 = 950_433_408 + 484_403_648 + RUNTIME_BYTES;
 const ASSETS: [(&str, u64, &str); 3] = [
     (
@@ -440,7 +443,7 @@ fn devices(output: &str) -> Vec<Device> {
         if lower.contains("llvmpipe")
             || lower.contains("lavapipe")
             || lower.contains("software")
-            || free < 2048
+            || free < MIN_GPU_FREE_MIB
         {
             continue;
         }
@@ -574,28 +577,100 @@ fn discover_devices(binary: &Path, context: &Context<'_>) -> Result<Vec<Device>>
     Ok(devices(&output))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Offload {
+    Full,
+    Fit,
+    Vision,
+    Cpu,
+}
+impl Offload {
+    fn attempts(self) -> &'static [Self] {
+        match self {
+            Self::Full => &[Self::Full, Self::Fit, Self::Vision, Self::Cpu],
+            Self::Fit => &[Self::Fit, Self::Vision, Self::Cpu],
+            Self::Vision => &[Self::Vision, Self::Cpu],
+            Self::Cpu => &[Self::Cpu],
+        }
+    }
+    fn fallback(self) -> Self {
+        match self {
+            Self::Full => Self::Fit,
+            Self::Fit => Self::Vision,
+            Self::Vision | Self::Cpu => Self::Cpu,
+        }
+    }
+    fn label(self, device: Option<&Device>) -> String {
+        let Some(device) = device else {
+            return "CPU Q8".into();
+        };
+        let mode = match self {
+            Self::Full => "Vulkan Q8",
+            Self::Fit => "Vulkan Q8 · memory fit",
+            Self::Vision => "Vulkan/CPU Q8 · GPU image encoder",
+            Self::Cpu => unreachable!(),
+        };
+        format!("{mode} · {}", device.name)
+    }
+    fn configure(self, command: &mut std::process::Command, device: Option<&Device>) {
+        let id = device.map(|device| device.id.as_str()).unwrap_or("none");
+        command.args([
+            "--device",
+            if matches!(self, Self::Vision | Self::Cpu) {
+                "none"
+            } else {
+                id
+            },
+            "--mmproj-device",
+            id,
+            "--gpu-layers",
+            match self {
+                Self::Full => "all",
+                Self::Fit => "auto",
+                Self::Vision | Self::Cpu => "0",
+            },
+            "--fit",
+            if self == Self::Fit { "on" } else { "off" },
+        ]);
+        if self == Self::Fit {
+            // Server fitting reserves the projector's weights too. This extra margin
+            // covers image workspaces, shaders and concurrent desktop allocations.
+            // The explicitly set context size is never reduced by fitting.
+            command.args(["--fit-target", "1024"]);
+        }
+        if self != Self::Full {
+            // Do not move operations belonging to CPU layers back to a crowded GPU.
+            command.arg("--no-op-offload");
+        }
+        if self == Self::Cpu {
+            command.arg("--no-mmproj-offload");
+        }
+    }
+}
+
 pub(super) struct Native {
     pub pack: PathBuf,
     http: Http,
     url: String,
     token: String,
     label: String,
+    offload: Offload,
 }
 impl Native {
     pub fn load(pack: &Path, cache: &mut Cache, context: &Context<'_>) -> Result<Self> {
-        Self::load_inner(pack, cache, context, false)
+        Self::load_inner(pack, cache, context, Offload::Full)
     }
-    pub fn load_cpu(pack: &Path, cache: &mut Cache, context: &Context<'_>) -> Result<Self> {
-        Self::load_inner(pack, cache, context, true)
+    pub fn load_fallback(&self, cache: &mut Cache, context: &Context<'_>) -> Result<Self> {
+        Self::load_inner(&self.pack, cache, context, self.offload.fallback())
     }
     pub fn is_gpu(&self) -> bool {
-        self.label.starts_with("Vulkan")
+        self.offload != Offload::Cpu
     }
     fn load_inner(
         pack: &Path,
         cache: &mut Cache,
         context: &Context<'_>,
-        force_cpu: bool,
+        first: Offload,
     ) -> Result<Self> {
         let prepared = cache.prepare(pack, context)?;
         let root = &prepared.root;
@@ -603,9 +678,7 @@ impl Native {
         let devices: Vec<_> = prepared
             .devices
             .iter()
-            .filter(|device| {
-                !force_cpu && (prepared.selected == "auto" || prepared.selected == device.id)
-            })
+            .filter(|device| prepared.selected == "auto" || prepared.selected == device.id)
             .collect();
         let http = Http::builder()
             .no_proxy()
@@ -615,11 +688,21 @@ impl Native {
             .map_err(io)?;
         let token = Id::new_v4().to_string();
         let mut last_error = None;
-        for device in devices.iter().map(Some).chain(std::iter::once(None)) {
+        // Preserve preference for full inference on another eligible GPU before
+        // introducing CPU layers. Each later mode is bounded and keeps vision on GPU.
+        let attempts = first.attempts().iter().flat_map(|&offload| {
+            if offload == Offload::Cpu {
+                vec![(offload, None)]
+            } else {
+                devices
+                    .iter()
+                    .map(|&device| (offload, Some(device)))
+                    .collect()
+            }
+        });
+        for (offload, device) in attempts {
             context.check()?;
-            let label = device
-                .map(|d| format!("Vulkan Q8 · {}", d.name))
-                .unwrap_or_else(|| "CPU Q8 · Vulkan unavailable".into());
+            let label = offload.label(device);
             context.stage(format!("Loading OCR · {label}…"));
             let port = TcpListener::bind("127.0.0.1:0")
                 .map_err(io)?
@@ -638,8 +721,6 @@ impl Native {
                     "--api-key",
                     &token,
                     "--offline",
-                    "--fit",
-                    "off",
                     "--threads",
                     "4",
                     "--threads-batch",
@@ -663,27 +744,7 @@ impl Native {
                     "--verbosity",
                     "0",
                 ]);
-            if let Some(device) = device {
-                command.args([
-                    "--device",
-                    &device.id,
-                    "--mmproj-device",
-                    &device.id,
-                    "--gpu-layers",
-                    "all",
-                ]);
-            } else {
-                command.args([
-                    "--device",
-                    "none",
-                    "--mmproj-device",
-                    "none",
-                    "--gpu-layers",
-                    "0",
-                    "--no-mmproj-offload",
-                    "--no-op-offload",
-                ]);
-            }
+            offload.configure(&mut command, device);
             let log = File::create(root.join("last-runtime.log")).map_err(io)?;
             let child = command
                 .stdin(Stdio::null())
@@ -739,6 +800,7 @@ impl Native {
                     url,
                     token,
                     label,
+                    offload,
                 });
             }
             last_error = Some(format!(
@@ -1193,17 +1255,24 @@ mod tests {
     }
     #[test]
     fn prefers_discrete_gpu_and_filters_low_memory_and_software() {
-        let output = "Available devices:\n Vulkan0: AMD Radeon 780M Graphics (RADV PHOENIX) (16000 MiB, 13000 MiB free)\n Vulkan1: NVIDIA RTX 4070 (8000 MiB, 7000 MiB free)\n Vulkan2: llvmpipe (16000 MiB, 16000 MiB free)\n Vulkan3: Intel Arc (4000 MiB, 900 MiB free)";
+        let output = "Available devices:\n Vulkan0: AMD Radeon 780M Graphics (RADV PHOENIX) (16000 MiB, 13000 MiB free)\n Vulkan1: NVIDIA RTX 4070 (8000 MiB, 7000 MiB free)\n Vulkan2: llvmpipe (16000 MiB, 16000 MiB free)\n Vulkan3: Intel Arc (4000 MiB, 900 MiB free)\n Vulkan4: NVIDIA low-memory GPU (2000 MiB, 1400 MiB free)\n Vulkan5: NVIDIA busy GPU (2000 MiB, 1100 MiB free)";
         let found = devices(output);
-        assert_eq!(found.len(), 2);
+        assert_eq!(found.len(), 3);
         assert_eq!(found[0].id, "Vulkan1");
-        assert_eq!(found[1].id, "Vulkan0");
+        assert_eq!(found[1].id, "Vulkan4");
+        assert_eq!(found[2].id, "Vulkan0");
     }
     #[cfg(unix)]
     #[test]
     fn startup_preparation_survives_server_restart_and_cpu_fallback() {
         use std::os::unix::fs::PermissionsExt;
-        for selected in ["auto", "cpu"] {
+        for (selected, failed_gpu_modes) in [
+            ("auto", 0),
+            ("cpu", 0),
+            ("auto", 1),
+            ("auto", 2),
+            ("auto", 3),
+        ] {
             let directory = root();
             let pack = directory.join("pack.json");
             let model_root = directory.join("glm-ocr-q8-b11457");
@@ -1226,6 +1295,11 @@ mod tests {
             for (name, _, _) in assets {
                 fs::write(model_root.join(name), b"mock").unwrap();
             }
+            fs::write(
+                model_root.join("failed-gpu-modes"),
+                failed_gpu_modes.to_string(),
+            )
+            .unwrap();
             fs::write(&binary, r#"#!/usr/bin/env python3
 import sys, json
 from pathlib import Path
@@ -1234,9 +1308,25 @@ root = Path(__file__).resolve().parents[2]
 if '--list-devices' in sys.argv:
     with (root / 'probes').open('a') as log: log.write('probe\n')
     print(' Vulkan0: NVIDIA test GPU (8000 MiB, 7000 MiB free)')
+    print(' Vulkan1: AMD Radeon test iGPU (16000 MiB, 12000 MiB free)')
     sys.exit(0)
-with (root / 'launches').open('a') as log:
-    log.write(sys.argv[sys.argv.index('--device') + 1] + '\n')
+def arg(name): return sys.argv[sys.argv.index(name) + 1]
+mode = 'cpu' if arg('--mmproj-device') == 'none' else {'all': 'full', 'auto': 'fit', '0': 'vision'}[arg('--gpu-layers')]
+with (root / 'launches').open('a') as log: log.write(json.dumps({'mode': mode, 'args': sys.argv[1:]}) + '\n')
+assert arg('--ctx-size') == '16384'
+if mode == 'fit':
+    assert arg('--fit') == 'on' and arg('--fit-target') == '1024'
+    assert '--no-op-offload' in sys.argv and '--no-mmproj-offload' not in sys.argv
+else:
+    assert arg('--fit') == 'off'
+if mode == 'vision':
+    assert arg('--device') == 'none' and '--no-op-offload' in sys.argv
+    assert '--no-mmproj-offload' not in sys.argv
+if mode == 'cpu':
+    assert arg('--device') == 'none'
+    assert '--no-mmproj-offload' in sys.argv and '--no-op-offload' in sys.argv
+if mode in ['full', 'fit', 'vision'] and ['full', 'fit', 'vision'].index(mode) < int((root / 'failed-gpu-modes').read_text()):
+    sys.exit(1)
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
@@ -1244,6 +1334,11 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
     def do_POST(self):
         self.rfile.read(int(self.headers['Content-Length']))
+        failure = root / 'fail-inference'
+        if failure.exists() and failure.read_text() == mode:
+            self.send_response(500)
+            self.end_headers()
+            return
         self.send_response(200)
         self.end_headers()
         self.wfile.write(json.dumps({'choices': [{'finish_reason': 'stop', 'message': {'content': 'recognized locally'}}]}).encode())
@@ -1289,7 +1384,13 @@ HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).
                 image_path: None,
             };
             let client = Native::load(&pack, &mut cache, &context).unwrap();
-            assert_eq!(client.is_gpu(), selected == "auto");
+            let expected = if selected == "cpu" {
+                Offload::Cpu
+            } else {
+                [Offload::Full, Offload::Fit, Offload::Vision, Offload::Cpu][failed_gpu_modes]
+            };
+            assert_eq!(client.offload, expected);
+            assert_eq!(client.is_gpu(), expected != Offload::Cpu);
             assert_eq!(
                 client.recognize(&request, &context).unwrap(),
                 "recognized locally"
@@ -1315,7 +1416,36 @@ HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).
                 "recognized locally"
             );
             stop_process(&process);
-            let client = Native::load_cpu(&pack, &mut cache, &context).unwrap();
+            // Runtime/server failures step down without returning to a failed mode.
+            // No asset verification or discovery is repeated, even at the final CPU fallback.
+            let mut client = client;
+            while client.is_gpu() {
+                let mode = match client.offload {
+                    Offload::Full => "full",
+                    Offload::Fit => "fit",
+                    Offload::Vision => "vision",
+                    Offload::Cpu => unreachable!(),
+                };
+                fs::write(model_root.join("fail-inference"), mode).unwrap();
+                client = Native::load_inner(&pack, &mut cache, &context, client.offload).unwrap();
+                assert!(
+                    client
+                        .recognize(&request, &context)
+                        .unwrap_err()
+                        .starts_with("OCR runtime unavailable:")
+                );
+                stop_process(&process);
+                let previous = client.offload;
+                client = client.load_fallback(&mut cache, &context).unwrap();
+                assert_eq!(client.offload, previous.fallback());
+                assert_eq!(
+                    client.recognize(&request, &context).unwrap(),
+                    "recognized locally"
+                );
+                fs::remove_file(model_root.join("fail-inference")).unwrap();
+                stop_process(&process);
+            }
+            let client = Native::load_inner(&pack, &mut cache, &context, Offload::Cpu).unwrap();
             assert!(!client.is_gpu());
             assert_eq!(
                 client.recognize(&request, &context).unwrap(),
@@ -1327,16 +1457,37 @@ HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).
                     fs::read_to_string(model_root.join("probes")).unwrap(),
                     "probe\n"
                 );
-                assert_eq!(
-                    fs::read_to_string(model_root.join("launches")).unwrap(),
-                    "Vulkan0\nVulkan0\nnone\n"
-                );
             } else {
                 assert!(!model_root.join("probes").exists());
-                assert_eq!(
-                    fs::read_to_string(model_root.join("launches")).unwrap(),
-                    "none\nnone\nnone\n"
-                );
+            }
+            let launches: Vec<serde_json::Value> = fs::read_to_string(model_root.join("launches"))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let modes: Vec<_> = launches
+                .iter()
+                .map(|launch| launch["mode"].as_str().unwrap())
+                .collect();
+            let initial_attempts = if selected == "cpu" {
+                vec!["cpu"]
+            } else {
+                ["full", "fit", "vision"][..failed_gpu_modes]
+                    .iter()
+                    .flat_map(|&mode| [mode, mode])
+                    .chain(std::iter::once(
+                        ["full", "fit", "vision", "cpu"][failed_gpu_modes],
+                    ))
+                    .collect()
+            };
+            assert_eq!(&modes[..initial_attempts.len()], &initial_attempts);
+            assert_eq!(
+                &modes[initial_attempts.len()..initial_attempts.len() * 2],
+                &initial_attempts
+            );
+            assert_eq!(modes.last(), Some(&"cpu"));
+            if selected == "cpu" {
+                assert!(modes.iter().all(|mode| *mode == "cpu"));
             }
             drop(guard);
             fs::remove_dir_all(directory).unwrap();
@@ -1387,29 +1538,7 @@ HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).
             }
         }
         let _guard = Guard(&process);
-        for device in ["auto", "Vulkan0", "Vulkan999", "cpu"] {
-            if device != "auto" {
-                fs::write(
-                    &pack,
-                    serde_json::to_vec(
-                        &serde_json::json!({"backend":"llama-vulkan","device":device}),
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-            }
-            let client = Native::load(&pack, &mut Cache::default(), &context).unwrap();
-            assert!(pack.is_file());
-            assert!(model_root.join("GLM-OCR-NOTICE.txt").is_file());
-            if device == "cpu" || device == "Vulkan999" {
-                assert!(client.label.starts_with("CPU"));
-            }
-            if device == "auto" {
-                assert!(client.label.contains("NVIDIA"));
-            }
-            if device == "Vulkan0" {
-                assert!(client.label.contains("AMD"));
-            }
+        let check_recognition = |client: &Native, label: &str| {
             let samples = assets.parent().unwrap().join("recognition-2026-10-04");
             for (kind, name) in [
                 (RecognitionKind::Text, "text"),
@@ -1426,10 +1555,112 @@ HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).
                 };
                 let start = Instant::now();
                 let text = client.recognize(&request, &context).unwrap();
-                eprintln!("{device} {name} {:?}: {text}", start.elapsed());
+                eprintln!("{label} {name} {:?}: {text}", start.elapsed());
                 assert!(!text.is_empty());
                 assert_eq!(text, client.recognize(&request, &context).unwrap());
             }
+        };
+        for device in ["auto", "Vulkan0", "Vulkan999", "cpu"] {
+            if device != "auto" {
+                fs::write(
+                    &pack,
+                    serde_json::to_vec(
+                        &serde_json::json!({"backend":"llama-vulkan","device":device}),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            }
+            let mut cache = Cache::default();
+            let mut client = Native::load(&pack, &mut cache, &context).unwrap();
+            assert!(pack.is_file());
+            assert!(model_root.join("GLM-OCR-NOTICE.txt").is_file());
+            if device == "cpu" || device == "Vulkan999" {
+                assert!(client.label.starts_with("CPU"));
+            }
+            if device == "auto" {
+                assert!(client.label.contains("NVIDIA"));
+            }
+            if device == "Vulkan0" {
+                assert!(client.label.contains("AMD"));
+            }
+            check_recognition(&client, device);
+            if device == "auto" {
+                for expected in [Offload::Fit, Offload::Vision] {
+                    stop_process(&process);
+                    client = client.load_fallback(&mut cache, &context).unwrap();
+                    assert_eq!(client.offload, expected);
+                    check_recognition(&client, &client.label);
+                }
+            }
+            stop_process(&process);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Exercise actual partial allocation without occupying the user's VRAM:
+            // reject full loading and give the real fitter a 1 GiB allocation budget.
+            fs::write(&pack, br#"{"backend":"llama-vulkan","device":"auto"}"#).unwrap();
+            let mut cache = Cache::default();
+            let prepared = cache.prepare(&pack, &context).unwrap();
+            let device = prepared.devices.first().expect("requires a Vulkan GPU");
+            let margin = device
+                .free
+                .checked_sub(1024)
+                .expect("requires >1 GiB free GPU memory");
+            let binary = model_root.join("runtime").join(SERVER_PATH);
+            let real_binary = binary.with_file_name("llama-server-real");
+            fs::rename(&binary, &real_binary).unwrap();
+            fs::write(model_root.join("test-fit-margin"), margin.to_string()).unwrap();
+            fs::write(
+                &binary,
+                r#"#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+binary = Path(__file__).with_name('llama-server-real')
+args = sys.argv[1:]
+if '--gpu-layers' in args:
+    layers = args[args.index('--gpu-layers') + 1]
+    if layers == 'all':
+        print('Simulated full-GPU allocation failure', file=sys.stderr)
+        sys.exit(1)
+    if layers == 'auto':
+        margin = Path(__file__).resolve().parents[2] / 'test-fit-margin'
+        args[args.index('--fit-target') + 1] = margin.read_text()
+args += ['--verbosity', '4']
+os.execv(str(binary), [str(binary)] + args)
+"#,
+            )
+            .unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+            let client = Native::load(&pack, &mut cache, &context).unwrap();
+            assert_eq!(client.offload, Offload::Fit);
+            let log = fs::read_to_string(model_root.join("last-runtime.log")).unwrap();
+            let layers = log
+                .lines()
+                .find_map(|line| {
+                    line.split_once("offloaded ").and_then(|(_, line)| {
+                        line.split_once(" layers to GPU").map(|(layers, _)| layers)
+                    })
+                })
+                .unwrap();
+            let (gpu, total) = layers.split_once('/').unwrap();
+            assert!(
+                gpu.parse::<u32>().unwrap() > 0
+                    && gpu.parse::<u32>().unwrap() < total.parse::<u32>().unwrap(),
+                "expected partial layers: {layers}"
+            );
+            let props: serde_json::Value = client
+                .http
+                .get(format!("{}/props", client.url))
+                .bearer_auth(&client.token)
+                .send()
+                .unwrap()
+                .json()
+                .unwrap();
+            assert_eq!(props["default_generation_settings"]["n_ctx"], 16384);
+            eprintln!("Real constrained fit: {layers} GPU layers, 16384-token context");
+            check_recognition(&client, "constrained-fit");
             stop_process(&process);
         }
         fs::remove_dir_all(root).unwrap();

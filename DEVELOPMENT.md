@@ -1,8 +1,8 @@
-# Development status — Folio 0.1.3
+# Development status — Folio 0.1.4
 
 Updated 2026-10-12. Folio is a runnable Rust/GPUI Linux and Windows desktop application. Production certification still requires physical tablets and additional desktop/distribution sessions; synthetic events and CPU benchmarks do not establish hardware-to-display latency.
 
-Version 0.1.3 fixes retained GPU upload buffers as dense ink grows and enables bounded settled-ink caching on Linux as well as Windows. Windows setup/portable and signed Flatpak packages share the same release source. See `WINDOWS.md` for Windows Ink support and validation limits.
+Version 0.1.4 adds bounded partial OCR offload when full GPU inference cannot fit and caches verified recognition assets and Vulkan discovery for faster repeated use. Windows setup/portable and signed Flatpak packages share the same release source. See `WINDOWS.md` for Windows Ink support and validation limits.
 
 ## Continuous integration
 
@@ -83,7 +83,9 @@ Text and math recognition share a resident GLM-OCR backend for handwriting, imag
 
 Downloads are resumable and checksummed. Cancellation retains `.partial` files; retrying recognition resumes setup. Checksum failures discard corrupt partials, and only verified assets become active. Setup is serialized with a file lock and uses safe staged extraction. At launch, a background worker verifies an existing native pack and discovers eligible Vulkan devices once, without downloading assets or loading the model. Successful preparation is retained for the library session: cancellation, server restarts and CPU fallback reuse it without hashing files, extracting the runtime or probing devices again. Missing or corrupt packs still go through verified setup on an OCR request; first-use setup caches its results too. Restart Folio after changing native pack files or device preferences. Warm requests reuse the resident model. Progress appears in recognition controls and accessibility status. Cancel/Esc invalidates pending results and stops the model process.
 
-The backend prefers an eligible discrete Vulkan GPU, tries other eligible devices and falls back to CPU if GPU startup fails. A GPU inference connection/server failure gets one CPU retry; invalid input and truncated output remain errors. Language inference and image encoding use the same chosen device. NVIDIA and AMD have recorded smoke checks; Intel remains unverified. See [WINDOWS.md](WINDOWS.md#optional-ocr) for Windows-specific guidance.
+The backend prefers full inference on an eligible discrete Vulkan GPU, then other eligible devices. If full GPU loading fails, it tries memory fitting: the runtime accounts for image-encoder weights, keeps the 16,384-token context, targets an additional 1 GiB of GPU memory headroom and places language layers and their attention cache in system RAM as needed. CPU-assigned language operations stay on the CPU. If fitting still fails, it tries the image encoder alone on the GPU, then CPU-only recognition. GPU discovery includes devices with at least 1.25 GiB free; this is a candidate threshold, not a guaranteed memory requirement. Fitting uses current runtime memory availability rather than the cached discovery budget.
+
+A GPU inference connection/server failure follows the same bounded progression through lower-memory modes, ending with one CPU attempt; invalid input and truncated output remain errors. Status distinguishes memory fitting, GPU image encoding and CPU execution. Full GPU inference uses the same device for language and vision; mixed modes retain GPU image encoding while language work can run on the CPU. NVIDIA and AMD have recorded smoke checks; Intel remains unverified. See [WINDOWS.md](WINDOWS.md#optional-ocr) for Windows-specific guidance.
 
 Images stay local. The inference server binds to loopback with a random API key, bypasses HTTP proxies, disables its web UI and loads models offline. Internet access is needed to fetch assets, not for subsequent recognition. Source ink is rendered as black rounded strokes on white with supersampling; image transparency is composited onto white. Model attribution and runtime licenses/notices are retained in the pack; see [LICENSES.md](LICENSES.md).
 
