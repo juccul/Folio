@@ -462,6 +462,24 @@ fn first_ocr_request_waits_for_setup_choice_without_dispatching_downloads() {
     app.session_mut().selection = HashSet::from([id]);
     let review = app.recognition_snapshot(RecognitionKind::Text).unwrap();
     let pack = root.join("recognition/pack.json");
+    // Startup preparation must also leave a missing pack untouched.
+    let generation = AtomicU64::new(0);
+    let process = Mutex::new(None);
+    let stages = Mutex::new(Vec::new());
+    native::Cache::default()
+        .prepare_existing(
+            &pack,
+            &native::Context {
+                generation: 0,
+                current: &generation,
+                process: &process,
+                progress: &|text| stages.lock().unwrap().push(text),
+            },
+        )
+        .unwrap();
+    assert!(stages.lock().unwrap().is_empty());
+    assert!(process.lock().unwrap().is_none());
+    assert!(!pack.parent().unwrap().exists());
     app.recognition_service
         .submit(
             Task {

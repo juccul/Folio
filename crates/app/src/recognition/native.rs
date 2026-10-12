@@ -260,6 +260,9 @@ fn download(
 }
 
 pub(super) fn installed(pack: &Path) -> bool {
+    installed_assets(pack, &ASSETS)
+}
+fn installed_assets(pack: &Path, assets: &[(&str, u64, &str)]) -> bool {
     let native = fs::read(pack)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -270,7 +273,7 @@ pub(super) fn installed(pack: &Path) -> bool {
     let root = parent.join("glm-ocr-q8-b11457");
     native
         && root.join("runtime").join(SERVER_PATH).is_file()
-        && ASSETS
+        && assets
             .iter()
             .all(|(name, size, _)| fs::metadata(root.join(name)).is_ok_and(|m| m.len() == *size))
 }
@@ -457,6 +460,120 @@ fn devices(output: &str) -> Vec<Device> {
     found
 }
 
+// Successful preparation is retained for this service session, independently of the server.
+#[derive(Default)]
+pub(super) struct Cache {
+    packs: HashMap<PathBuf, Prepared>,
+}
+struct Prepared {
+    root: PathBuf,
+    selected: String,
+    devices: Vec<Device>,
+}
+impl Cache {
+    pub fn prepare_existing(&mut self, pack: &Path, context: &Context<'_>) -> Result<()> {
+        self.prepare_existing_assets(pack, context, &ASSETS)
+    }
+    fn prepare_existing_assets(
+        &mut self,
+        pack: &Path,
+        context: &Context<'_>,
+        assets: &[(&str, u64, &str)],
+    ) -> Result<()> {
+        if self.packs.contains_key(pack) || !installed_assets(pack, assets) {
+            return Ok(());
+        }
+        let root = pack
+            .parent()
+            .ok_or("Invalid recognition directory")?
+            .join("glm-ocr-q8-b11457");
+        context.stage("Checking installed OCR…");
+        for &(name, size, sha) in assets {
+            if !verified(&root.join(name), size, sha, context)? {
+                return Err("Installed OCR assets need repair; request OCR to run setup".into());
+            }
+        }
+        self.remember(pack, root, context)
+    }
+    fn remember(&mut self, pack: &Path, root: PathBuf, context: &Context<'_>) -> Result<()> {
+        let selected = selected_device(pack)?;
+        let devices = if selected == "cpu" {
+            Vec::new()
+        } else {
+            discover_devices(&root.join("runtime").join(SERVER_PATH), context)?
+        };
+        self.packs.insert(
+            pack.into(),
+            Prepared {
+                root,
+                selected,
+                devices,
+            },
+        );
+        Ok(())
+    }
+    fn prepare(&mut self, pack: &Path, context: &Context<'_>) -> Result<&Prepared> {
+        if !self.packs.contains_key(pack) {
+            // First use or an incomplete/corrupt startup pack still uses verified, resumable setup.
+            selected_device(pack)?;
+            let root = install(pack, context)?;
+            self.remember(pack, root, context)?;
+        }
+        Ok(&self.packs[pack])
+    }
+}
+fn selected_device(pack: &Path) -> Result<String> {
+    let selected = fs::read(pack)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .filter(|config| config["backend"] == "llama-vulkan")
+        .and_then(|config| config["device"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "auto".into());
+    if selected != "auto" && selected != "cpu" && !selected.starts_with("Vulkan") {
+        return Err("OCR device must be auto, cpu or a Vulkan device ID".into());
+    }
+    Ok(selected)
+}
+fn discover_devices(binary: &Path, context: &Context<'_>) -> Result<Vec<Device>> {
+    context.stage("Checking Vulkan GPUs…");
+    let mut probe = folio_platform::command(binary)
+        .arg("--list-devices")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn_background()
+        .map_err(io)?;
+    let stdout = probe.stdout.take().unwrap();
+    // Put even discovery under cancellation ownership; no detached GPU processes.
+    {
+        let mut shared = context.process.lock().unwrap();
+        if context.check().is_err() {
+            let _ = probe.kill();
+            let _ = probe.wait();
+            return Err("Recognition cancelled".into());
+        }
+        *shared = Some(probe);
+    }
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut output = String::new();
+        let _ = stdout.take(65536).read_to_string(&mut output);
+        let _ = tx.send(output);
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let output = loop {
+        context.check()?;
+        if let Ok(output) = rx.recv_timeout(Duration::from_millis(100)) {
+            break output;
+        }
+        if Instant::now() > deadline {
+            break String::new();
+        }
+    };
+    stop_process(context.process);
+    Ok(devices(&output))
+}
+
 pub(super) struct Native {
     pub pack: PathBuf,
     http: Http,
@@ -465,74 +582,31 @@ pub(super) struct Native {
     label: String,
 }
 impl Native {
-    pub fn load(pack: &Path, context: &Context<'_>) -> Result<Self> {
-        Self::load_inner(pack, context, false)
+    pub fn load(pack: &Path, cache: &mut Cache, context: &Context<'_>) -> Result<Self> {
+        Self::load_inner(pack, cache, context, false)
     }
-    pub fn load_cpu(pack: &Path, context: &Context<'_>) -> Result<Self> {
-        Self::load_inner(pack, context, true)
+    pub fn load_cpu(pack: &Path, cache: &mut Cache, context: &Context<'_>) -> Result<Self> {
+        Self::load_inner(pack, cache, context, true)
     }
     pub fn is_gpu(&self) -> bool {
         self.label.starts_with("Vulkan")
     }
-    fn load_inner(pack: &Path, context: &Context<'_>, force_cpu: bool) -> Result<Self> {
-        let selected = if pack.is_file() {
-            let config: serde_json::Value = serde_json::from_slice(&fs::read(pack).map_err(io)?)
-                .unwrap_or(serde_json::Value::Null);
-            if config["backend"] == "llama-vulkan" {
-                config["device"].as_str().unwrap_or("auto").to_string()
-            } else {
-                "auto".into()
-            }
-        } else {
-            "auto".into()
-        };
-        if selected != "auto" && selected != "cpu" && !selected.starts_with("Vulkan") {
-            return Err("OCR device must be auto, cpu or a Vulkan device ID".into());
-        }
-        let root = install(pack, context)?;
+    fn load_inner(
+        pack: &Path,
+        cache: &mut Cache,
+        context: &Context<'_>,
+        force_cpu: bool,
+    ) -> Result<Self> {
+        let prepared = cache.prepare(pack, context)?;
+        let root = &prepared.root;
         let binary = root.join("runtime").join(SERVER_PATH);
-        context.stage("Checking Vulkan GPUs…");
-        let mut probe = folio_platform::command(&binary)
-            .arg("--list-devices")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn_background()
-            .map_err(io)?;
-        let stdout = probe.stdout.take().unwrap();
-        // Put even discovery under cancellation ownership; no detached GPU processes.
-        {
-            let mut shared = context.process.lock().unwrap();
-            if context.check().is_err() {
-                let _ = probe.kill();
-                let _ = probe.wait();
-                return Err("Recognition cancelled".into());
-            }
-            *shared = Some(probe);
-        }
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let mut output = String::new();
-            let _ = stdout.take(65536).read_to_string(&mut output);
-            let _ = tx.send(output);
-        });
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let output = loop {
-            context.check()?;
-            if let Ok(output) = rx.recv_timeout(Duration::from_millis(100)) {
-                break output;
-            }
-            if Instant::now() > deadline {
-                break String::new();
-            }
-        };
-        stop_process(context.process);
-        let mut devices = devices(&output);
-        if selected == "cpu" || force_cpu {
-            devices.clear();
-        } else if selected != "auto" {
-            devices.retain(|d| d.id == selected);
-        }
+        let devices: Vec<_> = prepared
+            .devices
+            .iter()
+            .filter(|device| {
+                !force_cpu && (prepared.selected == "auto" || prepared.selected == device.id)
+            })
+            .collect();
         let http = Http::builder()
             .no_proxy()
             .connect_timeout(Duration::from_secs(2))
@@ -1125,6 +1199,149 @@ mod tests {
         assert_eq!(found[0].id, "Vulkan1");
         assert_eq!(found[1].id, "Vulkan0");
     }
+    #[cfg(unix)]
+    #[test]
+    fn startup_preparation_survives_server_restart_and_cpu_fallback() {
+        use std::os::unix::fs::PermissionsExt;
+        for selected in ["auto", "cpu"] {
+            let directory = root();
+            let pack = directory.join("pack.json");
+            let model_root = directory.join("glm-ocr-q8-b11457");
+            let binary = model_root.join("runtime").join(SERVER_PATH);
+            fs::create_dir_all(binary.parent().unwrap()).unwrap();
+            fs::write(
+                &pack,
+                serde_json::to_vec(&serde_json::json!({
+                    "backend": "llama-vulkan", "device": selected,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let sha = format!("{:x}", Sha256::digest(b"mock"));
+            let assets = [
+                (MODEL, 4, sha.as_str()),
+                (VISION, 4, sha.as_str()),
+                (RUNTIME, 4, sha.as_str()),
+            ];
+            for (name, _, _) in assets {
+                fs::write(model_root.join(name), b"mock").unwrap();
+            }
+            fs::write(&binary, r#"#!/usr/bin/env python3
+import sys, json
+from pathlib import Path
+from http.server import BaseHTTPRequestHandler, HTTPServer
+root = Path(__file__).resolve().parents[2]
+if '--list-devices' in sys.argv:
+    with (root / 'probes').open('a') as log: log.write('probe\n')
+    print(' Vulkan0: NVIDIA test GPU (8000 MiB, 7000 MiB free)')
+    sys.exit(0)
+with (root / 'launches').open('a') as log:
+    log.write(sys.argv[sys.argv.index('--device') + 1] + '\n')
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args): pass
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+    def do_POST(self):
+        self.rfile.read(int(self.headers['Content-Length']))
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(json.dumps({'choices': [{'finish_reason': 'stop', 'message': {'content': 'recognized locally'}}]}).encode())
+HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).serve_forever()
+"#).unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+            let generation = AtomicU64::new(0);
+            let process = Mutex::new(None);
+            struct Guard<'a>(&'a Mutex<Option<Child>>);
+            impl Drop for Guard<'_> {
+                fn drop(&mut self) {
+                    stop_process(self.0);
+                }
+            }
+            let guard = Guard(&process);
+            let stages = Mutex::new(Vec::new());
+            let progress = |text| stages.lock().unwrap().push(text);
+            let context = Context {
+                generation: 0,
+                current: &generation,
+                process: &process,
+                progress: &progress,
+            };
+            let mut cache = Cache::default();
+            // A same-size corrupt asset cannot become a trusted startup pack.
+            fs::write(model_root.join(MODEL), b"bad!").unwrap();
+            assert!(
+                cache
+                    .prepare_existing_assets(&pack, &context, &assets)
+                    .is_err()
+            );
+            assert!(!model_root.join("probes").exists());
+            fs::write(model_root.join(MODEL), b"mock").unwrap();
+            cache
+                .prepare_existing_assets(&pack, &context, &assets)
+                .unwrap();
+            stages.lock().unwrap().clear();
+            // Removing the archive makes any accidental re-verification or extraction fail.
+            fs::remove_file(model_root.join(RUNTIME)).unwrap();
+            let request = Request {
+                kind: RecognitionKind::Text,
+                strokes: vec![vec![[0., 0.], [10., 10.]]],
+                image_path: None,
+            };
+            let client = Native::load(&pack, &mut cache, &context).unwrap();
+            assert_eq!(client.is_gpu(), selected == "auto");
+            assert_eq!(
+                client.recognize(&request, &context).unwrap(),
+                "recognized locally"
+            );
+            stop_process(&process);
+            generation.store(1, Ordering::Release);
+            assert!(
+                client
+                    .recognize(&request, &context)
+                    .unwrap_err()
+                    .contains("cancelled")
+            );
+            let context = Context {
+                generation: 1,
+                ..context
+            };
+            cache
+                .prepare_existing_assets(&pack, &context, &assets)
+                .unwrap();
+            let client = Native::load(&pack, &mut cache, &context).unwrap();
+            assert_eq!(
+                client.recognize(&request, &context).unwrap(),
+                "recognized locally"
+            );
+            stop_process(&process);
+            let client = Native::load_cpu(&pack, &mut cache, &context).unwrap();
+            assert!(!client.is_gpu());
+            assert_eq!(
+                client.recognize(&request, &context).unwrap(),
+                "recognized locally"
+            );
+            assert!(stages.lock().unwrap().iter().all(|stage| !stage.starts_with("Checking") && !stage.starts_with("Installing")));
+            if selected == "auto" {
+                assert_eq!(
+                    fs::read_to_string(model_root.join("probes")).unwrap(),
+                    "probe\n"
+                );
+                assert_eq!(
+                    fs::read_to_string(model_root.join("launches")).unwrap(),
+                    "Vulkan0\nVulkan0\nnone\n"
+                );
+            } else {
+                assert!(!model_root.join("probes").exists());
+                assert_eq!(
+                    fs::read_to_string(model_root.join("launches")).unwrap(),
+                    "none\nnone\nnone\n"
+                );
+            }
+            drop(guard);
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
     #[test]
     fn renders_bounded_ink_and_preserves_formula_meaning() {
         let png = render_ink(&[vec![[0., 0.], [f32::MAX, 0.]]], RecognitionKind::Text).unwrap();
@@ -1181,7 +1398,7 @@ mod tests {
                 )
                 .unwrap();
             }
-            let client = Native::load(&pack, &context).unwrap();
+            let client = Native::load(&pack, &mut Cache::default(), &context).unwrap();
             assert!(pack.is_file());
             assert!(model_root.join("GLM-OCR-NOTICE.txt").is_file());
             if device == "cpu" || device == "Vulkan999" {

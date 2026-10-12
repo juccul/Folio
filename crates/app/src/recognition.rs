@@ -86,6 +86,8 @@ pub(super) struct Service {
     status: mpsc::Receiver<StatusMessage>,
     process: Arc<Mutex<Option<Child>>>,
     generation: Arc<AtomicU64>,
+    startup_process: Arc<Mutex<Option<Child>>>,
+    shutdown: Arc<AtomicU64>,
 }
 struct Client {
     input: ChildStdin,
@@ -93,7 +95,7 @@ struct Client {
     pack: PathBuf,
 }
 impl Service {
-    pub fn new() -> Self {
+    pub fn new(startup_pack: PathBuf) -> Self {
         let (sender, jobs) = mpsc::sync_channel::<Task>(1);
         let (tx, results) = mpsc::channel();
         let (progress, status) = mpsc::channel();
@@ -101,11 +103,28 @@ impl Service {
         let generation = Arc::new(AtomicU64::new(0));
         let worker_process = process.clone();
         let worker_generation = generation.clone();
+        let startup_process = Arc::new(Mutex::new(None));
+        let worker_startup_process = startup_process.clone();
+        let shutdown = Arc::new(AtomicU64::new(0));
+        let worker_shutdown = shutdown.clone();
         std::thread::Builder::new()
             .name("folio-recognition".into())
             .spawn(move || {
                 let mut client: Option<Client> = None;
                 let mut native_client: Option<native::Native> = None;
+                // Preparation outlives the model process, including cancellation and CPU fallback.
+                // Startup never downloads assets or loads the model into GPU memory.
+                let mut preparation = native::Cache::default();
+                let startup_context = native::Context {
+                    generation: 0,
+                    current: &worker_shutdown,
+                    process: &worker_startup_process,
+                    progress: &|_| {},
+                };
+                if let Err(error) = preparation.prepare_existing(&startup_pack, &startup_context) {
+                    eprintln!("Folio OCR startup preparation: {error}");
+                }
+                stop_process(&worker_startup_process);
                 while let Ok(task) = jobs.recv() {
                     if task.generation != worker_generation.load(Ordering::Acquire) {
                         continue;
@@ -142,7 +161,11 @@ impl Service {
                             if native_client.as_ref().is_none_or(|c| c.pack != task.pack) || !alive
                             {
                                 stop_process(&worker_process);
-                                native_client = Some(native::Native::load(&task.pack, &context)?);
+                                native_client = Some(native::Native::load(
+                                    &task.pack,
+                                    &mut preparation,
+                                    &context,
+                                )?);
                             }
                             let (request, temporary_image) = prepare_request(&task)?;
                             let mut result = native_client
@@ -160,8 +183,11 @@ impl Service {
                                 );
                                 report_progress("GPU OCR failed; retrying on CPU…".into());
                                 stop_process(&worker_process);
-                                native_client =
-                                    Some(native::Native::load_cpu(&task.pack, &context)?);
+                                native_client = Some(native::Native::load_cpu(
+                                    &task.pack,
+                                    &mut preparation,
+                                    &context,
+                                )?);
                                 result = native_client
                                     .as_ref()
                                     .unwrap()
@@ -299,6 +325,8 @@ impl Service {
             status,
             process,
             generation,
+            startup_process,
+            shutdown,
         }
     }
     fn submit(&mut self, task: Task, download_allowed: bool) -> Result<(), String> {
@@ -413,6 +441,8 @@ fn stop_process(process: &Mutex<Option<Child>>) {
 }
 impl Drop for Service {
     fn drop(&mut self) {
+        self.shutdown.store(1, Ordering::Release);
+        stop_process(&self.startup_process);
         self.cancel(u64::MAX);
         self.sender.take();
     }
@@ -454,30 +484,37 @@ impl Controller {
         self.recognition_status = "OCR download paused. Partial downloads are retained.".into();
     }
     fn recognition_pack(&self) -> PathBuf {
-        if let Some(path) = std::env::var_os("FOLIO_RECOGNITION_CONFIG") {
-            return path.into();
-        }
-        let local = self.data_dir.join("recognition/pack.json");
-        if local.is_file() {
-            return local;
-        }
-        if let Some(root) = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent()?.parent().map(PathBuf::from))
-        {
-            let pack = root.join("recognition/pack.json");
-            if pack.is_file()
-                && (legacy_pack_available(&pack)
-                    || std::fs::read(&pack)
-                        .ok()
-                        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                        .is_some_and(|config| config["backend"] == "llama-vulkan"))
-            {
-                return pack;
-            }
-        }
-        local
+        pack_path(&self.data_dir)
     }
+}
+
+pub(super) fn pack_path(data_dir: &std::path::Path) -> PathBuf {
+    if let Some(path) = std::env::var_os("FOLIO_RECOGNITION_CONFIG") {
+        return path.into();
+    }
+    let local = data_dir.join("recognition/pack.json");
+    if local.is_file() {
+        return local;
+    }
+    if let Some(root) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent()?.parent().map(PathBuf::from))
+    {
+        let pack = root.join("recognition/pack.json");
+        if pack.is_file()
+            && (legacy_pack_available(&pack)
+                || std::fs::read(&pack)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .is_some_and(|config| config["backend"] == "llama-vulkan"))
+        {
+            return pack;
+        }
+    }
+    local
+}
+
+impl Controller {
     pub fn can_recognize_selection(&self) -> bool {
         let hidden = self.page().hidden_sources();
         self.session().selection.iter().any(|id| {

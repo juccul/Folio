@@ -502,7 +502,7 @@ impl Controller {
             last_math_ink: Instant::now(),
             math_live_ocr: None,
             math_ink_signatures: HashMap::new(),
-            recognition_service: recognition::Service::new(),
+            recognition_service: recognition::Service::new(recognition::pack_path(&data_dir)),
             recognition_generation: 0,
             recognition_pending: false,
             recognition_status: String::new(),

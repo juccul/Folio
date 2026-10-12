@@ -1,6 +1,5 @@
 # Repository instructions
 
-- Identify the executable and build profile the user actually launches. Rebuild that executable after relevant changes and provide its exact launch command. Passing tests does not refresh the application executable.
 - Match verification effort to the change. Use focused checks for small changes; run broader suites when shared behavior or packaging is affected. Do not repeatedly run unrelated regression checks.
 - Extend a meaningful existing test before adding a new one. Consolidate overlapping coverage while preserving unique assertions; avoid tests that merely restate constants or implementation details.
 - Keep UI controls compact and avoid duplicate actions. Limit changes to the controls or behavior requested, preserving surrounding workflows. When a screenshot identifies particular controls, do not infer permission to remove the entire toolbar or workflow.
