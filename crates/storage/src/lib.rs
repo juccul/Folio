@@ -1501,7 +1501,7 @@ mod tests {
     fn durable_roundtrip_and_incremental_delete() {
         let p = path();
         let mut s = Store::open(&p).unwrap();
-        let mut d = Document::new("Journal");
+        let mut d = Document::new("研究 notes");
         s.save(&Delta::full(&d)).unwrap();
         assert_eq!(s.load(d.metadata.id).unwrap().unwrap(), d);
         let page = d.pages[0].id;
@@ -1534,7 +1534,9 @@ mod tests {
         s.save(&Delta::command(&d, &cmd)).unwrap();
         drop(s);
         let mut s = Store::open(&p).unwrap();
-        assert_eq!(s.load(d.metadata.id).unwrap().unwrap().pages, d.pages);
+        let loaded = s.load(d.metadata.id).unwrap().unwrap();
+        assert_eq!(loaded, d);
+        loaded.validate().unwrap();
         cmd.apply(&mut d, false);
         s.save(&Delta::command(&d, &cmd)).unwrap();
         assert!(

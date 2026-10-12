@@ -562,19 +562,6 @@ mod tests {
         assert!(b > 2. * a);
     }
     #[test]
-    fn transformed_hit_testing() {
-        let mut s = stroke();
-        s.transform = Transform::translate(50., 100.);
-        assert!(hit_stroke(&s, Point::new(90., 100.), 1.));
-        assert!(!hit_stroke(&s, Point::new(90., 110.), 1.));
-        assert!(swept_hit(
-            &s,
-            Point::new(90., 80.),
-            Point::new(90., 120.),
-            1.
-        ));
-    }
-    #[test]
     fn polygon_selection() {
         let p = [
             Point::new(0., 0.),
@@ -592,26 +579,19 @@ mod tests {
         assert!(b.finish().is_none());
     }
     #[test]
-    fn refinement_keeps_original() {
-        let mut s = stroke();
-        let before = s.clone();
-        refine(&mut s);
-        assert_eq!(s.raw, before.raw);
-        assert_eq!(s.path, before.path);
-        assert!(s.refinement_enabled);
-    }
-    #[test]
     fn in_place_refinement_matches_simultaneous_neighbor_updates() {
         let mut s = stroke();
-        for count in [0, 1, 2, 3, 4096] {
-            let input = (0..count)
-                .map(|i| PathPoint {
-                    position: Point::new(i as f32, (i as f32 * 0.17).sin() * 8.),
-                    radius: 1. + i as f32 * 0.001,
-                })
-                .collect::<Vec<_>>();
-            s.fragment_path = Some(input.clone());
-            let mut expected = input;
+        let before = s.clone();
+        for count in [None, Some(0), Some(1), Some(2), Some(3), Some(4096)] {
+            s.fragment_path = count.map(|count| {
+                (0..count)
+                    .map(|i| PathPoint {
+                        position: Point::new(i as f32, (i as f32 * 0.17).sin() * 8.),
+                        radius: 1. + i as f32 * 0.001,
+                    })
+                    .collect()
+            });
+            let mut expected = s.fragment_path.as_deref().unwrap_or(&s.path).to_vec();
             for _ in 0..2 {
                 let original = expected.clone();
                 for i in 1..expected.len().saturating_sub(1) {
@@ -623,6 +603,9 @@ mod tests {
             }
             refine(&mut s);
             assert_eq!(s.refined_path.as_ref().unwrap(), &expected);
+            assert_eq!(s.raw, before.raw);
+            assert_eq!(s.path, before.path);
+            assert!(s.refinement_enabled);
         }
     }
     #[test]

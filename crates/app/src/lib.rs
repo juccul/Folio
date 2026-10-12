@@ -3557,19 +3557,6 @@ mod tests {
         assert_eq!(a.session().document.pages.len(), 2);
     }
     #[test]
-    fn clipboard_has_independent_raw_and_ids() {
-        let mut a = app();
-        draw(&mut a);
-        a.select_all();
-        let objects = a.copy_objects();
-        let id = objects[0].id();
-        a.paste_objects(objects);
-        assert_eq!(a.page().objects.len(), 2);
-        assert!(!a.session().selection.contains(&id));
-        a.undo();
-        assert_eq!(a.page().objects.len(), 1);
-    }
-    #[test]
     fn context_paste_places_mixed_objects_at_anchor_and_undoes_once() {
         let mut a = app();
         draw(&mut a);
@@ -3585,6 +3572,12 @@ mod tests {
         a.paste_text_or_objects_at(clipboard.clone(), target);
         assert_eq!(a.page().objects.len(), 4);
         assert_eq!(a.session().selection.len(), 2);
+        assert!(
+            a.session()
+                .selection
+                .iter()
+                .all(|id| !originals.contains_key(id))
+        );
         let bounds = a.selection_bounds().unwrap();
         assert!((bounds.min.x - target.x).abs() < 0.01);
         assert!((bounds.min.y - target.y).abs() < 0.01);
@@ -3638,20 +3631,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         assert!(a.error.is_none(), "{:?}", a.error);
-    }
-    #[test]
-    fn batched_delete_undo_restores_original_z_order() {
-        let mut a = app();
-        for i in 0..5 {
-            a.add_text(i.to_string(), Point::new(20., i as f32 * 20.));
-        }
-        let original = a.page().order.clone();
-        a.session_mut().selection = HashSet::from([original[1], original[3]]);
-        a.delete_selection();
-        a.undo();
-        assert_eq!(a.page().order, original);
-        a.redo();
-        assert_eq!(a.page().order, vec![original[0], original[2], original[4]]);
     }
     #[test]
     fn save_with_autosave_off_removes_previously_saved_objects() {
@@ -3758,19 +3737,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(d.pages[0].objects.len(), 2);
-    }
-    #[test]
-    fn local_equations_render_off_thread_and_are_undoable() {
-        let mut a = app();
-        a.insert_equation(r"E=mc^2".into());
-        wait(&mut a);
-        assert!(
-            a.page()
-                .ordered_objects()
-                .any(|o| matches!(o.as_ref(),Object::Equation(e)if e.rendered_svg.is_some()))
-        );
-        a.undo();
-        assert!(a.page().objects.is_empty());
     }
     fn with_unloaded_note() -> (Controller, Id) {
         let mut a = app();

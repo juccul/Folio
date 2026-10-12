@@ -696,6 +696,11 @@ fn equation_failures_remain_retryable_and_cancellation_does_not_insert() {
     settle(&mut a);
     assert!(matches!(a.equation_result, Some(Ok(()))));
     assert_eq!(a.page().objects.len(), 1);
+    assert!(a.page().ordered_objects().any(|object| {
+        matches!(object.as_ref(), Object::Equation(equation) if equation.rendered_svg.is_some())
+    }));
+    a.undo();
+    assert!(a.page().objects.is_empty());
 }
 
 #[test]

@@ -1274,14 +1274,6 @@ mod tests {
         assert_eq!(d.version, FORMAT_VERSION);
     }
     #[test]
-    fn serialization_and_validation() {
-        let d = Document::new("研究 notes");
-        let json = serde_json::to_string(&d).unwrap();
-        let loaded: Document = serde_json::from_str(&json).unwrap();
-        assert_eq!(loaded, d);
-        loaded.validate().unwrap();
-    }
-    #[test]
     fn affine_roundtrip() {
         let p = Point::new(3., 7.);
         let t =

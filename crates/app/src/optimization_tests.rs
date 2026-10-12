@@ -388,6 +388,12 @@ fn sparse_selection_commands_follow_page_order_and_ignore_unknown_ids() {
     app.undo();
     assert_eq!(app.page().order, order);
     ranks(&app);
+    app.redo();
+    assert_eq!(
+        app.page().order,
+        vec![order[0], order[2], order[3], order[4]]
+    );
+    ranks(&app);
     cleanup(app, root);
 }
 
