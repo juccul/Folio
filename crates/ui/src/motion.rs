@@ -117,6 +117,12 @@ impl Motion {
     pub fn advance(&mut self) -> bool {
         self.advance_at(Instant::now())
     }
+    pub fn needs_frame(&self) -> bool {
+        self.values
+            .values()
+            .chain(self.hovers.values())
+            .any(|t| t.from != t.to)
+    }
     fn advance_at(&mut self, now: Instant) -> bool {
         let mut changed = false;
         for tween in self.values.values_mut().chain(self.hovers.values_mut()) {
@@ -161,6 +167,7 @@ mod tests {
         motion.value("switch", 0., false, now);
         assert_eq!(motion.value("switch", 1., true, now), 1.);
         assert!(!motion.running());
+        assert!(!motion.needs_frame());
         assert_eq!(motion.panel("dialog", Some("open".into()), true), 1.);
         assert!(!motion.running());
     }
@@ -170,7 +177,15 @@ mod tests {
         let mut motion = Motion::default();
         motion.value("switch", 0., false, now);
         motion.value("switch", 1., false, now);
+        assert!(motion.needs_frame());
+        motion.values.get_mut("switch").unwrap().started = now - DURATION;
+        assert!(!motion.running());
+        assert!(
+            motion.needs_frame(),
+            "Expired tweens still need their endpoint painted"
+        );
         assert!(motion.advance_at(now + DURATION));
+        assert!(!motion.needs_frame());
         assert!(!motion.advance_at(now + DURATION));
         assert_eq!(motion.value("switch", 1., false, now + DURATION), 1.);
     }

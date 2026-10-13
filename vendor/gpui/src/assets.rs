@@ -6,6 +6,7 @@ use std::{
     borrow::Cow,
     fmt,
     hash::Hash,
+    sync::Arc,
     sync::atomic::{AtomicUsize, Ordering::SeqCst},
 };
 
@@ -44,7 +45,16 @@ pub struct RenderImage {
     pub id: ImageId,
     /// The scale factor of this image on render.
     pub(crate) scale_factor: f32,
-    data: SmallVec<[Frame; 1]>,
+    data: RenderImageData,
+}
+
+enum RenderImageData {
+    Frames(SmallVec<[Frame; 1]>),
+    Shared {
+        width: u32,
+        height: u32,
+        pixels: Arc<Vec<u8>>,
+    },
 }
 
 impl PartialEq for RenderImage {
@@ -58,25 +68,54 @@ impl Eq for RenderImage {}
 impl RenderImage {
     /// Create a new image from the given data.
     pub fn new(data: impl Into<SmallVec<[Frame; 1]>>) -> Self {
+        Self::with_data(RenderImageData::Frames(data.into()))
+    }
+
+    /// Create a still image sharing an existing straight-BGRA pixel buffer.
+    /// Invalid dimensions or a buffer whose length does not match are rejected.
+    pub fn from_shared_bgra(width: u32, height: u32, pixels: Arc<Vec<u8>>) -> Option<Self> {
+        let length = (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)?;
+        if width == 0 || height == 0 || pixels.len() != length {
+            return None;
+        }
+        Some(Self::with_data(RenderImageData::Shared {
+            width,
+            height,
+            pixels,
+        }))
+    }
+
+    fn with_data(data: RenderImageData) -> Self {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
         Self {
             id: ImageId(NEXT_ID.fetch_add(1, SeqCst)),
             scale_factor: 1.0,
-            data: data.into(),
+            data,
         }
     }
 
     /// Convert this image into a byte slice.
     pub fn as_bytes(&self, frame_index: usize) -> Option<&[u8]> {
-        self.data
-            .get(frame_index)
-            .map(|frame| frame.buffer().as_raw().as_slice())
+        match &self.data {
+            RenderImageData::Frames(frames) => frames
+                .get(frame_index)
+                .map(|frame| frame.buffer().as_raw().as_slice()),
+            RenderImageData::Shared { pixels, .. } => (frame_index == 0).then(|| pixels.as_slice()),
+        }
     }
 
     /// Get the size of this image, in pixels.
     pub fn size(&self, frame_index: usize) -> Size<DevicePixels> {
-        let (width, height) = self.data[frame_index].buffer().dimensions();
+        let (width, height) = match &self.data {
+            RenderImageData::Frames(frames) => frames[frame_index].buffer().dimensions(),
+            RenderImageData::Shared { width, height, .. } => {
+                assert_eq!(frame_index, 0);
+                (*width, *height)
+            }
+        };
         size(width.into(), height.into())
     }
 
@@ -88,12 +127,21 @@ impl RenderImage {
 
     /// Get the delay of this frame from the previous
     pub fn delay(&self, frame_index: usize) -> Delay {
-        self.data[frame_index].delay()
+        match &self.data {
+            RenderImageData::Frames(frames) => frames[frame_index].delay(),
+            RenderImageData::Shared { .. } => {
+                assert_eq!(frame_index, 0);
+                Delay::from_numer_denom_ms(0, 1)
+            }
+        }
     }
 
     /// Get the number of frames for this image.
     pub fn frame_count(&self) -> usize {
-        self.data.len()
+        match &self.data {
+            RenderImageData::Frames(frames) => frames.len(),
+            RenderImageData::Shared { .. } => 1,
+        }
     }
 }
 

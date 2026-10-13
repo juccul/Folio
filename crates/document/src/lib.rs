@@ -1062,6 +1062,38 @@ pub struct Command {
 }
 impl Command {
     pub fn apply(&self, doc: &mut Document, forward: bool) {
+        #[derive(Default)]
+        struct Removed {
+            ids: Vec<Id>,
+            indexed: Option<std::collections::HashSet<Id>>,
+        }
+        impl Removed {
+            fn insert(&mut self, id: Id) {
+                if let Some(ids) = &mut self.indexed {
+                    ids.insert(id);
+                } else {
+                    self.ids.push(id);
+                }
+            }
+            fn remove(&mut self, id: &Id) -> bool {
+                self.indexed
+                    .get_or_insert_with(|| std::mem::take(&mut self.ids).into_iter().collect())
+                    .remove(id)
+            }
+        }
+        fn remove_from_order(page: &mut Page, removed: Removed) {
+            let ids = if let Some(ids) = removed.indexed {
+                ids
+            } else if removed.ids.len() == 1 {
+                page.order.retain(|id| *id != removed.ids[0]);
+                return;
+            } else {
+                removed.ids.into_iter().collect()
+            };
+            if !ids.is_empty() {
+                page.order.retain(|id| !ids.contains(id));
+            }
+        }
         // A favorite is library organization, not a content edit. Preserve its
         // edit time in both directions so toggling it cannot reorder the shelf
         // or invalidate the cover preview.
@@ -1078,6 +1110,7 @@ impl Command {
             });
         doc.version = FORMAT_VERSION;
         let mut inserted = Vec::new();
+        let mut removed: BTreeMap<Id, Removed> = BTreeMap::new();
         let mut apply = |c: &Change, doc: &mut Document| match c {
             Change::InkText {
                 page,
@@ -1118,13 +1151,23 @@ impl Command {
                     let value = if forward { after } else { before };
                     if let Some(o) = value {
                         if !p.objects.contains_key(id) {
+                            // Only a reused identity needs its old order entry
+                            // removed now. Unrelated replacement fragments can
+                            // leave batch deletion deferred until the end.
+                            if removed.get_mut(page).is_some_and(|ids| ids.remove(id)) {
+                                p.order.retain(|old| old != id);
+                            }
                             p.order.push(*id);
                             inserted.push((*page, *id, *index));
                         }
                         p.objects.insert(*id, o.clone());
                     } else {
                         p.objects.remove(id);
-                        p.order.retain(|v| v != id);
+                        if self.changes.len() == 1 {
+                            p.order.retain(|v| v != id);
+                        } else {
+                            removed.entry(*page).or_default().insert(*id);
+                        }
                     }
                     p.revision += 1;
                     p.groups.clear();
@@ -1138,9 +1181,11 @@ impl Command {
                 let old = if forward { before } else { after };
                 let new = if forward { after } else { before };
                 if let Some(old) = old {
+                    removed.remove(&old.id);
                     doc.pages.retain(|p| p.id != old.id)
                 }
                 if let Some(new) = new {
+                    removed.remove(&new.id);
                     doc.pages.insert((*index).min(doc.pages.len()), new.clone())
                 }
             }
@@ -1175,6 +1220,13 @@ impl Command {
                 apply(c, doc)
             }
         }
+        // Batch erasing visits a page's drawing order once instead of once per
+        // deleted object. Object-map changes and revision increments stay ordered.
+        for (id, ids) in removed {
+            if let Some(page) = doc.page_mut(id) {
+                remove_from_order(page, ids);
+            }
+        }
         // Restore original z-order after a batch deletion. Inserting immediately
         // while undoing in reverse shifts later objects into the wrong positions.
         inserted.sort_by_key(|(page, _, index)| (*page, *index));
@@ -1201,8 +1253,23 @@ impl Command {
                         .map(|(_, id, _)| *id)
                         .collect::<std::collections::HashSet<_>>();
                     page.order.retain(|id| !ids.contains(id));
-                    for (_, id, index) in objects {
-                        page.order.insert((*index).min(page.order.len()), *id);
+                    if objects.len() > 1 && objects.windows(2).all(|pair| pair[0].2 < pair[1].2) {
+                        // Merge distinct positions in one pass when restoring a
+                        // large selection; repeated Vec::insert shifts the tail.
+                        let mut order = Vec::with_capacity(page.order.len() + objects.len());
+                        let mut remaining = std::mem::take(&mut page.order).into_iter();
+                        for (_, id, index) in objects {
+                            order
+                                .extend(remaining.by_ref().take(index.saturating_sub(order.len())));
+                            order.push(*id);
+                        }
+                        order.extend(remaining);
+                        page.order = order;
+                    } else {
+                        // Equal indices preserve the existing stable insertion semantics.
+                        for (_, id, index) in objects {
+                            page.order.insert((*index).min(page.order.len()), *id);
+                        }
                     }
                 }
             }
@@ -1373,6 +1440,218 @@ mod edge_case_tests {
             alignment: Alignment::Left,
             list: ListStyle::None,
         }))
+    }
+    #[test]
+    fn batch_deletion_restores_interleaved_order_across_pages() {
+        let mut doc = Document::new("Batch edits");
+        doc.pages.push(Page::new());
+        for page in &mut doc.pages {
+            for _ in 0..256 {
+                let object = text();
+                page.order.push(object.id());
+                page.objects.insert(object.id(), object);
+            }
+        }
+        let original = doc.pages.clone();
+        let deletion = Command {
+            label: "Delete alternating objects on two pages".into(),
+            changes: original
+                .iter()
+                .enumerate()
+                .flat_map(|(i, page)| {
+                    page.order
+                        .iter()
+                        .enumerate()
+                        .step_by(i + 2)
+                        .map(|(index, id)| Change::Object {
+                            page: page.id,
+                            id: *id,
+                            before: Some(page.objects[id].clone()),
+                            after: None,
+                            index,
+                        })
+                })
+                .collect(),
+        };
+        for _ in 0..3 {
+            deletion.apply(&mut doc, true);
+            doc.validate().unwrap();
+            for (i, page) in doc.pages.iter().enumerate() {
+                assert_eq!(
+                    page.order,
+                    original[i]
+                        .order
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| index % (i + 2) != 0)
+                        .map(|(_, id)| *id)
+                        .collect::<Vec<_>>()
+                );
+            }
+            deletion.apply(&mut doc, false);
+            doc.validate().unwrap();
+            for (page, original) in doc.pages.iter().zip(&original) {
+                assert_eq!(page.order, original.order);
+                assert_eq!(page.objects, original.objects);
+            }
+        }
+
+        // Segment erasing interleaves deletion with insertion of fresh
+        // fragments. Each replacement belongs at its source's drawing rank.
+        let replacements = Command {
+            label: "Replace alternating objects on two pages".into(),
+            changes: deletion
+                .changes
+                .iter()
+                .flat_map(|change| {
+                    let Change::Object { page, index, .. } = change else {
+                        unreachable!()
+                    };
+                    let object = text();
+                    [
+                        change.clone(),
+                        Change::Object {
+                            page: *page,
+                            id: object.id(),
+                            before: None,
+                            after: Some(object),
+                            index: *index,
+                        },
+                    ]
+                })
+                .collect(),
+        };
+        for _ in 0..3 {
+            replacements.apply(&mut doc, true);
+            doc.validate().unwrap();
+            for (page, source) in doc.pages.iter().zip(&original) {
+                let mut expected = source.order.clone();
+                for change in &replacements.changes {
+                    if let Change::Object {
+                        page: target,
+                        id,
+                        before: None,
+                        index,
+                        ..
+                    } = change
+                        && *target == page.id
+                    {
+                        expected[*index] = *id;
+                    }
+                }
+                assert_eq!(page.order, expected);
+            }
+            replacements.apply(&mut doc, false);
+            doc.validate().unwrap();
+            for (page, source) in doc.pages.iter().zip(&original) {
+                assert_eq!(page.order, source.order);
+                assert_eq!(page.objects, source.objects);
+            }
+        }
+
+        // An insertion after a deletion flushes the old order entry, even when
+        // the same identity is reused within the command.
+        let page = &original[0];
+        let id = page.order[0];
+        let remove = Change::Object {
+            page: page.id,
+            id,
+            before: Some(page.objects[&id].clone()),
+            after: None,
+            index: 0,
+        };
+        let reinsert = Change::Object {
+            page: page.id,
+            id,
+            before: None,
+            after: Some(page.objects[&id].clone()),
+            index: 0,
+        };
+        let mixed = Command {
+            label: "Remove and reinsert".into(),
+            changes: vec![remove.clone(), reinsert],
+        };
+        for forward in [true, false] {
+            mixed.apply(&mut doc, forward);
+            doc.validate().unwrap();
+            assert_eq!(doc.pages[0].order, page.order);
+        }
+
+        let mut deleted = doc.pages[0].clone();
+        deleted.objects.remove(&id);
+        deleted.order.remove(0);
+        let replaced = Command {
+            label: "Delete then replace page".into(),
+            changes: vec![
+                remove,
+                Change::Page {
+                    index: 0,
+                    before: Some(deleted),
+                    after: Some(page.clone()),
+                },
+            ],
+        };
+        for forward in [true, false] {
+            replaced.apply(&mut doc, forward);
+            doc.validate().unwrap();
+            assert_eq!(doc.pages[0].order, page.order);
+        }
+    }
+
+    #[test]
+    fn middle_insertions_preserve_equal_and_clamped_positions() {
+        for positions in [[0, 2, 999, 1000], [1, 1, 1, 1]] {
+            let mut doc = Document::new("Insertion order");
+            let existing = [text(), text()];
+            let inserted = [text(), text(), text(), text()];
+            let page = &mut doc.pages[0];
+            for object in &existing {
+                page.order.push(object.id());
+                page.objects.insert(object.id(), object.clone());
+            }
+            let original = page.order.clone();
+            let command = Command {
+                label: "Insert at requested positions".into(),
+                changes: inserted
+                    .iter()
+                    .zip(positions)
+                    .map(|(object, index)| Change::Object {
+                        page: page.id,
+                        id: object.id(),
+                        before: None,
+                        after: Some(object.clone()),
+                        index,
+                    })
+                    .collect(),
+            };
+            let expected = if positions[0] == 0 {
+                vec![
+                    inserted[0].id(),
+                    existing[0].id(),
+                    inserted[1].id(),
+                    existing[1].id(),
+                    inserted[2].id(),
+                    inserted[3].id(),
+                ]
+            } else {
+                vec![
+                    existing[0].id(),
+                    inserted[3].id(),
+                    inserted[2].id(),
+                    inserted[1].id(),
+                    inserted[0].id(),
+                    existing[1].id(),
+                ]
+            };
+            for _ in 0..2 {
+                command.apply(&mut doc, true);
+                assert_eq!(doc.pages[0].order, expected);
+                doc.validate().unwrap();
+                command.apply(&mut doc, false);
+                assert_eq!(doc.pages[0].order, original);
+                doc.validate().unwrap();
+            }
+        }
     }
     #[test]
     fn duplicate_object_ids_across_pages_are_rejected() {

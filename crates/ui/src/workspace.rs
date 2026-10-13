@@ -56,13 +56,58 @@ impl Thumbnails {
         let valid = self.entries.get(&id).is_some_and(|entry| &entry.key == key);
         (touched, valid)
     }
+    fn start(
+        &mut self,
+        id: Id,
+        key: ThumbnailKey,
+        aspect: f32,
+        touched: u64,
+        mut release: impl FnMut(Arc<RenderImage>),
+    ) {
+        if !self.entries.contains_key(&id)
+            && self.entries.len() >= 48
+            && let Some(oldest) = self
+                .entries
+                .iter()
+                .filter(|(id, _)| !self.pending.contains_key(id))
+                .min_by_key(|(_, entry)| entry.touched)
+                .map(|(id, _)| *id)
+            && let Some(image) = self.entries.remove(&oldest).and_then(|entry| entry.image)
+        {
+            release(image);
+        }
+        if let Some(image) = self
+            .entries
+            .insert(
+                id,
+                Thumbnail {
+                    key,
+                    generation: touched,
+                    image: None,
+                    error: None,
+                    aspect,
+                    touched,
+                },
+            )
+            .and_then(|entry| entry.image)
+        {
+            release(image);
+        }
+        self.pending.insert(id, touched);
+    }
 }
 enum ThumbnailSource {
     Cover(Arc<Page>),
     Current(usize),
 }
 impl NotesView {
-    fn thumbnail(&mut self, source: ThumbnailSource, width: f32, cx: &mut Context<Self>) -> Div {
+    fn thumbnail(
+        &mut self,
+        source: ThumbnailSource,
+        width: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let page = match &source {
             ThumbnailSource::Cover(page) => page.as_ref(),
             ThumbnailSource::Current(index) => &self.controller.session().document.pages[*index],
@@ -86,32 +131,12 @@ impl NotesView {
         let (touched, valid) = self.thumbnails.touch(id, &key);
         if !valid && self.thumbnails.pending.len() < 2 && !self.thumbnails.pending.contains_key(&id)
         {
-            if !self.thumbnails.entries.contains_key(&id)
-                && self.thumbnails.entries.len() >= 48
-                && let Some(oldest) = self
-                    .thumbnails
-                    .entries
-                    .iter()
-                    .filter(|(id, _)| !self.thumbnails.pending.contains_key(id))
-                    .min_by_key(|(_, e)| e.touched)
-                    .map(|(id, _)| *id)
-            {
-                self.thumbnails.entries.remove(&oldest);
-            }
             let generation = touched;
             let aspect = page.properties.width / page.properties.height.max(1.);
-            self.thumbnails.entries.insert(
-                id,
-                Thumbnail {
-                    key,
-                    generation,
-                    image: None,
-                    error: None,
-                    aspect,
-                    touched,
-                },
-            );
-            self.thumbnails.pending.insert(id, generation);
+            self.thumbnails.start(id, key, aspect, touched, |image| {
+                // Dropping the Arc alone leaves its sprite-atlas allocation alive.
+                let _ = window.drop_image(image);
+            });
             // Snapshot only when a raster job is needed. Cached redraws avoid
             // cloning the entire page/object map, and appearance adaptation runs
             // on the worker with the rasterization.
@@ -647,6 +672,7 @@ impl NotesView {
         &mut self,
         notes: Vec<folio_document::NoteMetadata>,
         list_view: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let theme = Theme::new(&self.controller.settings);
@@ -837,6 +863,7 @@ impl NotesView {
                     self.thumbnail(
                         ThumbnailSource::Cover(page.clone()),
                         144. * self.controller.settings.ui_scale,
+                        window,
                         cx,
                     )
                 } else {
@@ -996,13 +1023,14 @@ impl NotesView {
                     let start = row * columns;
                     let end = (start + columns).min(total);
                     rows.push(
-                        this.library_items(notes[start..end].to_vec(), list_view, cx)
+                        this.library_items(notes[start..end].to_vec(), list_view, window, cx)
                             .h(rems(if list_view { 4.5 } else { 20. }))
                             .items_start(),
                     );
                 }
                 this.accessibility
                     .retain_library_items(&notes[visible_start..visible_end]);
+                this.resume_poll(cx);
                 this.accessibility.publish(this, window, cx);
                 rows
             }),
@@ -1856,7 +1884,8 @@ impl NotesView {
                     if let Some(background) = background {
                         this.controller.request_pdf_background(background);
                     }
-                    let thumbnail = this.thumbnail(ThumbnailSource::Current(index), 122., cx);
+                    let thumbnail =
+                        this.thumbnail(ThumbnailSource::Current(index), 122., window, cx);
                     let page = &this.controller.session().document.pages[index];
                     let page_id = page.id;
                     let label = page.properties.bookmark.as_ref().map_or_else(
@@ -1908,6 +1937,7 @@ impl NotesView {
                     );
                 }
                 // Virtual rows register during layout, after the root's render.
+                this.resume_poll(cx);
                 this.accessibility.publish(this, window, cx);
                 rows
             }),
@@ -2101,17 +2131,15 @@ mod thumbnail_tests {
         let page = Page::new();
         let original = key(&page);
         let mut cache = Thumbnails::default();
-        cache.entries.insert(
-            page.id,
-            Thumbnail {
-                key: original.clone(),
-                generation: 1,
-                image: None,
-                error: None,
-                aspect: 1.,
-                touched: 1,
-            },
-        );
+        let mut atlas = std::collections::HashSet::new();
+        cache.start(page.id, original.clone(), 1., 1, |_| {
+            panic!("A new cache entry cannot retire an image")
+        });
+        cache.pending.remove(&page.id);
+        let image = graph::image(1, 1, vec![0; 4]);
+        let old_image = Arc::downgrade(&image);
+        atlas.insert(image.id);
+        cache.entries.get_mut(&page.id).unwrap().image = Some(image);
         assert!(cache.touch(page.id, &original).1);
         for change in [
             |k: &mut ThumbnailKey| k.revision += 1,
@@ -2124,5 +2152,40 @@ mod thumbnail_tests {
             assert!(!cache.touch(page.id, &changed).1);
         }
         assert!(!cache.touch(Id::new_v4(), &original).1);
+        let mut changed = original.clone();
+        changed.revision += 1;
+        let (generation, _) = cache.touch(page.id, &changed);
+        cache.start(page.id, changed.clone(), 1., generation, |image| {
+            assert!(atlas.remove(&image.id), "Image retired more than once");
+        });
+        assert!(old_image.upgrade().is_none());
+        assert!(cache.touch(page.id, &changed).1);
+        assert!(atlas.is_empty());
+
+        // Scrolling through many covers retires old atlas allocations while
+        // keeping an in-flight replacement pinned until its result arrives.
+        for _ in 0..80 {
+            let next = Id::new_v4();
+            let (touched, _) = cache.touch(next, &original);
+            cache.start(next, original.clone(), 1., touched, |image| {
+                assert!(atlas.remove(&image.id), "Image retired more than once");
+            });
+            let image = graph::image(1, 1, vec![0; 4]);
+            atlas.insert(image.id);
+            cache.entries.get_mut(&next).unwrap().image = Some(image);
+            cache.pending.remove(&next);
+        }
+        assert!(cache.entries.contains_key(&page.id));
+        assert_eq!(cache.pending.get(&page.id), Some(&generation));
+        assert_eq!(
+            atlas,
+            cache
+                .entries
+                .values()
+                .filter_map(|entry| entry.image.as_ref().map(|image| image.id))
+                .collect(),
+            "Evicted covers must not leave sprite-atlas images behind"
+        );
+        assert!(atlas.len() < 80, "Scrolling must evict old cover images");
     }
 }

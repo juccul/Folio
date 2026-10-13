@@ -44,7 +44,7 @@ fn main() {
     controller.commit("Fixture", changes);
     let note = controller.active;
     Application::new().with_assets(folio_ui::IconAssets).run(move |cx| {
-        let window=cx.open_window(WindowOptions {window_bounds:Some(WindowBounds::Windowed(Bounds::new(point(px(0.),px(0.)),size(px(1000.),px(800.))))),..Default::default()},|window,cx| {
+        let window=cx.open_window(WindowOptions {window_bounds:Some(WindowBounds::Windowed(Bounds::new(point(px(0.),px(0.)),size(px(1000.),px(800.))))),titlebar:Some(TitlebarOptions {title:Some("Folio - Ink cache fixture".into()),..Default::default()}),..Default::default()},|window,cx| {
             cx.new(|cx| {let mut view=NotesView::new_titlebar_smoke(controller,window,cx);view.navigation_smoke_open(note);view})
         }).unwrap();
         cx.activate(true);
@@ -57,17 +57,54 @@ fn main() {
                     if strokes==count {ready=true;break;}
                 }
                 if !ready { return Err("Ink batches did not settle".into()); }
+                // Keep settled images warm during continuous grow/shrink steps.
+                for width in (1000..1120).step_by(4).chain((1000..1120).rev().step_by(4)) {
+                    window.update(cx,|_,window,cx| {window.resize(size(px(width as f32),px(800.)));cx.notify();})?;
+                    cx.background_executor().timer(Duration::from_millis(20)).await;
+                    let (_,strokes)=window.update(cx,|view,_,_|view.smoke_ink_layers(None))?;
+                    if strokes!=count {return Err(format!("Resizing evicted settled ink at width {width}").into());}
+                }
+                window.update(cx,|_,window,cx| {window.resize(size(px(1000.),px(800.)));cx.notify();})?;
+                println!("FOLIO_RESIZE_INK_OK 60 grow/shrink steps retained {count} cached strokes");
                 window.update(cx,|view,_,cx| {view.controller.select_all();cx.notify();})?;
                 cx.background_executor().timer(Duration::from_millis(100)).await;
                 let (layers,strokes)=window.update(cx,|view,_,_|view.smoke_ink_layers(None))?;
                 if layers!=0 || strokes!=0 { return Err("Selected ink remained raster-cached".into()); }
                 window.update(cx,|view,_,cx| {view.controller.session_mut().selection.clear();view.controller.settings.appearance.adapt_ink=true;view.controller.session_mut().viewport.zoom=1.25;cx.notify();})?;
+                ready=false;
                 for _ in 0..200 {
                     cx.background_executor().timer(Duration::from_millis(50)).await;
                     let (layers,strokes)=window.update(cx,|view,_,_|view.smoke_ink_layers(None))?;
-                    if strokes==count {println!("FOLIO_INK_CACHE_OK {count} strokes / {layers} layers; default caching, selection, theme and zoom invalidation passed");return Ok(());}
+                    if strokes==count {println!("FOLIO_INK_CACHE_OK {count} strokes / {layers} layers; default caching, selection, theme and zoom invalidation passed");ready=true;break;}
                 }
-                Err("Ink batches did not recover after theme/selection changes".into())
+                if !ready {return Err("Ink batches did not recover after theme/selection changes".into());}
+                window.update(cx,|view,_,cx| {view.controller.page_size(794.,1123.,true);view.controller.paper(Paper::Dots);cx.notify();})?;
+                for zoom in [0.5,0.25,0.1] {
+                    window.update(cx,|view,_,cx| {let viewport=&mut view.controller.session_mut().viewport;viewport.zoom=zoom;viewport.rotation=0.35;viewport.pan=folio_document::Point::new(180.,100.);cx.notify();})?;
+                    ready=false;
+                    for _ in 0..200 {
+                        cx.background_executor().timer(Duration::from_millis(50)).await;
+                        let (_,strokes)=window.update(cx,|view,_,_|view.smoke_ink_layers(None))?;
+                        if strokes==count {ready=true;break;}
+                    }
+                    if !ready {return Err(format!("Ink batches did not settle on infinite dotted paper at zoom {zoom}").into());}
+                    println!("FOLIO_PAPER_ZOOM_OK zoom={zoom}; rotated infinite dotted paper with {count} strokes");
+                    cx.background_executor().timer(Duration::from_millis(300)).await;
+                }
+                window.update(cx,|view,_,cx| {view.navigation_smoke_setup();cx.notify();})?;
+                cx.background_executor().timer(Duration::from_millis(200)).await;
+                let (layers,strokes)=window.update(cx,|view,_,_|view.smoke_ink_layers(None))?;
+                if layers!=0 || strokes!=0 {return Err("Hidden editor retained its ink images".into());}
+                window.update(cx,|view,_,cx| {view.navigation_smoke_open(note);cx.notify();})?;
+                ready=false;
+                for _ in 0..200 {
+                    cx.background_executor().timer(Duration::from_millis(50)).await;
+                    let (_,strokes)=window.update(cx,|view,_,_|view.smoke_ink_layers(None))?;
+                    if strokes==count {ready=true;break;}
+                }
+                if !ready {return Err("Ink images did not rebuild after reopening the editor".into());}
+                println!("FOLIO_CANVAS_RELEASE_OK hidden editor images released; {count} strokes rebuilt after reopening");
+                Ok(())
             }.await;
             if let Err(error)=result {eprintln!("FOLIO_INK_CACHE_FAILED {error:#}");std::process::exit(1);}
             cx.update(|cx|cx.quit()).ok();

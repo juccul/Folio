@@ -47,17 +47,39 @@ fn reviewed_replacement_preserves_neighbors_order_raw_undo_and_durable_history()
     app.add_text("untouched neighbor".into(), Point::new(300., 50.));
     let neighbor = app.page().order[1];
     let second = draw(&mut app, 60.);
+    for i in 0..8 {
+        app.add_text(
+            format!("unselected {i}"),
+            Point::new(300., 100. + i as f32 * 30.),
+        );
+    }
     let old_order = app.page().order.clone();
     let originals = app.page().objects.clone();
     app.session_mut().selection = HashSet::from([first, second, neighbor]);
     let suggestion = review(&mut app);
     // Reviewing/copying text is read-only, and mixed selections capture ink only.
     assert_eq!(suggestion.sources.len(), 2);
+    assert_eq!(
+        suggestion
+            .sources
+            .iter()
+            .map(|o| o.id())
+            .collect::<Vec<_>>(),
+        vec![first, second]
+    );
     assert_eq!(app.page().objects, originals);
     app.replace_recognized_writing("Corrected café\n第二行".into())
         .unwrap();
     let text = *app.session().selection.iter().next().unwrap();
-    assert_eq!(app.page().order, vec![text, neighbor]);
+    let expected = std::iter::once(text)
+        .chain(
+            old_order
+                .iter()
+                .copied()
+                .filter(|id| *id != first && *id != second),
+        )
+        .collect::<Vec<_>>();
+    assert_eq!(app.page().order, expected);
     assert_eq!(app.page().objects[&neighbor], originals[&neighbor]);
     assert_eq!(
         app.page().objects[&text].searchable_text(),
@@ -77,6 +99,51 @@ fn reviewed_replacement_preserves_neighbors_order_raw_undo_and_durable_history()
     assert_eq!(app.page().order, old_order);
     app.redo();
     assert_eq!(app.page().objects[&text], replacement);
+    app.undo();
+    let shape = Object::Shape(Shape {
+        id: Id::new_v4(),
+        kind: ShapeKind::Line,
+        vertices: vec![Point::new(20., 50.), Point::new(40., 74.)],
+        style: PenStyle::default(),
+        transform: Transform::default(),
+        source_strokes: vec![first],
+    });
+    app.commit(
+        "Derived shape",
+        vec![Change::Object {
+            page: app.page().id,
+            id: shape.id(),
+            before: None,
+            after: Some(Arc::new(shape)),
+            index: 0,
+        }],
+    );
+    app.session_mut().selection = HashSet::from([first]);
+    assert!(!app.can_recognize_selection());
+    app.session_mut().selection.insert(second);
+    assert_eq!(
+        app.recognition_snapshot(RecognitionKind::Text)
+            .unwrap()
+            .sources[0]
+            .id(),
+        second
+    );
+    app.undo();
+    app.session_mut().selection = HashSet::from([first]);
+    assert!(app.can_recognize_selection());
+    // Public page selection can precede refresh of both spatial and rank caches.
+    app.add_page();
+    app.session_mut().page = 0;
+    app.session_mut().selection = HashSet::from([second, first]);
+    assert_eq!(
+        app.recognition_snapshot(RecognitionKind::Text)
+            .unwrap()
+            .sources
+            .iter()
+            .map(|o| o.id())
+            .collect::<Vec<_>>(),
+        vec![first, second]
+    );
     clean(app, root);
 }
 
@@ -252,7 +319,10 @@ fn wait_result(app: &mut Controller) {
 #[test]
 fn asynchronous_results_remain_suggestions_and_stale_results_are_rejected() {
     let (mut app, root) = fixture();
-    fake_pack(&root, 0.05);
+    // Processing takes longer than the idle timeout: running work must survive.
+    fake_pack(&root, 0.25);
+    app.recognition_service =
+        Service::with_idle_timeout(app.recognition_pack(), Duration::from_millis(150));
     let id = draw(&mut app, 20.);
     app.session_mut().selection = HashSet::from([id]);
     let before = app.page().objects.clone();
@@ -263,6 +333,51 @@ fn asynchronous_results_remain_suggestions_and_stale_results_are_rejected() {
         "recognized locally"
     );
     assert_eq!(app.page().objects, before);
+    let pid = app
+        .recognition_service
+        .process
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .id();
+    app.recognize_selection(RecognitionKind::Text).unwrap();
+    wait_result(&mut app);
+    assert_eq!(
+        app.recognition_service
+            .process
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .id(),
+        pid
+    );
+    let start = Instant::now();
+    while app.recognition_service.process.lock().unwrap().is_some() {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "Idle OCR process was retained"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Idle eviction preserves the review and permits a new request to restart.
+    assert_eq!(
+        app.recognition_review.as_ref().unwrap().text,
+        "recognized locally"
+    );
+    app.recognize_selection(RecognitionKind::Text).unwrap();
+    wait_result(&mut app);
+    assert_ne!(
+        app.recognition_service
+            .process
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .id(),
+        pid
+    );
     app.recognize_selection(RecognitionKind::Text).unwrap();
     app.transform_selection(Transform::translate(10., 0.), "Move during recognition");
     wait_result(&mut app);

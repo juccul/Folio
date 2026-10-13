@@ -199,6 +199,8 @@ pub struct NotesView {
     updater: folio_update::Updater,
     titlebar_smoke: bool,
     update_preparing: bool,
+    poll_task: Option<Task<()>>,
+    poll_idle: bool,
     region_selection: Option<region::Selection>,
     pub controller: Controller,
     math_inputs: Option<math_panel::Inputs>,
@@ -315,33 +317,6 @@ impl NotesView {
                 })
                 .unwrap_or(true)
         });
-        cx.spawn(async move |view, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                let result = view.update(cx, |view, cx| {
-                    let changed = !view.update_preparing && view.controller.tick();
-                    let update_changed = view.updater.poll();
-                    if view.updater.state == folio_update::State::Exit {
-                        view.update_preparing = false;
-                        cx.quit();
-                        return;
-                    }
-                    if matches!(view.updater.state, folio_update::State::Failed { .. }) {
-                        view.update_preparing = false;
-                    }
-                    let motion_changed = view.motion.borrow_mut().advance();
-                    if changed || update_changed || view.accessibility.poll() || motion_changed {
-                        cx.notify();
-                    }
-                });
-                if result.is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
         let mut workspace = controller.settings.workspace.clone();
         workspace
             .open_tabs
@@ -350,7 +325,7 @@ impl NotesView {
             workspace.open_tabs.clear();
             workspace.library_open = true;
         }
-        Self {
+        let mut view = Self {
             updater: if titlebar_smoke {
                 folio_update::Updater::disabled()
             } else {
@@ -358,6 +333,8 @@ impl NotesView {
             },
             titlebar_smoke,
             update_preparing: false,
+            poll_task: None,
+            poll_idle: false,
             region_selection: None,
             controller,
             math_inputs: None,
@@ -417,6 +394,59 @@ impl NotesView {
             start: Instant::now(),
             painter: painting::Painter::default(),
             accessibility: std::rc::Rc::new(accessibility::Accessibility::new(window)),
+        };
+        view.subscriptions.push(cx.observe_self(|view, cx| {
+            // Input and background render notifications cancel the idle timer,
+            // so newly started animations/work never wait for the idle interval.
+            if view.poll_idle {
+                view.schedule_poll(Duration::from_millis(16), cx);
+            }
+        }));
+        view.schedule_poll(Duration::from_millis(16), cx);
+        view
+    }
+    fn schedule_poll(&mut self, delay: Duration, cx: &mut Context<Self>) {
+        self.poll_idle = delay > Duration::from_millis(16);
+        // Replacing the handle cancels the previous timer rather than creating
+        // a second poll loop. The weak entity stops polling when the view closes.
+        self.poll_task = Some(cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = view.update(cx, |view, cx| {
+                if let Some(task) = view.poll_task.take() {
+                    task.detach();
+                }
+                let changed = !view.update_preparing && view.controller.tick();
+                let update_changed = view.updater.poll();
+                if view.updater.state == folio_update::State::Exit {
+                    view.update_preparing = false;
+                    cx.quit();
+                    return;
+                }
+                if matches!(view.updater.state, folio_update::State::Failed { .. }) {
+                    view.update_preparing = false;
+                }
+                let motion_changed = view.motion.borrow_mut().advance();
+                let notify =
+                    changed || update_changed || view.accessibility.poll() || motion_changed;
+                let fast = notify
+                    || view.controller.needs_fast_poll()
+                    || view.motion.borrow().needs_frame()
+                    || view.updater.state.busy()
+                    || view.updater.state == folio_update::State::Checking;
+                view.schedule_poll(Duration::from_millis(if fast { 16 } else { 250 }), cx);
+                if notify {
+                    cx.notify();
+                }
+            });
+        }));
+    }
+    fn resume_poll(&mut self, cx: &mut Context<Self>) {
+        // Rendering/layout can start work after the latest maintenance tick
+        // has selected the idle interval, without another entity notification.
+        if self.poll_idle
+            && (self.controller.needs_fast_poll() || self.motion.borrow().needs_frame())
+        {
+            self.schedule_poll(Duration::from_millis(16), cx);
         }
     }
     pub fn bindings(cx: &mut App) {
@@ -2801,6 +2831,11 @@ fn this_region(controller: &mut Controller, values: &[f32]) -> Result<(), String
 }
 impl Render for NotesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.library_open {
+            // The library does not paint the editor. Release its GPU images,
+            // decoded PDFs and page geometry until the canvas is shown again.
+            self.painter.clear(window, cx);
+        }
         self.controller.refresh_default_ink();
         if self.equation_draft.is_some()
             && let Some(result) = self.controller.equation_result.take()
@@ -3071,6 +3106,7 @@ impl Render for NotesView {
                         .paint(&mut view.controller, bounds, editing, window, cx);
                     view.paint_region(bounds, window);
                     view.diagnostics.painted();
+                    view.resume_poll(cx);
                 });
                 let tablet_entity = paint_entity.clone();
                 window.on_mouse_event(move |event: &TabletEvent, phase, window, cx| {
@@ -3821,6 +3857,7 @@ impl Render for NotesView {
                     ),
             );
         }
+        self.resume_poll(cx);
         self.accessibility.publish(self, window, cx);
         titlebar::frame(root, window)
     }

@@ -9,6 +9,10 @@ fn measure(mut action: impl FnMut(), repetitions: usize) -> serde_json::Value {
         action();
         times.push(start.elapsed().as_secs_f64() * 1e6);
     }
+    distribution(times)
+}
+fn distribution(mut times: Vec<f64>) -> serde_json::Value {
+    let repetitions = times.len();
     times.sort_by(f64::total_cmp);
     serde_json::json!({"p50_us":times[times.len()/2],"p95_us":times[(times.len()-1)*95/100],"repetitions":repetitions})
 }
@@ -59,6 +63,18 @@ fn main() {
         200,
     );
     app.session_mut().selection = HashSet::from([app.page().order[count - 1]]);
+    let recognition_eligibility = measure(
+        || {
+            std::hint::black_box(app.can_recognize_selection());
+        },
+        200,
+    );
+    let single_copy = measure(
+        || {
+            std::hint::black_box(app.copy_objects());
+        },
+        200,
+    );
     let single_selection = measure(
         || app.transform_selection(Transform::translate(1., 0.), "Move one"),
         200,
@@ -68,10 +84,86 @@ fn main() {
         || app.add_text("Short text".into(), Point::new(0., 0.)),
         200,
     );
+    let math_panel_open = measure(|| app.open_math_solver().unwrap(), 200);
+    let mut document = app.session().document.clone();
+    let deletion = Command {
+        label: "Delete alternating objects".into(),
+        changes: document.pages[0]
+            .order
+            .iter()
+            .enumerate()
+            .step_by(2)
+            .map(|(index, id)| Change::Object {
+                page,
+                id: *id,
+                before: Some(document.pages[0].objects[id].clone()),
+                after: None,
+                index,
+            })
+            .collect(),
+    };
+    let mut deletes = Vec::new();
+    let mut restores = Vec::new();
+    for _ in 0..20 {
+        let start = Instant::now();
+        deletion.apply(&mut document, true);
+        deletes.push(start.elapsed().as_secs_f64() * 1e6);
+        let start = Instant::now();
+        deletion.apply(&mut document, false);
+        restores.push(start.elapsed().as_secs_f64() * 1e6);
+    }
+    assert_eq!(document.pages[0].order, app.page().order);
+    assert_eq!(document.pages[0].objects, app.page().objects);
+    let replacement = Command {
+        label: "Replace alternating objects".into(),
+        changes: deletion
+            .changes
+            .iter()
+            .flat_map(|change| {
+                let Change::Object {
+                    page,
+                    before,
+                    index,
+                    ..
+                } = change
+                else {
+                    unreachable!()
+                };
+                let mut object = before.as_ref().unwrap().as_ref().clone();
+                object.set_id(Id::new_v4());
+                [
+                    change.clone(),
+                    Change::Object {
+                        page: *page,
+                        id: object.id(),
+                        before: None,
+                        after: Some(Arc::new(object)),
+                        index: *index,
+                    },
+                ]
+            })
+            .collect(),
+    };
+    let mut replacements = Vec::new();
+    let mut replacement_undos = Vec::new();
+    for _ in 0..20 {
+        let start = Instant::now();
+        replacement.apply(&mut document, true);
+        replacements.push(start.elapsed().as_secs_f64() * 1e6);
+        let start = Instant::now();
+        replacement.apply(&mut document, false);
+        replacement_undos.push(start.elapsed().as_secs_f64() * 1e6);
+    }
+    assert_eq!(document.pages[0].order, app.page().order);
+    assert_eq!(document.pages[0].objects, app.page().objects);
     println!("{}",serde_json::to_string_pretty(&serde_json::json!({
         "measurement":"CPU-only controller; generated fixture; no UI/GPU or physical input",
         "objects":count,"loaded_library_cover":cover,"single_object_transform_autosave_disabled":single_selection,
-        "autosave_disabled_edit":autosave_disabled_edit
+        "single_object_copy":single_copy,"autosave_disabled_edit":autosave_disabled_edit,
+        "single_stroke_recognition_eligibility":recognition_eligibility,"single_text_math_panel_open":math_panel_open,
+        "batch_objects":document.pages[0].objects.len(),"deleted_objects":deletion.changes.len(),
+        "delete_alternating_objects":distribution(deletes),"undo_alternating_deletion":distribution(restores),
+        "replace_alternating_objects":distribution(replacements),"undo_alternating_replacement":distribution(replacement_undos)
     })).unwrap());
     drop(app);
     std::fs::remove_dir_all(root).unwrap();

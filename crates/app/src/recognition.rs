@@ -96,6 +96,9 @@ struct Client {
 }
 impl Service {
     pub fn new(startup_pack: PathBuf) -> Self {
+        Self::with_idle_timeout(startup_pack, Duration::from_secs(5 * 60))
+    }
+    fn with_idle_timeout(startup_pack: PathBuf, idle_timeout: Duration) -> Self {
         let (sender, jobs) = mpsc::sync_channel::<Task>(1);
         let (tx, results) = mpsc::channel();
         let (progress, status) = mpsc::channel();
@@ -125,7 +128,26 @@ impl Service {
                     eprintln!("Folio OCR startup preparation: {error}");
                 }
                 stop_process(&worker_startup_process);
-                while let Ok(task) = jobs.recv() {
+                loop {
+                    let task = if client.is_some() || native_client.is_some() {
+                        match jobs.recv_timeout(idle_timeout) {
+                            Ok(task) => task,
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                // Model RAM/VRAM belongs to the child process.
+                                // Keep verified asset/device preparation for restart.
+                                stop_process(&worker_process);
+                                client = None;
+                                native_client = None;
+                                continue;
+                            }
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
+                    } else {
+                        match jobs.recv() {
+                            Ok(task) => task,
+                            Err(_) => break,
+                        }
+                    };
                     if task.generation != worker_generation.load(Ordering::Acquire) {
                         continue;
                     }
@@ -517,7 +539,7 @@ pub(super) fn pack_path(data_dir: &std::path::Path) -> PathBuf {
 
 impl Controller {
     pub fn can_recognize_selection(&self) -> bool {
-        let hidden = self.page().hidden_sources();
+        let hidden = self.hidden_selection();
         self.session().selection.iter().any(|id| {
             !hidden.contains(id)
                 && self
@@ -528,15 +550,10 @@ impl Controller {
         })
     }
     fn recognition_snapshot(&self, kind: RecognitionKind) -> Result<RecognitionReview, String> {
-        let hidden = self.page().hidden_sources();
+        let hidden = self.hidden_selection();
         let sources: Vec<_> = self
-            .page()
-            .ordered_objects()
-            .filter(|o| {
-                self.session().selection.contains(&o.id())
-                    && !hidden.contains(&o.id())
-                    && matches!(o.as_ref(), Object::Stroke(_))
-            })
+            .selected_objects()
+            .filter(|o| !hidden.contains(&o.id()) && matches!(o.as_ref(), Object::Stroke(_)))
             .cloned()
             .collect();
         let bounds = sources
@@ -611,12 +628,7 @@ impl Controller {
         if self.recognition_pending {
             return Err("Recognition is already running".into());
         }
-        let sources: Vec<_> = self
-            .page()
-            .ordered_objects()
-            .filter(|o| self.session().selection.contains(&o.id()))
-            .cloned()
-            .collect();
+        let sources: Vec<_> = self.selected_objects().cloned().collect();
         if sources.len() != 1 || !matches!(sources[0].as_ref(), Object::Image(_)) {
             return Err("Select one image; use its crop tool to isolate a problem".into());
         }

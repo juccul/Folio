@@ -4,6 +4,7 @@ use folio_app::{
     appearance::{ThemeColor, ThemeToken},
 };
 use gpui::{Hsla, Rgba, rgb, rgba};
+use std::borrow::Cow;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CanvasTheme {
     pub paper: u32,
@@ -22,13 +23,13 @@ impl CanvasTheme {
         }
         readable_ink(color, self.paper, minimum)
     }
-    pub fn preview_pixels(self, bgra: &[u8]) -> Vec<u8> {
-        let mut output = bgra.to_vec();
+    pub fn preview_pixels(self, bgra: &[u8]) -> Cow<'_, [u8]> {
+        let mut output = Cow::Borrowed(bgra);
         if !self.adapt_ink {
             return output;
         }
         let mut colors = std::collections::HashMap::new();
-        for pixel in output.as_chunks_mut::<4>().0 {
+        for (index, pixel) in bgra.as_chunks::<4>().0.iter().enumerate() {
             if pixel[3] == 0 {
                 continue;
             }
@@ -36,9 +37,14 @@ impl CanvasTheme {
             let adjusted = *colors
                 .entry(color)
                 .or_insert_with(|| self.readable(color, 4.5));
-            pixel[0] = adjusted as u8;
-            pixel[1] = (adjusted >> 8) as u8;
-            pixel[2] = (adjusted >> 16) as u8;
+            if adjusted != color {
+                // Most light-paper previews already have readable colors.
+                // Allocate only when an actual color change is necessary.
+                let pixel = &mut output.to_mut()[index * 4..index * 4 + 4];
+                pixel[0] = adjusted as u8;
+                pixel[1] = (adjusted >> 8) as u8;
+                pixel[2] = (adjusted >> 16) as u8;
+            }
         }
         output
     }
@@ -338,6 +344,18 @@ mod tests {
         );
         assert_eq!(&output[8..], &input[8..]);
         assert_eq!(input[0], 0);
+        assert!(matches!(output, Cow::Owned(_)));
+        // Transparent pixels need no adjustment, and already-readable text
+        // must not require another full-size allocation.
+        let readable = [255, 255, 255, 255, 0, 0, 0, 0];
+        let theme = Theme::new(&settings).canvas;
+        let unchanged = theme.preview_pixels(&readable);
+        assert!(matches!(unchanged, Cow::Borrowed(_)));
+        assert_eq!(unchanged.as_ptr(), readable.as_ptr());
+        settings.appearance.adapt_ink = false;
+        let original = Theme::new(&settings).canvas.preview_pixels(&input);
+        assert!(matches!(original, Cow::Borrowed(_)));
+        assert_eq!(original.as_ptr(), input.as_ptr());
     }
     #[test]
     fn custom_mid_gray_paper_chooses_a_readable_foreground() {

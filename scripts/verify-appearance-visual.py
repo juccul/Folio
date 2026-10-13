@@ -81,14 +81,28 @@ def main():
                             from PIL import ImageChops
                             with Image.open(args.output/'settings-dark.png') as settled, Image.open(args.output/'pages-dark.png') as baseline:
                                 settled=settled.convert('RGB');baseline=baseline.convert('RGB')
+                                heading=(390,180,530,220)
+                                settled_heading=settled.crop(heading)
+                                baseline_heading=baseline.crop(heading)
+                                glyphs=[(x,y) for y in range(settled_heading.height)
+                                        for x in range(settled_heading.width)
+                                        if min(settled_heading.getpixel((x,y)))>160
+                                        and max(baseline_heading.getpixel((x,y)))<100]
+                                assert glyphs, 'No Settings heading glyphs in the settled capture'
                                 intermediates=[]
                                 for frame in range(6):
                                     with Image.open(args.output/f'motion-settings-{frame}.png') as picture:
                                         picture=picture.convert('RGB')
                                         # Require visible panel content, not just a frame
                                         # before the input reached the application.
-                                        difference=ImageChops.difference(picture,settled).getbbox()
-                                        visible=picture.getpixel((450,180)) != baseline.getpixel((450,180))
+                                        # A flat background pixel can remain identical
+                                        # during a visible fade. Detect new heading
+                                        # glyphs and compare the heading's opacity.
+                                        picture_heading=picture.crop(heading)
+                                        difference=ImageChops.difference(picture_heading,settled_heading).getbbox()
+                                        visible=any(min(picture_heading.getpixel(p))>
+                                                    max(baseline_heading.getpixel(p))+15
+                                                    for p in glyphs)
                                         if visible and difference:intermediates.append(frame)
                                 assert intermediates, 'No visible intermediate panel animation frame'
                                 print('FINITE_MOTION_FRAMES_OK:',intermediates,flush=True)

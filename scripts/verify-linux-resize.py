@@ -112,7 +112,9 @@ def run_child(a):
             # Private Mutter wallpaper is blue; Folio's neutral chrome identifies
             # the actual presented client rectangle without trusting UIA prepaint.
             gray = ImageChops.multiply(ImageChops.difference(r, g).point([255 if i < 4 else 0 for i in range(256)]), ImageChops.difference(g, bl).point([255 if i < 4 else 0 for i in range(256)]))
-            gray = ImageChops.multiply(gray, r.point([255 if i > 15 else 0 for i in range(256)]))
+            # Include the dark title/status chrome; excluding it moves the
+            # detected bottom edge above the actual resize hitbox.
+            gray = ImageChops.multiply(gray, r.point([255 if i > 7 else 0 for i in range(256)]))
             rect = gray.getbbox()
             rect = [v * 4 for v in rect] if rect else None
             digest = hashlib.blake2b(small.tobytes(), digest_size=8).hexdigest()

@@ -107,9 +107,9 @@ fn math_source_text(sources: &Sources) -> String {
             Object::Equation(e) => Some(
                 e.math_link
                     .as_ref()
-                    .map_or_else(|| e.latex.clone(), |link| link.expression.clone()),
+                    .map_or(e.latex.as_str(), |link| link.expression.as_str()),
             ),
-            Object::Text(t) => Some(t.text.clone()),
+            Object::Text(t) => Some(t.text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -421,12 +421,7 @@ impl Controller {
         local
     }
     fn math_sources(&self) -> Sources {
-        let objects: Vec<_> = self
-            .page()
-            .ordered_objects()
-            .filter(|o| self.session().selection.contains(&o.id()))
-            .cloned()
-            .collect();
+        let objects: Vec<_> = self.selected_objects().cloned().collect();
         let bounds = objects
             .iter()
             .map(|o| o.bounds())
@@ -505,9 +500,9 @@ impl Controller {
             .request
             .expression
             .is_empty()
-            && self.page().ordered_objects().any(|o| {
-                self.session().selection.contains(&o.id()) && matches!(o.as_ref(), Object::Image(_))
-            })
+            && self
+                .selected_objects()
+                .any(|o| matches!(o.as_ref(), Object::Image(_)))
         {
             self.math_after_ocr = true;
             self.recognize_math_image(RecognitionKind::Math)?;

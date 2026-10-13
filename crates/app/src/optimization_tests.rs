@@ -19,6 +19,16 @@ fn ranks(app: &Controller) {
         .collect::<HashMap<_, _>>();
     assert_eq!(app.session().order_positions, expected);
 }
+fn preview(object: Arc<Object>) -> RasterPreview {
+    RasterPreview {
+        pixels_budget: 4,
+        object,
+        bounds: Rect::new(10., 20., 2., 2.),
+        width: 2,
+        height: 2,
+        bgra: Arc::new(vec![0; 16]),
+    }
+}
 #[test]
 fn mixed_middle_insert_and_move_keep_ranks_through_undo_redo() {
     let (mut app, root) = fixture();
@@ -76,20 +86,30 @@ fn preview_results_cannot_resurrect_edited_or_deleted_objects() {
     let note = app.active;
     let id = app.page().order[0];
     let old = app.page().objects[&id].clone();
-    let preview = |object| RasterPreview {
-        pixels_budget: 4,
-        object,
-        bounds: Rect::new(10., 20., 2., 2.),
-        width: 2,
-        height: 2,
-        bgra: Arc::new(vec![0; 16]),
-    };
+    let cached = preview(old.clone());
+    let pixels = Arc::downgrade(&cached.bgra);
+    assert!(app.accept_preview(note, page, cached));
+    app.preview_failed.insert((note, page, id), old.clone());
+    app.preview_pending.insert((note, page, id), old.clone());
     app.session_mut().selection.insert(id);
     app.transform_selection(Transform::translate(400., 0.), "Move text");
+    assert!(
+        pixels.upgrade().is_none(),
+        "Editing releases obsolete pixels"
+    );
+    assert!(!app.preview_failed.contains_key(&(note, page, id)));
+    assert!(app.preview_pending.contains_key(&(note, page, id)));
     assert!(!app.accept_preview(note, page, preview(old)));
     let current = app.page().objects[&id].clone();
-    assert!(app.accept_preview(note, page, preview(current.clone())));
+    let cached = preview(current.clone());
+    let pixels = Arc::downgrade(&cached.bgra);
+    assert!(app.accept_preview(note, page, cached));
     app.delete_selection();
+    assert!(
+        pixels.upgrade().is_none(),
+        "Deleting releases cached pixels"
+    );
+    assert!(!app.previews.contains_key(&(note, page, id)));
     assert!(!app.accept_preview(note, page, preview(current)));
     assert!(
         app.session()
@@ -97,6 +117,19 @@ fn preview_results_cannot_resurrect_edited_or_deleted_objects() {
             .query(Rect::new(-1000., -1000., 3000., 3000.))
             .is_empty()
     );
+    app.undo(); // Restore the deleted object and allow its preview to rebuild.
+    let restored = app.page().objects[&id].clone();
+    let cached = preview(restored.clone());
+    let pixels = Arc::downgrade(&cached.bgra);
+    assert!(app.accept_preview(note, page, cached));
+    app.undo(); // Undo the transform; the restored preview is now obsolete.
+    assert!(pixels.upgrade().is_none());
+    assert!(!app.accept_preview(note, page, preview(restored)));
+    let cached = preview(app.page().objects[&id].clone());
+    let pixels = Arc::downgrade(&cached.bgra);
+    assert!(app.accept_preview(note, page, cached));
+    app.redo();
+    assert!(pixels.upgrade().is_none(), "Redo releases obsolete pixels");
     cleanup(app, root);
 }
 #[test]
@@ -106,20 +139,14 @@ fn offscreen_page_preview_does_not_pollute_active_page_index() {
     let page = app.page().id;
     let object = app.page().objects[&app.page().order[0]].clone();
     let id = object.id();
+    app.add_text("unchanged object".into(), Point::new(30., 60.));
+    let unchanged = app.page().objects[&app.page().order[1]].clone();
+    let unchanged_id = unchanged.id();
     app.add_page();
     let note = app.active;
-    assert!(app.accept_preview(
-        note,
-        page,
-        RasterPreview {
-            pixels_budget: 4,
-            object,
-            bounds: Rect::new(10., 20., 2., 2.),
-            width: 2,
-            height: 2,
-            bgra: Arc::new(vec![0; 16])
-        }
-    ));
+    assert!(app.accept_preview(note, page, preview(object)));
+    assert!(app.accept_preview(note, page, preview(unchanged.clone())));
+    let unchanged_pixels = Arc::downgrade(&app.previews[&(note, page, unchanged_id)].bgra);
     assert!(
         !app.session()
             .index
@@ -127,6 +154,50 @@ fn offscreen_page_preview_does_not_pollute_active_page_index() {
             .contains(&id)
     );
     assert!(app.previews.contains_key(&(note, page, id)));
+    let pixels = Arc::downgrade(&app.previews[&(note, page, id)].bgra);
+    app.add_text("active page".into(), Point::new(40., 80.));
+    assert!(
+        pixels.upgrade().is_some(),
+        "Other page edits keep valid previews"
+    );
+    let before = app.session().document.page(page).unwrap().clone();
+    let mut after = before.clone();
+    after.objects.remove(&id);
+    after.order.retain(|object| *object != id);
+    app.preview_failed
+        .insert((note, page, id), before.objects[&id].clone());
+    app.commit(
+        "Replace offscreen page",
+        vec![Change::Page {
+            index: 0,
+            before: Some(before),
+            after: Some(after),
+        }],
+    );
+    assert!(
+        pixels.upgrade().is_none(),
+        "Page replacement releases stale pixels"
+    );
+    assert!(!app.previews.contains_key(&(note, page, id)));
+    assert!(!app.preview_failed.contains_key(&(note, page, id)));
+    assert!(unchanged_pixels.upgrade().is_some());
+    assert_eq!(
+        app.session()
+            .index
+            .query(Rect::new(0., 0., 100., 100.))
+            .len(),
+        1
+    );
+    app.undo();
+    let restored = app.session().document.page(page).unwrap().objects[&id].clone();
+    assert!(app.accept_preview(note, page, preview(restored.clone())));
+    let pixels = Arc::downgrade(&app.previews[&(note, page, id)].bgra);
+    app.change_page(0);
+    app.delete_page();
+    assert!(pixels.upgrade().is_none());
+    assert!(unchanged_pixels.upgrade().is_none());
+    assert!(!app.accept_preview(note, page, preview(restored)));
+    assert!(!app.accept_preview(note, page, preview(unchanged)));
     cleanup(app, root);
 }
 #[test]
@@ -136,8 +207,11 @@ fn repeated_note_load_requests_are_coalesced() {
     let first = app.active;
     app.create_note();
     app.flush().unwrap();
+    app.tick();
+    assert!(!app.needs_fast_poll());
     app.sessions.remove(&first);
     assert!(app.queue_load(first));
+    assert!(app.needs_fast_poll());
     let busy = app.busy;
     for _ in 0..100 {
         assert!(app.queue_load(first));
@@ -152,6 +226,7 @@ fn repeated_note_load_requests_are_coalesced() {
     }
     assert!(!app.loading_notes.contains(&first));
     assert!(app.sessions.contains_key(&first));
+    assert!(!app.needs_fast_poll());
     cleanup(app, root);
 }
 
@@ -159,12 +234,17 @@ fn repeated_note_load_requests_are_coalesced() {
 fn late_save_receipt_cannot_hide_new_unsaved_edits() {
     let (mut app, root) = fixture();
     app.add_text("Saved earlier".into(), Point::new(0., 0.));
+    assert!(app.needs_fast_poll());
     app.persistence.flush().unwrap(); // Leave the successful receipt unpolled.
     app.set_autosave(false);
     app.add_text("Still unsaved".into(), Point::new(0., 200.));
     assert!(app.status.contains("Unsaved"));
     app.tick();
     assert!(app.status.contains("Unsaved"), "{}", app.status);
+    assert!(
+        !app.needs_fast_poll(),
+        "Deferred edits have no pending disk work"
+    );
     cleanup(app, root);
 }
 
@@ -291,12 +371,22 @@ fn loaded_library_cover_reuses_snapshot_and_invalidates_after_commands() {
     let again = app.library_preview(note).unwrap().0;
     assert!(Arc::ptr_eq(&first, &again));
     let id = app.page().order[0];
+    app.cache_library_preview(
+        note,
+        app.session().document.metadata.updated_at,
+        app.page().clone(),
+        1,
+    );
+    let stored = Arc::downgrade(&app.library_previews[&note].1);
     app.edit_text(id, |text| text.text = "edited".into());
+    assert!(stored.upgrade().is_none());
+    assert!(app.session().library_cover.is_none());
     let edited = app.library_preview(note).unwrap().0;
     assert!(!Arc::ptr_eq(&first, &edited));
     assert!(edited.text().contains("edited"));
     assert!(first.text().contains("original"));
     app.undo();
+    assert!(app.session().library_cover.is_none());
     let undone = app.library_preview(note).unwrap().0;
     assert!(!Arc::ptr_eq(&edited, &undone));
     assert!(undone.text().contains("original"));
@@ -315,12 +405,31 @@ fn loaded_library_cover_reuses_snapshot_and_invalidates_after_commands() {
     assert!(!Arc::ptr_eq(&undone, &replaced));
     assert_eq!(replaced.properties.paper, Paper::Grid);
     app.add_page();
+    let unchanged = app.library_preview(note).unwrap().0;
     app.add_text("second page".into(), Point::new(0., 0.));
+    let again = app.library_preview(note).unwrap().0;
+    assert!(Arc::ptr_eq(&again, &unchanged));
+    let weak = Arc::downgrade(&unchanged);
+    drop(unchanged);
+    drop(again);
+    drop(replaced);
     app.use_page_as_cover();
+    assert!(
+        weak.upgrade().is_none(),
+        "Changing covers releases the old snapshot"
+    );
     let (cover, pages) = app.library_preview(note).unwrap();
     assert_eq!(pages, 2);
     assert_eq!(cover.id, app.page().id);
     assert!(cover.text().contains("second page"));
+    let weak = Arc::downgrade(&cover);
+    drop(cover);
+    let id = app.page().order[0];
+    app.edit_text(id, |text| text.text = "changed cover".into());
+    assert!(
+        weak.upgrade().is_none(),
+        "Cover edits release unused snapshots eagerly"
+    );
     app.delete_page();
     assert_eq!(app.library_preview(note).unwrap().0.id, first.id);
     cleanup(app, root);
@@ -376,10 +485,22 @@ fn sparse_selection_commands_follow_page_order_and_ignore_unknown_ids() {
     }
     let order = app.page().order.clone();
     app.session_mut().selection = HashSet::from([order[5], order[1], Id::new_v4()]);
+    assert_eq!(
+        app.copy_objects()
+            .iter()
+            .map(Object::id)
+            .collect::<Vec<_>>(),
+        vec![order[1], order[5]]
+    );
     let changes = app.object_changes(&app.session().selection, |_| None);
     assert_eq!(changes.len(), 2);
     assert!(matches!(&changes[0], Change::Object { id, index: 1, .. } if *id == order[1]));
     assert!(matches!(&changes[1], Change::Object { id, index: 5, .. } if *id == order[5]));
+    app.open_math_solver().unwrap();
+    assert_eq!(
+        app.math_session.as_ref().unwrap().request.expression,
+        "entry 1\nentry 5"
+    );
     app.delete_selection();
     assert_eq!(
         app.page().order,
@@ -394,6 +515,25 @@ fn sparse_selection_commands_follow_page_order_and_ignore_unknown_ids() {
         vec![order[0], order[2], order[3], order[4]]
     );
     ranks(&app);
+    app.select_all();
+    assert_eq!(
+        app.copy_objects()
+            .iter()
+            .map(Object::id)
+            .collect::<Vec<_>>(),
+        app.page().order
+    );
+    app.add_page();
+    app.add_text("Other page".into(), Point::new(0., 0.));
+    // Direct page selection is supported even before its rank cache is refreshed.
+    app.session_mut().page = 0;
+    app.session_mut().selection = HashSet::from([order[2]]);
+    assert_eq!(app.copy_objects()[0].id(), order[2]);
+    app.open_math_solver().unwrap();
+    assert_eq!(
+        app.math_session.as_ref().unwrap().request.expression,
+        "entry 2"
+    );
     cleanup(app, root);
 }
 

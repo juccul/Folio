@@ -116,8 +116,21 @@ impl Session {
             .changes
             .iter()
             .any(|c| matches!(c, Change::Page { .. }));
-        if pages_changed {
+        if self.library_cover.as_ref().is_some_and(|cover| {
+            let cover_id = self
+                .document
+                .metadata
+                .cover_page
+                .filter(|id| self.document.page(*id).is_some())
+                .unwrap_or(self.document.pages[0].id);
             // A page replacement can preserve both identity and revision.
+            pages_changed
+                || cover.id != cover_id
+                || self
+                    .document
+                    .page(cover.id)
+                    .is_none_or(|page| page.revision != cover.revision)
+        }) {
             self.library_cover = None;
         }
         let object_changes = command
@@ -706,6 +719,8 @@ impl Controller {
         };
         s.history.execute(cmd.clone(), &mut s.document);
         s.refresh_command(&cmd);
+        self.invalidate_previews(note, &cmd);
+        let s = &self.sessions[&note];
         // Deferred edits do not need a page header/search-text snapshot yet.
         let delta = autosave.then(|| {
             let mut delta = if provisional {
@@ -752,6 +767,7 @@ impl Controller {
                 delta.journal.push(JournalEvent::Undo);
                 delta
             });
+            self.invalidate_previews(self.active, &cmd);
             self.refresh_metadata(self.active);
             if let Some(delta) = delta {
                 self.persist(delta);
@@ -783,6 +799,7 @@ impl Controller {
                 delta.journal.push(JournalEvent::Redo);
                 delta
             });
+            self.invalidate_previews(self.active, &cmd);
             self.refresh_metadata(self.active);
             if let Some(delta) = delta {
                 self.persist(delta);
@@ -836,6 +853,18 @@ impl Controller {
     }
     pub fn has_background_work(&self) -> bool {
         self.busy > 0 || self.pending_search.is_some()
+    }
+    /// Work that benefits from frame-rate completion polling. Failed saves and
+    /// OCR awaiting a download choice can use the slower idle maintenance tick.
+    pub fn needs_fast_poll(&self) -> bool {
+        self.interaction.is_some()
+            || self.has_background_work()
+            || !self.save_notes.is_empty()
+            || (self.recognition_pending && !self.recognition_setup_needed())
+            || self.equation_pending
+            || self.math_session.as_ref().is_some_and(|s| s.pending)
+            || !self.math_live_pending.is_empty()
+            || self.pending_note.is_some()
     }
     pub fn default_page_properties(&self) -> PageProperties {
         let mut properties = self
@@ -1754,17 +1783,16 @@ impl Controller {
                 } else {
                     let page = self.page();
                     let mut changes = vec![];
-                    for id in &ids {
-                        if let Some(before) = page.objects.get(id) {
-                            let index = page.order.iter().position(|i| i == id).unwrap_or(0);
+                    for (index, id) in self.ordered_selection(&ids) {
+                        if let Some(before) = page.objects.get(&id) {
                             changes.push(Change::Object {
                                 page: page.id,
-                                id: *id,
+                                id,
                                 before: Some(before.clone()),
                                 after: None,
                                 index,
                             });
-                            if let Some(parts) = fragments.get(id) {
+                            if let Some(parts) = fragments.get(&id) {
                                 for (offset, part) in parts.iter().enumerate() {
                                     changes.push(Change::Object {
                                         page: page.id,
@@ -1912,23 +1940,22 @@ impl Controller {
         self.tool = Tool::Lasso;
         self.temporary_selection = false;
     }
-    fn object_changes(
-        &self,
-        ids: &HashSet<Id>,
-        mut change: impl FnMut(&Object) -> Option<Object>,
-    ) -> Vec<Change> {
+    fn ordered_selection(&self, ids: &HashSet<Id>) -> Vec<(usize, Id)> {
         let page = self.page();
-        // Selected edits scale with the selection, preserving document order for
-        // durable commands without visiting every object on a large page.
-        let mut selected = if self.session().indexed_page == page.id {
-            ids.iter()
+        // Sparse actions scale with the selection; dense actions already arrive
+        // in drawing order and do not need a sort.
+        if self.session().indexed_page == page.id && ids.len() <= page.order.len() / 2 {
+            let mut selected = ids
+                .iter()
                 .filter_map(|id| {
                     self.session()
                         .order_positions
                         .get(id)
                         .map(|index| (*index, *id))
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            selected.sort_unstable_by_key(|(index, _)| *index);
+            selected
         } else {
             // Session exposes its page selector; callers may change it directly.
             page.order
@@ -1937,9 +1964,33 @@ impl Controller {
                 .filter(|(_, id)| ids.contains(id))
                 .map(|(index, id)| (index, *id))
                 .collect()
-        };
-        selected.sort_unstable_by_key(|(index, _)| *index);
-        selected
+        }
+    }
+    fn selected_objects(&self) -> impl Iterator<Item = &Arc<Object>> {
+        let page = self.page();
+        self.ordered_selection(&self.session().selection)
+            .into_iter()
+            .filter_map(move |(_, id)| page.objects.get(&id))
+    }
+    fn hidden_selection(&self) -> HashSet<Id> {
+        let session = self.session();
+        if session.indexed_page != self.page().id {
+            return self.page().hidden_sources();
+        }
+        session
+            .selection
+            .iter()
+            .copied()
+            .filter(|id| session.index.is_hidden(id))
+            .collect()
+    }
+    fn object_changes(
+        &self,
+        ids: &HashSet<Id>,
+        mut change: impl FnMut(&Object) -> Option<Object>,
+    ) -> Vec<Change> {
+        let page = self.page();
+        self.ordered_selection(ids)
             .into_iter()
             .filter_map(|(index, id)| {
                 let before = page.objects.get(&id)?.clone();
@@ -2106,9 +2157,9 @@ impl Controller {
                 }
             }
         }
-        self.page()
-            .ordered_objects()
-            .filter(|o| ids.contains(&o.id()))
+        self.ordered_selection(&ids)
+            .into_iter()
+            .filter_map(|(_, id)| self.page().objects.get(&id))
             .map(|o| o.as_ref().clone())
             .collect()
     }
@@ -3318,6 +3369,63 @@ impl Controller {
             self.busy += 1;
         }
     }
+    fn invalidate_previews(&mut self, note: Id, command: &Command) {
+        // Keep in-flight requests tracked until completion; removing them here
+        // would allow duplicate jobs before stale results are rejected.
+        if self.library_previews.remove(&note).is_some() {
+            self.library_preview_recency.retain(|id| *id != note);
+        }
+        if self.previews.is_empty() && self.preview_failed.is_empty() {
+            return;
+        }
+        let Some(session) = self.sessions.get(&note) else {
+            return;
+        };
+        let current = |page, object: &Arc<Object>| {
+            session
+                .document
+                .page(page)
+                .and_then(|page| page.objects.get(&object.id()))
+                .is_some_and(|source| Arc::ptr_eq(source, object))
+        };
+        // Ordinary edits touch only their own cache keys, even in large notes.
+        for change in &command.changes {
+            if let Change::Object { page, id, .. } = change {
+                let key = (note, *page, *id);
+                if self
+                    .previews
+                    .get(&key)
+                    .is_some_and(|preview| !current(*page, &preview.object))
+                {
+                    self.previews.remove(&key);
+                }
+                if self
+                    .preview_failed
+                    .get(&key)
+                    .is_some_and(|object| !current(*page, object))
+                {
+                    self.preview_failed.remove(&key);
+                }
+            }
+        }
+        let pages = command
+            .changes
+            .iter()
+            .filter_map(|change| match change {
+                Change::Page { before, after, .. } => Some((before, after)),
+                _ => None,
+            })
+            .flat_map(|(before, after)| before.iter().chain(after.iter()).map(|page| page.id))
+            .collect::<HashSet<_>>();
+        if !pages.is_empty() {
+            self.previews.retain(|(owner, page, _), preview| {
+                *owner != note || !pages.contains(page) || current(*page, &preview.object)
+            });
+            self.preview_failed.retain(|(owner, page, _), object| {
+                *owner != note || !pages.contains(page) || current(*page, object)
+            });
+        }
+    }
     fn accept_preview(&mut self, note: Id, page: Id, preview: RasterPreview) -> bool {
         let id = preview.object.id();
         let current = self
@@ -3698,12 +3806,23 @@ mod tests {
             .unwrap();
         a.select_all();
         assert_eq!(a.session().selection.len(), 1);
+        let shape = *a.session().selection.iter().next().unwrap();
+        // Unrelated objects keep this a sparse copy after its hidden source is
+        // included, exercising the ranked path and the source's drawing order.
+        for i in 0..8 {
+            a.add_text(format!("Unrelated {i}"), Point::new(500., i as f32 * 50.));
+        }
+        a.session_mut().selection = HashSet::from([shape]);
         let copy = a.copy_objects();
+        assert_eq!(
+            copy.iter().map(Object::id).collect::<Vec<_>>(),
+            a.page().order[..2]
+        );
         a.paste_objects(copy);
-        assert_eq!(a.page().objects.len(), 4);
+        assert_eq!(a.page().objects.len(), 12);
         assert_eq!(a.page().hidden_sources().len(), 2);
         a.undo();
-        assert_eq!(a.page().objects.len(), 2);
+        assert_eq!(a.page().objects.len(), 10);
         let raw = a
             .page()
             .objects
