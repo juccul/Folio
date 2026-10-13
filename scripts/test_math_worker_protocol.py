@@ -40,10 +40,20 @@ class WorkerProtocolTests(unittest.TestCase):
                               {'expression': 'x', 'operation': 'graph', 'x_min': 1, 'x_max': 1}]:
                     with self.subTest(value=value):
                         self.assertIn('error', request(value))
+                # A decimal power must work within the real worker's one-second
+                # budget, including repeated requests and after timeout recovery.
+                for expression in ('2^{2.83}', '2^{2.83}', '2^{-2.83}'):
+                    with self.subTest(expression=expression):
+                        result = request({'expression': expression})
+                        self.assertNotIn('error', result)
+                        exponent = -2.83 if '-' in expression else 2.83
+                        self.assertAlmostEqual(float(result['approximate']), 2**exponent, places=10)
                 result = request({'expression': '(x+1)^999-x^999', 'operation': 'factor'})
                 self.assertIn('error', result)
                 self.assertIn('time limit', result['error'])
                 self.assertEqual(request({'expression': '2x+3=11'})['answer'], '{4}')
+                self.assertAlmostEqual(float(request({'expression': '2^{2.83}'})['approximate']),
+                                       2**2.83, places=10)
                 self.assertIsNone(worker.poll())
             finally:
                 selector.close()

@@ -40,6 +40,15 @@ class SolverTests(unittest.TestCase):
     def test_real_fractional_power_and_derivative_boundary_domains(self):
         self.assertEqual(solve('(-8)^(1/3)')['answer'],'-2')
         self.assertEqual(solve('(-8)^(-1/3)')['answer'],'-1/2')
+        for operation in ('auto', 'evaluate', 'simplify', 'factor'):
+            with self.subTest(operation=operation):
+                result=solve('2^{2.83}',operation=operation)
+                self.assertEqual(result['answer'],'4*2**(83/100)')
+                self.assertAlmostEqual(float(result['approximate']),2**2.83,places=10)
+                self.assertTrue(result['steps'])
+                self.assertTrue(all(item['status']=='verified' for item in result['steps']))
+        self.assertAlmostEqual(float(solve('2^{-2.83}')['approximate']),2**-2.83,places=10)
+        self.assertEqual(solve('2^{2.83} - 4*2^{0.83}')['answer'],'0')
         result=solve('sqrt(x)',operation='differentiate')
         self.assertTrue(any('neq' in condition for condition in result['restrictions']))
         result=solve('abs(x)',operation='differentiate')

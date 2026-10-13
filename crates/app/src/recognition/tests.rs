@@ -7,18 +7,21 @@ fn fixture() -> (Controller, PathBuf) {
     (app, root)
 }
 fn draw(app: &mut Controller, x: f32) -> Id {
-    for (i, phase) in [Phase::Down, Phase::Move, Phase::Up]
-        .into_iter()
-        .enumerate()
-    {
+    draw_points(app, &[[x, 50.], [x + 10., 62.], [x + 20., 74.]])
+}
+fn draw_points(app: &mut Controller, points: &[[f32; 2]]) -> Id {
+    for (i, &[x, y]) in points.iter().enumerate() {
         app.pointer(PenEvent {
             device: Device::Tablet,
             tool: PenTool::Pen,
-            phase,
-            position: app
-                .session()
-                .viewport
-                .to_screen(Point::new(x + i as f32 * 10., 50. + i as f32 * 12.)),
+            phase: if i == 0 {
+                Phase::Down
+            } else if i + 1 == points.len() {
+                Phase::Up
+            } else {
+                Phase::Move
+            },
+            position: app.session().viewport.to_screen(Point::new(x, y)),
             pressure: 0.7,
             tilt_x: 0.,
             tilt_y: 0.,
@@ -286,7 +289,7 @@ fn fake_pack(root: &std::path::Path, delay: f32) {
     let pack = root.join("recognition");
     std::fs::create_dir_all(&pack).unwrap();
     std::fs::write(pack.join("worker.py"), format!(
-        "import sys,json,time\nfor line in sys.stdin:\n request=json.loads(line)\n time.sleep({delay})\n print(json.dumps({{'text':'recognized locally'}}),flush=True)\n"
+        "import sys,json,time\nfrom pathlib import Path\nresponse=Path(__file__).with_name('response.json')\nfor line in sys.stdin:\n request=json.loads(line)\n time.sleep({delay})\n print(response.read_text() if response.exists() else json.dumps({{'text':'recognized locally'}}),flush=True)\n"
     )).unwrap();
     let math_config = std::env::var_os("FOLIO_MATH_CONFIG")
         .map(PathBuf::from)
@@ -378,6 +381,115 @@ fn asynchronous_results_remain_suggestions_and_stale_results_are_rejected() {
             .id(),
         pid
     );
+    // Numeric suggestions use the captured ink layout, including multi-stroke digits.
+    let number: Vec<_> = [
+        vec![[24., 150.], [30., 150.], [30., 180.]],
+        vec![
+            [38., 152.],
+            [43., 150.],
+            [50., 154.],
+            [50., 160.],
+            [38., 180.],
+            [50., 180.],
+        ],
+        vec![
+            [58., 150.],
+            [70., 150.],
+            [64., 164.],
+            [70., 168.],
+            [70., 180.],
+            [58., 180.],
+        ],
+        vec![[90., 180.], [90., 150.]],
+        vec![[84., 150.], [78., 170.], [94., 170.]],
+    ]
+    .iter()
+    .map(|points| draw_points(&mut app, points))
+    .collect();
+    app.session_mut().selection = number.iter().copied().collect();
+    let number_ink = app.page().objects.clone();
+    for (raw, expected) in [
+        ("1 2 3 4", "1234"),
+        (" 1  2 3 4 ", " 1234 "),
+        ("12 34", "1234"),
+        ("1234", "1234"),
+        ("1\t2\t3\t4", "1\t2\t3\t4"),
+        ("1 2\n3 4", "1 2\n3 4"),
+        ("1, 2, 3, 4", "1, 2, 3, 4"),
+        ("1 + 2 = 3 4", "1 + 2 = 3 4"),
+        ("1 2 3", "1 2 3"),
+    ] {
+        std::fs::write(
+            root.join("recognition/response.json"),
+            serde_json::to_vec(&serde_json::json!({"text":raw})).unwrap(),
+        )
+        .unwrap();
+        app.recognize_selection(RecognitionKind::Text).unwrap();
+        wait_result(&mut app);
+        assert_eq!(app.recognition_review.as_ref().unwrap().text, expected);
+        assert_eq!(app.page().objects, number_ink);
+    }
+    std::fs::write(
+        root.join("recognition/response.json"),
+        serde_json::to_vec(&serde_json::json!({"text":"1 2 3 4"})).unwrap(),
+    )
+    .unwrap();
+    app.recognize_selection(RecognitionKind::Math).unwrap();
+    wait_result(&mut app);
+    assert_eq!(app.recognition_review.as_ref().unwrap().text, "1234");
+    // Ordinary handwriting has unequal digit heights and a slightly uneven baseline.
+    for (id, offset) in [(number[1], 85.), (number[2], 83.)] {
+        app.session_mut().selection = HashSet::from([id]);
+        app.transform_selection(
+            Transform {
+                d: 0.5,
+                ty: offset,
+                ..Transform::default()
+            },
+            "Shorten handwritten digit",
+        );
+    }
+    app.session_mut().selection = number.iter().copied().collect();
+    app.recognize_selection(RecognitionKind::Math).unwrap();
+    wait_result(&mut app);
+    assert_eq!(app.recognition_review.as_ref().unwrap().text, "1234");
+    // A tiny mark misrecognized as a digit does not justify changing spacing.
+    app.session_mut().selection = HashSet::from([number[1]]);
+    app.transform_selection(
+        Transform {
+            d: 0.1,
+            ty: 153.,
+            ..Transform::default()
+        },
+        "Make ambiguous tiny mark",
+    );
+    app.session_mut().selection = number.iter().copied().collect();
+    app.recognize_selection(RecognitionKind::Text).unwrap();
+    wait_result(&mut app);
+    assert_eq!(app.recognition_review.as_ref().unwrap().text, "1 2 3 4");
+    app.undo();
+    // A real space between number groups must survive, including transformed ink.
+    app.session_mut().selection = HashSet::from([number[2], number[3], number[4]]);
+    app.transform_selection(Transform::translate(30., 0.), "Separate number groups");
+    app.session_mut().selection = number.iter().copied().collect();
+    app.transform_selection(
+        Transform {
+            a: 2.,
+            d: 2.,
+            ..Transform::default()
+        },
+        "Scale number",
+    );
+    app.recognize_selection(RecognitionKind::Text).unwrap();
+    wait_result(&mut app);
+    assert_eq!(app.recognition_review.as_ref().unwrap().text, "12 34");
+    // Flattened OCR output must not join ink on different lines.
+    app.session_mut().selection = HashSet::from([number[3], number[4]]);
+    app.transform_selection(Transform::translate(0., 100.), "Move digit to another line");
+    app.session_mut().selection = number.iter().copied().collect();
+    app.recognize_selection(RecognitionKind::Text).unwrap();
+    wait_result(&mut app);
+    assert_eq!(app.recognition_review.as_ref().unwrap().text, "1 2 3 4");
     app.recognize_selection(RecognitionKind::Text).unwrap();
     app.transform_selection(Transform::translate(10., 0.), "Move during recognition");
     wait_result(&mut app);

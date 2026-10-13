@@ -320,7 +320,8 @@ impl Service {
                             return Err("Recognized text is too long".into());
                         }
                         Ok(text)
-                    })();
+                    })()
+                    .map(|text| normalize_digit_spacing(text, &task.review.sources));
                     if result.is_err() {
                         stop_process(&worker_process);
                         client = None;
@@ -376,6 +377,94 @@ impl Service {
         self.generation.store(generation, Ordering::Release);
         stop_process(&self.process);
     }
+}
+/// Repair a numeric handwriting line only when its ink can be aligned to every digit.
+/// Wide gaps remain separators; uncertain layouts retain the model's suggestion.
+fn normalize_digit_spacing(text: String, sources: &[Arc<Object>]) -> String {
+    if !text.contains(' ')
+        || !text.bytes().all(|b| b.is_ascii_digit() || b == b' ')
+        || sources.is_empty()
+    {
+        return text;
+    }
+    let digit_count = text.bytes().filter(u8::is_ascii_digit).count();
+    if digit_count < 2 {
+        return text;
+    }
+    let mut bounds = Vec::with_capacity(sources.len());
+    for source in sources {
+        let Object::Stroke(stroke) = source.as_ref() else {
+            return text;
+        };
+        if stroke.display_path().is_empty() {
+            continue;
+        }
+        let points: Vec<_> = stroke
+            .display_path()
+            .iter()
+            .map(|p| stroke.transform.apply(p.position))
+            .collect();
+        if points.iter().any(|p| !p.x.is_finite() || !p.y.is_finite()) {
+            return text;
+        }
+        bounds.push(Rect::from_points(points));
+    }
+    bounds.sort_unstable_by(|a, b| a.min.x.total_cmp(&b.min.x));
+    let mut digits: Vec<Rect> = Vec::with_capacity(bounds.len());
+    for bounds in bounds {
+        // A digit may use several strokes, such as the crossbar of a handwritten 4.
+        if let Some(previous) = digits.last_mut()
+            && bounds.min.x <= previous.max.x
+        {
+            previous.max.x = previous.max.x.max(bounds.max.x);
+            previous.min.y = previous.min.y.min(bounds.min.y);
+            previous.max.y = previous.max.y.max(bounds.max.y);
+        } else {
+            digits.push(bounds);
+        }
+    }
+    if digits.len() != digit_count {
+        return text;
+    }
+    let top = digits.iter().map(|b| b.min.y).fold(f32::INFINITY, f32::min);
+    let bottom = digits
+        .iter()
+        .map(|b| b.max.y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let height = bottom - top;
+    let shared_top = digits
+        .iter()
+        .map(|b| b.min.y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let shared_bottom = digits.iter().map(|b| b.max.y).fold(f32::INFINITY, f32::min);
+    let shortest = digits
+        .iter()
+        .map(|b| b.height())
+        .fold(f32::INFINITY, f32::min);
+    // A tall 1 and shorter rounded digits need not share half the whole line's
+    // height. Compare their common band with the shortest digit instead, while
+    // excluding tiny marks that might be punctuation mistaken for a digit.
+    if !height.is_finite()
+        || height <= 0.
+        || shortest < height * 0.4
+        || shared_bottom - shared_top < shortest * 0.5
+    {
+        return text;
+    }
+    let mut result = String::with_capacity(text.len());
+    let mut seen = 0;
+    for character in text.chars() {
+        if character.is_ascii_digit() {
+            seen += 1;
+        } else if seen > 0
+            && seen < digit_count
+            && digits[seen].min.x - digits[seen - 1].max.x <= height * 0.35
+        {
+            continue;
+        }
+        result.push(character);
+    }
+    result
 }
 fn prepare_request(task: &Task) -> Result<(Request, TemporaryImage), String> {
     let strokes = task

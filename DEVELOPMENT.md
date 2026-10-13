@@ -93,6 +93,8 @@ Pack lookup checks `FOLIO_RECOGNITION_CONFIG`, `<data-dir>/recognition/pack.json
 
 Results open an editable review. Copy leaves the document intact. Replace writing removes only captured strokes and inserts editable text or a rendered equation in one journaled command. Math validates and renders before changing the page; failure restores the corrected review and retains the ink. Note/page/source identity is checked before accepting and replacing, and generations reject cancelled responses. Original sensor data stays in durable undo history.
 
+Digit-only handwriting lines use the captured stroke layout to remove false spaces inside compact numbers, for example `1 2 3 4` → `1234`. Correction requires one separable ink group per recognized digit on a shared line. Unequal heights and uneven baselines are accepted when the common vertical band covers at least half the shortest digit and every digit is at least 40% of the line height; tiny ambiguous marks are excluded. Gaps no larger than 35% of the line height are joined. Wide gaps remain separators. Ambiguous or overlapping glyphs, mixed text/formulas, tabs, line breaks and image/PDF recognition retain the model's spacing. This applies to text and math suggestions from both native and Python packs, before review; user edits are retained as entered.
+
 Keeping ink and indexing the reviewed text makes handwriting searchable without replacing its strokes. Editing or deleting a source invalidates its reviewed index; undo restores it. There is no automatic text detector.
 
 ## Rendering and persistence performance

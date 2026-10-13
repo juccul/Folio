@@ -104,7 +104,10 @@ def simplify_steps(expression, operation):
             ('simplify', s.simplify, 'Evaluate arithmetic and combine like terms.')]:
         after = calculate(current)
         if s.srepr(after) != s.srepr(current):
-            if normal(after-current) != 0:
+            # Evaluate the parser's held arithmetic before subtracting. Otherwise
+            # equivalent powers such as 2**(283/100) and 4*2**(83/100) can trigger
+            # expensive algebraic-number sign analysis instead of cancelling.
+            if normal(after.doit()-current.doit()) != 0:
                 continue
             steps.append(step(rule, current, after, explanation))
             current = after
