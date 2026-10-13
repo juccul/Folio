@@ -1,8 +1,8 @@
-# Development status — Folio 0.1.4
+# Development status — Folio 0.1.5
 
-Updated 2026-10-12. Folio is a runnable Rust/GPUI Linux and Windows desktop application. Production certification still requires physical tablets and additional desktop/distribution sessions; synthetic events and CPU benchmarks do not establish hardware-to-display latency.
+Updated 2026-10-14. Folio is a runnable Rust/GPUI Linux and Windows desktop application. Production certification still requires physical tablets and additional desktop/distribution sessions; synthetic events and CPU benchmarks do not establish hardware-to-display latency.
 
-Version 0.1.4 adds bounded partial OCR offload when full GPU inference cannot fit and caches verified recognition assets and Vulkan discovery for faster repeated use. Windows setup/portable and signed Flatpak packages share the same release source. See `WINDOWS.md` for Windows Ink support and validation limits.
+Version 0.1.5 reduces editor rendering and idle maintenance work, releases stale preview/GPU resources, and speeds up selection and object maintenance. It also corrects false spaces inside compact handwritten numbers and evaluates held arithmetic when checking fractional-power steps. Windows setup/portable and signed Flatpak packages share the same release source. See `WINDOWS.md` for Windows Ink support and validation limits.
 
 ## Continuous integration
 
