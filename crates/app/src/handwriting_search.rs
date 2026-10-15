@@ -1,4 +1,84 @@
 use super::*;
+impl Session {
+    pub fn page_text(&self) -> Arc<str> {
+        self.search_text_for(self.page())
+    }
+    pub(super) fn search_text_for(&self, page: &Page) -> Arc<str> {
+        let mut cached = self.search_text.borrow_mut();
+        let entry = cached
+            .entry(page.id)
+            .or_insert_with(|| (page.revision, Arc::from(page.text())));
+        if entry.0 != page.revision {
+            *entry = (page.revision, Arc::from(page.text()));
+        }
+        entry.1.clone()
+    }
+    pub(super) fn refresh_search_text(&mut self, command: &Command) {
+        let cached = self.search_text.get_mut();
+        if cached.is_empty() {
+            return;
+        }
+        if command
+            .changes
+            .iter()
+            .any(|c| matches!(c, Change::Page { .. }))
+        {
+            cached.clear();
+            return;
+        }
+        fn sources(object: &Option<Arc<Object>>) -> &[Id] {
+            match object.as_deref() {
+                Some(Object::Shape(shape)) => shape.source_strokes.as_slice(),
+                Some(Object::Equation(equation)) => equation.source_strokes.as_slice(),
+                _ => &[],
+            }
+        }
+        fn text(object: &Option<Arc<Object>>) -> &str {
+            object.as_ref().map_or("", |o| o.searchable_text())
+        }
+        let mut pages = HashMap::new();
+        for change in &command.changes {
+            let id = match change {
+                Change::Object { page, .. }
+                | Change::InkText { page, .. }
+                | Change::Properties { page, .. }
+                | Change::Groups { page, .. } => *page,
+                _ => continue,
+            };
+            if !cached.contains_key(&id) {
+                continue;
+            }
+            let current = *pages.entry(id).or_insert_with(|| self.document.page(id));
+            let (page, invalid) = match change {
+                Change::Object {
+                    page,
+                    before,
+                    after,
+                    ..
+                } => {
+                    let annotations = current.is_some_and(|p| !p.ink_text.is_empty());
+                    (
+                        *page,
+                        text(before) != text(after)
+                            || annotations
+                                && (before.is_some() != after.is_some()
+                                    || sources(before) != sources(after)),
+                    )
+                }
+                Change::InkText { page, .. } => (*page, true),
+                Change::Properties { page, .. } | Change::Groups { page, .. } => (*page, false),
+                _ => continue,
+            };
+            if invalid {
+                cached.remove(&page);
+            } else if let Some(entry) = cached.get_mut(&page)
+                && let Some(page) = current
+            {
+                entry.0 = page.revision;
+            }
+        }
+    }
+}
 impl Controller {
     pub fn index_selected_handwriting(&mut self) -> Result<(), String> {
         self.recognize_selection(RecognitionKind::Text)?;
@@ -274,6 +354,7 @@ mod tests {
             pdf_source: None,
         });
         app.keep_ink_and_index("reviewed draft".into()).unwrap();
+        assert_eq!(app.session().page_text().as_ref(), "reviewed draft");
         let mut new_stroke = app.page().objects[&id].as_ref().clone();
         new_stroke.set_id(Id::new_v4());
         app.commit(
@@ -289,6 +370,7 @@ mod tests {
         assert_eq!(app.stale_handwriting_regions(), 1);
         assert_eq!(app.page().ink_text[0].text, "reviewed draft");
         assert!(!app.page().text().contains("reviewed draft"));
+        assert_eq!(app.session().page_text().as_ref(), app.page().text());
         app.review_stale_handwriting();
         assert_eq!(
             app.recognition_review.as_ref().unwrap().text,
@@ -297,8 +379,10 @@ mod tests {
         assert_eq!(app.recognition_review.as_ref().unwrap().sources.len(), 2);
         app.undo();
         assert_eq!(app.stale_handwriting_regions(), 0);
+        assert_eq!(app.session().page_text().as_ref(), "reviewed draft");
         app.redo();
         assert_eq!(app.stale_handwriting_regions(), 1);
+        assert_eq!(app.session().page_text().as_ref(), app.page().text());
         app.select_all();
         app.delete_selection();
         assert_eq!(app.page().ink_text[0].text, "reviewed draft");

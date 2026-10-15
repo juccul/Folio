@@ -22,6 +22,17 @@ pub(super) struct Options {
     image: Option<Arc<RenderImage>>,
     error: Option<String>,
 }
+impl Options {
+    pub(super) fn clear_preview(&mut self, window: &mut Window) {
+        if self.key.take().is_some() {
+            self.generation += 1;
+        }
+        if let Some(image) = self.image.take() {
+            let _ = window.drop_image(image);
+        }
+        self.error = None;
+    }
+}
 pub(super) fn apply(page: &mut Page, theme: Theme, appearance: Appearance) {
     if appearance == Appearance::Original {
         return;
@@ -101,7 +112,7 @@ fn ink_svg(svg: &str, palette: theme::CanvasTheme) -> String {
     output
 }
 impl NotesView {
-    pub(super) fn export_appearance(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn export_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
         let page = self.controller.page();
         let key = (
@@ -112,10 +123,10 @@ impl NotesView {
             self.export_options.appearance,
         );
         if self.export_options.key.as_ref() != Some(&key) {
+            self.export_options.clear_preview(window);
             self.export_options.key = Some(key);
             self.export_options.generation += 1;
             let generation = self.export_options.generation;
-            self.export_options.image = None;
             self.export_options.error = None;
             let mut page = page.clone();
             let appearance = self.export_options.appearance;

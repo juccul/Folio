@@ -5,6 +5,7 @@ mod blade_context;
 mod blade_renderer;
 mod buffer_belt;
 mod resize;
+mod retirement;
 mod upload_pool;
 
 #[cfg(target_os = "macos")]

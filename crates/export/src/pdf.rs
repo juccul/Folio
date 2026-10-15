@@ -57,6 +57,17 @@ pub fn export(doc: &Document, assets: &Path, path: &Path) -> Result<()> {
     let mut form_dictionary = Dictionary::new();
     let mut names = Vec::new();
     let mut fields = Vec::new();
+    let mut requested_pages: HashMap<&str, std::collections::HashSet<u32>> = HashMap::new();
+    for background in doc
+        .pages
+        .iter()
+        .filter_map(|page| page.properties.pdf.as_ref())
+    {
+        requested_pages
+            .entry(&background.asset)
+            .or_default()
+            .insert(background.page);
+    }
     for page in &doc.pages {
         let Some(background) = &page.properties.pdf else {
             continue;
@@ -73,12 +84,9 @@ pub fn export(doc: &Document, assets: &Path, path: &Path) -> Result<()> {
         }
         source.renumber_objects_with(output.max_id + 1);
         let pages = source.get_pages();
-        let requested: std::collections::HashSet<_> = doc
-            .pages
+        let requested: std::collections::HashSet<_> = requested_pages[background.asset.as_str()]
             .iter()
-            .filter_map(|page| page.properties.pdf.as_ref())
-            .filter(|candidate| candidate.asset == background.asset)
-            .filter_map(|candidate| pages.get(&candidate.page).copied())
+            .filter_map(|number| pages.get(number).copied())
             .collect();
         // Inherited attributes must become local before reparenting page trees.
         for id in &requested {

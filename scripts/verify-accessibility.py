@@ -18,10 +18,12 @@ def main():
     parser.add_argument('--appearance',action='store_true',help='Exercise theme customization and themed/fixed paper on throwaway notes')
     parser.add_argument('--system-theme',action='store_true',help='Verify live system-theme events through a private desktop portal')
     parser.add_argument('--shortcuts',action='store_true',help='Verify native Ctrl+N, modal typing and Ctrl+S on an isolated test display')
+    parser.add_argument('--folder-navigation',action='store_true',help='Verify keyboard traversal of 100 virtualized folders in a throwaway fixture')
     parser.add_argument('--screenshots',type=Path,help='Save only the test application client window')
     args=parser.parse_args()
     if (args.appearance or args.navigation or args.polish or args.system_theme) and not (args.fixture and args.virtual_display):parser.error('These checks require a throwaway --fixture and --virtual-display')
     if args.shortcuts and not args.virtual_display:parser.error('--shortcuts requires an isolated --virtual-display')
+    if args.folder_navigation and not (args.fixture and args.virtual_display):parser.error('--folder-navigation requires a throwaway --fixture and --virtual-display')
     if (args.fixture or args.screenshots) and not args.virtual_display:parser.error('Fixture screenshots require --virtual-display')
     launcher=subprocess.Popen(['/usr/libexec/at-spi-bus-launcher','--launch-immediately'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     time.sleep(.3)
@@ -39,6 +41,22 @@ def main():
         assert portal.stdout.readline().strip()=='READY', 'Private theme portal did not start'
     with tempfile.TemporaryDirectory(prefix='folio-a11y-') as root:
         if args.fixture:shutil.copytree(args.fixture,root,dirs_exist_ok=True,ignore=shutil.ignore_patterns('session.lock','*.sqlite3-wal','*.sqlite3-shm'))
+        if args.folder_navigation:
+            import sqlite3,uuid
+            with sqlite3.connect(Path(root)/'notes.sqlite3') as db:
+                row=db.execute("SELECT data FROM settings WHERE key='preferences'").fetchone()
+                preferences=json.loads(row[0]) if row else {}
+                preferences.setdefault('workspace',{}).update(library_open=True,open_tabs=[],active_document=None)
+                db.execute('DELETE FROM notebooks')
+                folder_ids=[]
+                for i in range(100):
+                    id=str(uuid.uuid4())
+                    folder_ids.append(id)
+                    db.execute('INSERT INTO notebooks(id,data) VALUES(?,?)',(id,json.dumps({'id':id,'name':f'Folder {i:03}','parent':None})))
+                id=str(uuid.uuid4())
+                db.execute('INSERT INTO notebooks(id,data) VALUES(?,?)',(id,json.dumps({'id':id,'name':'Nested','parent':folder_ids[0]})))
+                preferences['collapsed_folders']=[folder_ids[0]]
+                db.execute("INSERT OR REPLACE INTO settings(key,data) VALUES('preferences',?)",(json.dumps(preferences),))
         env=os.environ.copy();env['WAYLAND_DISPLAY']=''
         with open('/tmp/folio-a11y-runtime.log','w') as log:
             app=subprocess.Popen([str(args.binary.resolve()),'--data-dir',root],env=env,stdout=log,stderr=log)
@@ -62,20 +80,36 @@ def main():
                     time.sleep(.15)
                 if target is None:raise RuntimeError('No Folio AT-SPI application registered')
                 def walk(node):
+                    if node is None:return # A layout update can replace a child mid-traversal.
                     # Older AT-SPI clients cannot decode the newest cache signal.
                     # Query current properties rather than using stale children.
                     node.clear_cache()
                     yield node
                     for i in range(node.get_child_count()):yield from walk(node.get_child_at_index(i))
                 def controls():
-                    while GLib.MainContext.default().iteration(False):pass
                     # Native radio, switch, and tab controls expose the same Action
                     # interface as buttons. Preserve their correct semantic roles.
-                    return [n for n in walk(target) if n.get_role() in [Atspi.Role.PUSH_BUTTON,Atspi.Role.PUSH_BUTTON_MENU,Atspi.Role.RADIO_BUTTON,Atspi.Role.CHECK_BOX,Atspi.Role.TOGGLE_BUTTON,Atspi.Role.PAGE_TAB,Atspi.Role.LIST_ITEM,Atspi.Role.TREE_ITEM]]
+                    deadline=time.monotonic()+3
+                    while True:
+                        while GLib.MainContext.default().iteration(False):pass
+                        try:
+                            return [n for n in walk(target) if n.get_role() in [Atspi.Role.PUSH_BUTTON,Atspi.Role.PUSH_BUTTON_MENU,Atspi.Role.RADIO_BUTTON,Atspi.Role.CHECK_BOX,Atspi.Role.TOGGLE_BUTTON,Atspi.Role.PAGE_TAB,Atspi.Role.LIST_ITEM,Atspi.Role.TREE_ITEM]]
+                        except GLib.GError:
+                            # A theme/layout rebuild can retire a node after
+                            # child discovery. Retry discovery, never the action.
+                            if time.monotonic()>=deadline:raise
+                            time.sleep(.03)
                 def click(label, prefix=False):
-                    buttons=controls()
-                    item=next((n for n in buttons if (n.get_name().startswith(label) if prefix else n.get_name()==label)),None)
-                    assert item is not None, f'Missing {label}: {[n.get_name() for n in buttons]}'
+                    deadline=time.monotonic()+3
+                    while True:
+                        try:
+                            buttons=controls()
+                            item=next((n for n in buttons if (n.get_name().startswith(label) if prefix else n.get_name()==label)),None)
+                            if item is not None:break
+                        except GLib.GError:
+                            if time.monotonic()>=deadline:raise
+                        assert time.monotonic()<deadline, f'Missing {label}: {[n.get_name() for n in buttons]}'
+                        time.sleep(.03)
                     assert item.get_action_iface().do_action(0), f'Native action failed: {label}'
                     time.sleep(.5)
                     while GLib.MainContext.default().iteration(False):pass
@@ -98,6 +132,32 @@ def main():
                     initial_objects=db.execute('SELECT count(*) FROM objects').fetchone()[0]
                 assert not any(n.get_name()=='New document with options…' for n in buttons), 'Creation options must be on the main button, without adjacent sliders'
                 capture('library-light')
+                if args.folder_navigation:
+                    def folders():
+                        deadline=time.monotonic()+3
+                        while True:
+                            try:
+                                return [(n,n.get_name(),n.get_state_set().contains(Atspi.StateType.SELECTED)) for n in controls() if n.get_role()==Atspi.Role.TREE_ITEM]
+                            except GLib.GError:
+                                if time.monotonic()>=deadline:raise
+                                time.sleep(.03)
+                    def selected(label):
+                        deadline=time.monotonic()+5
+                        while True:
+                            if any(name==label and active for _,name,active in folders()):return
+                            if time.monotonic()>=deadline:raise AssertionError(f'Virtual folder navigation did not reach {label}')
+                            time.sleep(.05)
+                    assert len(folders())<100,'Fixture must exercise offscreen rows'
+                    assert next(n for n,name,_ in folders() if name=='Folder 000').get_component_iface().grab_focus()
+                    time.sleep(.3);client.key('Up');selected('Folder 099')
+                    client.key('Down');selected('Folder 000')
+                    client.key('Right');client.key('Down');selected('Folder 000 / Nested')
+                    client.key('Up');selected('Folder 000');client.key('Left')
+                    for i in range(1,16):client.key('Down');selected(f'Folder {i:03}')
+                    client.key('Up');selected('Folder 014')
+                    capture('folders-keyboard')
+                    print('FOLDER_NAVIGATION_OK: virtual list wrap, scrolling, forward/reverse focus, selection and collapsed descendants',flush=True)
+                    return
                 if args.fixture:
                     click('List view');capture('library-list')
                     click('Grid view');click('Favorites');capture('library-favorites');click('Documents')

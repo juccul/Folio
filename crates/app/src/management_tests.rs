@@ -154,9 +154,11 @@ fn background_pdf_import_is_pinned_while_other_notes_open() {
     a.create_note(); // Explicit existing document, independent of first-launch onboarding.
     let id = a.active;
     *a.pending_imports.entry(id).or_default() += 1;
+    a.close_session(id);
     for _ in 0..12 {
         a.create_note();
         a.flush().unwrap();
+        a.tick();
         a.trim_caches();
     }
     assert!(a.sessions.contains_key(&id));
@@ -170,6 +172,22 @@ fn background_pdf_import_is_pinned_while_other_notes_open() {
     assert_eq!(a.sessions[&id].document.pages.len(), 1);
     assert!(a.sessions[&id].page().properties.pdf.is_some());
     a.import_finished(id);
+    a.flush().unwrap();
+    a.tick();
+    settle(&mut a);
+    a.trim_caches();
+    assert!(!a.sessions.contains_key(&id));
+    assert!(
+        Store::open_reader(&a.database)
+            .unwrap()
+            .load(id)
+            .unwrap()
+            .unwrap()
+            .pages[0]
+            .properties
+            .pdf
+            .is_some()
+    );
 }
 
 #[test]
@@ -382,12 +400,13 @@ fn continuous_scroll_rebases_and_writing_targets_the_clicked_page() {
     a.add_page();
     a.change_page(0);
     a.session_mut().viewport.pan = Point::new(100., -650.);
-    let stack = PageStack::new(&a.session().document.pages, 0).unwrap();
+    let stack = a.session().page_stack().unwrap();
     let before = stack
         .viewport(a.session().viewport, 0, 1)
         .to_screen(Point::new(100., 100.));
     a.synchronize_page_view(800., 700.);
     assert_eq!(a.session().page, 1);
+    assert!(Arc::ptr_eq(&stack, &a.session().page_stack().unwrap()));
     assert!(
         a.session()
             .viewport
@@ -399,7 +418,7 @@ fn continuous_scroll_rebases_and_writing_targets_the_clicked_page() {
     // rebase before converting its pen sample, without moving the document.
     a.session_mut().viewport.zoom = 0.5;
     a.session_mut().viewport.pan = Point::new(100., 32.);
-    let stack = PageStack::new(&a.session().document.pages, 1).unwrap();
+    let stack = a.session().page_stack().unwrap();
     let position = stack
         .viewport(a.session().viewport, 1, 2)
         .to_screen(Point::new(100., 100.));
@@ -434,6 +453,17 @@ fn continuous_scroll_rebases_and_writing_targets_the_clicked_page() {
     assert!(a.page().objects.is_empty());
     a.redo();
     assert_eq!(a.page().objects.len(), 1);
+    assert!(Arc::ptr_eq(&stack, &a.session().page_stack().unwrap()));
+    a.paper(Paper::Grid);
+    assert!(Arc::ptr_eq(&stack, &a.session().page_stack().unwrap()));
+    a.page_size(500., 700., false);
+    let resized = a.session().page_stack().unwrap();
+    assert_eq!(resized.frame(2).height(), 700.);
+    assert!(!Arc::ptr_eq(&stack, &resized));
+    a.undo();
+    assert_eq!(a.session().page_stack().unwrap().frame(2), stack.frame(2));
+    a.redo();
+    assert_eq!(a.session().page_stack().unwrap().frame(2), resized.frame(2));
     a.flush().unwrap();
     let note = a.active;
     let path = a.data_dir.clone();
@@ -701,6 +731,26 @@ fn equation_failures_remain_retryable_and_cancellation_does_not_insert() {
     }));
     a.undo();
     assert!(a.page().objects.is_empty());
+    a.flush().unwrap();
+    a.tick();
+    let note = a.active;
+    a.insert_equation("y^2".into());
+    a.close_session(note);
+    assert!(a.sessions.contains_key(&note));
+    settle(&mut a);
+    assert!(matches!(a.equation_result, Some(Ok(()))));
+    a.flush().unwrap();
+    a.tick();
+    a.trim_caches();
+    assert!(!a.sessions.contains_key(&note));
+    let saved = Store::open_reader(&a.database)
+        .unwrap()
+        .load(note)
+        .unwrap()
+        .unwrap();
+    assert!(saved.pages[0].ordered_objects().any(|object| {
+        matches!(object.as_ref(), Object::Equation(equation) if equation.latex == "y^2")
+    }));
 }
 
 #[test]
@@ -898,6 +948,7 @@ fn workspace_preferences_restore_documents_and_page_ids_and_allow_opt_out() {
     let mut a = app();
     let root = a.data_dir.clone();
     let first = a.active;
+    a.add_text("First document".into(), Point::new(20., 20.));
     a.create_note();
     let second = a.active;
     a.add_page();
@@ -915,16 +966,34 @@ fn workspace_preferences_restore_documents_and_page_ids_and_allow_opt_out() {
     a.store_settings();
     a.flush().unwrap();
     drop(a);
-    let mut a = Controller::open(root.clone()).unwrap();
+    let mut a = Controller::open_for_ui(root.clone(), false).unwrap();
     assert_eq!(a.active, second);
     assert_eq!(a.page().id, page);
     assert_eq!(a.settings.workspace.open_tabs, vec![first, second]);
     assert!(a.settings.workspace.list_view && a.settings.workspace.pages_open);
+    a.settings.workspace.library_open = true;
+    a.store_settings();
+    a.flush().unwrap();
+    let expected = a.session().document.clone();
+    let history = serde_json::to_value(&a.session().history).unwrap();
+    drop(a);
+    let mut a = Controller::open_for_ui(root.clone(), false).unwrap();
+    assert!(a.is_bootstrap_document(a.active));
+    assert!(!a.sessions.contains_key(&first) && !a.sessions.contains_key(&second));
+    assert_eq!(a.settings.workspace.open_tabs, vec![first, second]);
+    assert_eq!(a.notes.len(), 2);
+    a.switch_note(second);
+    settle(&mut a);
+    assert_eq!(a.page().id, page);
+    assert_eq!(a.session().document, expected);
+    assert_eq!(serde_json::to_value(&a.session().history).unwrap(), history);
+    assert_eq!(a.sessions.len(), 1);
     a.settings.reopen_documents = false;
     a.store_settings();
     a.flush().unwrap();
     drop(a);
-    let mut a = Controller::open(root.clone()).unwrap();
+    let mut a = Controller::open_for_ui(root.clone(), false).unwrap();
+    assert!(a.is_bootstrap_document(a.active));
     assert_eq!(a.session().page, 0);
     a.settings.reopen_documents = true;
     a.settings.workspace.active_document = Some(Id::new_v4());
@@ -932,7 +1001,7 @@ fn workspace_preferences_restore_documents_and_page_ids_and_allow_opt_out() {
     a.store_settings();
     a.flush().unwrap();
     drop(a);
-    let a = Controller::open(root).unwrap();
+    let a = Controller::open_for_ui(root, true).unwrap();
     assert_eq!(a.session().page, 0);
     assert!(a.notes.iter().any(|n| n.id == a.active));
 }

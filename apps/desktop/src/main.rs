@@ -93,6 +93,8 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
+    let open_editor =
+        smoke || titlebar_smoke || new_note || open_note.is_some() || !files.is_empty();
     let result = if !explicit_path
         && data_dir != folio_platform::default_data_dir()
         && !data_dir.join("notes.sqlite3").is_file()
@@ -102,7 +104,7 @@ fn main() -> anyhow::Result<()> {
             data_dir.display()
         ))
     } else {
-        Controller::open(data_dir.clone())
+        Controller::open_for_ui(data_dir.clone(), open_editor)
     };
     let mut controller = match result {
         Ok(controller) => controller,
@@ -137,8 +139,6 @@ fn main() -> anyhow::Result<()> {
         }
         controller.switch_note(id);
     }
-    let open_editor =
-        smoke || titlebar_smoke || new_note || open_note.is_some() || !files.is_empty();
     if titlebar_smoke {
         println!(
             "FOLIO_TITLEBAR_FIXTURE: simulated updates only; library {}",

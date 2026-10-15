@@ -390,7 +390,7 @@ impl Painter {
         let viewport = session.viewport;
         let width = f32::from(bounds.size.width);
         let height = f32::from(bounds.size.height);
-        let stack = PageStack::new(&session.document.pages, active);
+        let stack = session.page_stack();
         let frames = if let Some(stack) = &stack {
             let range = visible_page_range(stack, viewport, active, width, height);
             let mut frames = stack.pages[range]

@@ -1,4 +1,4 @@
-//! Embedded Tabler Outline SVGs and a matching Folio marker on a 24×24 grid.
+//! Embedded Tabler Outline icons with custom Folio and window-control glyphs.
 //! Attribution and upstream mappings: third_party/licenses/tabler-icons/NOTICE.md.
 use gpui::{prelude::*, rems, *};
 use std::borrow::Cow;
@@ -62,6 +62,10 @@ define_icons! {
     Minimize => "Minimize.svg",
     Maximize => "Maximize.svg",
     Restore => "Restore.svg",
+    WindowMinimize => "WindowMinimize.svg",
+    WindowMaximize => "WindowMaximize.svg",
+    WindowRestore => "WindowRestore.svg",
+    WindowClose => "WindowClose.svg",
     Copy => "Copy.svg",
     Cut => "Cut.svg",
     Math => "Math.svg",

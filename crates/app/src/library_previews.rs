@@ -8,13 +8,18 @@ impl Controller {
                 .cover_page
                 .and_then(|id| session.document.page(id))
                 .unwrap_or(&session.document.pages[0]);
-            let cover = session
+            if session
                 .library_cover
-                .get_or_insert_with(|| Arc::new(page.clone()));
-            if cover.id != page.id || cover.revision != page.revision {
-                *cover = Arc::new(page.clone());
+                .as_ref()
+                .is_none_or(|cover| cover.id != page.id || cover.revision != page.revision)
+            {
+                session.library_cover = Some(Arc::new(page.clone()));
+                session.memory_usage.set(None);
             }
-            return Some((cover.clone(), session.document.pages.len()));
+            return Some((
+                session.library_cover.as_ref().unwrap().clone(),
+                session.document.pages.len(),
+            ));
         }
         let metadata = self.notes.iter().find(|n| n.id == note)?;
         if let Some((updated, page, count)) = self.library_previews.get(&note)
@@ -57,7 +62,7 @@ impl Controller {
         self.library_preview_recency.push_back(note);
         self.library_previews
             .insert(note, (updated, Arc::new(page), count));
-        while self.library_previews.len() > 128 {
+        while self.library_previews.len() > 48 {
             if let Some(id) = self.library_preview_recency.pop_front() {
                 self.library_previews.remove(&id);
             } else {

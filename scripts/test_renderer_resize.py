@@ -12,6 +12,7 @@ def main():
     policy = root / 'vendor/gpui/src/platform/blade/resize.rs'
     acknowledgement = root / 'vendor/gpui/src/platform/linux/x11/resize_ack.rs'
     uploads = root / 'vendor/gpui/src/platform/blade/upload_pool.rs'
+    retirement = root / 'vendor/gpui/src/platform/blade/retirement.rs'
     with tempfile.TemporaryDirectory(prefix='folio-renderer-resize-') as temporary:
         directory = Path(temporary)
         wrapper = directory / 'resize_tests.rs'
@@ -20,7 +21,9 @@ def main():
             '#[path = ' + json.dumps(str(acknowledgement), ensure_ascii=False)
             + ']\nmod resize_ack;\n'
             '#[path = ' + json.dumps(str(uploads), ensure_ascii=False)
-            + ']\nmod upload_pool;\n',
+            + ']\nmod upload_pool;\n'
+            '#[path = ' + json.dumps(str(retirement), ensure_ascii=False)
+            + ']\nmod retirement;\n',
             encoding='utf-8',
         )
         executable = directory / ('resize_tests.exe' if os.name == 'nt' else 'resize_tests')

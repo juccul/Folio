@@ -1,6 +1,92 @@
 //! Stable folder hierarchy and unambiguous paths shared by navigation and pickers.
 use super::*;
+pub struct FolderDetails {
+    pub path: String,
+    pub level: usize,
+    pub branch: bool,
+}
+pub(super) struct DetailsCache {
+    notebooks: Vec<Notebook>,
+    indices: HashMap<Id, usize>,
+    branches: HashSet<Id>,
+    details: HashMap<Id, Arc<FolderDetails>>,
+    bytes: usize,
+    tree: Option<Vec<(Id, usize)>>,
+}
+impl DetailsCache {
+    fn new(notebooks: &[Notebook]) -> Self {
+        Self {
+            indices: notebooks
+                .iter()
+                .enumerate()
+                .map(|(index, folder)| (folder.id, index))
+                .collect(),
+            branches: notebooks
+                .iter()
+                .filter_map(|folder| folder.parent)
+                .collect(),
+            notebooks: notebooks.to_vec(),
+            details: HashMap::new(),
+            bytes: 0,
+            tree: None,
+        }
+    }
+}
 impl Controller {
+    /// Resolve only requested navigation labels against a shared identity index.
+    /// The source comparison also honors direct mutations of the public model.
+    pub fn folder_details(
+        &self,
+        ids: impl IntoIterator<Item = Id>,
+    ) -> HashMap<Id, Arc<FolderDetails>> {
+        let mut ids = ids.into_iter().peekable();
+        if ids.peek().is_none() {
+            return HashMap::new();
+        }
+        let mut cached = self.folder_details.borrow_mut();
+        if cached
+            .as_ref()
+            .is_none_or(|cache| cache.notebooks != self.notebooks)
+        {
+            *cached = Some(DetailsCache::new(&self.notebooks));
+        }
+        let cache = cached.as_mut().unwrap();
+        ids.filter_map(|id| {
+            if let Some(details) = cache.details.get(&id) {
+                return Some((id, details.clone()));
+            }
+            if !cache.indices.contains_key(&id) {
+                return None;
+            }
+            let mut cursor = Some(id);
+            let mut seen = HashSet::new();
+            let mut names = Vec::new();
+            while let Some(id) = cursor {
+                if !seen.insert(id) {
+                    break;
+                }
+                let Some(index) = cache.indices.get(&id) else {
+                    break;
+                };
+                let folder = &cache.notebooks[*index];
+                names.push(folder.name.as_str());
+                cursor = folder.parent;
+            }
+            names.reverse();
+            let details = Arc::new(FolderDetails {
+                path: names.join(" / "),
+                level: names.len(),
+                branch: cache.branches.contains(&id),
+            });
+            // Deep imported trees must not retain unbounded tooltip text.
+            if cache.bytes + details.path.len() <= 16 * 1024 * 1024 {
+                cache.bytes += details.path.len();
+                cache.details.insert(id, details.clone());
+            }
+            Some((id, details))
+        })
+        .collect()
+    }
     /// Direct contents; child folders must be moved before their parent can be deleted.
     pub fn folder_contents(&self, id: Id) -> (usize, usize, usize) {
         let live = self
@@ -104,6 +190,20 @@ impl Controller {
             .join(" / ")
     }
     pub fn folder_tree(&self) -> Vec<(Notebook, usize)> {
+        let mut cached = self.folder_details.borrow_mut();
+        if cached
+            .as_ref()
+            .is_none_or(|cache| cache.notebooks != self.notebooks)
+        {
+            *cached = Some(DetailsCache::new(&self.notebooks));
+        }
+        let cache = cached.as_mut().unwrap();
+        if let Some(tree) = &cache.tree {
+            return tree
+                .iter()
+                .map(|(id, depth)| (cache.notebooks[cache.indices[id]].clone(), *depth))
+                .collect();
+        }
         let mut ordered: Vec<_> = self.notebooks.iter().collect();
         ordered.sort_by_cached_key(|n| (n.name.to_lowercase(), n.name.clone(), n.id));
         let folders: HashMap<_, _> = self.notebooks.iter().map(|n| (n.id, n)).collect();
@@ -134,6 +234,12 @@ impl Controller {
                 }
             }
         }
+        cache.tree = Some(
+            result
+                .iter()
+                .map(|(folder, depth)| (folder.id, *depth))
+                .collect(),
+        );
         result
     }
 }
@@ -167,6 +273,11 @@ mod tests {
             parent: Some(cycle),
         });
         let tree = app.folder_tree();
+        let requested: Vec<_> = app.notebooks.iter().map(|folder| folder.id).collect();
+        let details = app.folder_details(requested.iter().copied());
+        let again = app.folder_details([ids[0]]);
+        assert!(Arc::ptr_eq(&details[&ids[0]], &again[&ids[0]]));
+        assert_eq!(again.len(), 1);
         assert_eq!(tree.len(), 1002);
         assert_eq!(
             tree.iter()
@@ -177,7 +288,22 @@ mod tests {
         );
         for (i, id) in ids.iter().enumerate() {
             assert_eq!((tree[i].0.id, tree[i].1), (*id, i));
+            assert_eq!(details[id].level, i + 1);
+            assert_eq!(
+                details[id].path,
+                (0..=i)
+                    .map(|index| format!("Folder {index:04}"))
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            );
+            assert_eq!(details[id].branch, i + 1 < ids.len());
         }
+        assert_eq!(details[&orphan].path, "Orphan");
+        assert_eq!(details[&cycle].path, "Cycle");
+        app.notebooks[0].name = "Renamed".into();
+        let renamed = app.folder_details([ids[999]]);
+        assert!(!Arc::ptr_eq(&details[&ids[999]], &renamed[&ids[999]]));
+        assert!(renamed[&ids[999]].path.starts_with("Renamed / "));
         assert!(
             tree.iter()
                 .any(|(folder, depth)| folder.id == orphan && *depth == 0)

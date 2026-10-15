@@ -36,6 +36,7 @@ fn mixed_middle_insert_and_move_keep_ranks_through_undo_redo() {
         app.add_text(format!("text {i}"), Point::new(0., i as f32 * 20.));
     }
     let original = app.page().order.clone();
+    let original_text = app.session().page_text();
     let before = app.page().objects[&original[0]].clone();
     let mut moved = before.as_ref().clone();
     moved.set_transform(Transform::translate(200., 0.));
@@ -71,11 +72,24 @@ fn mixed_middle_insert_and_move_keep_ranks_through_undo_redo() {
         [original[0], id, original[1], original[2], original[3]]
     );
     ranks(&app);
+    assert_eq!(app.session().page_text().as_ref(), app.page().text());
     app.undo();
     assert_eq!(app.page().order, original);
+    assert_eq!(app.session().page_text().as_ref(), original_text.as_ref());
     ranks(&app);
     app.redo();
     ranks(&app);
+    let cached_text = app.session().page_text();
+    app.session_mut().selection = HashSet::from([original[0]]);
+    app.transform_selection(
+        Transform::translate(10., 20.),
+        "Move text without changing content",
+    );
+    assert!(Arc::ptr_eq(&cached_text, &app.session().page_text()));
+    app.edit_text(original[0], |text| text.text = "changed text".into());
+    assert_eq!(app.session().page_text().as_ref(), app.page().text());
+    app.undo();
+    assert_eq!(app.session().page_text().as_ref(), cached_text.as_ref());
     cleanup(app, root);
 }
 #[test]
@@ -209,6 +223,13 @@ fn repeated_note_load_requests_are_coalesced() {
     app.flush().unwrap();
     app.tick();
     assert!(!app.needs_fast_poll());
+    app.cache_library_preview(
+        first,
+        app.sessions[&first].document.metadata.updated_at,
+        app.sessions[&first].page().clone(),
+        1,
+    );
+    let old_cover = Arc::downgrade(&app.library_previews[&first].1);
     app.sessions.remove(&first);
     assert!(app.queue_load(first));
     assert!(app.needs_fast_poll());
@@ -226,7 +247,140 @@ fn repeated_note_load_requests_are_coalesced() {
     }
     assert!(!app.loading_notes.contains(&first));
     assert!(app.sessions.contains_key(&first));
+    assert!(!app.library_previews.contains_key(&first));
+    assert!(
+        old_cover.upgrade().is_none(),
+        "Loading a session releases its separate cover model"
+    );
     assert!(!app.needs_fast_poll());
+    app.sessions.remove(&first);
+    let active = app.active;
+    app.switch_note(first);
+    app.close_session(first);
+    assert!(!app.loading_note());
+    let start = Instant::now();
+    while app.has_background_work() {
+        app.tick();
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    app.trim_caches();
+    assert_eq!(
+        app.active, active,
+        "A closed loading tab must not reactivate"
+    );
+    assert!(!app.sessions.contains_key(&first));
+    cleanup(app, root);
+}
+
+#[test]
+fn saved_closed_sessions_release_memory_and_reload_their_undo() {
+    let (mut app, root) = fixture();
+    app.settings.reopen_documents = false;
+    app.add_text("Durable closed document".into(), Point::new(0., 0.));
+    app.add_page();
+    app.add_text("Remember this page".into(), Point::new(0., 0.));
+    let note = app.active;
+    let page = app.page().id;
+    let viewport = Viewport {
+        zoom: 2.25,
+        pan: Point::new(-170., 245.),
+        rotation: 0.3,
+    };
+    app.session_mut().viewport = viewport;
+    let object = Arc::downgrade(app.page().objects.values().next().unwrap());
+    app.flush().unwrap();
+    app.tick();
+    let count = app.notes.len();
+    app.close_session(note);
+    assert!(object.upgrade().is_none());
+    assert!(!app.sessions.contains_key(&note));
+    assert!(app.is_bootstrap_document(app.active));
+    assert_eq!(
+        app.notes.len(),
+        count,
+        "Closing a tab must not create a saved note"
+    );
+    app.switch_note(note);
+    let start = Instant::now();
+    while app.loading_note() {
+        app.tick();
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(app.active, note);
+    assert_eq!(app.page().id, page);
+    assert_eq!(app.session().viewport.zoom, viewport.zoom);
+    assert_eq!(app.session().viewport.pan, viewport.pan);
+    assert_eq!(app.session().viewport.rotation, viewport.rotation);
+    assert_eq!(app.page().text(), "Remember this page");
+    app.undo();
+    assert!(app.page().objects.is_empty());
+    app.redo();
+    assert_eq!(app.page().text(), "Remember this page");
+    cleanup(app, root);
+}
+
+#[test]
+fn inactive_sessions_evict_by_bytes_before_the_count_limit() {
+    let (mut app, root) = fixture();
+    app.settings.reopen_documents = false;
+    let mut notes = Vec::new();
+    for index in 0..4 {
+        app.create_note();
+        app.add_page();
+        app.add_text(
+            format!("Note {index} {}", "x".repeat(4096)),
+            Point::new(0., 0.),
+        );
+        app.session_mut().viewport.zoom = 1.75;
+        app.session_mut().viewport.pan = Point::new(-135., 270.);
+        app.flush().unwrap();
+        notes.push(app.active);
+    }
+    // Rapid document creation can finish before the next maintenance tick.
+    app.tick();
+    let active = app.active;
+    let first_page = app.sessions[&notes[0]].page().id;
+    let old = Arc::downgrade(
+        app.sessions[&notes[0]]
+            .page()
+            .objects
+            .values()
+            .next()
+            .unwrap(),
+    );
+    let budget = app.sessions[&notes[2]].memory_bytes();
+    app.trim_sessions(budget);
+    assert_eq!(app.active, active);
+    assert!(app.sessions.contains_key(&notes[2]));
+    assert!(!app.sessions.contains_key(&notes[0]));
+    assert!(old.upgrade().is_none());
+    assert!(
+        app.sessions
+            .iter()
+            .filter(|(id, _)| **id != active)
+            .map(|(_, session)| session.memory_bytes())
+            .sum::<usize>()
+            <= budget
+    );
+    assert!(
+        Store::open_reader(&app.database)
+            .unwrap()
+            .load(notes[0])
+            .unwrap()
+            .is_some()
+    );
+    app.switch_note(notes[0]);
+    let start = Instant::now();
+    while app.loading_note() {
+        app.tick();
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(app.page().id, first_page);
+    assert_eq!(app.session().viewport.zoom, 1.75);
+    assert_eq!(app.session().viewport.pan, Point::new(-135., 270.));
     cleanup(app, root);
 }
 
@@ -238,9 +392,13 @@ fn late_save_receipt_cannot_hide_new_unsaved_edits() {
     app.persistence.flush().unwrap(); // Leave the successful receipt unpolled.
     app.set_autosave(false);
     app.add_text("Still unsaved".into(), Point::new(0., 200.));
+    let note = app.active;
+    app.close_session(note);
     assert!(app.status.contains("Unsaved"));
     app.tick();
     assert!(app.status.contains("Unsaved"), "{}", app.status);
+    assert!(app.sessions.contains_key(&note));
+    assert_eq!(app.active, note);
     assert!(
         !app.needs_fast_poll(),
         "Deferred edits have no pending disk work"
@@ -339,6 +497,10 @@ fn a_failed_close_flush_is_tracked_and_retried() {
         app.dirty_notes.contains(&app.active),
         "Failed full flush did not schedule recovery"
     );
+    let note = app.active;
+    let expected = app.session().document.clone();
+    app.close_session(note);
+    assert!(app.sessions.contains_key(&note));
     injector
         .connection
         .execute_batch("DROP TRIGGER reject_note_write;")
@@ -351,13 +513,15 @@ fn a_failed_close_flush_is_tracked_and_retried() {
         assert!(start.elapsed() < Duration::from_secs(10));
         std::thread::sleep(Duration::from_millis(2));
     }
+    app.trim_caches();
+    assert!(!app.sessions.contains_key(&note));
     assert_eq!(
         Store::open_reader(&app.database)
             .unwrap()
-            .load(app.active)
+            .load(note)
             .unwrap()
             .unwrap(),
-        app.session().document
+        expected
     );
     cleanup(app, root);
 }

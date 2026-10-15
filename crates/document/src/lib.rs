@@ -668,9 +668,17 @@ impl Page {
     }
     /// Clone editable content with fresh identities and remap page-local dependencies.
     pub fn duplicate(&self) -> Self {
-        let mut page = self.clone();
-        page.id = Id::new_v4();
-        page.revision = 0;
+        // Object identities/order are rebuilt below. Avoid cloning the old map
+        // and order just to discard them, especially on large imported pages.
+        let mut page = Self {
+            id: Id::new_v4(),
+            revision: 0,
+            properties: self.properties.clone(),
+            objects: BTreeMap::new(),
+            order: Vec::new(),
+            groups: Vec::new(),
+            ink_text: self.ink_text.clone(),
+        };
         let ids: BTreeMap<_, _> = self.order.iter().map(|id| (*id, Id::new_v4())).collect();
         page.objects = self
             .objects
@@ -703,7 +711,6 @@ impl Page {
             })
             .collect();
         page.order = self.order.iter().map(|id| ids[id]).collect();
-        page.groups.clear();
         for entry in &mut page.ink_text {
             for source in &mut entry.sources {
                 *source = ids[source];
@@ -1063,6 +1070,44 @@ pub struct Command {
 impl Command {
     pub fn apply(&self, doc: &mut Document, forward: bool) {
         #[derive(Default)]
+        struct PageLookup {
+            last: Option<(Id, Option<usize>)>,
+            indices: Option<std::collections::HashMap<Id, usize>>,
+            searched: usize,
+        }
+        fn page_mut<'a>(
+            doc: &'a mut Document,
+            id: Id,
+            lookup: &mut PageLookup,
+        ) -> Option<&'a mut Page> {
+            if let Some((previous, index)) = lookup.last
+                && previous == id
+            {
+                return index.and_then(|index| doc.pages.get_mut(index));
+            }
+            // Reuse grouped page changes without indexing a long document for
+            // a small edit near its start. Index only after scans justify it.
+            let index = if lookup.indices.is_some() || lookup.searched >= doc.pages.len() {
+                lookup
+                    .indices
+                    .get_or_insert_with(|| {
+                        doc.pages
+                            .iter()
+                            .enumerate()
+                            .map(|(index, page)| (page.id, index))
+                            .collect()
+                    })
+                    .get(&id)
+                    .copied()
+            } else {
+                let index = doc.pages.iter().position(|page| page.id == id);
+                lookup.searched += index.map_or(doc.pages.len(), |index| index + 1);
+                index
+            };
+            lookup.last = Some((id, index));
+            index.and_then(|index| doc.pages.get_mut(index))
+        }
+        #[derive(Default)]
         struct Removed {
             ids: Vec<Id>,
             indexed: Option<std::collections::HashSet<Id>>,
@@ -1111,13 +1156,14 @@ impl Command {
         doc.version = FORMAT_VERSION;
         let mut inserted = Vec::new();
         let mut removed: BTreeMap<Id, Removed> = BTreeMap::new();
+        let mut page_indices = PageLookup::default();
         let mut apply = |c: &Change, doc: &mut Document| match c {
             Change::InkText {
                 page,
                 before,
                 after,
             } => {
-                if let Some(page) = doc.page_mut(*page) {
+                if let Some(page) = page_mut(doc, *page, &mut page_indices) {
                     page.ink_text = if forward {
                         after.clone()
                     } else {
@@ -1131,7 +1177,7 @@ impl Command {
                 before,
                 after,
             } => {
-                if let Some(p) = doc.page_mut(*page) {
+                if let Some(p) = page_mut(doc, *page, &mut page_indices) {
                     p.groups = if forward {
                         after.clone()
                     } else {
@@ -1147,7 +1193,7 @@ impl Command {
                 after,
                 index,
             } => {
-                if let Some(p) = doc.page_mut(*page) {
+                if let Some(p) = page_mut(doc, *page, &mut page_indices) {
                     let value = if forward { after } else { before };
                     if let Some(o) = value {
                         if !p.objects.contains_key(id) {
@@ -1178,6 +1224,7 @@ impl Command {
                 before,
                 after,
             } => {
+                page_indices = PageLookup::default();
                 let old = if forward { before } else { after };
                 let new = if forward { after } else { before };
                 if let Some(old) = old {
@@ -1194,7 +1241,7 @@ impl Command {
                 before,
                 after,
             } => {
-                if let Some(p) = doc.page_mut(*page) {
+                if let Some(p) = page_mut(doc, *page, &mut page_indices) {
                     p.properties = if forward {
                         after.clone()
                     } else {
@@ -1223,7 +1270,7 @@ impl Command {
         // Batch erasing visits a page's drawing order once instead of once per
         // deleted object. Object-map changes and revision increments stay ordered.
         for (id, ids) in removed {
-            if let Some(page) = doc.page_mut(id) {
+            if let Some(page) = page_mut(doc, id, &mut page_indices) {
                 remove_from_order(page, ids);
             }
         }
@@ -1242,7 +1289,7 @@ impl Command {
                     .take_while(|(id, _, _)| *id == page_id)
                     .count();
             let objects = &inserted[start..end];
-            if let Some(page) = doc.page_mut(page_id) {
+            if let Some(page) = page_mut(doc, page_id, &mut page_indices) {
                 let suffix = page.order.len().saturating_sub(objects.len());
                 let already_ordered = objects.iter().enumerate().all(|(offset, (_, id, index))| {
                     *index == suffix + offset && page.order.get(*index) == Some(id)
@@ -1390,6 +1437,10 @@ mod tests {
         let mut h = History::default();
         let mut m = d.metadata.clone();
         m.title = "after".into();
+        let page = d.pages[0].id;
+        let initial = d.pages[0].properties.clone();
+        let mut resized = initial.clone();
+        resized.width += 20.;
         h.execute(
             Command {
                 label: "change".into(),
@@ -1398,18 +1449,32 @@ mod tests {
                         before: d.metadata.clone(),
                         after: m,
                     },
+                    Change::Properties {
+                        page,
+                        before: initial.clone(),
+                        after: resized.clone(),
+                    },
                     Change::Page {
-                        index: 1,
+                        index: 0,
                         before: None,
                         after: Some(Page::new()),
+                    },
+                    Change::Properties {
+                        page,
+                        before: resized,
+                        after: initial.clone(),
                     },
                 ],
             },
             &mut d,
         );
         assert_eq!(d.pages.len(), 2);
+        assert_eq!(d.pages[1].id, page);
+        assert_eq!(d.pages[1].properties, initial);
         h.undo(&mut d).unwrap();
-        assert_eq!(d.pages, original.pages);
+        let mut expected = original.pages.clone();
+        expected[0].revision = d.pages[0].revision;
+        assert_eq!(d.pages, expected);
         assert_eq!(d.metadata.title, "before");
         h.redo(&mut d).unwrap();
         assert_eq!(d.metadata.title, "after");

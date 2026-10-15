@@ -95,6 +95,47 @@ fn main() {
         )
     });
 
+    let mut dense = Document::new("Dense spatial updates");
+    let page_id = dense.pages[0].id;
+    for i in 0..10_000 {
+        let mut object = Object::Image(ImageObject {
+            id: Id::new_v4(),
+            asset: "fixture.png".into(),
+            rect: Rect::new(0., 0., 1., 1.),
+            transform: Transform::default(),
+            crop: None,
+        });
+        object.set_transform(Transform::translate((i % 8) as f32, (i / 8 % 8) as f32));
+        dense.pages[0].order.push(object.id());
+        dense.pages[0]
+            .objects
+            .insert(object.id(), std::sync::Arc::new(object));
+    }
+    let deletion = Command {
+        label: "Dense deletion".into(),
+        changes: dense.pages[0]
+            .order
+            .iter()
+            .enumerate()
+            .step_by(2)
+            .map(|(index, id)| Change::Object {
+                page: page_id,
+                id: *id,
+                before: Some(dense.pages[0].objects[id].clone()),
+                after: None,
+                index,
+            })
+            .collect(),
+    };
+    let mut dense_index = SpatialIndex::default();
+    dense_index.rebuild(&dense.pages[0]);
+    measure("spatial/dense-delete-undo/10k", || {
+        deletion.apply(&mut dense, true);
+        dense_index.update(&dense.pages[0], &deletion);
+        deletion.apply(&mut dense, false);
+        dense_index.update(&dense.pages[0], &deletion);
+    });
+
     let circle = (0..=1000)
         .map(|i| {
             let a = i as f32 / 1000. * std::f32::consts::TAU;

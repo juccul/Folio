@@ -2036,6 +2036,7 @@ dependencies = [
 name = "folio-platform"
 version = "0.1.5"
 dependencies = [
+ "libc",
  "serde_json",
  "windows-sys 0.61.2",
 ]
@@ -2082,6 +2083,7 @@ dependencies = [
  "folio-input",
  "folio-storage",
  "folio-update",
+ "futures",
  "gpui",
  "image",
  "serde_json",

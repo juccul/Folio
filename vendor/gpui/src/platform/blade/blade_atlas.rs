@@ -1,4 +1,5 @@
 use super::buffer_belt::{BufferBelt, BufferBeltDescriptor};
+use super::retirement::RetirementQueue;
 use crate::{
     AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, DevicePixels, PlatformAtlas,
     Point, Size, platform::AtlasTextureList,
@@ -25,6 +26,8 @@ struct BladeAtlasState {
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
     initializations: Vec<AtlasTextureId>,
     uploads: Vec<PendingUpload>,
+    last_sync_point: Option<gpu::SyncPoint>,
+    retired: RetirementQueue<BladeAtlasTexture, gpu::SyncPoint>,
 }
 
 #[cfg(gles)]
@@ -32,8 +35,27 @@ unsafe impl Send for BladeAtlasState {}
 
 impl BladeAtlasState {
     fn destroy(&mut self) {
+        self.retired
+            .destroy(|mut texture| texture.destroy(&self.gpu));
         self.storage.destroy(&self.gpu);
         self.upload_belt.destroy(&self.gpu);
+    }
+    fn reclaim_retired(&mut self) {
+        let Self {
+            gpu,
+            storage,
+            retired,
+            ..
+        } = self;
+        retired.collect(
+            |sync| gpu.wait_for(sync, 0),
+            |mut texture| {
+                storage[texture.id.kind]
+                    .free_list
+                    .push(texture.id.index as usize);
+                texture.destroy(gpu);
+            },
+        );
     }
 }
 
@@ -54,6 +76,8 @@ impl BladeAtlas {
             tiles_by_key: Default::default(),
             initializations: Vec::new(),
             uploads: Vec::new(),
+            last_sync_point: None,
+            retired: RetirementQueue::new(),
         }))
     }
 
@@ -70,6 +94,11 @@ impl BladeAtlas {
         let mut lock = self.0.lock();
         let gpu = Arc::clone(&lock.gpu);
         lock.upload_belt.flush(sync_point, &gpu);
+        lock.last_sync_point = Some(sync_point.clone());
+    }
+
+    pub fn reclaim_retired(&self) {
+        self.0.lock().reclaim_retired();
     }
 
     pub fn get_texture_info(&self, id: AtlasTextureId) -> BladeTextureInfo {
@@ -105,21 +134,36 @@ impl PlatformAtlas for BladeAtlas {
     fn remove(&self, key: &AtlasKey) {
         let mut lock = self.0.lock();
 
-        let Some(id) = lock.tiles_by_key.remove(key).map(|tile| tile.texture_id) else {
+        let Some(tile) = lock.tiles_by_key.remove(key) else {
             return;
         };
+        let id = tile.texture_id;
 
         let Some(texture_slot) = lock.storage[id.kind].textures.get_mut(id.index as usize) else {
             return;
         };
 
         if let Some(mut texture) = texture_slot.take() {
+            // Live neighbors can keep the texture resident. Return the removed
+            // tile's allocation so later image uploads can reuse empty buckets.
+            texture.allocator.deallocate(tile.tile_id.into());
             texture.decrement_ref_count();
             if texture.is_unreferenced() {
-                lock.storage[id.kind]
-                    .free_list
-                    .push(texture.id.index as usize);
-                texture.destroy(&lock.gpu);
+                // Dropping the last image can release an entire atlas while
+                // the last submitted frame still samples it. The renderer
+                // normally waits only for the frame before that one.
+                // A freshly painted image can also be retired before its
+                // queued initialization/upload is submitted.
+                lock.initializations.retain(|pending| *pending != id);
+                lock.uploads.retain(|upload| upload.id != id);
+                if let Some(sync) = lock.last_sync_point.clone() {
+                    lock.retired.push(texture, sync);
+                } else {
+                    lock.storage[id.kind]
+                        .free_list
+                        .push(texture.id.index as usize);
+                    texture.destroy(&lock.gpu);
+                }
             } else {
                 *texture_slot = Some(texture);
             }
@@ -334,8 +378,8 @@ impl BladeAtlasTexture {
     }
 
     fn destroy(&mut self, gpu: &gpu::Context) {
-        gpu.destroy_texture(self.raw);
         gpu.destroy_texture_view(self.raw_view);
+        gpu.destroy_texture(self.raw);
     }
 
     fn bytes_per_pixel(&self) -> u8 {

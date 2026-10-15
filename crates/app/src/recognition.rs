@@ -399,15 +399,16 @@ fn normalize_digit_spacing(text: String, sources: &[Arc<Object>]) -> String {
         if stroke.display_path().is_empty() {
             continue;
         }
-        let points: Vec<_> = stroke
-            .display_path()
-            .iter()
-            .map(|p| stroke.transform.apply(p.position))
-            .collect();
-        if points.iter().any(|p| !p.x.is_finite() || !p.y.is_finite()) {
+        let mut valid = true;
+        let bounds_for_stroke = Rect::from_points(stroke.display_path().iter().map(|p| {
+            let point = stroke.transform.apply(p.position);
+            valid &= point.x.is_finite() && point.y.is_finite();
+            point
+        }));
+        if !valid {
             return text;
         }
-        bounds.push(Rect::from_points(points));
+        bounds.push(bounds_for_stroke);
     }
     bounds.sort_unstable_by(|a, b| a.min.x.total_cmp(&b.min.x));
     let mut digits: Vec<Rect> = Vec::with_capacity(bounds.len());

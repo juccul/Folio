@@ -45,6 +45,7 @@ use field::{Field, FieldBoundsChanged, Submitted};
 use folio_app::{Controller, ExportKind, Interaction, NoteFilter, RecognitionKind, Tool};
 use folio_document::{Color, Id, InkTool, Paper, Point as DocPoint};
 use folio_input::{Device, PenEvent, Phase, TimestampExtender, Tool as PenTool};
+use futures::StreamExt;
 use gpui::{prelude::*, *};
 use icons::{Icon, icon};
 pub use painting::CanvasFrame;
@@ -249,6 +250,8 @@ pub struct NotesView {
     document_menu: Option<(Id, Point<Pixels>)>,
     document_menu_folders: bool,
     folder_menu: Option<(Id, Point<Pixels>)>,
+    folder_rows: Vec<Id>,
+    folder_scroll: UniformListScrollHandle,
     canvas_menu: Option<canvas_menu::CanvasMenu>,
     thumbnails: workspace::Thumbnails,
     writing_style: Option<folio_document::PenStyle>,
@@ -325,6 +328,7 @@ impl NotesView {
             workspace.open_tabs.clear();
             workspace.library_open = true;
         }
+        let (accessibility, mut accessibility_requests) = accessibility::Accessibility::new(window);
         let mut view = Self {
             updater: if titlebar_smoke {
                 folio_update::Updater::disabled()
@@ -383,6 +387,8 @@ impl NotesView {
             document_menu: None,
             document_menu_folders: false,
             folder_menu: None,
+            folder_rows: Vec::new(),
+            folder_scroll: UniformListScrollHandle::new(),
             canvas_menu: None,
             thumbnails: workspace::Thumbnails::default(),
             writing_style: None,
@@ -393,8 +399,22 @@ impl NotesView {
             mouse_pan: false,
             start: Instant::now(),
             painter: painting::Painter::default(),
-            accessibility: std::rc::Rc::new(accessibility::Accessibility::new(window)),
+            accessibility: std::rc::Rc::new(accessibility),
         };
+        cx.spawn_in(window, async move |view, cx| {
+            while let Some(request) = accessibility_requests.next().await {
+                if view
+                    .update_in(cx, |view, window, cx| {
+                        view.accessibility_action(request, window, cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         view.subscriptions.push(cx.observe_self(|view, cx| {
             // Input and background render notifications cancel the idle timer,
             // so newly started animations/work never wait for the idle interval.
@@ -404,6 +424,79 @@ impl NotesView {
         }));
         view.schedule_poll(Duration::from_millis(16), cx);
         view
+    }
+    fn accessibility_action(
+        &mut self,
+        request: accesskit::ActionRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let accessibility = self.accessibility.clone();
+        if request.target_node == accesskit::NodeId(3) {
+            if let Some((_, field)) = &self.modal {
+                if request.action == accesskit::Action::Focus {
+                    field.read(cx).focus.focus(window);
+                }
+                if let Some(accesskit::ActionData::Value(value)) = request.data {
+                    field.update(cx, |field, cx| {
+                        field.set_accessible_content(value.into(), cx)
+                    });
+                }
+            }
+        } else if request.target_node == accesskit::NodeId(13) {
+            if let Some(editor) = &self.inline_text {
+                if request.action == accesskit::Action::Focus {
+                    editor.field.read(cx).focus.focus(window);
+                }
+                if let Some(accesskit::ActionData::Value(value)) = request.data {
+                    editor.field.update(cx, |field, cx| {
+                        field.set_accessible_content(value.into(), cx)
+                    });
+                }
+            }
+        } else if request.target_node == accesskit::NodeId(12) {
+            if let Some(setup) = &self.notebook_setup {
+                if request.action == accesskit::Action::Focus {
+                    setup.color.read(cx).focus.focus(window);
+                }
+                if let Some(accesskit::ActionData::Value(value)) = request.data {
+                    setup.color.update(cx, |field, cx| {
+                        field.set_accessible_content(value.into(), cx)
+                    });
+                }
+            }
+        } else if ((5..=8).contains(&request.target_node.0) || request.target_node.0 == 11)
+            && self.modal.is_none()
+            && !self.blocking_overlay()
+        {
+            if let Some(inputs) = &self.math_inputs {
+                let fields = [
+                    &inputs.expression,
+                    &inputs.variable,
+                    &inputs.next_line,
+                    &inputs.range,
+                ];
+                let field = if request.target_node.0 == 11 {
+                    &inputs.result_latex
+                } else {
+                    fields[(request.target_node.0 - 5) as usize]
+                };
+                if request.action == accesskit::Action::Focus {
+                    field.read(cx).focus.focus(window);
+                }
+                if let Some(accesskit::ActionData::Value(value)) = request.data {
+                    field.update(cx, |field, cx| {
+                        field.set_accessible_content(value.into(), cx)
+                    });
+                }
+            }
+        } else if let Some((callback, focus)) = accessibility.action(request.target_node) {
+            match request.action {
+                accesskit::Action::Click => callback(self, window, cx),
+                accesskit::Action::Focus => focus.focus(window),
+                _ => {}
+            }
+        }
     }
     fn schedule_poll(&mut self, delay: Duration, cx: &mut Context<Self>) {
         self.poll_idle = delay > Duration::from_millis(16);
@@ -426,8 +519,7 @@ impl NotesView {
                     view.update_preparing = false;
                 }
                 let motion_changed = view.motion.borrow_mut().advance();
-                let notify =
-                    changed || update_changed || view.accessibility.poll() || motion_changed;
+                let notify = changed || update_changed || motion_changed;
                 let fast = notify
                     || view.controller.needs_fast_poll()
                     || view.motion.borrow().needs_frame()
@@ -1790,6 +1882,16 @@ impl NotesView {
                             return;
                         }
                     }
+                    if let Some(id) = control_key
+                        .as_ref()
+                        .strip_prefix("folder-")
+                        .and_then(|id| Id::parse_str(id).ok())
+                        && this.navigate_folder_control(id, forward, window, cx)
+                    {
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
                     if let Some((callback, focus)) = this
                         .accessibility
                         .group_neighbor(control_key.as_ref(), forward)
@@ -1912,7 +2014,7 @@ impl NotesView {
             .flex_col()
             .gap_2();
         if self.export_open {
-            panel = panel.child(self.export_appearance(cx));
+            panel = panel.child(self.export_appearance(window, cx));
             panel = panel.child(
                 div()
                     .px_2()
@@ -2201,9 +2303,12 @@ impl NotesView {
                 )
                 .justify_start(),
             );
+            let details = self
+                .controller
+                .folder_details(self.controller.notebooks.iter().map(|folder| folder.id));
             for (folder, _) in self.controller.folder_tree() {
                 let destination = folder.id;
-                let path = self.controller.folder_path(destination);
+                let path = details[&destination].path.clone();
                 if !path.to_lowercase().contains(&query) {
                     continue;
                 }
@@ -2371,7 +2476,7 @@ impl NotesView {
                             .unwrap_or_default();
                         match this.controller.use_math_review(text) {
                             Ok(()) => {
-                                this.math_inputs = None;
+                                this.clear_math_inputs(window);
                                 this.close_modal(window, cx);
                             }
                             Err(error) => {
@@ -2831,6 +2936,10 @@ fn this_region(controller: &mut Controller, values: &[f32]) -> Result<(), String
 }
 impl Render for NotesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.export_open || self.library_open || self.blocking_overlay() {
+            self.export_options.clear_preview(window);
+        }
+        self.release_math_images(window);
         if self.library_open {
             // The library does not paint the editor. Release its GPU images,
             // decoded PDFs and page geometry until the canvas is shown again.
@@ -2867,74 +2976,6 @@ impl Render for NotesView {
         }
         self.cancel_region_after_navigation();
         self.building_overlay = false;
-        let accessibility = self.accessibility.clone();
-        for request in accessibility.drain() {
-            if request.target_node == accesskit::NodeId(3) {
-                if let Some((_, field)) = &self.modal {
-                    if request.action == accesskit::Action::Focus {
-                        field.read(cx).focus.focus(window);
-                    }
-                    if let Some(accesskit::ActionData::Value(value)) = request.data {
-                        field.update(cx, |field, cx| {
-                            field.set_accessible_content(value.into(), cx)
-                        });
-                    }
-                }
-            } else if request.target_node == accesskit::NodeId(13) {
-                if let Some(editor) = &self.inline_text {
-                    if request.action == accesskit::Action::Focus {
-                        editor.field.read(cx).focus.focus(window);
-                    }
-                    if let Some(accesskit::ActionData::Value(value)) = request.data {
-                        editor.field.update(cx, |field, cx| {
-                            field.set_accessible_content(value.into(), cx)
-                        });
-                    }
-                }
-            } else if request.target_node == accesskit::NodeId(12) {
-                if let Some(setup) = &self.notebook_setup {
-                    if request.action == accesskit::Action::Focus {
-                        setup.color.read(cx).focus.focus(window);
-                    }
-                    if let Some(accesskit::ActionData::Value(value)) = request.data {
-                        setup.color.update(cx, |field, cx| {
-                            field.set_accessible_content(value.into(), cx)
-                        });
-                    }
-                }
-            } else if ((5..=8).contains(&request.target_node.0) || request.target_node.0 == 11)
-                && self.modal.is_none()
-                && !self.blocking_overlay()
-            {
-                if let Some(inputs) = &self.math_inputs {
-                    let fields = [
-                        &inputs.expression,
-                        &inputs.variable,
-                        &inputs.next_line,
-                        &inputs.range,
-                    ];
-                    let field = if request.target_node.0 == 11 {
-                        &inputs.result_latex
-                    } else {
-                        fields[(request.target_node.0 - 5) as usize]
-                    };
-                    if request.action == accesskit::Action::Focus {
-                        field.read(cx).focus.focus(window);
-                    }
-                    if let Some(accesskit::ActionData::Value(value)) = request.data {
-                        field.update(cx, |field, cx| {
-                            field.set_accessible_content(value.into(), cx)
-                        });
-                    }
-                }
-            } else if let Some((callback, focus)) = accessibility.action(request.target_node) {
-                match request.action {
-                    accesskit::Action::Click => callback(self, window, cx),
-                    accesskit::Action::Focus => focus.focus(window),
-                    _ => {}
-                }
-            }
-        }
         self.accessibility.begin();
         if self.modal.is_none()
             && !self.library_open
@@ -3331,7 +3372,7 @@ impl Render for NotesView {
                         || this.controller.error.is_some();
                     if !dismissing_ui && this.controller.math_session.is_some() {
                         this.controller.close_math_solver();
-                        this.math_inputs = None;
+                        this.clear_math_inputs(w);
                     } else if !dismissing_ui {
                         if this.controller.recognition_pending {
                             this.controller.cancel_recognition();

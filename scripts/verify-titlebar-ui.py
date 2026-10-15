@@ -66,13 +66,26 @@ def main():
                     time.sleep(.1)
                 assert target
                 def walk(node):
+                    if node is None:return # A layout update may retire a child during discovery.
                     node.clear_cache();yield node
                     for i in range(node.get_child_count()):yield from walk(node.get_child_at_index(i))
                 def nodes():
-                    while GLib.MainContext.default().iteration(False):pass
-                    return list(walk(target))
+                    for _ in range(60):
+                        while GLib.MainContext.default().iteration(False):pass
+                        try:return list(walk(target))
+                        except GLib.GError:time.sleep(.05)
+                    raise AssertionError('Accessibility tree did not settle')
                 def button(label):
-                    return next(n for n in nodes() if n.get_role()==Atspi.Role.PUSH_BUTTON and n.get_name()==label)
+                    # Navigation exposes tabs and filter radio buttons as well
+                    # as buttons; all support the same accessible click action.
+                    for _ in range(80):
+                        try:
+                            found=next((n for n in nodes() if n.get_role() in (Atspi.Role.PUSH_BUTTON,Atspi.Role.PAGE_TAB,Atspi.Role.RADIO_BUTTON) and n.get_name()==label),None)
+                            if found:return found
+                        except GLib.GError:
+                            pass
+                        time.sleep(.05)
+                    raise AssertionError(f'Missing actionable control: {label}')
                 def click(label):
                     assert button(label).get_action_iface().do_action(0);time.sleep(.4)
                 def bounds(label):

@@ -53,12 +53,15 @@ impl NotesView {
         self.controller.finish();
         let next = close_tab(&mut self.open_tabs, id);
         if self.controller.requested_note() == id {
+            self.controller.close_math_solver();
+            self.clear_math_inputs(window);
             if let Some(next) = next {
                 self.controller.switch_note(next);
             } else {
                 self.show_library();
             }
         }
+        self.controller.close_session(id);
         self.focus.focus(window);
         cx.notify();
     }
@@ -172,11 +175,14 @@ impl NotesView {
                 .flex_col()
                 .gap_1();
             let mut destinations = vec![(None, "All documents".to_owned())];
+            let details = self
+                .controller
+                .folder_details(self.controller.notebooks.iter().map(|folder| folder.id));
             destinations.extend(
                 self.controller
                     .notebooks
                     .iter()
-                    .map(|n| (Some(n.id), self.controller.folder_path(n.id))),
+                    .map(|n| (Some(n.id), details[&n.id].path.clone())),
             );
             for (folder, name) in destinations {
                 folders = folders.child(

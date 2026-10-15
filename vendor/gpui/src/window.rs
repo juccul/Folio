@@ -1755,8 +1755,12 @@ impl Window {
 
     /// Handle WM_GETOBJECT without exposing the backend's Windows crate version.
     #[cfg(target_os = "windows")]
-    pub fn on_accessibility_object(&self, callback: impl FnMut(usize, isize) -> Option<isize> + 'static) {
-        self.platform_window.on_accessibility_object(Box::new(callback));
+    pub fn on_accessibility_object(
+        &self,
+        callback: impl FnMut(usize, isize) -> Option<isize> + 'static,
+    ) {
+        self.platform_window
+            .on_accessibility_object(Box::new(callback));
     }
 
     /// Tells the compositor to take control of window movement (Wayland and X11)
@@ -2965,7 +2969,14 @@ impl Window {
         font_size: Pixels,
         color: Hsla,
     ) -> Result<()> {
-        self.paint_glyph_transformed(origin, font_id, glyph_id, font_size, color, TransformationMatrix::unit())
+        self.paint_glyph_transformed(
+            origin,
+            font_id,
+            glyph_id,
+            font_size,
+            color,
+            TransformationMatrix::unit(),
+        )
     }
 
     /// Paint a shaped glyph through a logical-pixel affine transform.
@@ -2983,11 +2994,14 @@ impl Window {
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
         let density = transformation.rotation_scale[0][0]
-            .hypot(transformation.rotation_scale[1][0]).clamp(0.1, 8.);
+            .hypot(transformation.rotation_scale[1][0])
+            .clamp(0.1, 8.);
         let glyph_origin = origin.scale(scale_factor * density);
         let font_size = font_size * density;
         for row in &mut transformation.rotation_scale {
-            for value in row { *value /= density; }
+            for value in row {
+                *value /= density;
+            }
         }
         transformation.translation[0] *= scale_factor;
         transformation.translation[1] *= scale_factor;
@@ -3007,6 +3021,19 @@ impl Window {
 
         let raster_bounds = self.text_system().raster_bounds(&params)?;
         if !raster_bounds.is_zero() {
+            let bounds = Bounds {
+                origin: glyph_origin.map(|px| px.floor()) + raster_bounds.origin.map(Into::into),
+                size: raster_bounds.size.map(Into::into),
+            };
+            let content_mask = self.content_mask().scale(scale_factor);
+            // Match scene culling before loading an offscreen glyph into the
+            // atlas. Long text must not rasterize every clipped line/emoji.
+            if crate::scene::transformed_bounds(bounds, transformation)
+                .intersect(&content_mask.bounds)
+                .is_empty()
+            {
+                return Ok(());
+            }
             let tile = self
                 .sprite_atlas
                 .get_or_insert_with(&params.clone().into(), &mut || {
@@ -3018,7 +3045,6 @@ impl Window {
                 origin: glyph_origin.map(|px| px.floor()) + raster_bounds.origin.map(Into::into),
                 size: tile.bounds.size.map(Into::into),
             };
-            let content_mask = self.content_mask().scale(scale_factor);
             self.next_frame.scene.insert_primitive(MonochromeSprite {
                 order: 0,
                 pad: 0,
@@ -3047,7 +3073,13 @@ impl Window {
         glyph_id: GlyphId,
         font_size: Pixels,
     ) -> Result<()> {
-        self.paint_emoji_transformed(origin, font_id, glyph_id, font_size, TransformationMatrix::unit())
+        self.paint_emoji_transformed(
+            origin,
+            font_id,
+            glyph_id,
+            font_size,
+            TransformationMatrix::unit(),
+        )
     }
 
     /// Paint a shaped emoji through a logical-pixel affine transform.
@@ -3063,11 +3095,14 @@ impl Window {
 
         let scale_factor = self.scale_factor();
         let density = transformation.rotation_scale[0][0]
-            .hypot(transformation.rotation_scale[1][0]).clamp(0.1, 8.);
+            .hypot(transformation.rotation_scale[1][0])
+            .clamp(0.1, 8.);
         let glyph_origin = origin.scale(scale_factor * density);
         let font_size = font_size * density;
         for row in &mut transformation.rotation_scale {
-            for value in row { *value /= density; }
+            for value in row {
+                *value /= density;
+            }
         }
         transformation.translation[0] *= scale_factor;
         transformation.translation[1] *= scale_factor;
@@ -3083,6 +3118,19 @@ impl Window {
 
         let raster_bounds = self.text_system().raster_bounds(&params)?;
         if !raster_bounds.is_zero() {
+            let bounds = Bounds {
+                origin: glyph_origin.map(|px| px.floor()) + raster_bounds.origin.map(Into::into),
+                size: raster_bounds.size.map(Into::into),
+            };
+            let content_mask = self.content_mask().scale(scale_factor);
+            // Match scene culling before loading an offscreen glyph into the
+            // atlas. Long text must not rasterize every clipped line/emoji.
+            if crate::scene::transformed_bounds(bounds, transformation)
+                .intersect(&content_mask.bounds)
+                .is_empty()
+            {
+                return Ok(());
+            }
             let tile = self
                 .sprite_atlas
                 .get_or_insert_with(&params.clone().into(), &mut || {
@@ -3095,11 +3143,11 @@ impl Window {
                 origin: glyph_origin.map(|px| px.floor()) + raster_bounds.origin.map(Into::into),
                 size: tile.bounds.size.map(Into::into),
             };
-            let content_mask = self.content_mask().scale(scale_factor);
             let opacity = self.element_opacity();
 
             self.next_frame.scene.insert_primitive(PolychromeSprite {
-                transformation,paint_bounds:crate::scene::transformed_bounds(bounds, transformation),
+                transformation,
+                paint_bounds: crate::scene::transformed_bounds(bounds, transformation),
                 order: 0,
                 pad: 0,
                 grayscale: false,
@@ -3188,20 +3236,73 @@ impl Window {
         frame_index: usize,
         grayscale: bool,
     ) -> Result<()> {
-        self.paint_image_transformed(bounds,corner_radii,data,frame_index,grayscale,TransformationMatrix::unit())
+        self.paint_image_transformed(
+            bounds,
+            corner_radii,
+            data,
+            frame_index,
+            grayscale,
+            TransformationMatrix::unit(),
+        )
     }
 
     /// Paint a raster image using a logical-pixel affine transform on the GPU.
-    pub fn paint_image_transformed(&mut self,bounds:Bounds<Pixels>,corner_radii:Corners<Pixels>,data:Arc<RenderImage>,frame_index:usize,grayscale:bool,mut transformation:TransformationMatrix)->Result<()> {
+    pub fn paint_image_transformed(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        data: Arc<RenderImage>,
+        frame_index: usize,
+        grayscale: bool,
+        mut transformation: TransformationMatrix,
+    ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        transformation.translation[0]*=scale_factor;transformation.translation[1]*=scale_factor;
-        let transform_point=|p:Point<Pixels>| {let x=f32::from(p.x)*scale_factor;let y=f32::from(p.y)*scale_factor;point(ScaledPixels(transformation.rotation_scale[0][0]*x+transformation.rotation_scale[0][1]*y+transformation.translation[0]),ScaledPixels(transformation.rotation_scale[1][0]*x+transformation.rotation_scale[1][1]*y+transformation.translation[1]))};
-        let points=[bounds.origin,point(bounds.right(),bounds.top()),point(bounds.right(),bounds.bottom()),point(bounds.left(),bounds.bottom())].map(transform_point);
-        let min=point(ScaledPixels(points.iter().map(|p|p.x.0).fold(f32::INFINITY,f32::min)),ScaledPixels(points.iter().map(|p|p.y.0).fold(f32::INFINITY,f32::min)));
-        let max=point(ScaledPixels(points.iter().map(|p|p.x.0).fold(f32::NEG_INFINITY,f32::max)),ScaledPixels(points.iter().map(|p|p.y.0).fold(f32::NEG_INFINITY,f32::max)));
-        let paint_bounds=Bounds::from_corners(min,max);
+        transformation.translation[0] *= scale_factor;
+        transformation.translation[1] *= scale_factor;
+        let transform_point = |p: Point<Pixels>| {
+            let x = f32::from(p.x) * scale_factor;
+            let y = f32::from(p.y) * scale_factor;
+            point(
+                ScaledPixels(
+                    transformation.rotation_scale[0][0] * x
+                        + transformation.rotation_scale[0][1] * y
+                        + transformation.translation[0],
+                ),
+                ScaledPixels(
+                    transformation.rotation_scale[1][0] * x
+                        + transformation.rotation_scale[1][1] * y
+                        + transformation.translation[1],
+                ),
+            )
+        };
+        let points = [
+            bounds.origin,
+            point(bounds.right(), bounds.top()),
+            point(bounds.right(), bounds.bottom()),
+            point(bounds.left(), bounds.bottom()),
+        ]
+        .map(transform_point);
+        let min = point(
+            ScaledPixels(points.iter().map(|p| p.x.0).fold(f32::INFINITY, f32::min)),
+            ScaledPixels(points.iter().map(|p| p.y.0).fold(f32::INFINITY, f32::min)),
+        );
+        let max = point(
+            ScaledPixels(
+                points
+                    .iter()
+                    .map(|p| p.x.0)
+                    .fold(f32::NEG_INFINITY, f32::max),
+            ),
+            ScaledPixels(
+                points
+                    .iter()
+                    .map(|p| p.y.0)
+                    .fold(f32::NEG_INFINITY, f32::max),
+            ),
+        );
+        let paint_bounds = Bounds::from_corners(min, max);
         let bounds = bounds.scale(scale_factor);
         let params = RenderImageParams {
             image_id: data.id,
@@ -3225,7 +3326,8 @@ impl Window {
         let opacity = self.element_opacity();
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
-            transformation,paint_bounds,
+            transformation,
+            paint_bounds,
             order: 0,
             pad: 0,
             grayscale,
@@ -3654,7 +3756,11 @@ impl Window {
 
     /// Dispatch input from the platform to this window's listeners.
     #[profiling::function]
-    pub(crate) fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
+    pub(crate) fn dispatch_event(
+        &mut self,
+        event: PlatformInput,
+        cx: &mut App,
+    ) -> DispatchEventResult {
         self.last_input_timestamp.set(Instant::now());
         // Handlers may set this to false by calling `stop_propagation`.
         cx.propagate_event = true;

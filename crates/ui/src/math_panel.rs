@@ -46,6 +46,7 @@ pub(super) struct Inputs {
     formula_cache: RefCell<FormulaCache>,
     graph_preview: Option<GraphPreview>,
     graph_pending: Option<GraphKey>,
+    retired_images: Vec<Arc<RenderImage>>,
     mode: Mode,
     operation: String,
     actions_open: bool,
@@ -123,10 +124,29 @@ fn automatic_operation(expression: &str) -> &'static str {
 }
 
 impl NotesView {
+    pub(super) fn clear_math_inputs(&mut self, window: &mut Window) {
+        if let Some(mut inputs) = self.math_inputs.take() {
+            if let Some(image) = inputs.graph_preview.take().and_then(|p| p.image) {
+                inputs.retired_images.push(image);
+            }
+            for image in inputs.retired_images {
+                let _ = window.drop_image(image);
+            }
+        }
+    }
+    pub(super) fn release_math_images(&mut self, window: &mut Window) {
+        if self.controller.math_session.is_none() {
+            self.clear_math_inputs(window);
+        } else if let Some(inputs) = &mut self.math_inputs {
+            for image in inputs.retired_images.drain(..) {
+                let _ = window.drop_image(image);
+            }
+        }
+    }
     pub(super) fn start_math(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.controller.open_math_solver() {
             Ok(()) => {
-                self.math_inputs = None;
+                self.clear_math_inputs(window);
                 self.sync_math_inputs(window, cx);
             }
             Err(error) => self.controller.error = Some(error),
@@ -141,9 +161,9 @@ impl NotesView {
         }
         cx.notify();
     }
-    pub(super) fn sync_math_inputs(&mut self, window: &Window, cx: &mut Context<Self>) {
+    pub(super) fn sync_math_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = &self.controller.math_session else {
-            self.math_inputs = None;
+            self.clear_math_inputs(window);
             return;
         };
         if let Some(inputs) = &mut self.math_inputs {
@@ -344,6 +364,7 @@ impl NotesView {
             formula_cache: RefCell::new(HashMap::new()),
             graph_preview: None,
             graph_pending: None,
+            retired_images: Vec::new(),
             mode,
             operation,
             actions_open: false,
@@ -846,6 +867,9 @@ impl NotesView {
                         && inputs.graph_pending.as_ref() == Some(&key)
                     {
                         inputs.graph_pending = None;
+                        if let Some(image) = inputs.graph_preview.take().and_then(|p| p.image) {
+                            inputs.retired_images.push(image);
+                        }
                         inputs.graph_preview = Some(GraphPreview { key, image });
                         cx.notify();
                     }
@@ -1551,7 +1575,7 @@ impl NotesView {
                             cx,
                             |this, window, cx| {
                                 this.controller.close_math_solver();
-                                this.math_inputs = None;
+                                this.clear_math_inputs(window);
                                 this.focus.focus(window);
                                 cx.notify();
                             },

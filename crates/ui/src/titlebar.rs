@@ -137,47 +137,16 @@ impl NotesView {
 // toolbar SVGs have different intrinsic bounds, so equal SVG boxes do not
 // produce equally sized minimize/maximize/close marks.
 fn window_icon(kind: Icon, color: u32) -> impl IntoElement {
-    let lines: &[&[(f32, f32)]] = match kind {
-        Icon::Minimize => &[&[(3., 9.), (15., 9.)]],
-        Icon::Maximize => &[&[(3., 3.), (15., 3.), (15., 15.), (3., 15.), (3., 3.)]],
-        Icon::Restore => &[
-            &[(6., 6.), (6., 3.), (15., 3.), (15., 12.), (12., 12.)],
-            &[(3., 6.), (12., 6.), (12., 15.), (3., 15.), (3., 6.)],
-        ],
-        Icon::Close => &[&[(3., 3.), (15., 15.)], &[(15., 3.), (3., 15.)]],
+    let mask = match kind {
+        Icon::Minimize => Icon::WindowMinimize,
+        Icon::Maximize => Icon::WindowMaximize,
+        Icon::Restore => Icon::WindowRestore,
+        Icon::Close => Icon::WindowClose,
         _ => unreachable!("Not a window control"),
     };
-    let paths = lines
-        .iter()
-        .filter_map(|line| {
-            let mut path = PathBuilder::stroke(px(1.4));
-            path.move_to(point(px(line[0].0), px(line[0].1)));
-            for &(x, y) in &line[1..] {
-                path.line_to(point(px(x), px(y)));
-            }
-            path.build().ok()
-        })
-        .collect::<Vec<_>>();
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            for path in &paths {
-                window.paint_path(
-                    path.clone().transformed([
-                        1.,
-                        0.,
-                        0.,
-                        1.,
-                        f32::from(bounds.origin.x),
-                        f32::from(bounds.origin.y),
-                    ]),
-                    rgb(color),
-                );
-            }
-        },
-    )
-    .size(px(18.))
-    .flex_shrink_0()
+    // Cache the same geometry as a small SVG mask. A few chrome strokes must
+    // not activate the full-window multisampled vector-path render target.
+    icon(mask, color).size(px(18.))
 }
 
 pub(super) fn drag_region() -> impl IntoElement {

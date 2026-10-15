@@ -147,7 +147,7 @@ pub(super) fn raster(batch: &InkBatch) -> Option<Arc<gpui::RenderImage>> {
         b.width(),
         b.height()
     );
-    let pixmap = folio_export::raster_svg(&svg, batch.density).ok()?;
+    let pixmap = folio_export::raster_geometry_svg(&svg, batch.density).ok()?;
     Some(super::graph::image(
         pixmap.width(),
         pixmap.height(),

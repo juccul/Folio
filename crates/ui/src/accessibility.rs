@@ -5,12 +5,13 @@ use accesskit::DeactivationHandler;
 use accesskit::{
     Action, ActionRequest, ActivationHandler, Node, NodeId, Role, TreeId, TreeInfo, TreeUpdate,
 };
+use futures::channel::mpsc;
 use std::{
     cell::RefCell,
     collections::HashMap,
     hash::{Hash, Hasher},
     rc::Rc,
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex},
 };
 pub type Callback = Rc<dyn Fn(&mut NotesView, &mut Window, &mut Context<NotesView>)>;
 struct Activation(Arc<Mutex<Option<TreeUpdate>>>);
@@ -19,10 +20,10 @@ impl ActivationHandler for Activation {
         self.0.lock().ok()?.clone()
     }
 }
-struct Actions(mpsc::Sender<ActionRequest>);
+struct Actions(mpsc::UnboundedSender<ActionRequest>);
 impl accesskit::ActionHandler for Actions {
     fn do_action(&mut self, request: ActionRequest) {
-        let _ = self.0.send(request);
+        let _ = self.0.unbounded_send(request);
     }
 }
 #[cfg(not(windows))]
@@ -321,14 +322,11 @@ struct Control {
     focus: FocusHandle,
 }
 pub struct Accessibility {
-    text_cache: RefCell<Option<(Id, u64, String)>>,
     adapter: RefCell<NativeAdapter>,
     snapshot: Arc<Mutex<Option<TreeUpdate>>>,
     controls: RefCell<Vec<Control>>,
     focus_handles: RefCell<HashMap<NodeId, FocusHandle>>,
     bounds: RefCell<HashMap<NodeId, accesskit::Rect>>,
-    requests: mpsc::Receiver<ActionRequest>,
-    pending: RefCell<Vec<ActionRequest>>,
 }
 fn replace_snapshot(current: &mut Option<TreeUpdate>, update: &TreeUpdate) -> bool {
     if current.as_ref() == Some(update) {
@@ -338,33 +336,40 @@ fn replace_snapshot(current: &mut Option<TreeUpdate>, update: &TreeUpdate) -> bo
     true
 }
 impl Accessibility {
-    pub fn new(window: &Window) -> Self {
+    fn control_id(key: &str) -> NodeId {
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hash);
+        NodeId(hash.finish() | 256)
+    }
+    pub(super) fn focus_virtual_control(
+        &self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<NotesView>,
+    ) {
+        self.focus_handles
+            .borrow_mut()
+            .entry(Self::control_id(key))
+            .or_insert_with(|| cx.focus_handle())
+            .focus(window);
+    }
+    pub fn new(window: &Window) -> (Self, mpsc::UnboundedReceiver<ActionRequest>) {
         let snapshot = Arc::new(Mutex::new(None));
-        let (tx, requests) = mpsc::channel();
+        let (tx, requests) = mpsc::unbounded();
         let adapter = NativeAdapter::new(snapshot.clone(), Actions(tx), window);
-        Self {
-            text_cache: RefCell::new(None),
-            adapter: RefCell::new(adapter),
-            snapshot,
-            controls: RefCell::new(vec![]),
-            focus_handles: RefCell::new(HashMap::new()),
-            bounds: RefCell::new(HashMap::new()),
+        (
+            Self {
+                adapter: RefCell::new(adapter),
+                snapshot,
+                controls: RefCell::new(vec![]),
+                focus_handles: RefCell::new(HashMap::new()),
+                bounds: RefCell::new(HashMap::new()),
+            },
             requests,
-            pending: RefCell::new(vec![]),
-        }
+        )
     }
     pub fn begin(&self) {
         self.controls.borrow_mut().clear();
-    }
-    pub fn poll(&self) -> bool {
-        while let Ok(request) = self.requests.try_recv() {
-            self.pending.borrow_mut().push(request);
-        }
-        !self.pending.borrow().is_empty()
-    }
-    pub fn drain(&self) -> Vec<ActionRequest> {
-        self.poll();
-        std::mem::take(&mut *self.pending.borrow_mut())
     }
     pub fn action(&self, id: NodeId) -> Option<(Callback, FocusHandle)> {
         self.controls
@@ -385,9 +390,7 @@ impl Accessibility {
         visible: bool,
         cx: &mut Context<NotesView>,
     ) -> (NodeId, FocusHandle) {
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        key.hash(&mut hash);
-        let id = NodeId(hash.finish() | 256);
+        let id = Self::control_id(key);
         let focus = self
             .focus_handles
             .borrow_mut()
@@ -474,6 +477,18 @@ impl Accessibility {
             id.is_none_or(|id| visible.contains(&id))
         });
     }
+    pub fn retain_folder_items(&self, ids: impl IntoIterator<Item = Id>) {
+        let visible: std::collections::HashSet<_> = ids.into_iter().collect();
+        self.controls.borrow_mut().retain(|control| {
+            let id = control
+                .key
+                .strip_prefix("folder-")
+                .or_else(|| control.key.strip_prefix("toggle-folder-"))
+                .or_else(|| control.key.strip_prefix("manage-folder-"))
+                .and_then(|id| Id::parse_str(id).ok());
+            id.is_none_or(|id| visible.contains(&id))
+        });
+    }
     pub(super) fn control_bounds_for_key(&self, key: &str) -> Option<accesskit::Rect> {
         let id = self.controls.borrow().iter().find(|c| c.key == key)?.id;
         self.bounds.borrow().get(&id).copied()
@@ -521,15 +536,7 @@ impl Accessibility {
         });
         let mut document = Node::new(Role::Document);
         document.set_label(format!("Page {}", view.controller.session().page + 1));
-        let page = view.controller.page();
-        let mut cache = self.text_cache.borrow_mut();
-        if cache
-            .as_ref()
-            .is_none_or(|(id, revision, _)| *id != page.id || *revision != page.revision)
-        {
-            *cache = Some((page.id, page.revision, page.text()));
-        }
-        document.set_value(cache.as_ref().unwrap().2.clone());
+        document.set_value(view.controller.session().page_text().to_string());
         if let Some(bounds) = view.canvas_bounds {
             document.set_bounds(accesskit::Rect {
                 x0: f32::from(bounds.left()) as f64,
@@ -546,6 +553,14 @@ impl Accessibility {
         }
         let mut focus = NodeId(1);
         let controls = self.controls.borrow();
+        let folders = view
+            .controller
+            .folder_details(controls.iter().filter_map(|control| {
+                control
+                    .key
+                    .strip_prefix("folder-")
+                    .and_then(|id| Id::parse_str(id).ok())
+            }));
         for control in controls.iter() {
             let mut node = semantic_node(
                 &control.key,
@@ -564,13 +579,9 @@ impl Accessibility {
                 .strip_prefix("folder-")
                 .and_then(|id| Id::parse_str(id).ok())
             {
-                node.set_level(view.controller.folder_ancestors(id).len());
-                if view
-                    .controller
-                    .notebooks
-                    .iter()
-                    .any(|n| n.parent == Some(id))
-                {
+                let details = folders.get(&id);
+                node.set_level(details.map_or(0, |folder| folder.level));
+                if details.is_some_and(|folder| folder.branch) {
                     node.set_expanded(!view.controller.settings.collapsed_folders.contains(&id));
                 }
             }

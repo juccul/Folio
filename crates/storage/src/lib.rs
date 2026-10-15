@@ -1,5 +1,6 @@
 //! Transactional incremental SQLite storage. Every command persists only changed
 //! objects, with WAL/FULL durability. The UI never performs disk writes.
+mod intern;
 pub mod recovery;
 use folio_document::*;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -52,6 +53,8 @@ pub struct Delta {
     pub pages: Vec<PageHeader>,
     pub objects: Vec<ObjectWrite>,
     pub authoritative: bool,
+    /// Only structural/full snapshots reconcile the complete page identity set.
+    pub page_structure_changed: bool,
     pub page_ids: Vec<Id>,
     pub metadata_changed: bool,
     pub journal: Vec<JournalEvent>,
@@ -77,6 +80,7 @@ impl Delta {
     pub fn from_document(doc: &Document, objects: Vec<ObjectWrite>) -> Self {
         Self {
             authoritative: false,
+            page_structure_changed: true,
             page_ids: doc.pages.iter().map(|p| p.id).collect(),
             metadata_changed: true,
             journal: vec![],
@@ -100,17 +104,55 @@ impl Delta {
         }
     }
     pub fn command(doc: &Document, cmd: &Command) -> Self {
+        Self::command_with_text(doc, cmd, Page::text)
+    }
+    /// Consumers with command-aware text caches avoid scanning unchanged ink.
+    pub fn command_with_text(
+        doc: &Document,
+        cmd: &Command,
+        mut text: impl FnMut(&Page) -> String,
+    ) -> Self {
         let mut objects = Vec::new();
+        let mut last_page = None;
+        let mut page_index = None;
+        let mut searched = 0;
+        let mut page = |id| {
+            if let Some((previous, page)) = last_page
+                && previous == id
+            {
+                return page;
+            }
+            // Cache a repeated page without allocating an index. Build the
+            // index only after linear lookups have visited a document's worth
+            // of pages, keeping small edits near the start inexpensive.
+            let page = if page_index.is_some() || searched >= doc.pages.len() {
+                page_index
+                    .get_or_insert_with(|| {
+                        doc.pages
+                            .iter()
+                            .map(|page| (page.id, page))
+                            .collect::<std::collections::HashMap<_, _>>()
+                    })
+                    .get(&id)
+                    .copied()
+            } else {
+                let found = doc.pages.iter().enumerate().find(|(_, page)| page.id == id);
+                searched += found.map_or(doc.pages.len(), |(index, _)| index + 1);
+                found.map(|(_, page)| page)
+            };
+            last_page = Some((id, page));
+            page
+        };
         for c in &cmd.changes {
             match c {
-                Change::Object { page, id, .. } => objects.push(ObjectWrite {
-                    page: *page,
+                Change::Object { page: pid, id, .. } => objects.push(ObjectWrite {
+                    page: *pid,
                     id: *id,
-                    value: doc.page(*page).and_then(|p| p.objects.get(id).cloned()),
+                    value: page(*pid).and_then(|p| p.objects.get(id).cloned()),
                 }),
                 Change::Page { before, after, .. } => {
-                    for page in before.iter().chain(after.iter()) {
-                        if let Some(p) = doc.page(page.id) {
+                    for changed in before.iter().chain(after.iter()) {
+                        if let Some(p) = page(changed.id) {
                             for o in p.objects.values() {
                                 objects.push(ObjectWrite {
                                     page: p.id,
@@ -146,6 +188,7 @@ impl Delta {
             .changes
             .iter()
             .any(|c| matches!(c, Change::Metadata { .. }));
+        let page_structure_changed = cmd.changes.iter().any(|c| matches!(c, Change::Page { .. }));
         let all_pages = cmd.changes.iter().any(|c| {
             matches!(c, Change::Page { .. })
                 || matches!(c,Change::Metadata {before,after} if before.trashed && !after.trashed)
@@ -156,7 +199,12 @@ impl Delta {
             pages: vec![],
             objects,
             authoritative: false,
-            page_ids: doc.pages.iter().map(|p| p.id).collect(),
+            page_structure_changed,
+            page_ids: if page_structure_changed {
+                doc.pages.iter().map(|p| p.id).collect()
+            } else {
+                vec![]
+            },
             metadata_changed,
             journal: vec![],
         };
@@ -174,8 +222,11 @@ impl Delta {
                 revision: p.revision,
                 order: p.order.clone(),
                 groups: p.groups.clone(),
-                text: p.text(),
+                text: text(p),
             });
+        }
+        if !page_structure_changed {
+            delta.page_ids = delta.pages.iter().map(|p| p.id).collect();
         }
         delta
     }
@@ -322,7 +373,10 @@ impl Store {
         let transaction = self.connection.unchecked_transaction()?;
         let result = self
             .load_snapshot(id)?
-            .map(|document| self.history(id).map(|history| (document, history)))
+            .map(|document| {
+                self.history_with_document(id, Some(&document))
+                    .map(|history| (document, history))
+            })
             .transpose()?;
         transaction.commit()?;
         Ok(result)
@@ -340,6 +394,7 @@ impl Store {
     }
     /// Read just the chosen cover page and page count in one WAL snapshot.
     pub fn library_preview(&self, note: Id, cover: Option<Id>) -> Result<Option<(Page, usize)>> {
+        let mut interner = intern::StrokeInterner::default();
         let tx = self.connection.unchecked_transaction()?;
         let header: Option<String> = tx.query_row(
             "SELECT header FROM pages WHERE note_id=?1 ORDER BY CASE WHEN id=?2 THEN 0 ELSE 1 END,position LIMIT 1",
@@ -357,7 +412,8 @@ impl Store {
             let mut query = tx.prepare("SELECT data FROM objects WHERE page_id=?1")?;
             let mut objects = std::collections::BTreeMap::new();
             for row in query.query_map([header.id.to_string()], |r| r.get::<_, String>(0))? {
-                let object: Object = serde_json::from_str(&row?)?;
+                let mut object: Object = serde_json::from_str(&row?)?;
+                interner.object(&mut object);
                 objects.insert(object.id(), Arc::new(object));
             }
             objects
@@ -384,6 +440,7 @@ impl Store {
         Ok(document)
     }
     fn load_snapshot(&self, id: Id) -> Result<Option<Document>> {
+        let mut interner = intern::StrokeInterner::default();
         let metadata: Option<String> = self
             .connection
             .query_row(
@@ -406,7 +463,8 @@ impl Store {
             let h: PageHeader = serde_json::from_str(&row?)?;
             let mut objects = std::collections::BTreeMap::new();
             for row in object_query.query_map([h.id.to_string()], |r| r.get::<_, String>(0))? {
-                let o: Object = serde_json::from_str(&row?)?;
+                let mut o: Object = serde_json::from_str(&row?)?;
+                interner.object(&mut o);
                 objects.insert(o.id(), Arc::new(o));
             }
             pages.push(Page {
@@ -431,7 +489,8 @@ impl Store {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })? {
             let (page_id, data) = row?;
-            let o: Object = serde_json::from_str(&data)?;
+            let mut o: Object = serde_json::from_str(&data)?;
+            interner.object(&mut o);
             let page_id = Id::parse_str(&page_id)
                 .map_err(|_| Error::Invalid("Invalid draft page ID".into()))?;
             if let Some(p) = page_indices.get(&page_id).map(|index| &mut pages[*index])
@@ -482,20 +541,24 @@ impl Store {
             .iter()
             .copied()
             .collect::<std::collections::HashSet<_>>();
-        // Header order is authoritative, and page deletion cascades its object rows.
-        let current = {
-            let mut q = tx.prepare("SELECT id FROM pages WHERE note_id=?1")?;
-            q.query_map([&note], |r| r.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-        };
-        for old in current {
-            if !Id::parse_str(&old).is_ok_and(|id| page_ids.contains(&id)) {
-                execute_cached(
-                    &tx,
-                    "DELETE FROM search WHERE rowid=(SELECT id FROM search_entries WHERE page_id=?1)",
-                    [&old],
-                )?;
-                execute_cached(&tx, "DELETE FROM pages WHERE id=?1", [old])?;
+        // Ordinary object/property edits cannot delete pages. Reconcile page
+        // identities only for structural/full snapshots, avoiding a database
+        // scan of every page on every stroke in a long document.
+        if delta.page_structure_changed {
+            let current = {
+                let mut q = tx.prepare("SELECT id FROM pages WHERE note_id=?1")?;
+                q.query_map([&note], |r| r.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            for old in current {
+                if !Id::parse_str(&old).is_ok_and(|id| page_ids.contains(&id)) {
+                    execute_cached(
+                        &tx,
+                        "DELETE FROM search WHERE rowid=(SELECT id FROM search_entries WHERE page_id=?1)",
+                        [&old],
+                    )?;
+                    execute_cached(&tx, "DELETE FROM pages WHERE id=?1", [old])?;
+                }
             }
         }
         for p in &delta.pages {
@@ -629,16 +692,29 @@ impl Store {
         Ok(())
     }
     pub fn history(&self, note: Id) -> Result<History> {
+        self.history_with_document(note, None)
+    }
+    fn history_with_document(&self, note: Id, document: Option<&Document>) -> Result<History> {
+        let mut interner = intern::StrokeInterner::default();
+        if let Some(document) = document {
+            interner.seed(document);
+        }
         let mut undo = vec![];
         let mut redo = vec![];
         let mut query = self
             .connection
             .prepare("SELECT command,applied FROM history WHERE note_id=?1 ORDER BY ordinal")?;
-        for row in query.query_map([note.to_string()], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
-        })? {
-            let (data, applied) = row?;
-            let command = serde_json::from_str(&data)?;
+        let mut rows = query.query([note.to_string()])?;
+        while let Some(row) = rows.next()? {
+            // Decode from SQLite's borrowed text instead of copying a large
+            // page/selection snapshot into a temporary JSON String.
+            let value = row.get_ref(0)?;
+            let data = value
+                .as_str()
+                .map_err(|error| Error::Invalid(format!("History record: {error}")))?;
+            let applied = row.get::<_, bool>(1)?;
+            let mut command = serde_json::from_str(data)?;
+            interner.command(&mut command);
             if applied {
                 undo.push(command);
             } else {
@@ -807,6 +883,8 @@ impl Persistence {
                                     sequence: 0,
                                     result: Err(e.to_string()),
                                 });
+                            } else {
+                                pending_deletes.remove(&id);
                             }
                         }
                         Work::Notebook(n) => {
@@ -818,6 +896,8 @@ impl Persistence {
                                     sequence: 0,
                                     result: Err(e.to_string()),
                                 });
+                            } else {
+                                pending_notebooks.remove(&n.id);
                             }
                         }
                         Work::Settings(data) => {
@@ -828,6 +908,8 @@ impl Persistence {
                                     sequence: 0,
                                     result: Err(e.to_string()),
                                 });
+                            } else {
+                                pending_settings = None;
                             }
                         }
                         Work::Checkpoint => {
@@ -1019,6 +1101,60 @@ mod tests {
             delta.objects[0].value.as_ref().unwrap(),
             &object
         ));
+        let other = document.pages[0].duplicate();
+        let other_object = other.objects[&other.order[0]].clone();
+        let other_page = other.id;
+        document.pages.extend((0..100).map(|_| Page::new()));
+        document.pages.push(other);
+        let missing_page = Id::new_v4();
+        let command = Command {
+            label: "Edit across pages".into(),
+            changes: [
+                (other_page, other_object.clone()),
+                (document.pages[0].id, object.clone()),
+                (other_page, other_object.clone()),
+                (missing_page, object.clone()),
+                (missing_page, object.clone()),
+            ]
+            .into_iter()
+            .map(|(page, object)| Change::Object {
+                page,
+                id: object.id(),
+                before: Some(object.clone()),
+                after: Some(object),
+                index: 0,
+            })
+            .collect(),
+        };
+        let delta = Delta::command(&document, &command);
+        assert_eq!(delta.objects.len(), 3);
+        assert_eq!(delta.pages.len(), 2);
+        assert!(!delta.page_structure_changed);
+        assert_eq!(delta.page_ids.len(), 2);
+        for (page, expected) in [(other_page, other_object), (document.pages[0].id, object)] {
+            let write = delta
+                .objects
+                .iter()
+                .find(|write| write.page == page)
+                .unwrap();
+            assert!(Arc::ptr_eq(write.value.as_ref().unwrap(), &expected));
+        }
+        assert!(
+            delta
+                .objects
+                .iter()
+                .find(|write| write.page == missing_page)
+                .unwrap()
+                .value
+                .is_none()
+        );
+        let path = path();
+        let mut store = Store::open(&path).unwrap();
+        store.save(&Delta::full(&document)).unwrap();
+        store.save(&delta).unwrap();
+        assert_eq!(store.load(document.metadata.id).unwrap().unwrap(), document);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1559,10 +1695,51 @@ mod tests {
     fn worker_flush_and_reload() {
         let p = path();
         let store = Store::open(&p).unwrap();
+        store.connection.execute_batch("CREATE TABLE writes(kind TEXT);
+            CREATE TRIGGER notebook_insert AFTER INSERT ON notebooks BEGIN INSERT INTO writes VALUES('notebook'); END;
+            CREATE TRIGGER notebook_update AFTER UPDATE ON notebooks BEGIN INSERT INTO writes VALUES('notebook'); END;
+            CREATE TRIGGER notebook_delete AFTER DELETE ON notebooks BEGIN INSERT INTO writes VALUES('delete'); END;
+            CREATE TRIGGER settings_insert AFTER INSERT ON settings BEGIN INSERT INTO writes VALUES('settings'); END;
+            CREATE TRIGGER settings_update AFTER UPDATE ON settings BEGIN INSERT INTO writes VALUES('settings'); END;").unwrap();
         let mut worker = Persistence::new(store);
         let d = Document::new("worker");
+        let folder = Notebook {
+            id: Id::new_v4(),
+            name: "folder".into(),
+            parent: None,
+        };
+        worker.notebook(folder.clone());
+        worker.settings("{}".into());
+        worker.delete_notebook(folder.id);
         worker.save(Delta::full(&d)).unwrap();
         worker.flush().unwrap();
+        let reader = Connection::open(&p).unwrap();
+        let writes = || {
+            reader
+                .query_row("SELECT COUNT(*) FROM writes", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        assert_eq!(writes(), 3, "Flush must not repeat successful writes");
+        worker.flush().unwrap();
+        assert_eq!(writes(), 3);
+        reader.execute_batch("CREATE TRIGGER fail_settings BEFORE UPDATE ON settings BEGIN SELECT RAISE(FAIL,'disk unavailable'); END;").unwrap();
+        worker.settings("{\"retry\":true}".into());
+        assert!(worker.flush().is_err());
+        reader.execute_batch("DROP TRIGGER fail_settings").unwrap();
+        worker.flush().unwrap();
+        assert_eq!(writes(), 4);
+        worker.flush().unwrap();
+        assert_eq!(writes(), 4);
+        assert_eq!(
+            reader
+                .query_row(
+                    "SELECT data FROM settings WHERE key='preferences'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+            "{\"retry\":true}"
+        );
         drop(worker);
         assert_eq!(
             Store::open(p)

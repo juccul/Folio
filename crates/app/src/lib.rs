@@ -1,6 +1,7 @@
 //! Application controller. Commands, input routing and worker scheduling live here;
 //! the GPUI layer only displays state and forwards user actions.
 mod folders;
+pub use folders::FolderDetails;
 #[cfg(test)]
 mod gesture_tests;
 mod handwriting_search;
@@ -8,6 +9,7 @@ mod library_actions;
 mod library_previews;
 #[cfg(test)]
 mod management_tests;
+mod memory;
 #[cfg(test)]
 mod optimization_tests;
 mod page_actions;
@@ -34,6 +36,7 @@ pub use math_solver::{MathReport, MathRequest, MathSession, MathStep};
 pub use recognition::{RecognitionKind, RecognitionReview};
 pub use settings::{EraserMode, PageTemplate, PenPreset, Settings, WorkspacePreferences};
 use std::{
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
@@ -76,6 +79,9 @@ pub struct Session {
     history_needs_save: bool,
     library_cover: Option<Arc<Page>>,
     linked_math: HashSet<Id>,
+    page_stack: RefCell<Option<Arc<PageStack>>>,
+    search_text: RefCell<HashMap<Id, (u64, Arc<str>)>>,
+    memory_usage: Cell<Option<usize>>,
 }
 impl Session {
     fn new(document: Document) -> Self {
@@ -100,15 +106,49 @@ impl Session {
             order_positions,
             history_needs_save: false,
             library_cover: None,
+            page_stack: RefCell::new(None),
+            search_text: RefCell::new(HashMap::new()),
+            memory_usage: Cell::new(None),
         }
     }
     pub fn page(&self) -> &Page {
         &self.document.pages[self.page]
     }
     pub fn page_mut(&mut self) -> &mut Page {
+        self.memory_usage.set(None);
+        self.page_stack.get_mut().take();
+        self.search_text
+            .get_mut()
+            .remove(&self.document.pages[self.page].id);
         &mut self.document.pages[self.page]
     }
+    /// Reuse finite-page layout across drawing and navigation frames. Only page
+    /// structure or dimensions affect it; ink revisions and paper colors do not.
+    pub fn page_stack(&self) -> Option<Arc<PageStack>> {
+        if self.page().properties.infinite {
+            return None;
+        }
+        let mut cached = self.page_stack.borrow_mut();
+        if cached.as_ref().is_none_or(|stack| {
+            self.page < stack.pages[0].0 || self.page > stack.pages.last().unwrap().0
+        }) {
+            *cached = PageStack::new(&self.document.pages, self.page).map(Arc::new);
+        }
+        cached.clone()
+    }
     fn refresh_command(&mut self, command: &Command) {
+        self.memory_usage.set(None);
+        if command.changes.iter().any(|change| match change {
+            Change::Page { .. } => true,
+            Change::Properties { before, after, .. } => {
+                (before.width, before.height, before.infinite)
+                    != (after.width, after.height, after.infinite)
+            }
+            _ => false,
+        }) {
+            self.page_stack.get_mut().take();
+        }
+        self.refresh_search_text(command);
         let old_page = self.page;
         self.page = self.page.min(self.document.pages.len() - 1);
         let page = &self.document.pages[self.page];
@@ -189,6 +229,7 @@ impl Session {
         self.indexed_page = page.id;
     }
     fn refresh(&mut self) {
+        self.memory_usage.set(None);
         self.page = self.page.min(self.document.pages.len() - 1);
         self.selection
             .retain(|id| self.document.pages[self.page].objects.contains_key(id));
@@ -357,6 +398,8 @@ pub struct Controller {
     pub previews: HashMap<(Id, Id, Id), RasterPreview>,
     preview_pending: HashMap<(Id, Id, Id), Arc<Object>>,
     session_recency: std::collections::VecDeque<Id>,
+    session_views: std::collections::VecDeque<(Id, Id, Viewport)>,
+    closed_sessions: HashSet<Id>,
     last_draft: Instant,
     last_cache_trim: Instant,
     pending_actions: HashMap<Id, Vec<NoteAction>>,
@@ -371,6 +414,7 @@ pub struct Controller {
     pending_search: Option<(String, u64)>,
     pub notes: Vec<NoteMetadata>,
     pub notebooks: Vec<Notebook>,
+    folder_details: RefCell<Option<folders::DetailsCache>>,
     pub sessions: HashMap<Id, Session>,
     pub active: Id,
     pub tool: Tool,
@@ -417,6 +461,14 @@ pub struct Controller {
 }
 impl Controller {
     pub fn open(data_dir: PathBuf) -> Result<Self, String> {
+        Self::open_inner(data_dir, false)
+    }
+    /// Restore the visible workspace without loading an editor hidden behind the
+    /// library. Explicit startup actions can request an editor instead.
+    pub fn open_for_ui(data_dir: PathBuf, editor_requested: bool) -> Result<Self, String> {
+        Self::open_inner(data_dir, !editor_requested)
+    }
+    fn open_inner(data_dir: PathBuf, defer_library: bool) -> Result<Self, String> {
         std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {
@@ -454,24 +506,26 @@ impl Controller {
             .then_some(settings.workspace.active_document)
             .flatten();
         let mut bootstrap_document = None;
-        let document = if let Some(n) = notes
+        let load_editor =
+            !defer_library || (settings.reopen_documents && !settings.workspace.library_open);
+        let (document, history) = if let Some(n) = notes
             .iter()
             .find(|n| Some(n.id) == preferred)
             .or_else(|| notes.iter().find(|n| !n.trashed))
+            .filter(|_| load_editor)
         {
             store
-                .load(n.id)
+                .load_with_history(n.id)
                 .map_err(|e| e.to_string())?
                 .ok_or("Missing note data")?
         } else {
             let mut doc = Document::new("Untitled document");
             doc.pages[0].properties.paper = settings.paper;
             bootstrap_document = Some(doc.metadata.id);
-            doc
+            (doc, History::default())
         };
         let active = document.metadata.id;
         let mut sessions = HashMap::new();
-        let history = store.history(active).map_err(|e| e.to_string())?;
         let mut session = Session::new(document);
         session.history = history;
         if settings.reopen_documents
@@ -523,6 +577,8 @@ impl Controller {
             recognition_review: None,
             _lock: lock,
             session_recency: std::collections::VecDeque::from([active]),
+            session_views: std::collections::VecDeque::new(),
+            closed_sessions: HashSet::new(),
             last_draft: Instant::now(),
             last_cache_trim: Instant::now(),
             pending_actions: HashMap::new(),
@@ -539,6 +595,7 @@ impl Controller {
             preview_pending: HashMap::new(),
             notes,
             notebooks,
+            folder_details: RefCell::new(None),
             sessions,
             active,
             tool: initial_tool,
@@ -668,9 +725,17 @@ impl Controller {
     }
     fn refresh_metadata(&mut self, id: Id) {
         if let Some(session) = self.sessions.get(&id)
-            && let Some(n) = self.notes.iter_mut().find(|n| n.id == id)
+            && let Some(index) = self.notes.iter().position(|n| n.id == id)
         {
-            *n = session.document.metadata.clone()
+            self.notes[index] = session.document.metadata.clone();
+            let edited = self.notes[index].updated_at;
+            // Most strokes update the already-first note. Sort only when its
+            // new timestamp crosses a neighbor, preserving stable ties.
+            if (index == 0 || self.notes[index - 1].updated_at >= edited)
+                && (index + 1 == self.notes.len() || self.notes[index + 1].updated_at <= edited)
+            {
+                return;
+            }
         }
         self.notes.sort_by_key(|n| std::cmp::Reverse(n.updated_at));
     }
@@ -726,7 +791,9 @@ impl Controller {
             let mut delta = if provisional {
                 Delta::full(&s.document)
             } else {
-                Delta::command(&s.document, &cmd)
+                Delta::command_with_text(&s.document, &cmd, |page| {
+                    s.search_text_for(page).to_string()
+                })
             };
             delta.journal.push(JournalEvent::Execute(cmd));
             delta
@@ -763,7 +830,9 @@ impl Controller {
             }
             s.refresh_command(&cmd);
             let delta = autosave.then(|| {
-                let mut delta = Delta::command(&s.document, &cmd);
+                let mut delta = Delta::command_with_text(&s.document, &cmd, |page| {
+                    s.search_text_for(page).to_string()
+                });
                 delta.journal.push(JournalEvent::Undo);
                 delta
             });
@@ -795,7 +864,9 @@ impl Controller {
             }
             s.refresh_command(&cmd);
             let delta = autosave.then(|| {
-                let mut delta = Delta::command(&s.document, &cmd);
+                let mut delta = Delta::command_with_text(&s.document, &cmd, |page| {
+                    s.search_text_for(page).to_string()
+                });
                 delta.journal.push(JournalEvent::Redo);
                 delta
             });
@@ -953,6 +1024,14 @@ impl Controller {
     }
     fn activate_note(&mut self, id: Id) {
         let previous = self.active;
+        self.closed_sessions.remove(&id);
+        self.session_recency.retain(|note| *note != id);
+        self.session_recency.push_back(id);
+        if previous != id
+            && let Some(session) = self.sessions.get(&previous)
+        {
+            session.memory_usage.set(None);
+        }
         self.active = id;
         if previous != id && self.bootstrap_document == Some(previous) {
             self.bootstrap_document = None;
@@ -1025,7 +1104,7 @@ impl Controller {
         self.pending_note = None;
         self.pending_navigation = None;
         let id = self.duplicate_loaded_note(self.active);
-        self.active = id;
+        self.activate_note(id);
     }
     fn duplicate_loaded_note(&mut self, source: Id) -> Id {
         let old = self.sessions[&source].document.clone();
@@ -1192,7 +1271,7 @@ impl Controller {
             return;
         }
         let session = self.session();
-        let Some(stack) = PageStack::new(&session.document.pages, session.page) else {
+        let Some(stack) = session.page_stack() else {
             return;
         };
         let active = session.page;
@@ -1207,7 +1286,7 @@ impl Controller {
     }
     fn focus_page_at(&mut self, screen: Point) {
         let session = self.session();
-        let Some(stack) = PageStack::new(&session.document.pages, session.page) else {
+        let Some(stack) = session.page_stack() else {
             return;
         };
         if let Some(target) = stack.hit(session.viewport, session.page, screen)
@@ -1401,16 +1480,26 @@ impl Controller {
                 && (event.device == folio_input::Device::Mouse
                     || matches!(tool, Tool::Text | Tool::Lasso | Tool::Rectangle))
             {
-                self.page().ordered_objects().rev().find_map(|o| {
-                    if let Object::Text(t) = o.as_ref() {
-                        t.transform
-                            .inverse()
-                            .filter(|inv| t.rect.contains(inv.apply(p)))
-                            .map(|_| t.id)
-                    } else {
-                        None
-                    }
-                })
+                let session = self.session();
+                session
+                    .index
+                    .query(Rect::new(p.x, p.y, 0., 0.))
+                    .into_iter()
+                    .filter_map(|id| {
+                        let o = session.page().objects.get(&id)?;
+                        if let Object::Text(t) = o.as_ref() {
+                            t.transform
+                                .inverse()
+                                .filter(|inv| t.rect.contains(inv.apply(p)))
+                                .map(|_| {
+                                    (session.order_positions.get(&id).copied().unwrap_or(0), t.id)
+                                })
+                        } else {
+                            None
+                        }
+                    })
+                    .max_by_key(|(rank, _)| *rank)
+                    .map(|(_, id)| id)
             } else {
                 None
             };
@@ -1644,7 +1733,12 @@ impl Controller {
                     return;
                 }
                 if let Some(stroke) = builder.finish() {
-                    let points = stroke.raw.iter().map(|p| p.position()).collect::<Vec<_>>();
+                    let points = std::cell::OnceCell::new();
+                    let points = || {
+                        points.get_or_init(|| {
+                            stroke.raw.iter().map(|p| p.position()).collect::<Vec<_>>()
+                        })
+                    };
                     let smart_pen =
                         self.tool == Tool::Pen && stroke.style.tool != InkTool::Highlighter;
                     // A deliberate endpoint hold identifies selection intent.
@@ -1654,7 +1748,7 @@ impl Controller {
                         && self.settings.encircle_select
                         && last_move.elapsed() >= INK_HOLD_DELAY
                     {
-                        let ids = self.encircled_ids(&points);
+                        let ids = self.encircled_ids(points());
                         if !ids.is_empty() {
                             self.session_mut().selection = ids;
                             self.tool = Tool::Lasso;
@@ -1716,7 +1810,7 @@ impl Controller {
                                 && self.settings.hold_shapes
                                 && last_move.elapsed() >= INK_HOLD_DELAY
                         {
-                            folio_shapes::fit(&points)
+                            folio_shapes::fit(points())
                         } else {
                             None
                         }
@@ -2760,32 +2854,53 @@ impl Controller {
             self.session_mut().viewport = Viewport::default();
         }
     }
-    fn trim_caches(&mut self) {
+    fn trim_sessions(&mut self, budget: usize) {
         if self.session_recency.back() != Some(&self.active) {
             self.session_recency.retain(|id| *id != self.active);
             self.session_recency.push_back(self.active);
         }
-        if self.settings.autosave
-            && self.saved >= self.queued
-            && self.dirty_notes.is_empty()
-            && self.interaction.is_none()
-        {
-            while self.sessions.len() > 8 {
+        if self.saved >= self.queued && self.dirty_notes.is_empty() && self.interaction.is_none() {
+            let closed: Vec<_> = self.closed_sessions.iter().copied().collect();
+            for id in closed {
+                if !self.sessions.contains_key(&id) && !self.loading_notes.contains(&id) {
+                    self.closed_sessions.remove(&id);
+                } else if self.can_release_session(id)
+                    && (id != self.active || self.pending_note.is_none())
+                {
+                    if id == self.active {
+                        let mut document = Document::new("Untitled document");
+                        document.pages[0].properties = self.default_page_properties();
+                        let next = document.metadata.id;
+                        self.sessions.insert(next, Session::new(document));
+                        self.activate_note(next);
+                        self.bootstrap_document = Some(next);
+                        self.provisional_imports.insert(next);
+                    }
+                    self.release_session(id);
+                }
+            }
+            let mut bytes = self
+                .sessions
+                .iter()
+                .filter(|(id, _)| **id != self.active)
+                .map(|(_, session)| session.memory_bytes())
+                .sum::<usize>();
+            while self.settings.autosave && (self.sessions.len() > 8 || bytes > budget) {
                 let victim = self.session_recency.iter().copied().find(|id| {
                     *id != self.active
                         && Some(*id) != self.pending_note
-                        && !self.pending_actions.contains_key(id)
-                        && !self.pending_imports.contains_key(id)
-                        && self.sessions.get(id).is_some_and(|s| !s.history_needs_save)
+                        && self.can_release_session(*id)
                 });
                 let Some(victim) = victim else {
                     break;
                 };
-                self.session_recency.retain(|id| *id != victim);
-                self.sessions.remove(&victim);
-                self.previews.retain(|(note, _, _), _| *note != victim);
+                bytes = bytes.saturating_sub(self.sessions[&victim].memory_bytes());
+                self.release_session(victim);
             }
         }
+    }
+    fn trim_caches(&mut self) {
+        self.trim_sessions(96 * 1024 * 1024);
         const BUDGET: usize = 128 * 1024 * 1024;
         if self.previews.values().map(|p| p.bgra.len()).sum::<usize>() > BUDGET {
             let note = self.active;
@@ -2902,10 +3017,11 @@ impl Controller {
                     result,
                 } => {
                     self.library_preview_pending.remove(&note);
-                    if self
-                        .notes
-                        .iter()
-                        .any(|n| n.id == note && n.updated_at == updated)
+                    if !self.sessions.contains_key(&note)
+                        && self
+                            .notes
+                            .iter()
+                            .any(|n| n.id == note && n.updated_at == updated)
                     {
                         match result {
                             Ok(Some((page, count))) => {
@@ -3062,27 +3178,43 @@ impl Controller {
                 }
                 Finished::Loaded(d, history) => {
                     let id = d.metadata.id;
+                    let view = self
+                        .session_views
+                        .iter()
+                        .position(|(note, _, _)| *note == id)
+                        .and_then(|index| self.session_views.remove(index));
+                    self.library_previews.remove(&id);
+                    self.library_preview_recency.retain(|note| *note != id);
                     self.loading_notes.remove(&id);
                     self.session_recency.retain(|n| *n != id);
                     self.session_recency.push_back(id);
                     self.sessions.entry(id).or_insert_with(|| {
                         let mut s = Session::new(d);
                         s.history = history;
-                        if self.settings.reopen_documents
-                            && let Some((_, page)) = self
-                                .settings
-                                .workspace
-                                .current_pages
-                                .iter()
-                                .find(|(note, _)| *note == id)
-                        {
+                        let page = view.map(|(_, page, _)| page).or_else(|| {
+                            self.settings
+                                .reopen_documents
+                                .then(|| {
+                                    self.settings
+                                        .workspace
+                                        .current_pages
+                                        .iter()
+                                        .find(|(note, _)| *note == id)
+                                        .map(|(_, page)| *page)
+                                })
+                                .flatten()
+                        });
+                        if let Some(page) = page {
                             s.page = s
                                 .document
                                 .pages
                                 .iter()
-                                .position(|p| p.id == *page)
+                                .position(|p| p.id == page)
                                 .unwrap_or(0);
                             s.refresh();
+                        }
+                        if let Some((_, _, viewport)) = view {
+                            s.viewport = viewport;
                         }
                         s
                     });
@@ -3261,7 +3393,9 @@ impl Controller {
             }
         }
         if self.last_cache_trim.elapsed() >= Duration::from_millis(250) {
+            let active = self.active;
             self.trim_caches();
+            changed |= active != self.active;
             self.last_cache_trim = Instant::now();
         }
         changed
@@ -4031,7 +4165,10 @@ mod extended_tests {
     #[test]
     fn segment_erase_is_atomic_and_preserves_original_sensor_data() {
         let mut a = app();
-        let original = ink();
+        let root = a.data_dir.clone();
+        let mut original = ink();
+        Arc::make_mut(&mut original.raw)[0].tilt_x = -0.0;
+        Arc::make_mut(&mut original.raw)[1].buttons = 5;
         insert(&mut a, original.clone());
         a.settings.segment_eraser = true;
         a.set_tool(Tool::Eraser);
@@ -4056,12 +4193,51 @@ mod extended_tests {
             assert_eq!(s.raw, original.raw);
             assert!(s.fragment_path.is_some());
         }
+        a.flush().unwrap();
+        let expected = a.session().document.clone();
+        let expected_history = serde_json::to_value(&a.session().history).unwrap();
+        drop(a);
+        let mut a = Controller::open(root.clone()).unwrap();
+        assert_eq!(a.session().document, expected);
+        assert_eq!(
+            serde_json::to_value(&a.session().history).unwrap(),
+            expected_history
+        );
+        let first = a.page().objects.values().next().unwrap().clone();
+        let Object::Stroke(first) = first.as_ref() else {
+            panic!()
+        };
+        for object in a.page().objects.values() {
+            let Object::Stroke(stroke) = object.as_ref() else {
+                panic!()
+            };
+            assert!(Arc::ptr_eq(&first.raw, &stroke.raw));
+            assert!(Arc::ptr_eq(&first.path, &stroke.path));
+            assert_eq!(stroke.raw[0].tilt_x.to_bits(), (-0.0_f32).to_bits());
+            assert_eq!(stroke.raw[1].buttons, 5);
+        }
+        for (command, _) in a.session().history.entries() {
+            for change in &command.changes {
+                if let Change::Object { before, after, .. } = change {
+                    for object in before.iter().chain(after.iter()) {
+                        if let Object::Stroke(stroke) = object.as_ref() {
+                            assert!(Arc::ptr_eq(&first.raw, &stroke.raw));
+                            assert!(Arc::ptr_eq(&first.path, &stroke.path));
+                        }
+                    }
+                }
+            }
+        }
         a.undo();
         assert_eq!(a.page().objects.len(), 1);
         assert_eq!(
             a.page().objects[&original.id].as_ref(),
             &Object::Stroke(original)
         );
+        a.redo();
+        assert_eq!(a.page().objects.len(), 2);
+        drop(a);
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn ink_erasers_protect_media_and_keep_their_own_radius() {

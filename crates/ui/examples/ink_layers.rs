@@ -66,6 +66,26 @@ fn main() {
                 }
                 window.update(cx,|_,window,cx| {window.resize(size(px(1000.),px(800.)));cx.notify();})?;
                 println!("FOLIO_RESIZE_INK_OK 60 grow/shrink steps retained {count} cached strokes");
+                // Repeatedly replace one layer while neighboring atlas images
+                // stay live, exercising tile reuse and deferred retirement.
+                for _ in 0..8 {
+                    window.update(cx,|view,_,cx| {
+                        view.controller.session_mut().selection = view.controller.page().order[..32].iter().copied().collect();
+                        cx.notify();
+                    })?;
+                    cx.background_executor().timer(Duration::from_millis(100)).await;
+                    let (_,strokes)=window.update(cx,|view,_,_|view.smoke_ink_layers(None))?;
+                    if strokes!=count-32 {return Err("Partial selection disturbed neighboring cached ink".into());}
+                    window.update(cx,|view,_,cx| {view.controller.session_mut().selection.clear();cx.notify();})?;
+                    ready=false;
+                    for _ in 0..200 {
+                        cx.background_executor().timer(Duration::from_millis(50)).await;
+                        let (_,strokes)=window.update(cx,|view,_,_|view.smoke_ink_layers(None))?;
+                        if strokes==count {ready=true;break;}
+                    }
+                    if !ready {return Err("Ink images did not recover after atlas image churn".into());}
+                }
+                println!("FOLIO_IMAGE_CHURN_OK replaced one ink layer eight times with neighboring images resident");
                 window.update(cx,|view,_,cx| {view.controller.select_all();cx.notify();})?;
                 cx.background_executor().timer(Duration::from_millis(100)).await;
                 let (layers,strokes)=window.update(cx,|view,_,_|view.smoke_ink_layers(None))?;

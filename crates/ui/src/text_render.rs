@@ -189,12 +189,11 @@ impl Layout {
         line.offset + line.shaped.closest_index_for_x(px(p.x - line.x - prefix))
     }
     pub fn caret(&self, index: usize) -> Rect {
-        let line = self
+        let row = self
             .lines
-            .iter()
-            .rev()
-            .find(|l| l.offset <= index)
-            .unwrap_or(&self.lines[0]);
+            .partition_point(|line| line.offset <= index)
+            .saturating_sub(1);
+        let line = &self.lines[row];
         let prefix = line.prefix.as_ref().map_or(0., |p| f32::from(p.width));
         let x = line.x
             + prefix

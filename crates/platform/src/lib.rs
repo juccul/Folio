@@ -147,27 +147,21 @@ pub trait BackgroundCommand {
 impl BackgroundCommand for Command {
     fn spawn_background(&mut self) -> std::io::Result<std::process::Child> {
         configure_command(self);
-        let child = self.spawn()?;
         #[cfg(windows)]
-        let mut child = child;
-        #[cfg(windows)]
-        if let Err(error) = own_windows_worker(&child) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
+        {
+            spawn_windows_worker(self, None)
         }
-        Ok(child)
+        #[cfg(not(windows))]
+        {
+            self.spawn()
+        }
     }
 }
 
 #[cfg(windows)]
-fn own_windows_worker(child: &std::process::Child) -> std::io::Result<()> {
-    use std::{os::windows::io::AsRawHandle, sync::OnceLock};
+fn new_windows_worker_job() -> Result<usize, u32> {
     use windows_sys::Win32::System::JobObjects::*;
-    // Windows closes this process-owned handle even on an app crash, killing
-    // all assigned workers and their descendants. Rust statics live until exit.
-    static JOB: OnceLock<Result<usize, u32>> = OnceLock::new();
-    let job = JOB.get_or_init(|| unsafe {
+    unsafe {
         let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
         if job.is_null() {
             return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(1) as u32);
@@ -186,15 +180,177 @@ fn own_windows_worker(child: &std::process::Child) -> std::io::Result<()> {
             return Err(error);
         }
         Ok(job as usize)
-    });
-    let job = job
-        .as_ref()
-        .map_err(|code| std::io::Error::from_raw_os_error(*code as i32))?;
-    // SAFETY: both the process handle and the process-lifetime job are live.
-    if unsafe { AssignProcessToJobObject(*job as *mut _, child.as_raw_handle()) } == 0 {
-        return Err(std::io::Error::last_os_error());
+    }
+}
+
+#[cfg(windows)]
+fn windows_worker_job() -> std::io::Result<usize> {
+    use std::sync::OnceLock;
+    // Windows closes this process-owned handle even on an app crash, killing
+    // all assigned workers and their descendants. Rust statics live until exit.
+    static JOB: OnceLock<Result<usize, u32>> = OnceLock::new();
+    let job = JOB.get_or_init(new_windows_worker_job);
+    job.as_ref()
+        .copied()
+        .map_err(|code| std::io::Error::from_raw_os_error(*code as i32))
+}
+
+#[cfg(windows)]
+fn spawn_windows_worker(
+    command: &mut Command,
+    call_job: Option<usize>,
+) -> std::io::Result<std::process::Child> {
+    use std::os::windows::{io::AsRawHandle, process::CommandExt};
+    use windows_sys::Win32::System::{
+        JobObjects::AssignProcessToJobObject,
+        Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED},
+    };
+    let app_job = windows_worker_job()?;
+    // Assign both jobs before the launcher can run, spawn a helper, or exit.
+    // Restore the builder flags even if spawning fails so it remains reusable.
+    command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+    let child = command.spawn();
+    configure_command(command);
+    let mut child = child?;
+    let result = (|| {
+        for job in std::iter::once(app_job).chain(call_job) {
+            // SAFETY: the job and suspended child's process handle are live.
+            if unsafe { AssignProcessToJobObject(job as *mut _, child.as_raw_handle()) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        resume_windows_worker(child.id())
+    })();
+    if let Err(error) = result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    Ok(child)
+}
+
+#[cfg(windows)]
+fn resume_windows_worker(pid: u32) -> std::io::Result<()> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::{
+        Foundation::{ERROR_NO_MORE_FILES, FILETIME, INVALID_HANDLE_VALUE},
+        System::{
+            Diagnostics::ToolHelp::*,
+            Threading::{
+                GetThreadTimes, OpenThread, ResumeThread, THREAD_QUERY_LIMITED_INFORMATION,
+                THREAD_SUSPEND_RESUME,
+            },
+        },
+    };
+    // Stable Rust doesn't expose Child's primary thread handle. A suspended
+    // process's earliest-created thread is its primary thread; injected helper
+    // threads, if present, must not be mistaken for it.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let snapshot = OwnedHandle::from_raw_handle(snapshot);
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of_val(&entry) as u32;
+        let mut primary: Option<(u64, OwnedHandle)> = None;
+        let mut found = Thread32First(snapshot.as_raw_handle(), &mut entry);
+        while found != 0 {
+            if entry.th32OwnerProcessID == pid {
+                let thread = OpenThread(
+                    THREAD_QUERY_LIMITED_INFORMATION | THREAD_SUSPEND_RESUME,
+                    0,
+                    entry.th32ThreadID,
+                );
+                if thread.is_null() {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let thread = OwnedHandle::from_raw_handle(thread);
+                let mut created: FILETIME = std::mem::zeroed();
+                let mut exited: FILETIME = std::mem::zeroed();
+                let mut kernel: FILETIME = std::mem::zeroed();
+                let mut user: FILETIME = std::mem::zeroed();
+                if GetThreadTimes(
+                    thread.as_raw_handle(),
+                    &mut created,
+                    &mut exited,
+                    &mut kernel,
+                    &mut user,
+                ) == 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let created = (created.dwHighDateTime as u64) << 32 | created.dwLowDateTime as u64;
+                if primary
+                    .as_ref()
+                    .is_none_or(|(earliest, _)| created < *earliest)
+                {
+                    primary = Some((created, thread));
+                }
+            }
+            found = Thread32Next(snapshot.as_raw_handle(), &mut entry);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_NO_MORE_FILES as i32) {
+            return Err(error);
+        }
+        let (_, primary) = primary
+            .ok_or_else(|| std::io::Error::other("Suspended worker has no primary thread"))?;
+        if ResumeThread(primary.as_raw_handle()) == u32::MAX {
+            return Err(std::io::Error::last_os_error());
+        }
     }
     Ok(())
+}
+
+/// Offline calls own their descendants as well as their direct child. Inherited
+/// pipes must close before joining the input/output threads, including when a
+/// launcher exits successfully while one of its helpers remains alive.
+struct WorkerGroup {
+    #[cfg(unix)]
+    pid: u32,
+    #[cfg(windows)]
+    job: Option<usize>,
+}
+impl WorkerGroup {
+    fn spawn(command: &mut Command) -> std::io::Result<(std::process::Child, Self)> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        #[cfg(windows)]
+        let group = Self {
+            job: Some(
+                new_windows_worker_job()
+                    .map_err(|code| std::io::Error::from_raw_os_error(code as i32))?,
+            ),
+        };
+        #[cfg(windows)]
+        let child = spawn_windows_worker(command, group.job)?;
+        #[cfg(not(windows))]
+        let child = command.spawn_background()?;
+        #[cfg(not(windows))]
+        let group = Self {
+            #[cfg(unix)]
+            pid: child.id(),
+        };
+        Ok((child, group))
+    }
+}
+impl Drop for WorkerGroup {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        // SAFETY: process_group(0) gives this call its own child-led group.
+        unsafe {
+            libc::killpg(self.pid as libc::pid_t, libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        if let Some(job) = self.job.take() {
+            // KILL_ON_JOB_CLOSE closes inherited pipes even after the root exits.
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(job as *mut _) };
+        }
+    }
 }
 pub struct Output {
     pub stdout: Vec<u8>,
@@ -206,56 +362,74 @@ pub fn run(
     timeout: Duration,
 ) -> std::io::Result<Output> {
     configure_command(command);
-    let mut child = command
+    command
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn_background()?;
+        .stderr(Stdio::piped());
+    let (mut child, group) = WorkerGroup::spawn(command)?;
     let out = child.stdout.take().unwrap();
     let err = child.stderr.take().unwrap();
-    let read = |reader: Box<dyn Read + Send>| {
+    let read = |mut reader: Box<dyn Read + Send>| {
         thread::spawn(move || {
             let mut data = Vec::new();
-            reader.take(8_000_000).read_to_end(&mut data).map(|_| data)
+            reader.by_ref().take(8_000_000).read_to_end(&mut data)?;
+            // Retain bounded diagnostics while continuing to drain the pipe.
+            // Closing it early can abort or stall an otherwise successful tool.
+            std::io::copy(&mut reader, &mut std::io::sink())?;
+            Ok::<_, std::io::Error>(data)
         })
     };
     let stdout = read(Box::new(out));
     let stderr = read(Box::new(err));
-    if let Some(input) = input
-        && let Some(mut stdin) = child.stdin.take()
-        && let Err(e) = stdin.write_all(input)
-    {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(e);
-    }
     let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if start.elapsed() > timeout {
+    let status = thread::scope(|scope| {
+        // A worker that stops reading must not hold the caller indefinitely in
+        // write_all before the deadline even starts. Borrow input without a copy.
+        let writer = input.map(|input| {
+            let mut stdin = child.stdin.take().unwrap();
+            scope.spawn(move || stdin.write_all(input))
+        });
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Err(error) => break Err(error),
+                Ok(None) if start.elapsed() >= timeout => {
+                    break Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Offline worker exceeded its time limit",
+                    ));
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(10)),
+            }
+        };
+        if status.is_err() {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = stdout.join();
-            let _ = stderr.join();
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Offline worker exceeded its time limit",
-            ));
         }
-        thread::sleep(Duration::from_millis(10));
-    };
+        drop(group);
+        let written = writer
+            .map(|writer| {
+                writer
+                    .join()
+                    .map_err(|_| std::io::Error::other("stdin worker failed"))?
+            })
+            .unwrap_or(Ok(()));
+        // Prefer the deadline/process error over the resulting broken pipe.
+        let status = status?;
+        written?;
+        Ok::<_, std::io::Error>(status)
+    });
     let stdout = stdout
         .join()
         .map_err(|_| std::io::Error::other("stdout worker failed"))??;
     let stderr = stderr
         .join()
         .map_err(|_| std::io::Error::other("stderr worker failed"))??;
+    let status = status?;
     if !status.success() {
         return Err(std::io::Error::other(format!(
             "Offline tool exited with {status}: {}",
@@ -392,6 +566,167 @@ pub fn sync_directory(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "subprocess fixture launched by the deadline/output regression"]
+    #[allow(clippy::zombie_processes)] // Deliberate orphan; the caller owns and kills its process group/job.
+    fn subprocess_fixture() {
+        match std::env::var("FOLIO_SUBPROCESS_FIXTURE").as_deref() {
+            Ok("blocked") => thread::sleep(Duration::from_secs(5)),
+            #[cfg(windows)]
+            Ok("background-owner") => {
+                let child = command(std::env::current_exe().unwrap())
+                    .args([
+                        "--ignored",
+                        "--exact",
+                        "tests::subprocess_fixture",
+                        "--nocapture",
+                    ])
+                    .env("FOLIO_SUBPROCESS_FIXTURE", "blocked")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn_background()
+                    .unwrap();
+                println!("WORKER_PID={}", child.id());
+                std::io::stdout().flush().unwrap();
+                thread::sleep(Duration::from_secs(5));
+            }
+            Ok(mode @ ("descendant-output" | "descendant-blocked" | "descendant-fast")) => {
+                let mut child = command(std::env::current_exe().unwrap());
+                child
+                    .args([
+                        "--ignored",
+                        "--exact",
+                        "tests::subprocess_fixture",
+                        "--nocapture",
+                    ])
+                    .env("FOLIO_SUBPROCESS_FIXTURE", "blocked")
+                    .stderr(Stdio::null());
+                // Inherit the pipe while the launcher either exits or blocks.
+                let _child = child.spawn().unwrap();
+                if mode == "descendant-output" {
+                    std::io::stdout()
+                        .lock()
+                        .write_all(&vec![b'x'; 9_000_000])
+                        .unwrap();
+                } else if mode == "descendant-blocked" {
+                    thread::sleep(Duration::from_secs(5));
+                }
+            }
+            Ok("output") => std::io::stdout()
+                .lock()
+                .write_all(&vec![b'x'; 9_000_000])
+                .unwrap(),
+            _ => panic!("subprocess fixture needs a mode"),
+        }
+    }
+    #[test]
+    fn offline_deadline_includes_blocked_input_and_output_remains_bounded() {
+        let fixture = |mode| {
+            let mut command = command(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "tests::subprocess_fixture",
+                    "--nocapture",
+                ])
+                .env("FOLIO_SUBPROCESS_FIXTURE", mode);
+            command
+        };
+        let start = Instant::now();
+        let error = run(
+            &mut fixture("blocked"),
+            Some(&vec![0; 1_000_000]),
+            Duration::from_millis(100),
+        )
+        .err()
+        .expect("blocked input must time out");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(3));
+        let output = run(&mut fixture("output"), None, Duration::from_secs(10)).unwrap();
+        assert_eq!(output.stdout.len(), 8_000_000);
+        assert!(output.stdout.ends_with(b"xxxx"));
+        let start = Instant::now();
+        let output = run(
+            &mut fixture("descendant-output"),
+            None,
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(output.stdout.len(), 8_000_000);
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "A successful launcher left its output pipe open"
+        );
+        let start = Instant::now();
+        let error = run(
+            &mut fixture("descendant-blocked"),
+            Some(&vec![0; 1_000_000]),
+            Duration::from_millis(100),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "A descendant held stdin/stdout open past the deadline"
+        );
+        // A fast launcher must belong to its cleanup group/job before it can
+        // fork a pipe-inheriting helper or exit. Reuse the same command builder.
+        let mut fast = fixture("descendant-fast");
+        for _ in 0..16 {
+            let start = Instant::now();
+            run(&mut fast, None, Duration::from_secs(2)).unwrap();
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "A fast launcher escaped descendant cleanup"
+            );
+        }
+        // A failed spawn must also leave the command builder usable.
+        fast.current_dir(directory("worker-cwd"));
+        let cwd = fast.get_current_dir().unwrap().to_path_buf();
+        std::fs::remove_dir(&cwd).unwrap();
+        assert!(run(&mut fast, None, Duration::from_secs(2)).is_err());
+        std::fs::create_dir(&cwd).unwrap();
+        run(&mut fast, None, Duration::from_secs(2)).unwrap();
+        std::fs::remove_dir(cwd).unwrap();
+        #[cfg(windows)]
+        {
+            use std::{
+                io::BufRead,
+                os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+            };
+            use windows_sys::Win32::{
+                Foundation::WAIT_OBJECT_0,
+                System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+            };
+            // Launch a separate app owner without our jobs, then crash it.
+            // Its long-lived background worker must die when its job closes.
+            let mut owner = fixture("background-owner")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let output = std::io::BufReader::new(owner.stdout.take().unwrap());
+            let pid: u32 = output
+                .lines()
+                .map(Result::unwrap)
+                .find_map(|line| line.strip_prefix("WORKER_PID=").map(str::to_owned))
+                .expect("Worker owner did not start its child")
+                .parse()
+                .unwrap();
+            let worker = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+            assert!(!worker.is_null(), "Worker exited before its owner");
+            let worker = unsafe { OwnedHandle::from_raw_handle(worker) };
+            owner.kill().unwrap();
+            owner.wait().unwrap();
+            assert_eq!(
+                unsafe { WaitForSingleObject(worker.as_raw_handle(), 2000) },
+                WAIT_OBJECT_0,
+                "Crashing the app left its background worker alive"
+            );
+        }
+    }
     fn directory(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "folio-platform-{label}-{}-{}",

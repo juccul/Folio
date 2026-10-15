@@ -80,6 +80,24 @@ fn main() {
         200,
     );
     app.session_mut().selection.clear();
+    app.tool = folio_app::Tool::Text;
+    let empty_text_click = measure(
+        || {
+            app.pointer(folio_input::PenEvent {
+                device: folio_input::Device::Mouse,
+                tool: folio_input::Tool::Pen,
+                phase: folio_input::Phase::Down,
+                position: Point::new(300., 300.),
+                pressure: 0.5,
+                tilt_x: 0.,
+                tilt_y: 0.,
+                buttons: 0,
+                timestamp: 0,
+            });
+            app.cancel();
+        },
+        200,
+    );
     let autosave_disabled_edit = measure(
         || app.add_text("Short text".into(), Point::new(0., 0.)),
         200,
@@ -160,6 +178,7 @@ fn main() {
         "measurement":"CPU-only controller; generated fixture; no UI/GPU or physical input",
         "objects":count,"loaded_library_cover":cover,"single_object_transform_autosave_disabled":single_selection,
         "single_object_copy":single_copy,"autosave_disabled_edit":autosave_disabled_edit,
+        "empty_text_click":empty_text_click,
         "single_stroke_recognition_eligibility":recognition_eligibility,"single_text_math_panel_open":math_panel_open,
         "batch_objects":document.pages[0].objects.len(),"deleted_objects":deletion.changes.len(),
         "delete_alternating_objects":distribution(deletes),"undo_alternating_deletion":distribution(restores),

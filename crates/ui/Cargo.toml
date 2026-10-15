@@ -16,6 +16,7 @@ folio-export = { path = "../export" }
 image.workspace = true
 unicode-segmentation = "1.12"
 smallvec = "1"
+futures = "0.3"
 accesskit = "=0.25.1"
 folio-storage = { path = "../storage" }
 folio-update = { path = "../update" }

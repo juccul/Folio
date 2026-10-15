@@ -297,12 +297,17 @@ pub fn raster_object_limited(
     max_pixels: u32,
 ) -> Result<(Rect, resvg::tiny_skia::Pixmap)> {
     let body = object_svg(object, assets)?;
+    let options = if matches!(object, Object::Stroke(_) | Object::Shape(_)) {
+        resvg::usvg::Options::default()
+    } else {
+        svg_options()
+    };
     let mut bounds = object.bounds().expand(3.);
     if matches!(object, Object::Text(_)) {
         // Wrapped text may extend vertically beyond its frame. Use
         // actual shaped glyph bounds rather than clipping to the nominal frame.
         let measured = wrap_svg(Rect::new(0., 0., 1., 1.), 1., 1., &body);
-        let tree = resvg::usvg::Tree::from_str(&measured, &svg_options())?;
+        let tree = resvg::usvg::Tree::from_str(&measured, &options)?;
         let r = tree.root().abs_bounding_box();
         if r.width() > 0. && r.height() > 0. {
             bounds = bounds.union(Rect::new(r.left(), r.top(), r.width(), r.height()).expand(3.));
@@ -313,7 +318,19 @@ pub fn raster_object_limited(
         .min(((max_pixels.max(1) as f32) / (bounds.width() * bounds.height()).max(1.)).sqrt())
         .min(4096. / bounds.width().max(1.))
         .min(4096. / bounds.height().max(1.));
-    Ok((bounds, raster_svg(&svg, scale)?))
+    let tree = resvg::usvg::Tree::from_str(&svg, &options)?;
+    Ok((bounds, raster_tree(&tree, scale)?))
+}
+fn page_options(page: &Page) -> resvg::usvg::Options<'static> {
+    if page
+        .objects
+        .values()
+        .all(|object| matches!(object.as_ref(), Object::Stroke(_) | Object::Shape(_)))
+    {
+        resvg::usvg::Options::default()
+    } else {
+        svg_options()
+    }
 }
 fn svg_options() -> resvg::usvg::Options<'static> {
     static FONTS: std::sync::OnceLock<std::sync::Arc<resvg::usvg::fontdb::Database>> =
@@ -362,12 +379,18 @@ pub fn raster_page_limited(
     edge: u32,
 ) -> Result<resvg::tiny_skia::Pixmap> {
     let svg = page_svg(page, assets, true)?;
-    let tree = resvg::usvg::Tree::from_str(&svg, &svg_options())?;
+    let tree = resvg::usvg::Tree::from_str(&svg, &page_options(page))?;
     let scale = edge.clamp(1, 2048) as f32 / tree.size().width().max(tree.size().height()).max(1.);
     raster_tree(&tree, scale)
 }
 pub fn raster_svg(svg: &str, scale: f32) -> Result<resvg::tiny_skia::Pixmap> {
     let tree = resvg::usvg::Tree::from_str(svg, &svg_options())?;
+    raster_tree(&tree, scale)
+}
+/// Rasterize generated paths/shapes without loading a system font database.
+/// Text and embedded SVG images must use `raster_svg` instead.
+pub fn raster_geometry_svg(svg: &str, scale: f32) -> Result<resvg::tiny_skia::Pixmap> {
+    let tree = resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default())?;
     raster_tree(&tree, scale)
 }
 fn raster_tree(tree: &resvg::usvg::Tree, scale: f32) -> Result<resvg::tiny_skia::Pixmap> {
@@ -396,7 +419,8 @@ pub fn svg(page: &Page, assets: &Path, path: &Path) -> Result<()> {
     atomic_write(path, page_svg(page, assets, true)?.as_bytes())
 }
 pub fn png(page: &Page, assets: &Path, path: &Path, scale: f32) -> Result<()> {
-    let data = raster_svg(&page_svg(page, assets, true)?, scale)?
+    let tree = resvg::usvg::Tree::from_str(&page_svg(page, assets, true)?, &page_options(page))?;
+    let data = raster_tree(&tree, scale)?
         .encode_png()
         .map_err(|e| Error::Invalid(e.to_string()))?;
     atomic_write(path, &data)
@@ -472,6 +496,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(preview.data(), reference.data());
+        assert_eq!(
+            raster_geometry_svg(
+                &svg,
+                128. / page.properties.width.max(page.properties.height)
+            )
+            .unwrap()
+            .data(),
+            reference.data()
+        );
         assert!(preview.width().max(preview.height()) <= 128);
         for scale in [0., -1., f32::NAN, f32::INFINITY] {
             assert!(raster_svg(&svg, scale).is_err());
@@ -574,6 +607,23 @@ mod tests {
         assert_eq!((green.red(), green.green(), green.blue()), (0, 255, 0));
         let smaller = raster_page_limited(&page, &root, 24).unwrap();
         assert!(smaller.width() <= 24 && smaller.height() <= 24);
+        // An equation can contain SVG text inside its encoded image, so page
+        // classification must preserve fonts even without outer text objects.
+        page.objects.clear();
+        page.order.clear();
+        let equation = Object::Equation(Equation { id: Id::new_v4(), latex: "8".into(), rendered_svg: Some(r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><text x="10" y="75" font-family="sans-serif" font-size="70" fill="black">8</text></svg>"##.into()), rect: Rect::new(5.,5.,90.,90.), source_strokes: vec![], transform: Transform::default(), math_link: None });
+        page.order.push(equation.id());
+        page.objects
+            .insert(equation.id(), std::sync::Arc::new(equation.clone()));
+        let preview = raster_page_limited(&page, &root, 100).unwrap();
+        assert!(
+            preview
+                .pixels()
+                .iter()
+                .any(|pixel| pixel.red() < 128 && pixel.green() < 128 && pixel.blue() < 128)
+        );
+        let (_, object) = raster_object_limited(&equation, &root, 4096).unwrap();
+        assert!(object.pixels().iter().any(|pixel| pixel.alpha() > 0));
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

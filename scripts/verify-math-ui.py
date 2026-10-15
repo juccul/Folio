@@ -68,27 +68,51 @@ def main():
                     time.sleep(.1)
                 assert target is not None,'No native accessibility tree'
                 def walk(node):
+                    if node is None:return # A worker completion can replace a child mid-traversal.
                     node.clear_cache();yield node
                     for i in range(node.get_child_count()):yield from walk(node.get_child_at_index(i))
                 def nodes():
-                    while GLib.MainContext.default().iteration(False):pass
-                    return list(walk(target))
+                    for _ in range(30):
+                        while GLib.MainContext.default().iteration(False):pass
+                        try:return list(walk(target))
+                        except GLib.GError:time.sleep(.05) # Retry a replaced child.
+                    raise AssertionError('Accessibility tree did not settle')
                 def click(label):
                     matches=[node for node in nodes() if node.get_role() in (Atspi.Role.PUSH_BUTTON,Atspi.Role.RADIO_BUTTON,Atspi.Role.CHECK_BOX,Atspi.Role.TOGGLE_BUTTON) and node.get_name()==label]
                     item=matches[-1] if matches else None
                     assert item is not None,f'Missing {label}: {[n.get_name() for n in nodes()]}'
                     assert item.get_action_iface().do_action(0);time.sleep(.25)
+                def focus_field(label):
+                    for _ in range(30):
+                        try:
+                            item=next((node for node in nodes() if node.get_role() in (Atspi.Role.ENTRY,Atspi.Role.TEXT) and node.get_name()==label),None)
+                            component=item.get_component_iface() if item else None
+                            if component and component.grab_focus():
+                                # Let the asynchronous action reach the next frame.
+                                time.sleep(.3)
+                                return item
+                        except GLib.GError:pass # The field can be replaced during layout.
+                        time.sleep(.1)
+                    else:raise AssertionError(f'Cannot focus field {label} after layout')
                 def fill(label,text):
-                    item=next((node for node in nodes() if node.get_name()==label),None)
-                    assert item is not None,f'Missing field {label}'
-                    assert item.get_component_iface().grab_focus(),f'Cannot focus {label}'
-                    time.sleep(.1);client.key('a',4,delay=.03);client.key('BackSpace',delay=.03)
+                    focus_field(label)
+                    client.key('a',4);client.key('BackSpace')
                     symbols={' ':'space','=':'equal',':':'colon','*':'asterisk','+':'plus','-':'minus','/':'slash','^':'asciicircum','(':'parenleft',')':'parenright','.':'period',',':'comma','\n':'Return'}
                     shifted=':*+^()'
                     for char in text:
                         client.key(symbols.get(char,char.lower()),1 if char in shifted or char.isupper() else 0,delay=.06)
                     time.sleep(.2);client.key('a',4,delay=.03);client.key('c',4,delay=.1)
-                    actual=Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).wait_for_text()
+                    clipboard=Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+                    for _ in range(30):
+                        while GLib.MainContext.default().iteration(False):pass
+                        actual=clipboard.wait_for_text()
+                        if actual==text:break
+                        time.sleep(.05)
+                    if actual!=text:
+                        subprocess.run([sys.executable,'scripts/capture-x11.py',str(args.output/'input-failure.png'),'--pid',str(app.pid),'--virtual-display-root'],check=True)
+                        item=next(n for n in nodes() if n.get_name()==label)
+                        iface=item.get_text_iface()
+                        (args.output/'input-failure.json').write_text(json.dumps({'field':label,'requested':text,'clipboard':actual,'accessible_text':iface.get_text(0,-1) if iface else None},indent=2))
                     assert actual==text,f'Native input mismatch: {actual!r} != {text!r}'
                 def wait_result():
                     for _ in range(200):
@@ -111,10 +135,14 @@ def main():
                     time.sleep(.3)
                 def objects():
                     with sqlite3.connect(database) as db:return [json.loads(data) for (data,) in db.execute('SELECT data FROM objects')]
+                def wait_object_count(count):
+                    for _ in range(150):
+                        current=len(objects())
+                        if current==count:return
+                        time.sleep(.04)
+                    raise AssertionError(f'Document save did not reach {count} objects (got {current})')
                 def paste(label,text):
-                    item=next(n for n in nodes() if n.get_name()==label)
-                    assert item.get_component_iface().grab_focus()
-                    time.sleep(.1)
+                    focus_field(label)
                     clipboard=Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
                     clipboard.set_text(text,-1)
                     client.key('a',4,delay=.03);client.key('v',4,delay=.03)
@@ -131,7 +159,10 @@ def main():
                 def enabled(label):
                     item=next(n for n in nodes() if n.get_role()==Atspi.Role.PUSH_BUTTON and n.get_name()==label)
                     return item.get_state_set().contains(Atspi.StateType.ENABLED)
-                client.key('a',4);click('Size');fill('Font size','nan');click('Save')
+                client.key('a',4)
+                font_size = next(n.get_name() for n in nodes()
+                                 if n.get_role()==Atspi.Role.PUSH_BUTTON and n.get_name().endswith(' pt'))
+                click(font_size);fill('Font size','nan');click('Save')
                 time.sleep(.8)
                 assert any(n.get_name()=='Enter a font size between 6 and 180 canvas pixels.' for n in nodes()),'Layout updates cleared the validation error'
                 assert any(n.get_name()=='Font size' and n.get_role()==Atspi.Role.ENTRY for n in nodes()),'Invalid input closed the dialog'
@@ -221,9 +252,11 @@ def main():
                 click('Solution');click('Solve problem');wait_result();click('Add options');click('Answer and steps')
                 count=len(objects());assert count>2,'Worked steps were not inserted'
                 assert any('Equation' in obj and '<path' in (obj['Equation'].get('rendered_svg') or '') for obj in objects())
-                client.key('z',4);time.sleep(.3);assert len(objects())==1,'Worked solution did not undo atomically'
-                client.key('z',5);time.sleep(.3);assert len(objects())==count
-                client.key('z',4);time.sleep(.3)
+                # The math input retains focus after insertion; its keyboard
+                # undo belongs to the field. Use the document history controls.
+                click('Undo');wait_object_count(1)
+                click('Redo');wait_object_count(count)
+                click('Undo');wait_object_count(1)
                 fill('Math expression','a=5');click('Operation: Automatic');click('Define variable');click('Preview variable');wait_result();click('Add variable')
                 assignment=next(obj['Equation'] for obj in objects() if obj.get('Equation',{}).get('math_link',{}).get('operation')=='assign')
                 assert assignment['math_link']['expression']=='a:=5'
@@ -238,20 +271,28 @@ def main():
                     from PIL import Image
                     from collections import Counter
                     saved_graphs=[obj for obj in objects() if obj.get('Equation',{}).get('math_link',{}).get('operation')=='graph']
+                    # Clear selection chrome; insertion positions depend on the viewport.
+                    click('Select · L');client.click(800,700)
                     def graph_colors(name,paper,curve):
-                        time.sleep(.7)
                         path=args.output/f'graph-{name}.png'
-                        subprocess.run([sys.executable,'scripts/capture-x11.py',str(path),'--pid',str(app.pid),'--virtual-display-root'],check=True)
-                        picture=Image.open(path).convert('RGB')
-                        field=next(n for n in nodes() if n.get_name()=='Math expression').get_component_iface().get_extents(Atspi.CoordType.WINDOW)
-                        _,top,_,height=bounds('Plot graph')
-                        _,bottom,_,_=bounds('Add graph')
-                        region=picture.crop((field.x,top+height,field.x+field.width,bottom))
-                        colors=Counter(region.getdata())
+                        for _ in range(40):
+                            time.sleep(.2)
+                            subprocess.run([sys.executable,'scripts/capture-x11.py',str(path),'--pid',str(app.pid),'--virtual-display-root'],check=True)
+                            picture=Image.open(path).convert('RGB')
+                            field=next(n for n in nodes() if n.get_name()=='Math expression').get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                            _,top,_,height=bounds('Plot graph')
+                            _,bottom,_,_=bounds('Add graph')
+                            # Sample the plot interior, excluding the primary
+                            # button and the floating canvas selection toolbar.
+                            region=picture.crop((field.x+12,top+height+72,field.x+field.width-12,bottom-80))
+                            colors=Counter(region.getdata())
+                            canvas=next(n for n in nodes() if n.get_role()==Atspi.Role.DOCUMENT_FRAME).get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                            canvas_colors=Counter(picture.crop((canvas.x+4,canvas.y+4,canvas.x+canvas.width-4,canvas.y+canvas.height-4)).getdata())
+                            if colors[paper]>20000 and colors[curve]>30 and canvas_colors[curve]>5:break
                         assert colors[paper]>20000,f'{name} preview does not match paper: {colors.most_common(8)}'
                         assert colors[curve]>30,f'{name} curve does not match accent: {colors.most_common(8)}'
                         assert colors[(36,99,174)]==0,'Graph still uses the old blue curve'
-                        canvas_colors=Counter(picture.crop((53,176,847,826)).getdata())
+                        assert canvas_colors[curve]>5,f'{name} inserted graph is missing its curve: {canvas_colors.most_common(8)}'
                         assert canvas_colors[(36,99,174)]==0,'Inserted graph still uses the old blue curve'
                         if paper!=(255,255,255):
                             assert canvas_colors[(255,255,255)]<1000,'Inserted graph kept its white background'
@@ -260,12 +301,12 @@ def main():
                         item=next(n for n in nodes() if n.get_role()==Atspi.Role.PUSH_BUTTON and n.get_name()=='Settings')
                         assert item.get_action_iface().do_action(0);time.sleep(.25)
                     graph_colors('light',(255,255,255),(82,135,108))
-                    global_settings();click('Dark appearance');click('Done')
+                    global_settings();click('Dark appearance');click('Close settings')
                     graph_colors('dark',(10,10,10),(119,189,171))
                     global_settings();click('Paper follows appearance: On');click('Custom paper color')
-                    paste('Paper color','#182522');click('Save');click('Done')
+                    paste('Paper color','#182522');click('Save');click('Close settings')
                     graph_colors('custom',(24,37,34),(119,189,171))
-                    global_settings();click('Light appearance');click('Done')
+                    global_settings();click('Light appearance');click('Close settings')
                     graph_colors('fixed-light',(24,37,34),(82,135,108))
                 click('Solution');fill('Math expression','twice a number plus 3 is 11');click('Solve problem')
                 for _ in range(100):
@@ -314,10 +355,21 @@ def main():
                     for label in ('Apply changes','Cancel editing','Copy LaTeX'):
                         x,y,w,h=bounds(label);assert x>=0 and y>=0 and x+w<=980 and y+h<=760,f'{label} is clipped'
                     subprocess.run([sys.executable,'scripts/capture-x11.py',str(args.output/'latex-compact.png'),'--pid',str(app.pid),'--virtual-display-root'],check=True)
+                    click('Cancel editing')
+                # Escape and the Close button must both discard graph inputs;
+                # opening a solver again must not revive the retired preview.
+                client.resize(1320,860)
+                click('Graph');paste('Math expression','y=x^2');click('Plot graph');wait_result()
+                client.key('Escape');time.sleep(.4)
+                assert not any(n.get_name()=='Math expression' for n in nodes()),'Escape did not close the graph solver'
+                click('Select · L');client.key('a',4);click('Solve')
+                assert any(n.get_name()=='Math expression' for n in nodes()),'Solver did not reopen after graph cleanup'
+                click('Close');time.sleep(.3)
+                assert not any(n.get_name()=='Math expression' for n in nodes()),'Close did not close the solver'
                 result={'native_solver':True,'selection_actions_with_solver':True,'dialog_validation_persists':True,'progressive_disclosure':True,'pinned_problem_and_actions':True,
                     'guided_learning':True,'bidirectional_guide':True,'working_examples':True,'clear_add_options':True,'keyboard_submit':True,'compact_layout':True,'hidden_range_independent':True,'source_preserved':True,'worked_solution_undo_redo':True,
                     'rendered_steps':True,'next_step_check':True,'page_variable':True,'live_result':True,
-                    'graph':True,'word_problem_review':True,'private_display':True}
+                    'graph':True,'word_problem_review':True,'private_display':True,'graph_escape_close_reopen':True}
                 if args.edge_cases: result.update(selection_reversal=True,unicode_grapheme_clipboard=True)
                 if args.latex: result.update(editable_latex=True,latex_copy=True,latex_apply=True,invalid_latex_preserves_result=True,latex_static_equation_undo_redo=True,source_editor_resets=True,focused_editor=True,apply_returns_to_answer=True)
                 if args.graph_theme: result.update(graph_light_palette=True,graph_dark_palette=True,graph_custom_paper=True,graph_fixed_paper_theme_switch=True,graph_source_preserved=True)

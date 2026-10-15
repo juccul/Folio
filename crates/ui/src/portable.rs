@@ -129,7 +129,7 @@ impl NotesView {
                 self.list_view = self.controller.settings.workspace.list_view;
                 self.sort_by_name = self.controller.settings.workspace.sort_by_name;
                 self.sort_reverse = self.controller.settings.workspace.sort_reverse;
-                self.math_inputs = None;
+                self.clear_math_inputs(window);
                 self.region_selection = None;
                 self.modal = None;
                 self.settings_open = false;

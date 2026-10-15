@@ -294,6 +294,26 @@ impl SpatialIndex {
         if changed.is_empty() {
             return;
         }
+        // Bulk edits in dense cells otherwise repeatedly retain the same bucket
+        // for every removed/moved object. Rebuild once when a substantial part
+        // of the page changes, while retaining incremental work for small edits.
+        if changed.len() > 64 && changed.len() > self.bounds.len() / 4 {
+            // Rendered text can extend beyond its nominal frame. Keep those
+            // measured bounds for unchanged objects when taking this shortcut.
+            let retained = self
+                .bounds
+                .iter()
+                .filter(|(id, _)| !changed.contains(id))
+                .map(|(id, bounds)| (*id, *bounds))
+                .collect::<Vec<_>>();
+            self.rebuild(page);
+            for (id, bounds) in retained {
+                if self.bounds.contains_key(&id) {
+                    self.insert(id, bounds);
+                }
+            }
+            return;
+        }
         let mut affected = changed.clone();
         // Read the actual document state, so this works identically for execute,
         // undo and redo, including sources shared by multiple derived objects.
@@ -413,6 +433,55 @@ mod tests {
 mod incremental_tests {
     use super::*;
     use std::sync::Arc;
+    #[test]
+    fn dense_bulk_edits_preserve_measured_bounds_and_match_rebuilds_through_undo() {
+        let mut doc = Document::new("Dense edits");
+        let page = doc.pages[0].id;
+        for _ in 0..256 {
+            let object = Arc::new(Object::Image(ImageObject {
+                id: Id::new_v4(),
+                asset: "fixture.png".into(),
+                rect: Rect::new(0., 0., 20., 20.),
+                transform: Transform::default(),
+                crop: None,
+            }));
+            doc.pages[0].order.push(object.id());
+            doc.pages[0].objects.insert(object.id(), object);
+        }
+        let unchanged = doc.pages[0].order[1];
+        let measured = Rect::new(0., 0., 20., 200.);
+        let mut index = SpatialIndex::default();
+        index.rebuild(&doc.pages[0]);
+        index.insert(unchanged, measured);
+        let deletion = Command {
+            label: "Delete alternating".into(),
+            changes: doc.pages[0]
+                .order
+                .iter()
+                .enumerate()
+                .step_by(2)
+                .map(|(position, id)| Change::Object {
+                    page,
+                    id: *id,
+                    before: Some(doc.pages[0].objects[id].clone()),
+                    after: None,
+                    index: position,
+                })
+                .collect(),
+        };
+        for forward in [true, false, true, false] {
+            deletion.apply(&mut doc, forward);
+            index.update(&doc.pages[0], &deletion);
+            let mut expected = SpatialIndex::default();
+            expected.rebuild(&doc.pages[0]);
+            expected.insert(unchanged, measured);
+            for bounds in [Rect::new(-1., -1., 40., 40.), Rect::new(0., 150., 20., 20.)] {
+                assert_eq!(index.query(bounds), expected.query(bounds));
+            }
+            assert_eq!(index.cell_references, expected.cell_references);
+            doc.validate().unwrap();
+        }
+    }
     #[test]
     fn update_removes_old_cells_and_matches_a_rebuild() {
         let mut doc = Document::new("test");

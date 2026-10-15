@@ -143,6 +143,7 @@ pub struct Field {
     marked: Option<Range<usize>>,
     layouts: std::sync::Arc<Vec<(usize, ShapedLine)>>,
     layout_key: Option<FieldLayoutKey>,
+    layout_width: f32,
     pub(super) bounds: Option<Bounds<Pixels>>,
     selecting: bool,
     history: EditHistory,
@@ -169,6 +170,7 @@ impl Field {
             marked: None,
             layouts: std::sync::Arc::new(vec![]),
             layout_key: None,
+            layout_width: 0.,
             bounds: None,
             selecting: false,
             history: EditHistory::default(),
@@ -259,9 +261,8 @@ impl Field {
         } else {
             let row = self
                 .layouts
-                .iter()
-                .rposition(|(offset, _)| *offset <= head)
-                .unwrap_or(0);
+                .partition_point(|(offset, _)| *offset <= head)
+                .saturating_sub(1);
             let target = if down {
                 (row + 1).min(self.layouts.len().saturating_sub(1))
             } else {
@@ -673,9 +674,8 @@ impl Element for FieldElement {
                 field.selection.start
             };
             let row = lines
-                .iter()
-                .rposition(|(offset, _)| *offset <= head)
-                .unwrap_or(0);
+                .partition_point(|(offset, _)| *offset <= head)
+                .saturating_sub(1);
             let x = lines.get(row).map_or(0., |(offset, line)| {
                 f32::from(line.x_for_index(if field.secret {
                     field.content[*offset..head].chars().count()
@@ -683,13 +683,15 @@ impl Element for FieldElement {
                     head.saturating_sub(*offset).min(line.len())
                 }))
             });
-            let max_width = lines
-                .iter()
-                .map(|(_, line)| f32::from(line.width))
-                .fold(0., f32::max)
-                + 4.;
+            if !cached {
+                field.layout_width = lines
+                    .iter()
+                    .map(|(_, line)| f32::from(line.width))
+                    .fold(0., f32::max)
+                    + 4.;
+            }
             field.scroll_max = point(
-                px((max_width - f32::from(bounds.size.width)).max(0.)),
+                px((field.layout_width - f32::from(bounds.size.width)).max(0.)),
                 px((lines.len() as f32 * line_height - f32::from(bounds.size.height)).max(0.)),
             );
             if field.follow_caret {
@@ -770,9 +772,8 @@ impl Element for FieldElement {
         let line_height = field.line_height;
         let scroll = field.scroll;
         let caret_row = lines
-            .iter()
-            .rposition(|(offset, _)| *offset <= selection.start)
-            .unwrap_or(0);
+            .partition_point(|(offset, _)| *offset <= selection.start)
+            .saturating_sub(1);
         let focused = field.focus.is_focused(window);
         let focus = field.focus.clone();
         window.handle_input(
@@ -781,7 +782,18 @@ impl Element for FieldElement {
             cx,
         );
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            for (row, (offset, line)) in lines.iter().enumerate() {
+            let visible = visible_rows(
+                lines.len(),
+                f32::from(scroll.y),
+                f32::from(bounds.size.height),
+                line_height,
+            );
+            for (row, (offset, line)) in lines
+                .iter()
+                .enumerate()
+                .take(visible.end)
+                .skip(visible.start)
+            {
                 let y = bounds.top() + px(row as f32 * line_height) - scroll.y;
                 let end = offset + line.len();
                 if selection.start <= end && selection.end >= *offset && !selection.is_empty() {
@@ -1045,6 +1057,16 @@ fn caret_scroll(current: f32, caret: f32, extent: f32, viewport: f32, maximum: f
     };
     next.clamp(0., maximum)
 }
+fn visible_rows(count: usize, scroll: f32, height: f32, line_height: f32) -> Range<usize> {
+    // Include neighboring rows for glyph overhangs and selections at the edges.
+    let start = ((scroll / line_height).floor().max(0.) as usize)
+        .saturating_sub(1)
+        .min(count);
+    let end = (((scroll + height) / line_height).ceil().max(0.) as usize)
+        .saturating_add(1)
+        .min(count);
+    start..end.max(start)
+}
 fn select_range(range: &mut Range<usize>, anchor: &mut usize, start: usize, head: usize) {
     *anchor = start;
     *range = start.min(head)..start.max(head);
@@ -1120,6 +1142,18 @@ mod tests {
         assert_eq!(caret_scroll(78., 0., 26., 208., 78.), 0.);
         assert_eq!(caret_scroll(80., 60., 4., 30., 0.), 0.);
         assert_eq!(caret_scroll(40., 50., 4., 30., 100.), 40.);
+        for scroll in [0., 13., 26., 100_000., 259_999.] {
+            let rows = super::visible_rows(10_000, scroll, 208., 26.);
+            assert!(rows.len() <= 11);
+            for row in 0..10_000 {
+                let top = row as f32 * 26.;
+                if top < scroll + 208. && top + 26. > scroll {
+                    assert!(rows.contains(&row), "visible row {row} at scroll {scroll}");
+                }
+            }
+        }
+        assert!(super::visible_rows(0, 0., 208., 26.).is_empty());
+        assert_eq!(super::visible_rows(1, 100_000., 208., 26.), 1..1);
     }
     use std::time::{Duration, Instant};
     fn draft(text: &str) -> Draft {
