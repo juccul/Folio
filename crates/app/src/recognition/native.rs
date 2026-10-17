@@ -30,6 +30,8 @@ const RUNTIME_SHA: &str = "d01301582c711a69b9747b5984710d6ca99e57d95f680d3d33753
 const SERVER_PATH: &str = "llama-b11457/llama-server";
 #[cfg(windows)]
 const SERVER_PATH: &str = "llama-server.exe";
+const CONTEXT_TOKENS: usize = 4096;
+const PROMPT_HEADROOM: usize = 128;
 const MODEL: &str = "GLM-OCR-Q8_0.gguf";
 const VISION: &str = "mmproj-GLM-OCR-Q8_0.gguf";
 // The pinned image encoder can run below the full model's memory requirement.
@@ -57,7 +59,7 @@ pub(super) struct Context<'a> {
     pub progress: &'a dyn Fn(String),
 }
 impl Context<'_> {
-    fn check(&self) -> Result<()> {
+    pub(super) fn check(&self) -> Result<()> {
         if self.current.load(Ordering::Acquire) != self.generation {
             Err("Recognition cancelled".into())
         } else {
@@ -400,7 +402,7 @@ fn install(pack: &Path, context: &Context<'_>) -> Result<PathBuf> {
         })
         .unwrap_or_else(|| "auto".into());
     let config = serde_json::json!({"backend":"llama-vulkan", "quantization":"Q8_0",
-        "model_revision":REVISION,"runtime":"b11457", "device":selected});
+        "model_revision":REVISION,"runtime":"b11457", "device":selected, "image_profile":image_profile(pack)?});
     // Publishing this marker is the final operation. Interrupted setup never looks installed.
     folio_export::atomic_write(
         pack,
@@ -412,7 +414,7 @@ fn install(pack: &Path, context: &Context<'_>) -> Result<PathBuf> {
     Ok(root)
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Device {
     id: String,
     name: String,
@@ -472,8 +474,12 @@ struct Prepared {
     root: PathBuf,
     selected: String,
     devices: Vec<Device>,
+    successful: Option<(Offload, Option<String>)>,
 }
 impl Cache {
+    pub fn is_prepared(&self, pack: &Path) -> bool {
+        self.packs.contains_key(pack)
+    }
     pub fn prepare_existing(&mut self, pack: &Path, context: &Context<'_>) -> Result<()> {
         self.prepare_existing_assets(pack, context, &ASSETS)
     }
@@ -499,6 +505,7 @@ impl Cache {
         self.remember(pack, root, context)
     }
     fn remember(&mut self, pack: &Path, root: PathBuf, context: &Context<'_>) -> Result<()> {
+        image_profile(pack)?;
         let selected = selected_device(pack)?;
         let devices = if selected == "cpu" {
             Vec::new()
@@ -511,6 +518,7 @@ impl Cache {
                 root,
                 selected,
                 devices,
+                successful: None,
             },
         );
         Ok(())
@@ -658,7 +666,12 @@ pub(super) struct Native {
 }
 impl Native {
     pub fn load(pack: &Path, cache: &mut Cache, context: &Context<'_>) -> Result<Self> {
-        Self::load_inner(pack, cache, context, Offload::Full)
+        let first = cache
+            .prepare(pack, context)?
+            .successful
+            .as_ref()
+            .map_or(Offload::Full, |(mode, _)| *mode);
+        Self::load_inner(pack, cache, context, first)
     }
     pub fn load_fallback(&self, cache: &mut Cache, context: &Context<'_>) -> Result<Self> {
         Self::load_inner(&self.pack, cache, context, self.offload.fallback())
@@ -673,13 +686,17 @@ impl Native {
         first: Offload,
     ) -> Result<Self> {
         let prepared = cache.prepare(pack, context)?;
-        let root = &prepared.root;
+        let root = prepared.root.clone();
         let binary = root.join("runtime").join(SERVER_PATH);
-        let devices: Vec<_> = prepared
+        let mut devices: Vec<_> = prepared
             .devices
             .iter()
             .filter(|device| prepared.selected == "auto" || prepared.selected == device.id)
+            .cloned()
             .collect();
+        if let Some((_, Some(preferred))) = &prepared.successful {
+            devices.sort_by_key(|device| device.id != *preferred);
+        }
         let http = Http::builder()
             .no_proxy()
             .connect_timeout(Duration::from_secs(2))
@@ -696,7 +713,7 @@ impl Native {
             } else {
                 devices
                     .iter()
-                    .map(|&device| (offload, Some(device)))
+                    .map(|device| (offload, Some(device)))
                     .collect()
             }
         });
@@ -726,7 +743,9 @@ impl Native {
                     "--threads-batch",
                     "4",
                     "--ctx-size",
-                    "16384",
+                ])
+                .arg(CONTEXT_TOKENS.to_string())
+                .args([
                     "--image-min-tokens",
                     "16",
                     "--image-max-tokens",
@@ -791,6 +810,8 @@ impl Native {
                 thread::sleep(Duration::from_millis(100));
             };
             if ready {
+                cache.packs.get_mut(pack).unwrap().successful =
+                    Some((offload, device.map(|device| device.id.clone())));
                 if let Some(error) = last_error {
                     eprintln!("Folio OCR fallback: {error}; using {label}");
                 }
@@ -814,60 +835,70 @@ impl Native {
             last_error.unwrap_or_default()
         ))
     }
+    #[cfg(test)]
     pub fn recognize(&self, request: &Request, context: &Context<'_>) -> Result<String> {
-        context.check()?;
+        let input = Input::from_request(request)?;
+        self.recognize_prepared(&input, context, None)
+            .map_err(|error| error.message)
+    }
+    pub fn recognize_prepared(
+        &self,
+        input: &Input,
+        context: &Context<'_>,
+        mut timing: Option<&mut RecognitionTiming>,
+    ) -> std::result::Result<String, InferenceError> {
+        context.check().map_err(InferenceError::runtime)?;
         context.stage(format!("Recognizing · {}…", self.label));
-        let bytes = match &request.image_path {
-            Some(path) => image_bytes(path)?,
-            None => render_ink(&request.strokes, request.kind)?,
-        };
-        let prompt = match request.kind {
-            RecognitionKind::Text => "Text Recognition:",
-            RecognitionKind::Math => "Formula Recognition:",
-        };
-        let limit = match request.kind {
-            RecognitionKind::Text => 1024,
-            RecognitionKind::Math => 512,
-        };
-        let payload = serde_json::json!({"messages":[{"role":"user","content":[
-            {"type":"image_url","image_url":{"url":format!("data:image/png;base64,{}",base64::engine::general_purpose::STANDARD.encode(bytes))}},
-            {"type":"text","text":prompt}]}], "temperature":0,"max_tokens":limit,"seed":0,
-            "stream":false,"cache_prompt":false,"repeat_penalty":1.0});
         let response = self
             .http
             .post(format!("{}/v1/chat/completions", self.url))
             .bearer_auth(&self.token)
-            .json(&payload)
+            .json(&input.payload)
             .send()
-            .map_err(|error| format!("OCR runtime unavailable: {error}"))?;
+            .map_err(|error| {
+                InferenceError::runtime(format!("OCR runtime unavailable: {error}"))
+            })?;
         let response = response.error_for_status().map_err(|error| {
             if error
                 .status()
                 .is_some_and(|status| status.is_server_error())
             {
-                format!("OCR runtime unavailable: {error}")
+                InferenceError::runtime(format!("OCR runtime unavailable: {error}"))
             } else {
-                io(error)
+                InferenceError::request(io(error))
             }
         })?;
-        let response: serde_json::Value =
-            serde_json::from_reader(response.take(1024 * 1024)).map_err(io)?;
-        context.check()?;
+        let response: serde_json::Value = serde_json::from_reader(response.take(1024 * 1024))
+            .map_err(|error| InferenceError::runtime(format!("Invalid OCR response: {error}")))?;
+        context.check().map_err(InferenceError::runtime)?;
+        if let Some(timing) = timing.as_mut() {
+            // Server prompt timing already includes image encoding; do not count vision twice.
+            timing.server_prompt_ms += response["timings"]["prompt_ms"].as_f64().unwrap_or(0.);
+            timing.server_decode_ms += response["timings"]["predicted_ms"].as_f64().unwrap_or(0.);
+        }
         let choice = &response["choices"][0];
-        if choice["finish_reason"] != "stop" {
-            return Err("Recognition was truncated; select a smaller region".into());
+        match choice["finish_reason"].as_str() {
+            Some("stop") => {}
+            Some("length") => {
+                return Err(InferenceError::request(
+                    "Recognition was truncated; select a smaller region",
+                ));
+            }
+            _ => return Err(InferenceError::runtime("Invalid OCR response")),
         }
         let text = choice["message"]["content"]
             .as_str()
-            .ok_or("Invalid OCR response")?
+            .ok_or_else(|| InferenceError::runtime("Invalid OCR response"))?
             .trim();
         if text.is_empty() {
-            return Err("No text recognized; select a clearer line of writing".into());
+            return Err(InferenceError::request(
+                "No text recognized; select a clearer line of writing",
+            ));
         }
         if text.len() > 32768 {
-            return Err("Recognized text is too long".into());
+            return Err(InferenceError::request("Recognized text is too long"));
         }
-        Ok(if matches!(request.kind, RecognitionKind::Math) {
+        Ok(if matches!(input.kind, RecognitionKind::Math) {
             strip_math_wrappers(text)
         } else {
             text.into()
@@ -875,7 +906,150 @@ impl Native {
     }
 }
 
+pub(super) struct InferenceError {
+    pub message: String,
+    pub restart: bool,
+}
+impl InferenceError {
+    fn runtime(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            restart: true,
+        }
+    }
+    fn request(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            restart: false,
+        }
+    }
+}
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ImageProfile {
+    #[default]
+    Quality,
+    FastLines,
+}
+fn image_profile(pack: &Path) -> Result<ImageProfile> {
+    let config = fs::read(pack)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    match config.and_then(|config| config.get("image_profile").cloned()) {
+        None => Ok(ImageProfile::Quality),
+        Some(value) => serde_json::from_value(value)
+            .map_err(|_| "OCR image_profile must be quality or fast-lines".into()),
+    }
+}
+pub(super) struct Input {
+    kind: RecognitionKind,
+    payload: serde_json::Value,
+}
+impl Input {
+    pub fn prepare(task: &Task) -> Result<Self> {
+        let profile = image_profile(&task.pack)?;
+        let rgb = match &task.image {
+            Some(source) => composite_white(prepare_image(source)?.to_rgba8())?,
+            None => render_ink_rgb(&request_strokes(task), task.review.kind)?,
+        };
+        Self::new(rgb, task.review.kind, profile)
+    }
+    #[cfg(test)]
+    fn from_request(request: &Request) -> Result<Self> {
+        let rgb = match &request.image_path {
+            Some(path) => decode_image(path)?,
+            None => render_ink_rgb(&request.strokes, request.kind)?,
+        };
+        Self::new(rgb, request.kind, ImageProfile::Quality)
+    }
+    fn new(mut rgb: image::RgbImage, kind: RecognitionKind, profile: ImageProfile) -> Result<Self> {
+        validate_image_size(rgb.width(), rgb.height())?;
+        if matches!(profile, ImageProfile::FastLines)
+            && kind == RecognitionKind::Text
+            && single_line(&rgb)
+        {
+            let tokens = rgb.width().div_ceil(28) * rgb.height().div_ceil(28);
+            if tokens > 256 {
+                let scale = (256. / tokens as f32).sqrt();
+                let width = ((rgb.width() as f32 * scale / 28.).floor() as u32).max(1) * 28;
+                let height = ((rgb.height() as f32 * scale / 28.).floor() as u32).max(1) * 28;
+                rgb = image::imageops::resize(
+                    &rgb,
+                    width,
+                    height,
+                    image::imageops::FilterType::Lanczos3,
+                );
+            }
+        }
+        let limit = match kind {
+            RecognitionKind::Text => 1024,
+            RecognitionKind::Math => 512,
+        };
+        // Align upwards and reserve ample space for minimum-size resizing and the chat template.
+        let image_tokens =
+            (rgb.width().div_ceil(28) as usize * rgb.height().div_ceil(28) as usize).max(128);
+        if image_tokens + limit + PROMPT_HEADROOM > CONTEXT_TOKENS {
+            return Err("Select a smaller OCR image region".into());
+        }
+        let mut png = std::io::Cursor::new(Vec::new());
+        rgb.write_to(&mut png, image::ImageFormat::Png)
+            .map_err(io)?;
+        let uri = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+        );
+        let prompt = match kind {
+            RecognitionKind::Text => "Text Recognition:",
+            RecognitionKind::Math => "Formula Recognition:",
+        };
+        Ok(Self {
+            kind,
+            payload: serde_json::json!({"messages":[{"role":"user","content":[
+            {"type":"image_url","image_url":{"url":uri}}, {"type":"text","text":prompt}]}],
+            "temperature":0,"max_tokens":limit,"seed":0,"stream":false,"cache_prompt":false,"repeat_penalty":1.0}),
+        })
+    }
+}
+fn validate_image_size(width: u32, height: u32) -> Result<()> {
+    if width == 0
+        || height == 0
+        || width > 4096
+        || height > 4096
+        || width as u64 * height as u64 > 2_000_000
+    {
+        Err("Select a smaller OCR image region".into())
+    } else {
+        Ok(())
+    }
+}
+fn single_line(image: &image::RgbImage) -> bool {
+    if image.width() < image.height().saturating_mul(4) {
+        return false;
+    }
+    let mut bands = 0;
+    let mut last = None;
+    let gap = (image.height() / 20).max(3);
+    for y in 0..image.height() {
+        if (0..image.width()).any(|x| image.get_pixel(x, y).0.iter().all(|&v| v < 160)) {
+            if last.is_none_or(|old| y - old > gap) {
+                bands += 1;
+            }
+            last = Some(y);
+        }
+    }
+    bands == 1
+}
+
+#[cfg(test)]
 fn image_bytes(path: &Path) -> Result<Vec<u8>> {
+    let rgb = decode_image(path)?;
+    let mut output = std::io::Cursor::new(Vec::new());
+    rgb.write_to(&mut output, image::ImageFormat::Png)
+        .map_err(io)?;
+    Ok(output.into_inner())
+}
+#[cfg(test)]
+fn decode_image(path: &Path) -> Result<image::RgbImage> {
     let mut reader = image::ImageReader::open(path)
         .map_err(io)?
         .with_guessed_format()
@@ -885,23 +1059,21 @@ fn image_bytes(path: &Path) -> Result<Vec<u8>> {
     limits.max_image_height = Some(4096);
     limits.max_alloc = Some(64 * 1024 * 1024);
     reader.limits(limits);
-    let rgba = reader.decode().map_err(io)?.to_rgba8();
-    if rgba.width() as u64 * rgba.height() as u64 > 2_000_000 {
-        return Err("Select a smaller OCR image region".into());
-    }
-    // Rotation/cropping leaves transparent pixels. Composite onto white rather than
-    // letting an RGB decoder turn transparent background into black handwriting.
-    let rgb = image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
-        let pixel = rgba.get_pixel(x, y);
-        let alpha = pixel[3] as u32;
-        image::Rgb(std::array::from_fn(|i| {
-            ((pixel[i] as u32 * alpha + 255 * (255 - alpha) + 127) / 255) as u8
-        }))
-    });
-    let mut output = std::io::Cursor::new(Vec::new());
-    rgb.write_to(&mut output, image::ImageFormat::Png)
-        .map_err(io)?;
-    Ok(output.into_inner())
+    composite_white(reader.decode().map_err(io)?.to_rgba8())
+}
+fn composite_white(rgba: image::RgbaImage) -> Result<image::RgbImage> {
+    validate_image_size(rgba.width(), rgba.height())?;
+    Ok(image::RgbImage::from_fn(
+        rgba.width(),
+        rgba.height(),
+        |x, y| {
+            let pixel = rgba.get_pixel(x, y);
+            let alpha = pixel[3] as u32;
+            image::Rgb(std::array::from_fn(|i| {
+                ((pixel[i] as u32 * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+            }))
+        },
+    ))
 }
 
 fn strip_math_wrappers(input: &str) -> String {
@@ -925,7 +1097,7 @@ fn strip_math_wrappers(input: &str) -> String {
     }
     text.into()
 }
-fn render_ink(strokes: &[Vec<[f32; 2]>], kind: RecognitionKind) -> Result<Vec<u8>> {
+fn render_ink_rgb(strokes: &[Vec<[f32; 2]>], kind: RecognitionKind) -> Result<image::RgbImage> {
     if strokes.is_empty()
         || strokes.len() > 4096
         || strokes.iter().map(Vec::len).sum::<usize>() > 250000
@@ -979,7 +1151,7 @@ fn render_ink(strokes: &[Vec<[f32; 2]>], kind: RecognitionKind) -> Result<Vec<u8
         }
     }
     svg.push_str("</svg>");
-    let pixmap = folio_export::raster_svg(&svg, 4.).map_err(io)?;
+    let pixmap = folio_export::raster_geometry_svg(&svg, 2.).map_err(io)?;
     let image = image::RgbaImage::from_raw(pixmap.width(), pixmap.height(), pixmap.take())
         .ok_or("Invalid ink image")?;
     let image = image::DynamicImage::ImageRgba8(image)
@@ -989,6 +1161,11 @@ fn render_ink(strokes: &[Vec<[f32; 2]>], kind: RecognitionKind) -> Result<Vec<u8
             image::imageops::FilterType::Lanczos3,
         )
         .to_rgb8();
+    Ok(image)
+}
+#[cfg(test)]
+fn render_ink(strokes: &[Vec<[f32; 2]>], kind: RecognitionKind) -> Result<Vec<u8>> {
+    let image = render_ink_rgb(strokes, kind)?;
     let mut output = std::io::Cursor::new(Vec::new());
     image
         .write_to(&mut output, image::ImageFormat::Png)
@@ -1251,6 +1428,33 @@ mod tests {
             .to_rgb8();
         assert_eq!(rgb.get_pixel(0, 0).0, [255, 255, 255]);
         assert_eq!(rgb.get_pixel(1, 0).0, [0, 0, 0]);
+        let path = root.join("colored.png");
+        image::RgbaImage::from_fn(40, 40, |x, y| {
+            image::Rgba([40, 90, 160, ((x + y) * 3) as u8])
+        })
+        .save(&path)
+        .unwrap();
+        let object = Arc::new(Object::Image(ImageObject {
+            id: Id::new_v4(),
+            asset: "colored.png".into(),
+            rect: Rect::new(0., 0., 40., 40.),
+            transform: Transform::around(Point::new(20., 20.), 1., 0.3),
+            crop: Some(Rect::new(0., 0., 0.75, 1.)),
+        }));
+        let (_, reference) =
+            folio_export::raster_object_limited(&object, &root, 1_400_000).unwrap();
+        reference.save_png(root.join("reference.png")).unwrap();
+        let original = decode_image(&root.join("reference.png")).unwrap();
+        let prepared = composite_white(
+            prepare_image(&ImageSource::Object(object, root.clone()))
+                .unwrap()
+                .to_rgba8(),
+        )
+        .unwrap();
+        assert_eq!(
+            prepared, original,
+            "In-memory input must preserve transparent and antialiased pixels exactly"
+        );
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -1301,7 +1505,7 @@ mod tests {
             )
             .unwrap();
             fs::write(&binary, r#"#!/usr/bin/env python3
-import sys, json
+import sys, json, time
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 root = Path(__file__).resolve().parents[2]
@@ -1313,7 +1517,7 @@ if '--list-devices' in sys.argv:
 def arg(name): return sys.argv[sys.argv.index(name) + 1]
 mode = 'cpu' if arg('--mmproj-device') == 'none' else {'all': 'full', 'auto': 'fit', '0': 'vision'}[arg('--gpu-layers')]
 with (root / 'launches').open('a') as log: log.write(json.dumps({'mode': mode, 'args': sys.argv[1:]}) + '\n')
-assert arg('--ctx-size') == '16384'
+assert arg('--ctx-size') == '4096'
 if mode == 'fit':
     assert arg('--fit') == 'on' and arg('--fit-target') == '1024'
     assert '--no-op-offload' in sys.argv and '--no-mmproj-offload' not in sys.argv
@@ -1327,6 +1531,7 @@ if mode == 'cpu':
     assert '--no-mmproj-offload' in sys.argv and '--no-op-offload' in sys.argv
 if mode in ['full', 'fit', 'vision'] and ['full', 'fit', 'vision'].index(mode) < int((root / 'failed-gpu-modes').read_text()):
     sys.exit(1)
+if (root / 'start-delay').exists(): time.sleep(float((root / 'start-delay').read_text()))
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
@@ -1335,7 +1540,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self.rfile.read(int(self.headers['Content-Length']))
         failure = root / 'fail-inference'
-        if failure.exists() and failure.read_text() == mode:
+        behavior = failure.read_text() if failure.exists() else ''
+        if behavior == 'request':
+            self.send_response(400)
+            self.end_headers()
+            return
+        if behavior in ['truncated', 'malformed']:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps({'choices':[{'finish_reason':'length','message':{'content':'partial'}}]}).encode() if behavior == 'truncated' else b'not-json')
+            return
+        if behavior == mode:
             self.send_response(500)
             self.end_headers()
             return
@@ -1395,6 +1610,19 @@ HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).
                 client.recognize(&request, &context).unwrap(),
                 "recognized locally"
             );
+            let input = Input::from_request(&request).unwrap();
+            for (behavior, restart) in [
+                ("request", false),
+                ("truncated", false),
+                ("malformed", true),
+            ] {
+                fs::write(model_root.join("fail-inference"), behavior).unwrap();
+                let error = client
+                    .recognize_prepared(&input, &context, None)
+                    .unwrap_err();
+                assert_eq!(error.restart, restart, "{behavior} error classification");
+            }
+            fs::remove_file(model_root.join("fail-inference")).unwrap();
             stop_process(&process);
             generation.store(1, Ordering::Release);
             assert!(
@@ -1481,15 +1709,87 @@ HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).
                     .collect()
             };
             assert_eq!(&modes[..initial_attempts.len()], &initial_attempts);
+            // A reload starts directly in the successful mode, on its working device.
             assert_eq!(
-                &modes[initial_attempts.len()..initial_attempts.len() * 2],
-                &initial_attempts
+                modes[initial_attempts.len()],
+                initial_attempts.last().copied().unwrap()
             );
             assert_eq!(modes.last(), Some(&"cpu"));
             if selected == "cpu" {
                 assert!(modes.iter().all(|mode| *mode == "cpu"));
             }
             drop(guard);
+            // Exercise the actual service queue: a request arriving during a speculative
+            // load must reuse it; Cancel must stop it without publishing a result.
+            fs::write(model_root.join("start-delay"), "0.15").unwrap();
+            let mut service =
+                Service::with_preparation(pack.clone(), Duration::from_secs(10), cache);
+            service.prewarm(pack.clone(), 1);
+            let wait_for_process = |service: &Service| {
+                let started = Instant::now();
+                loop {
+                    if let Some(pid) = service.process.lock().unwrap().as_ref().map(Child::id) {
+                        break pid;
+                    }
+                    assert!(started.elapsed() < Duration::from_secs(5));
+                    thread::sleep(Duration::from_millis(5));
+                }
+            };
+            let warming_pid = wait_for_process(&service);
+            image::RgbImage::from_pixel(20, 20, image::Rgb([255, 255, 255]))
+                .save(directory.join("input.png"))
+                .unwrap();
+            let object = Arc::new(Object::Image(ImageObject {
+                id: Id::new_v4(),
+                asset: "input.png".into(),
+                rect: Rect::new(0., 0., 20., 20.),
+                transform: Transform::default(),
+                crop: None,
+            }));
+            let task = Task {
+                submitted: Instant::now(),
+                queued: Instant::now(),
+                generation: 1,
+                pack: pack.clone(),
+                auto_setup: false,
+                image: Some(ImageSource::Object(object.clone(), directory.clone())),
+                review: RecognitionReview {
+                    kind: RecognitionKind::Text,
+                    text: String::new(),
+                    note: Id::new_v4(),
+                    page: Id::new_v4(),
+                    bounds: object.bounds(),
+                    sources: vec![object],
+                    pdf_source: None,
+                },
+            };
+            service.generation.store(1, Ordering::Release);
+            service.submit(task, true).unwrap();
+            let result = service
+                .results
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            assert_eq!(result.result.unwrap(), "recognized locally");
+            assert_eq!(
+                service.process.lock().unwrap().as_ref().map(Child::id),
+                Some(warming_pid)
+            );
+            assert_eq!(
+                result.timing.model_load_ms, 0.,
+                "An arriving request must not restart the speculative load"
+            );
+            service.cancel(2);
+            service.prewarm(pack.clone(), 2);
+            wait_for_process(&service);
+            service.cancel(3);
+            let started = Instant::now();
+            while service.warming.load(Ordering::Acquire) {
+                assert!(started.elapsed() < Duration::from_secs(5));
+                thread::sleep(Duration::from_millis(5));
+            }
+            assert!(service.process.lock().unwrap().is_none());
+            assert!(service.results.try_recv().is_err());
+            drop(service);
             fs::remove_dir_all(directory).unwrap();
         }
     }
@@ -1503,6 +1803,59 @@ HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).
         assert!(render_ink(&[vec![]], RecognitionKind::Text).is_err());
         assert_eq!(strip_math_wrappers("```latex\n\\[x^2=4\\]\n```"), "x^2=4");
         assert_eq!(strip_math_wrappers("$x$ + $y$"), "$x$ + $y$");
+        let mut line = image::RgbImage::from_pixel(1400, 120, image::Rgb([255, 255, 255]));
+        for x in 32..1368 {
+            for y in 38..70 {
+                line.put_pixel(x, y, image::Rgb([0, 0, 0]));
+            }
+        }
+        let decode = |input: &Input| {
+            let url = input.payload["messages"][0]["content"][0]["image_url"]["url"]
+                .as_str()
+                .unwrap();
+            image::load_from_memory(
+                &base64::engine::general_purpose::STANDARD
+                    .decode(url.split_once(',').unwrap().1)
+                    .unwrap(),
+            )
+            .unwrap()
+            .to_rgb8()
+        };
+        let quality =
+            Input::new(line.clone(), RecognitionKind::Text, ImageProfile::Quality).unwrap();
+        assert_eq!(decode(&quality), line);
+        let fast = decode(
+            &Input::new(line.clone(), RecognitionKind::Text, ImageProfile::FastLines).unwrap(),
+        );
+        assert!(fast.width().div_ceil(28) * fast.height().div_ceil(28) <= 256);
+        assert_eq!(
+            decode(
+                &Input::new(line.clone(), RecognitionKind::Math, ImageProfile::FastLines).unwrap()
+            ),
+            line
+        );
+        for x in 32..1368 {
+            for y in 90..110 {
+                line.put_pixel(x, y, image::Rgb([0, 0, 0]));
+            }
+        }
+        assert_eq!(
+            decode(
+                &Input::new(line.clone(), RecognitionKind::Text, ImageProfile::FastLines).unwrap()
+            ),
+            line
+        );
+        // The complete maximum permitted image fits alongside the maximum text output.
+        let largest = image::RgbImage::from_pixel(2000, 1000, image::Rgb([255, 255, 255]));
+        assert!(Input::new(largest, RecognitionKind::Text, ImageProfile::Quality).is_ok());
+        assert!(
+            Input::new(
+                image::RgbImage::new(2001, 1000),
+                RecognitionKind::Text,
+                ImageProfile::Quality
+            )
+            .is_err()
+        );
     }
     #[test]
     #[ignore = "Requires FOLIO_OCR_TEST_ASSETS with the pinned public benchmark files; runs real OCR"]
@@ -1560,7 +1913,11 @@ HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).
                 assert_eq!(text, client.recognize(&request, &context).unwrap());
             }
         };
-        for device in ["auto", "Vulkan0", "Vulkan999", "cpu"] {
+        let fit_only = std::env::var_os("FOLIO_OCR_TEST_FIT_ONLY").is_some();
+        for device in ["auto", "Vulkan0", "Vulkan999", "cpu"]
+            .into_iter()
+            .filter(|_| !fit_only)
+        {
             if device != "auto" {
                 fs::write(
                     &pack,
@@ -1599,15 +1956,15 @@ HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).
         {
             use std::os::unix::fs::PermissionsExt;
             // Exercise actual partial allocation without occupying the user's VRAM:
-            // reject full loading and give the real fitter a 1 GiB allocation budget.
+            // reject full loading and give the real fitter a 512 MiB language allocation budget.
             fs::write(&pack, br#"{"backend":"llama-vulkan","device":"auto"}"#).unwrap();
             let mut cache = Cache::default();
             let prepared = cache.prepare(&pack, &context).unwrap();
             let device = prepared.devices.first().expect("requires a Vulkan GPU");
             let margin = device
                 .free
-                .checked_sub(1024)
-                .expect("requires >1 GiB free GPU memory");
+                .checked_sub(512)
+                .expect("requires >512 MiB free GPU memory");
             let binary = model_root.join("runtime").join(SERVER_PATH);
             let real_binary = binary.with_file_name("llama-server-real");
             fs::rename(&binary, &real_binary).unwrap();
@@ -1658,8 +2015,11 @@ os.execv(str(binary), [str(binary)] + args)
                 .unwrap()
                 .json()
                 .unwrap();
-            assert_eq!(props["default_generation_settings"]["n_ctx"], 16384);
-            eprintln!("Real constrained fit: {layers} GPU layers, 16384-token context");
+            assert_eq!(
+                props["default_generation_settings"]["n_ctx"],
+                CONTEXT_TOKENS
+            );
+            eprintln!("Real constrained fit: {layers} GPU layers, 4096-token context");
             check_recognition(&client, "constrained-fit");
             stop_process(&process);
         }

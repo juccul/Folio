@@ -364,13 +364,19 @@ fn asynchronous_results_remain_suggestions_and_stale_results_are_rejected() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    // Idle eviction preserves the review and permits a new request to restart.
+    assert!(app.recognition_timing.as_ref().unwrap().cache_hit);
+    // Cached suggestions remain available after idle eviction without restarting a model.
     assert_eq!(
         app.recognition_review.as_ref().unwrap().text,
         "recognized locally"
     );
     app.recognize_selection(RecognitionKind::Text).unwrap();
     wait_result(&mut app);
+    assert!(app.recognition_timing.as_ref().unwrap().cache_hit);
+    assert!(app.recognition_service.process.lock().unwrap().is_none());
+    app.recognize_selection(RecognitionKind::Math).unwrap();
+    wait_result(&mut app);
+    assert!(!app.recognition_timing.as_ref().unwrap().cache_hit);
     assert_ne!(
         app.recognition_service
             .process
@@ -380,6 +386,63 @@ fn asynchronous_results_remain_suggestions_and_stale_results_are_rejected() {
             .unwrap()
             .id(),
         pid
+    );
+    let resident_pid = app
+        .recognition_service
+        .process
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .id();
+    let config_path = root.join("recognition/pack.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+    config["test_response_revision"] = "empty-result".into();
+    std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    std::fs::write(root.join("recognition/response.json"), br#"{"text":""}"#).unwrap();
+    app.recognize_selection(RecognitionKind::Text).unwrap();
+    wait_result(&mut app);
+    assert!(app.error.as_ref().unwrap().contains("No text recognized"));
+    assert_eq!(
+        app.recognition_service
+            .process
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .id(),
+        resident_pid
+    );
+    config["test_response_revision"] = "valid-result".into();
+    std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    std::fs::write(
+        root.join("recognition/response.json"),
+        br#"{"text":"recognized locally"}"#,
+    )
+    .unwrap();
+    app.recognize_selection(RecognitionKind::Text).unwrap();
+    wait_result(&mut app);
+    assert_eq!(
+        app.recognition_service
+            .process
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .id(),
+        resident_pid
+    );
+    let request_id = app.recognition_timing.as_ref().unwrap().generation;
+    app.recognition_frame_completed(request_id.wrapping_add(1));
+    assert!(app.recognition_timing.as_ref().unwrap().frame_ms.is_none());
+    app.recognition_frame_completed(request_id);
+    let frame = app.recognition_timing.as_ref().unwrap().frame_ms.unwrap();
+    assert!(frame >= app.recognition_timing.as_ref().unwrap().review_ms.unwrap());
+    app.recognition_frame_completed(request_id);
+    assert_eq!(
+        app.recognition_timing.as_ref().unwrap().frame_ms,
+        Some(frame)
     );
     // Numeric suggestions use the captured ink layout, including multi-stroke digits.
     let number: Vec<_> = [
@@ -424,6 +487,11 @@ fn asynchronous_results_remain_suggestions_and_stale_results_are_rejected() {
             serde_json::to_vec(&serde_json::json!({"text":raw})).unwrap(),
         )
         .unwrap();
+        let pack_path = root.join("recognition/pack.json");
+        let mut config: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&pack_path).unwrap()).unwrap();
+        config["test_response_revision"] = raw.into();
+        std::fs::write(&pack_path, serde_json::to_vec(&config).unwrap()).unwrap();
         app.recognize_selection(RecognitionKind::Text).unwrap();
         wait_result(&mut app);
         assert_eq!(app.recognition_review.as_ref().unwrap().text, expected);
@@ -710,6 +778,8 @@ fn first_ocr_request_waits_for_setup_choice_without_dispatching_downloads() {
     app.recognition_service
         .submit(
             Task {
+                submitted: Instant::now(),
+                queued: Instant::now(),
                 generation: 1,
                 pack: pack.clone(),
                 review,
@@ -719,7 +789,9 @@ fn first_ocr_request_waits_for_setup_choice_without_dispatching_downloads() {
             false,
         )
         .unwrap();
+    app.prepare_recognition();
     assert!(app.recognition_setup_needed());
+    assert!(!app.recognition_service.warming.load(Ordering::Acquire));
     assert!(app.recognition_service.last_task.is_none());
     std::thread::sleep(Duration::from_millis(30));
     assert!(!pack.exists());

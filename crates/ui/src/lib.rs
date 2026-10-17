@@ -525,7 +525,12 @@ impl NotesView {
                     || view.motion.borrow().needs_frame()
                     || view.updater.state.busy()
                     || view.updater.state == folio_update::State::Checking;
-                view.schedule_poll(Duration::from_millis(if fast { 16 } else { 250 }), cx);
+                let delay = Duration::from_millis(if fast { 16 } else { 250 });
+                let delay = view
+                    .controller
+                    .math_ink_poll_delay()
+                    .map_or(delay, |deadline| delay.min(deadline));
+                view.schedule_poll(delay, cx);
                 if notify {
                     cx.notify();
                 }
@@ -1923,6 +1928,20 @@ impl NotesView {
             .bg(rgb(background))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if enabled {
+                    if *hovered
+                        && matches!(
+                            hover_id.as_ref(),
+                            "recognize-text"
+                                | "recognize-math"
+                                | "index-handwriting"
+                                | "math-use-selection"
+                                | "math-read-selection"
+                                | "math-read-text"
+                                | "math-read-next"
+                        )
+                    {
+                        this.controller.prepare_recognition();
+                    }
                     this.motion.borrow_mut().hover(
                         hover_id.as_ref(),
                         *hovered,
@@ -3070,6 +3089,23 @@ impl Render for NotesView {
                 ),
             )
         };
+        let review_visible =
+            matches!(self.modal.as_ref(), Some((Modal::Recognition, _))) && modal_alpha > 0.;
+        let math_visible = self.controller.math_session.is_some()
+            && self.modal.is_none()
+            && !self.library_open
+            && !self.settings_open
+            && !self.help_open;
+        if (review_visible || math_visible)
+            && let Some(request) = self.controller.recognition_frame_pending()
+        {
+            let view = cx.entity().downgrade();
+            window.on_next_frame(move |_, cx| {
+                let _ = view.update(cx, |view, _| {
+                    view.controller.recognition_frame_completed(request)
+                });
+            });
+        }
         let theme = Theme::new(&self.controller.settings);
         window.set_rem_size(px(16. * self.controller.settings.ui_scale));
         let entity = cx.entity();

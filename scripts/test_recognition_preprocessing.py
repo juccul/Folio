@@ -1,4 +1,6 @@
 """Geometry/offline regressions; no models or dataset downloads needed."""
+import io
+import json
 import importlib.util
 from pathlib import Path
 import socket
@@ -166,6 +168,21 @@ class PreprocessingTests(unittest.TestCase):
             Image.new('RGB',(2001,2000)).save(path)
             with self.assertRaisesRegex(ValueError,'smaller image'):
                 recognizer.recognize({'kind':'math','image_path':str(path)})
+
+    def test_worker_protocol_preserves_request_errors_and_marks_runtime_failures(self):
+        recognizer = Mock()
+        recognizer.recognize.side_effect = [ValueError('smaller crop'), 'valid result', RuntimeError('backend failed')]
+        output = io.StringIO()
+        with patch.object(worker, 'Recognizer', return_value=recognizer) as constructor, \
+                patch.object(sys, 'argv', ['worker', '--config', '/local/pack.json']), \
+                patch.object(sys, 'stdin', io.StringIO('{}\n{}\n{}\n')), \
+                patch.object(sys, 'stdout', output):
+            worker.main()
+        constructor.assert_called_once()
+        responses = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertFalse(responses[0]['restart'])
+        self.assertEqual(responses[1], {'text': 'valid result'})
+        self.assertTrue(responses[2]['restart'])
 
     def test_internet_sockets_are_blocked(self):
         for family in [socket.AF_INET, socket.AF_INET6]:

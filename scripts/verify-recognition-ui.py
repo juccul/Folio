@@ -56,7 +56,9 @@ def main():
                 note = db.execute('SELECT id FROM notes LIMIT 1').fetchone()[0]
                 original_count = db.execute('SELECT count(*) FROM objects').fetchone()[0]
                 assert original_count > 1
-            env = dict(os.environ, FOLIO_RECOGNITION_CONFIG=str(pack / 'pack.json'))
+            trace = args.output / 'ocr-timing.jsonl'
+            trace.unlink(missing_ok=True)
+            env = dict(os.environ, FOLIO_RECOGNITION_CONFIG=str(pack / 'pack.json'), FOLIO_OCR_TRACE=str(trace.resolve()))
             with (args.output / 'runtime.log').open('w') as log:
                 app = subprocess.Popen([str(args.binary.resolve()), '--data-dir', str(root / 'data'), '--open-note', note], env=env, stdout=log, stderr=log)
                 client = Client(app.pid)
@@ -160,8 +162,17 @@ def main():
                 assert count() == original_count, 'Equation undo did not restore ink'
                 client.key('z', 5); time.sleep(.3)
                 assert count() == 1, 'Equation redo did not restore rendering'
+                timings = [json.loads(line) for line in trace.read_text().splitlines()]
+                completed = [row['timing'] for row in timings if row['stage'] == 'frame-complete']
+                assert len(completed) >= 3, 'Displayed reviews were not correlated with completed frames'
+                assert any(row['cache_hit'] for row in completed), 'Repeated math review did not reuse its cached result'
+                for row in completed:
+                    assert row['frame_ms'] >= row['review_ms'] >= 0
+                    assert all(row[key] >= 0 for key in ('submission_ms','queue_ms','preparation_ms','model_load_ms','inference_ms'))
+                    if row['cache_hit']:
+                        assert row['preparation_ms'] == row['model_load_ms'] == row['inference_ms'] == 0
                 result = {'native_clipboard_corrected_text': True, 'review_before_conversion': True,
-                    'replace_undo_redo': True, 'math_cancel_keeps_ink': True,
+                    'replace_undo_redo': True, 'math_cancel_keeps_ink': True, 'cached_review_frame_timing': True,
                     'math_clipboard_source': True, 'math_rendered_equation': True,
                     'math_replace_undo_redo': True, 'original_strokes': original_count}
                 (args.output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')

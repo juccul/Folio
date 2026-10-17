@@ -33,7 +33,7 @@ use folio_input::{PenEvent, Phase, Tool as PenTool};
 pub use folio_math::{VectorCommand, VectorFormula};
 use folio_storage::{Delta, JournalEvent, Persistence, Store};
 pub use math_solver::{MathReport, MathRequest, MathSession, MathStep};
-pub use recognition::{RecognitionKind, RecognitionReview};
+pub use recognition::{RecognitionKind, RecognitionReview, RecognitionTiming};
 pub use settings::{EraserMode, PageTemplate, PenPreset, Settings, WorkspacePreferences};
 use std::{
     cell::{Cell, RefCell},
@@ -387,6 +387,7 @@ pub struct Controller {
     last_math_scan: Instant,
     math_scan_cursor: usize,
     last_math_ink: Instant,
+    math_ink_due: Option<Instant>,
     math_live_ocr: Option<(Id, String)>,
     math_ink_signatures: HashMap<Id, String>,
     recognition_service: recognition::Service,
@@ -395,6 +396,7 @@ pub struct Controller {
     pub recognition_status: String,
     pub recognition_replacing: bool,
     pub recognition_review: Option<RecognitionReview>,
+    pub recognition_timing: Option<RecognitionTiming>,
     pub previews: HashMap<(Id, Id, Id), RasterPreview>,
     preview_pending: HashMap<(Id, Id, Id), Arc<Object>>,
     session_recency: std::collections::VecDeque<Id>,
@@ -567,6 +569,7 @@ impl Controller {
             last_math_scan: Instant::now(),
             math_scan_cursor: 0,
             last_math_ink: Instant::now(),
+            math_ink_due: None,
             math_live_ocr: None,
             math_ink_signatures: HashMap::new(),
             recognition_service: recognition::Service::new(recognition::pack_path(&data_dir)),
@@ -575,6 +578,7 @@ impl Controller {
             recognition_status: String::new(),
             recognition_replacing: false,
             recognition_review: None,
+            recognition_timing: None,
             _lock: lock,
             session_recency: std::collections::VecDeque::from([active]),
             session_views: std::collections::VecDeque::new(),
@@ -785,6 +789,9 @@ impl Controller {
         s.history.execute(cmd.clone(), &mut s.document);
         s.refresh_command(&cmd);
         self.invalidate_previews(note, &cmd);
+        if note == self.active {
+            self.math_ink_edited(&cmd);
+        }
         let s = &self.sessions[&note];
         // Deferred edits do not need a page header/search-text snapshot yet.
         let delta = autosave.then(|| {
@@ -837,6 +844,7 @@ impl Controller {
                 delta
             });
             self.invalidate_previews(self.active, &cmd);
+            self.math_ink_edited(&cmd);
             self.refresh_metadata(self.active);
             if let Some(delta) = delta {
                 self.persist(delta);
@@ -871,6 +879,7 @@ impl Controller {
                 delta
             });
             self.invalidate_previews(self.active, &cmd);
+            self.math_ink_edited(&cmd);
             self.refresh_metadata(self.active);
             if let Some(delta) = delta {
                 self.persist(delta);

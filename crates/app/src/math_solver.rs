@@ -1038,10 +1038,48 @@ impl Controller {
         sources.sort_unstable_by_key(|o| self.session().order_positions[&o.id()]);
         sources
     }
+    pub(super) fn math_ink_edited(&mut self, command: &Command) {
+        if self.session().linked_math.is_empty() {
+            return;
+        }
+        if command.changes.iter().any(|change| match change {
+            Change::Object { before, after, .. } => before
+                .iter()
+                .chain(after.iter())
+                .any(|object| matches!(object.as_ref(), Object::Stroke(_))),
+            Change::Page { .. } => true,
+            _ => false,
+        }) {
+            self.last_math_ink = Instant::now();
+            self.math_scan_cursor = 0;
+            self.math_ink_due = Some(self.last_math_ink + Duration::from_millis(700));
+        }
+    }
+    /// The UI can sleep until this deadline instead of polling continuously during the pause.
+    pub fn math_ink_poll_delay(&self) -> Option<Duration> {
+        if self.interaction.is_some()
+            || self.recognition_pending
+            || self.math_live_ocr.is_some()
+            || self
+                .math_session
+                .as_ref()
+                .is_some_and(|session| session.pending)
+            || self.session().linked_math.is_empty()
+        {
+            return None;
+        }
+        self.math_ink_due.map(|due| {
+            due.saturating_duration_since(Instant::now())
+                .max(Duration::from_millis(16))
+        })
+    }
     pub(super) fn poll_math_solver(&mut self) -> bool {
         let mut changed = false;
         if self.interaction.is_some() {
             self.last_math_ink = Instant::now();
+            if self.math_ink_due.is_some() {
+                self.math_ink_due = Some(self.last_math_ink + Duration::from_millis(700));
+            }
         }
         if self.math_live_ocr.is_some() && !self.recognition_pending {
             let (id, signature) = self.math_live_ocr.take().unwrap();
@@ -1242,7 +1280,10 @@ impl Controller {
                 }
             }
         }
-        if self.last_math_scan.elapsed() >= Duration::from_millis(600)
+        let ink_due = self.math_ink_due.is_some_and(|due| Instant::now() >= due)
+            && !self.recognition_pending
+            && self.math_live_ocr.is_none();
+        if (self.last_math_scan.elapsed() >= Duration::from_millis(600) || ink_due)
             && self.interaction.is_none()
             && !self.math_session.as_ref().is_some_and(|s| s.pending)
         {
@@ -1251,6 +1292,7 @@ impl Controller {
                 Ok(v) => v,
                 Err(e) => {
                     self.status = e;
+                    self.math_ink_due = None;
                     return changed;
                 }
             };
@@ -1270,6 +1312,7 @@ impl Controller {
             if self.math_scan_cursor >= ids.len() {
                 self.math_scan_cursor = 0;
             }
+            let total_candidates = ids.len();
             let candidates = ids
                 .into_iter()
                 .skip(self.math_scan_cursor)
@@ -1283,6 +1326,7 @@ impl Controller {
                 })
                 .collect::<Vec<_>>();
             self.math_scan_cursor += candidates.len();
+            let mut retry_ink = false;
             for (before, mut link) in candidates {
                 if self.math_live_pending.contains(&before.id()) {
                     continue;
@@ -1297,12 +1341,25 @@ impl Controller {
                         entry.insert(signature.clone());
                     } else if self.math_ink_signatures.get(&before.id()) != Some(&signature)
                         && !sources.is_empty()
-                        && !self.recognition_pending
-                        && self.math_live_ocr.is_none()
                         && self.last_math_ink.elapsed() >= Duration::from_millis(700)
                     {
-                        if self.recognize_math_sources(sources, region).is_ok() {
-                            self.math_live_ocr = Some((before.id(), signature));
+                        if !self.recognition_pending && self.math_live_ocr.is_none() {
+                            match self.recognize_math_sources(sources, region) {
+                                Ok(()) => {
+                                    self.math_live_ocr = Some((before.id(), signature));
+                                    retry_ink = true;
+                                }
+                                Err(error) if error.contains("busy") => {
+                                    retry_ink = true;
+                                }
+                                Err(error) => {
+                                    // An oversized/invalid region is attempted once per ink version.
+                                    self.math_ink_signatures.insert(before.id(), signature);
+                                    self.status = format!("Live math: {error}");
+                                }
+                            }
+                        } else {
+                            retry_ink = true;
                         }
                         continue;
                     }
@@ -1361,6 +1418,10 @@ impl Controller {
                 {
                     self.math_live_pending.insert(id);
                 }
+            }
+            if ink_due {
+                self.math_ink_due =
+                    (retry_ink || self.math_scan_cursor < total_candidates).then(Instant::now);
             }
         }
         changed
@@ -1791,10 +1852,46 @@ for line in sys.stdin:
         app.insert_math_result(false, true).unwrap();
         let result = *app.session().selection.iter().next().unwrap();
         app.close_math_solver();
+        // A deadline scan must start a complete cycle, even if periodic maintenance
+        // was in a later chunk of a page with many linked calculations.
+        let mut additions = Vec::new();
+        for index in 0..33 {
+            let Object::Equation(mut equation) = app.page().objects[&result].as_ref().clone()
+            else {
+                unreachable!()
+            };
+            equation.id = Id::new_v4();
+            let link = equation.math_link.as_mut().unwrap();
+            link.ink_region = None;
+            link.sources.clear();
+            let signature =
+                serde_json::to_string(&request_from_link(link, BTreeMap::new())).unwrap();
+            app.math_live_signatures.insert(equation.id, signature);
+            additions.push(Change::Object {
+                page: app.page().id,
+                id: equation.id,
+                before: None,
+                after: Some(Arc::new(Object::Equation(equation))),
+                index: app.page().order.len() + index,
+            });
+        }
+        app.commit("Add linked calculations", additions);
+        app.math_scan_cursor = 32;
         draw_ink(&mut app, 80.);
-        app.last_math_scan = Instant::now() - Duration::from_secs(1);
-        app.last_math_ink = Instant::now() - Duration::from_secs(2);
+        let edited_at = app.last_math_ink;
+        app.last_math_scan = Instant::now();
         app.tick();
+        assert!(
+            !app.recognition_pending,
+            "A partial writing pause must not trigger OCR"
+        );
+        assert!(app.math_ink_poll_delay().is_some());
+        app.last_math_ink = edited_at - Duration::from_secs(2);
+        app.math_ink_due = Some(Instant::now() - Duration::from_millis(1));
+        // The periodic scan has just run: the ink deadline must bypass it.
+        app.last_math_scan = Instant::now();
+        app.tick();
+        assert!(app.recognition_pending);
         wait(&mut app);
         assert_eq!(app.page().objects[&result].searchable_text(), "4");
         assert_eq!(app.page().objects[&first], original);

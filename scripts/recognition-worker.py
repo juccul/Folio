@@ -219,7 +219,7 @@ def main():
                 text = recognizer.recognize(json.loads(line))
             response = {'text': text}
         except Exception as error:
-            response = {'error': str(error)}
+            response = {'error': str(error), 'restart': not isinstance(error, ValueError)}
         print(json.dumps(response, ensure_ascii=False), flush=True)
 
 if __name__ == '__main__':

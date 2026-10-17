@@ -1,8 +1,8 @@
 //! Opt-in end-to-end local-model check with externally supplied stroke JSON.
 //! Usage: FOLIO_RECOGNITION_CONFIG=... cargo run -p folio-app --example
-//! recognition_fixture -- EMPTY_DIRECTORY INPUT_JSON
+//! recognition_fixture -- EMPTY_DIRECTORY INPUT_JSON [--benchmark]
 use folio_app::{Controller, RecognitionKind};
-use folio_document::{Object, Point, Rect};
+use folio_document::{Object, Point, Rect, Transform};
 use folio_input::{Device, PenEvent, Phase, Tool};
 use serde::Deserialize;
 use std::{
@@ -106,6 +106,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Recognition must retain ink until replacement"
     );
     let elapsed = start.elapsed().as_secs_f32();
+    let mut repeated = Vec::new();
+    let mut warm_uncached = Vec::new();
+    if args.iter().any(|argument| argument == "--benchmark") {
+        for shift in [0., 1., -1., 1., -1., 0.] {
+            if shift != 0. {
+                app.transform_selection(
+                    Transform::translate(shift, 0.),
+                    "Benchmark source version",
+                );
+            }
+            let started = Instant::now();
+            app.recognize_selection(kind)?;
+            while app.recognition_pending {
+                app.tick();
+                if started.elapsed() > Duration::from_secs(185) {
+                    return Err("Warm recognition timed out".into());
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let review = app
+                .recognition_review
+                .as_ref()
+                .ok_or_else(|| app.error.clone().unwrap_or("No warm result".into()))?;
+            assert_eq!(
+                review.text, text,
+                "Translation must preserve the OCR image and result"
+            );
+            if shift == 0. {
+                repeated.push(started.elapsed().as_secs_f64());
+            } else {
+                warm_uncached.push(started.elapsed().as_secs_f64());
+            }
+        }
+        assert_eq!(app.page().objects, originals);
+    }
     app.replace_recognized_writing(text.clone())?;
     while app.recognition_pending {
         app.tick();
@@ -142,7 +177,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::json!({"recognized": text, "seconds_including_cold_start": elapsed,
-        "review_before_replace": true, "undo_redo_reopen": true, "runtime": "offline"})
+        "review_before_replace": true, "undo_redo_reopen": true, "runtime": "offline",
+        "repeated_request_seconds": repeated, "warm_uncached_seconds": warm_uncached})
     );
     Ok(())
 }

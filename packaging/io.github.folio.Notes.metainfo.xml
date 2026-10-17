@@ -12,6 +12,9 @@
   <launchable type="desktop-id">io.github.folio.Notes.desktop</launchable>
   <supports><control>pointing</control><control>keyboard</control></supports>
   <releases>
+    <release version="0.1.6" date="2026-10-17">
+      <description><p>Faster and lower-memory OCR with result caching, installed-model prewarming, direct live-handwriting deadlines, and improved editor memory and worker lifetimes.</p></description>
+    </release>
     <release version="0.1.5" date="2026-10-14">
       <description><p>More efficient editor rendering and object maintenance, reduced retained preview memory, corrected spacing inside compact handwritten numbers, and fractional-power step checking fixes.</p></description>
     </release>

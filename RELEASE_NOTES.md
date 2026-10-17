@@ -1,9 +1,10 @@
-# Folio 0.1.5
+# Folio 0.1.6
 
-- More efficient editing: cached viewport geometry and paper backgrounds reduce repeated rendering work; idle maintenance runs less often while active drawing and background operations retain responsive polling.
-- Lower retained preview memory: obsolete thumbnails, object previews, PDF pages and GPU images are released as content changes or leaves the working set. Selection actions and drawing-order updates are faster on large documents.
-- Handwriting recognition removes false spaces inside compact digit groups, such as `1 2 3 4` → `1234`, using the captured ink layout. Wide gaps and ambiguous or mixed content retain their original spacing; suggestions remain editable before acceptance.
-- Math step checking correctly evaluates held arithmetic in fractional powers before comparing expressions.
+- Faster OCR preparation uses lighter ink supersampling and keeps image/PDF crops in memory. A smaller, bounded context reduces native model memory while preserving the supported input and output limits.
+- Repeated recognition of unchanged sources reuses a bounded result cache. Hovering an OCR control prepares an installed model; requests reuse that load, healthy models survive ordinary request errors, and successful device/fallback choices are remembered for the app session.
+- Live handwriting calculations start at the end of the existing 700 ms writing pause without waiting for the periodic linked-math scan. Review, correction, cancellation and undo workflows remain available.
+- Lower editor memory use releases inactive documents, obsolete previews and GPU resources sooner. Large-page geometry, sidebar navigation and text interaction avoid repeated work; worker cleanup and failed-load recovery are more robust.
+- Optional OCR timing traces correlate requests with completed visible UI frames. Native packs retain the quality profile by default; the explicit `fast-lines` profile trades some single-line text resolution for speed.
 
 Windows x64 setup EXE and portable ZIP, Linux x86_64 Flatpak, checksums and complete corresponding source are published together. Updates remain signed and user-initiated.
 
