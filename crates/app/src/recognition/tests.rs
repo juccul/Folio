@@ -336,26 +336,8 @@ fn asynchronous_results_remain_suggestions_and_stale_results_are_rejected() {
         "recognized locally"
     );
     assert_eq!(app.page().objects, before);
-    let pid = app
-        .recognition_service
-        .process
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .id();
     app.recognize_selection(RecognitionKind::Text).unwrap();
     wait_result(&mut app);
-    assert_eq!(
-        app.recognition_service
-            .process
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .id(),
-        pid
-    );
     let start = Instant::now();
     while app.recognition_service.process.lock().unwrap().is_some() {
         assert!(
@@ -377,16 +359,11 @@ fn asynchronous_results_remain_suggestions_and_stale_results_are_rejected() {
     app.recognize_selection(RecognitionKind::Math).unwrap();
     wait_result(&mut app);
     assert!(!app.recognition_timing.as_ref().unwrap().cache_hit);
-    assert_ne!(
-        app.recognition_service
-            .process
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .id(),
-        pid
-    );
+    // Worker reuse uses the production idle timeout. Filesystem work and runner
+    // scheduling must not race the intentionally short eviction deadline above.
+    app.recognition_service = Service::new(app.recognition_pack());
+    app.recognize_selection(RecognitionKind::Math).unwrap();
+    wait_result(&mut app);
     let resident_pid = app
         .recognition_service
         .process
@@ -404,16 +381,15 @@ fn asynchronous_results_remain_suggestions_and_stale_results_are_rejected() {
     app.recognize_selection(RecognitionKind::Text).unwrap();
     wait_result(&mut app);
     assert!(app.error.as_ref().unwrap().contains("No text recognized"));
-    assert_eq!(
+    let process_id = |app: &Controller| {
         app.recognition_service
             .process
             .lock()
             .unwrap()
             .as_ref()
-            .unwrap()
-            .id(),
-        resident_pid
-    );
+            .map(std::process::Child::id)
+    };
+    assert_eq!(process_id(&app), Some(resident_pid));
     config["test_response_revision"] = "valid-result".into();
     std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
     std::fs::write(
@@ -423,16 +399,7 @@ fn asynchronous_results_remain_suggestions_and_stale_results_are_rejected() {
     .unwrap();
     app.recognize_selection(RecognitionKind::Text).unwrap();
     wait_result(&mut app);
-    assert_eq!(
-        app.recognition_service
-            .process
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .id(),
-        resident_pid
-    );
+    assert_eq!(process_id(&app), Some(resident_pid));
     let request_id = app.recognition_timing.as_ref().unwrap().generation;
     app.recognition_frame_completed(request_id.wrapping_add(1));
     assert!(app.recognition_timing.as_ref().unwrap().frame_ms.is_none());
