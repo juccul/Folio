@@ -243,6 +243,75 @@ impl Controller {
         result
     }
 }
+impl Controller {
+    pub fn create_notebook(&mut self, name: String, parent: Option<Id>) -> Result<Id, String> {
+        let name = self.validate_folder_name(&name, parent, None)?;
+        let n = Notebook {
+            id: Id::new_v4(),
+            name,
+            parent,
+        };
+        let id = n.id;
+        self.persistence.notebook(n.clone());
+        self.notebooks.push(n);
+        Ok(id)
+    }
+    pub fn rename_notebook(&mut self, id: Id, name: String) -> Result<(), String> {
+        let parent = self
+            .notebooks
+            .iter()
+            .find(|n| n.id == id)
+            .ok_or("Folder no longer exists")?
+            .parent;
+        let name = self.validate_folder_name(&name, parent, Some(id))?;
+        let n = self.notebooks.iter_mut().find(|n| n.id == id).unwrap();
+        n.name = name;
+        self.persistence.notebook(n.clone());
+        Ok(())
+    }
+    pub fn validate_folder_move(&self, id: Id, parent: Option<Id>) -> Result<(), String> {
+        if !self.notebooks.iter().any(|n| n.id == id) {
+            return Err("Folder no longer exists".into());
+        }
+        let mut cursor = parent;
+        let mut visited = HashSet::new();
+        while let Some(next) = cursor {
+            if next == id || !visited.insert(next) {
+                return Err("A folder cannot be moved inside itself or a descendant".into());
+            }
+            cursor = self
+                .notebooks
+                .iter()
+                .find(|n| n.id == next)
+                .ok_or("Destination folder no longer exists")?
+                .parent;
+        }
+        let name = &self.notebooks.iter().find(|n| n.id == id).unwrap().name;
+        self.validate_folder_name(name, parent, Some(id))?;
+        Ok(())
+    }
+    pub fn move_notebook(&mut self, id: Id, parent: Option<Id>) -> Result<(), String> {
+        self.validate_folder_move(id, parent)?;
+        let name = &self.notebooks.iter().find(|n| n.id == id).unwrap().name;
+        self.validate_folder_name(name, parent, Some(id))?;
+        let n = self.notebooks.iter_mut().find(|n| n.id == id).unwrap();
+        n.parent = parent;
+        self.persistence.notebook(n.clone());
+        Ok(())
+    }
+    pub fn delete_empty_notebook(&mut self, id: Id) -> Result<(), String> {
+        if let Some(reason) = self.folder_deletion_reason(id) {
+            return Err(reason);
+        }
+        self.notebooks.retain(|n| n.id != id);
+        self.persistence.delete_notebook(id);
+        if matches!(self.filter, NoteFilter::Notebook(folder) | NoteFilter::NotebookTrash(folder) if folder == id)
+        {
+            self.filter = NoteFilter::All;
+        }
+        Ok(())
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

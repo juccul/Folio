@@ -219,3 +219,91 @@ impl Controller {
         self.preview_errors.retain(|(note, _), _| *note != id);
     }
 }
+impl Controller {
+    pub(crate) fn trim_sessions(&mut self, budget: usize) {
+        if self.session_recency.back() != Some(&self.active) {
+            self.session_recency.retain(|id| *id != self.active);
+            self.session_recency.push_back(self.active);
+        }
+        if self.saved >= self.queued && self.dirty_notes.is_empty() && self.interaction.is_none() {
+            let closed: Vec<_> = self.closed_sessions.iter().copied().collect();
+            for id in closed {
+                if !self.sessions.contains_key(&id) && !self.loading_notes.contains(&id) {
+                    self.closed_sessions.remove(&id);
+                } else if self.can_release_session(id)
+                    && (id != self.active || self.pending_note.is_none())
+                {
+                    if id == self.active {
+                        let mut document = Document::new("Untitled document");
+                        document.pages[0].properties = self.default_page_properties();
+                        let next = document.metadata.id;
+                        self.sessions.insert(next, Session::new(document));
+                        self.activate_note(next);
+                        self.bootstrap_document = Some(next);
+                        self.provisional_imports.insert(next);
+                    }
+                    self.release_session(id);
+                }
+            }
+            let mut bytes = self
+                .sessions
+                .iter()
+                .filter(|(id, _)| **id != self.active)
+                .map(|(_, session)| session.memory_bytes())
+                .sum::<usize>();
+            while self.settings.autosave && (self.sessions.len() > 8 || bytes > budget) {
+                let victim = self.session_recency.iter().copied().find(|id| {
+                    *id != self.active
+                        && Some(*id) != self.pending_note
+                        && self.can_release_session(*id)
+                });
+                let Some(victim) = victim else {
+                    break;
+                };
+                bytes = bytes.saturating_sub(self.sessions[&victim].memory_bytes());
+                self.release_session(victim);
+            }
+        }
+    }
+    pub(crate) fn trim_caches(&mut self) {
+        self.trim_sessions(96 * 1024 * 1024);
+        const BUDGET: usize = 128 * 1024 * 1024;
+        if self.previews.values().map(|p| p.bgra.len()).sum::<usize>() > BUDGET {
+            let note = self.active;
+            let page = self.page().id;
+            self.previews
+                .retain(|(n, p, _), _| *n == note && *p == page);
+            let mut bytes = self.previews.values().map(|p| p.bgra.len()).sum::<usize>();
+            if bytes > BUDGET {
+                let visible = self
+                    .session()
+                    .index
+                    .query(self.session().viewport.visible(1920., 1200.));
+                self.previews.retain(|(_, _, id), p| {
+                    let keep = visible.contains(id) || bytes <= BUDGET;
+                    if !keep {
+                        bytes = bytes.saturating_sub(p.bgra.len());
+                    }
+                    keep
+                });
+            }
+        }
+        let mut bytes = self.previews.values().map(|p| p.bgra.len()).sum::<usize>();
+        if bytes > BUDGET {
+            let mut candidates = self
+                .previews
+                .iter()
+                .map(|(key, p)| (*key, p.pixels_budget))
+                .collect::<Vec<_>>();
+            candidates.sort_unstable_by_key(|(_, budget)| std::cmp::Reverse(*budget));
+            for (key, _) in candidates {
+                if bytes <= BUDGET {
+                    break;
+                }
+                if let Some(preview) = self.previews.remove(&key) {
+                    bytes = bytes.saturating_sub(preview.bgra.len());
+                }
+            }
+        }
+    }
+}

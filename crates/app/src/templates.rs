@@ -53,6 +53,25 @@ impl Controller {
         self.settings.templates.retain(|t| t.id != id);
         self.store_settings();
     }
+    pub(crate) fn template_page_ready(&mut self, note: Id, page: Page) {
+        self.import_finished(note);
+        self.library_imports.remove(&note);
+        if let Some(session) = self.sessions.get(&note) {
+            let index = session.document.pages.len();
+            self.commit_to(
+                note,
+                "Add template page",
+                vec![Change::Page {
+                    index,
+                    before: None,
+                    after: Some(page),
+                }],
+            );
+            if note == self.active {
+                self.change_page(index);
+            }
+        }
+    }
 }
 #[cfg(test)]
 mod tests {

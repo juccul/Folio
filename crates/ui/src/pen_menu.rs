@@ -23,7 +23,88 @@ pub(super) fn quick_presets(
     visible
 }
 
+/// A numeric pen setting adjusted with −/+ steppers.
+#[derive(Clone, Copy)]
+pub(super) enum PenSetting {
+    Width,
+    Opacity,
+    Stabilization,
+    PressureResponse,
+}
+impl PenSetting {
+    const ALL: [Self; 4] = [
+        Self::Width,
+        Self::Opacity,
+        Self::Stabilization,
+        Self::PressureResponse,
+    ];
+    fn label(self) -> &'static str {
+        match self {
+            Self::Width => "Width",
+            Self::Opacity => "Opacity",
+            Self::Stabilization => "Stabilization",
+            Self::PressureResponse => "Pressure response",
+        }
+    }
+    /// Lowercase name used in the steppers' accessible labels.
+    fn description(self) -> &'static str {
+        match self {
+            Self::Width => "stroke width",
+            Self::Opacity => "opacity",
+            Self::Stabilization => "stabilization",
+            Self::PressureResponse => "pressure response",
+        }
+    }
+    pub(super) fn value(self, style: &folio_document::PenStyle) -> String {
+        match self {
+            Self::Width => format!("{:.1} px", style.width),
+            Self::Opacity => format!("{:.0}%", style.opacity * 100.),
+            Self::Stabilization => format!("{:.0}%", style.stabilization * 100.),
+            Self::PressureResponse => format!("{:.1}", style.pressure_gamma),
+        }
+    }
+    /// Step the setting up (`sign` = 1) or down (`sign` = -1) within its range.
+    fn adjust(self, style: &mut folio_document::PenStyle, sign: f32) {
+        match self {
+            Self::Width => style.width = (style.width + sign * 0.5).clamp(0.5, 50.),
+            Self::Opacity => style.opacity = (style.opacity + sign * 0.1).clamp(0.1, 1.),
+            Self::Stabilization => {
+                style.stabilization = (style.stabilization + sign * 0.1).clamp(0., 0.9)
+            }
+            Self::PressureResponse => {
+                style.pressure_gamma = (style.pressure_gamma + sign * 0.1).clamp(0.2, 3.)
+            }
+        }
+    }
+}
+
 impl NotesView {
+    /// A "−" or "+" button for `setting`. Its id ("minus-0", "plus-0", …)
+    /// identifies the setting by position.
+    pub(super) fn pen_stepper(
+        &self,
+        setting: PenSetting,
+        increase: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let index = setting as usize;
+        let (id, symbol, verb, sign) = if increase {
+            (format!("plus-{index}"), "+", "Increase", 1.)
+        } else {
+            (format!("minus-{index}"), "−", "Decrease", -1.)
+        };
+        self.control(
+            id,
+            format!("{verb} {}", setting.description()),
+            div().min_w_0().truncate().child(symbol).into_any_element(),
+            false,
+            cx,
+            move |this, _, _| {
+                setting.adjust(&mut this.controller.style, sign);
+                this.controller.store_settings();
+            },
+        )
+    }
     pub(super) fn apply_pen_preset(&mut self, id: Id) {
         if self.controller.style.tool != InkTool::Highlighter
             && self
@@ -193,24 +274,7 @@ impl NotesView {
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("Pen settings"),
                 );
-                for (label, kind, value) in [
-                    ("Width", 0, format!("{:.1} px", self.controller.style.width)),
-                    (
-                        "Opacity",
-                        1,
-                        format!("{:.0}%", self.controller.style.opacity * 100.),
-                    ),
-                    (
-                        "Stabilization",
-                        2,
-                        format!("{:.0}%", self.controller.style.stabilization * 100.),
-                    ),
-                    (
-                        "Pressure response",
-                        3,
-                        format!("{:.1}", self.controller.style.pressure_gamma),
-                    ),
-                ] {
+                for setting in PenSetting::ALL {
                     panel = panel.child(
                         div()
                             .flex()
@@ -219,36 +283,26 @@ impl NotesView {
                             .gap_2()
                             .px_2()
                             .text_sm()
-                            .child(label)
+                            .child(setting.label())
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .gap_1()
                                     .child(
-                                        self.button(
-                                            format!("minus-{kind}"),
-                                            "−",
-                                            false,
-                                            cx,
-                                            move |this, _, _| adjust_pen(this, kind, -1.),
-                                        )
-                                        .min_h_0()
-                                        .px_2()
-                                        .py_1(),
+                                        self.pen_stepper(setting, false, cx)
+                                            .min_h_0()
+                                            .px_2()
+                                            .py_1(),
                                     )
-                                    .child(div().min_w(rems(3.)).text_center().child(value))
                                     .child(
-                                        self.button(
-                                            format!("plus-{kind}"),
-                                            "+",
-                                            false,
-                                            cx,
-                                            move |this, _, _| adjust_pen(this, kind, 1.),
-                                        )
-                                        .min_h_0()
-                                        .px_2()
-                                        .py_1(),
+                                        div()
+                                            .min_w(rems(3.))
+                                            .text_center()
+                                            .child(setting.value(&self.controller.style)),
+                                    )
+                                    .child(
+                                        self.pen_stepper(setting, true, cx).min_h_0().px_2().py_1(),
                                     ),
                             ),
                     );

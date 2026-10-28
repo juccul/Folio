@@ -244,21 +244,17 @@ impl NotesView {
                         .gap_2()
                         .px_2()
                         .child(
-                            self.button("minus-0", "−", false, cx, |this, _, _| {
-                                adjust_pen(this, 0, -1.)
-                            })
-                            .px_2(),
+                            self.pen_stepper(pen_menu::PenSetting::Width, false, cx)
+                                .px_2(),
                         )
                         .child(
                             div()
                                 .text_sm()
-                                .child(format!("{:.1} px", self.controller.style.width)),
+                                .child(pen_menu::PenSetting::Width.value(&self.controller.style)),
                         )
                         .child(
-                            self.button("plus-0", "+", false, cx, |this, _, _| {
-                                adjust_pen(this, 0, 1.)
-                            })
-                            .px_2(),
+                            self.pen_stepper(pen_menu::PenSetting::Width, true, cx)
+                                .px_2(),
                         ),
                 );
             }

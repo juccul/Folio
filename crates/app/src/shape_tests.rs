@@ -1,4 +1,5 @@
 use super::*;
+use crate::interaction::INK_HOLD_DELAY;
 use folio_input::Device;
 use std::f32::consts::TAU;
 

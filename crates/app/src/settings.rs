@@ -131,6 +131,17 @@ impl Settings {
         self.dark = dark;
         true
     }
+    /// The page a document was last showing, if documents reopen where they were left.
+    pub fn remembered_page(&self, note: Id) -> Option<Id> {
+        if !self.reopen_documents {
+            return None;
+        }
+        self.workspace
+            .current_pages
+            .iter()
+            .find(|(id, _)| *id == note)
+            .map(|(_, page)| *page)
+    }
     pub fn effective_eraser_mode(&self) -> EraserMode {
         if self.segment_eraser {
             EraserMode::Segment

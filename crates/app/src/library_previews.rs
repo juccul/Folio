@@ -80,4 +80,28 @@ impl Controller {
         let page = self.page().id;
         self.metadata(|metadata| metadata.cover_page = Some(page));
     }
+    pub(crate) fn library_preview_finished(
+        &mut self,
+        note: Id,
+        updated: u64,
+        result: Result<Option<(Page, usize)>, String>,
+    ) {
+        self.library_preview_pending.remove(&note);
+        // Ignore previews for notes that were opened or edited meanwhile.
+        if self.sessions.contains_key(&note)
+            || !self
+                .notes
+                .iter()
+                .any(|n| n.id == note && n.updated_at == updated)
+        {
+            return;
+        }
+        match result {
+            Ok(Some((page, count))) => self.cache_library_preview(note, updated, page, count),
+            Ok(None) => {}
+            Err(_) => {
+                self.library_preview_failed.insert(note, updated);
+            }
+        }
+    }
 }
