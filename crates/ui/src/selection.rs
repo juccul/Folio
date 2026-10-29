@@ -1,11 +1,13 @@
 use super::*;
 use folio_document::{Point, Rect};
+const ROTATION_HANDLE_CLEARANCE: f32 = 28.;
 /// Keep the action row close to the selected bounds and inside the canvas.
 pub(super) fn toolbar_origin(selection: Rect, canvas: (f32, f32), toolbar: (f32, f32)) -> Point {
     let margin = 12.;
     let width = toolbar.0.min((canvas.0 - margin * 2.).max(0.));
     let height = toolbar.1.min((canvas.1 - margin * 2.).max(0.));
-    let above = selection.min.y - height - margin;
+    // Leave the rotation handle, drawn 24 px above the bounds, uncovered.
+    let above = selection.min.y - height - margin - ROTATION_HANDLE_CLEARANCE;
     let y = if above >= margin {
         above
     } else {
@@ -352,8 +354,10 @@ mod tests {
     fn actions_follow_selection_without_leaving_small_or_edge_viewports() {
         assert_eq!(
             toolbar_origin(Rect::new(300., 300., 100., 80.), (1000., 700.), (500., 60.)),
-            Point::new(300., 228.)
+            Point::new(300., 200.)
         );
+        // The row ends above the rotation handle (24 px plus its radius).
+        assert!(200. + 60. < 300. - 24. - 4.);
         assert_eq!(
             toolbar_origin(Rect::new(900., 0., 100., 20.), (1000., 700.), (500., 60.)),
             Point::new(488., 32.)

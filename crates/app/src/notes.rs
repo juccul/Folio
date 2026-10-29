@@ -49,12 +49,22 @@ impl Controller {
         properties.bookmark = None;
         properties
     }
+    /// "Untitled document", numbered when that title is already in use so
+    /// new documents can be told apart in tabs, pickers and search.
+    pub fn untitled_title(&self) -> String {
+        let base = "Untitled document";
+        let taken = |title: &str| self.notes.iter().any(|n| n.title == title);
+        if !taken(base) {
+            return base.into();
+        }
+        (2..)
+            .map(|n| format!("{base} {n}"))
+            .find(|title| !taken(title))
+            .unwrap()
+    }
     pub fn create_note(&mut self) {
-        self.create_note_with_properties(
-            "Untitled document".into(),
-            self.default_page_properties(),
-        )
-        .expect("Valid default page properties");
+        self.create_note_with_properties(self.untitled_title(), self.default_page_properties())
+            .expect("Valid default page properties");
     }
     pub fn create_note_with_properties(
         &mut self,
@@ -218,7 +228,7 @@ impl Controller {
         let before = self.session().document.metadata.clone();
         let mut after = before.clone();
         after.title = if title.trim().is_empty() {
-            "Untitled note".into()
+            "Untitled document".into()
         } else {
             title.trim().into()
         };

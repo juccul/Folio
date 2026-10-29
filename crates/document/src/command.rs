@@ -225,10 +225,32 @@ impl Command {
                 }
             }
             Change::Metadata { before, after } => {
-                doc.metadata = if forward {
-                    after.clone()
+                // Apply only the fields this command changed. Library
+                // organization (folder, favorite, trash) is not part of undo
+                // history, so a stored snapshot must not revert it.
+                let (from, to) = if forward {
+                    (before, after)
                 } else {
-                    before.clone()
+                    (after, before)
+                };
+                let m = &mut doc.metadata;
+                if from.title != to.title {
+                    m.title.clone_from(&to.title);
+                }
+                if from.tags != to.tags {
+                    m.tags.clone_from(&to.tags);
+                }
+                if from.cover_page != to.cover_page {
+                    m.cover_page = to.cover_page;
+                }
+                if from.notebook != to.notebook {
+                    m.notebook = to.notebook;
+                }
+                if from.favorite != to.favorite {
+                    m.favorite = to.favorite;
+                }
+                if from.trashed != to.trashed {
+                    m.trashed = to.trashed;
                 }
             }
         };
@@ -337,6 +359,14 @@ impl History {
         cmd.apply(doc, true);
         self.undo.push(cmd.clone());
         Some(cmd)
+    }
+    /// Drop the most recently undone command so it cannot be redone.
+    pub fn forget_redo(&mut self) -> Option<Command> {
+        self.redo.pop()
+    }
+    /// The command that the next undo would revert.
+    pub fn last(&self) -> Option<&Command> {
+        self.undo.last()
     }
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()

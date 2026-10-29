@@ -6,13 +6,19 @@ pub(super) enum ToolMenu {
     Selection,
     Insert,
     Width,
+    Color,
 }
+/// Ink colors offered before recent and custom colors.
+const INK_SWATCHES: [u32; 8] = [
+    0x171717, 0x5f6368, 0x1f5fbf, 0x2e7d32, 0xc62828, 0xef6c00, 0x6a1b9a, 0x00838f,
+];
 impl ToolMenu {
     fn anchor(self) -> &'static str {
         match self {
             Self::Selection => "select-options",
             Self::Insert => "insert-options",
             Self::Width => "width-options",
+            Self::Color => "custom-color",
         }
     }
     fn title(self) -> &'static str {
@@ -20,6 +26,7 @@ impl ToolMenu {
             Self::Selection => "Selection tools",
             Self::Insert => "Insert",
             Self::Width => "Stroke width",
+            Self::Color => "Ink color",
         }
     }
 }
@@ -165,9 +172,7 @@ impl NotesView {
                             cx,
                             |this, w, _| {
                                 this.focus.focus(w);
-                                this.region_selection = None;
-                                this.controller.set_tool(Tool::Shape);
-                                this.dismiss_popovers();
+                                this.select_tool(Tool::Shape);
                             },
                         )
                         .w_full()
@@ -176,13 +181,13 @@ impl NotesView {
                     .child(
                         self.control(
                             "toolbar-image",
-                            "Insert image or PDF",
+                            "Insert image or PDF…",
                             div()
                                 .flex()
                                 .items_center()
                                 .gap_2()
                                 .child(icon(Icon::Image, theme.muted))
-                                .child("Insert image or PDF")
+                                .child("Insert image or PDF…")
                                 .into_any_element(),
                             false,
                             cx,
@@ -197,13 +202,13 @@ impl NotesView {
                     .child(
                         self.control(
                             "insert-equation",
-                            "Insert LaTeX equation",
+                            "Insert LaTeX equation…",
                             div()
                                 .flex()
                                 .items_center()
                                 .gap_2()
                                 .child(icon(Icon::Math, theme.muted))
-                                .child("Insert LaTeX equation")
+                                .child("Insert LaTeX equation…")
                                 .into_any_element(),
                             false,
                             cx,
@@ -214,6 +219,55 @@ impl NotesView {
                         .w_full()
                         .justify_start(),
                     );
+            }
+            ToolMenu::Color => {
+                let mut swatches = div().flex().flex_wrap().gap_1().px_1();
+                let mut colors: Vec<Color> = INK_SWATCHES.map(Color::from_rgb).to_vec();
+                for recent in &self.controller.settings.recent_colors {
+                    if !colors.contains(recent) {
+                        colors.push(*recent);
+                    }
+                }
+                for color in colors {
+                    swatches = swatches.child(
+                        self.control(
+                            format!("ink-swatch-{}", color.rgb()),
+                            format!("Ink color {}", color.hex()),
+                            div()
+                                .size(rems(1.25))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(rgb(theme.muted))
+                                .bg(rgb(color.rgb()))
+                                .into_any_element(),
+                            self.controller.style.color == color,
+                            cx,
+                            move |this, w, cx| {
+                                this.controller.set_color(color);
+                                this.tool_menu = None;
+                                this.focus.focus(w);
+                                cx.notify();
+                            },
+                        )
+                        .size(rems(2.25))
+                        .min_h_0()
+                        .p_1(),
+                    );
+                }
+                panel = panel.child(swatches).child(
+                    self.button(
+                        "ink-custom-color",
+                        "Custom color…",
+                        false,
+                        cx,
+                        |this, w, cx| {
+                            this.tool_menu = None;
+                            this.modal(Modal::Color, w, cx);
+                        },
+                    )
+                    .w_full()
+                    .justify_start(),
+                );
             }
             ToolMenu::Width => {
                 for (i, width) in width_presets(self.controller.style.tool)

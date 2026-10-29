@@ -31,18 +31,18 @@ const EDITING_CONTROLS: &[&str] = &[
     "grid",
     "dots",
     "toolbar-image",
-    "import",
     "favorite-note",
     "header-add-page",
     "duplicate-page-panel",
     "bookmark-page-panel",
     "move-page-panel",
-    "page-from-template",
     "move-document-folder",
     "paper-color",
     "selection-cut",
     "delete-selection",
     "canvas-paste",
+    "canvas-cut",
+    "canvas-delete",
 ];
 
 impl NotesView {
@@ -86,7 +86,18 @@ impl NotesView {
             theme.surface
         };
         let background = theme::mix(resting, theme.selected, hover);
-        let destructive = label.as_ref().starts_with("Delete");
+        let destructive = [
+            "Delete",
+            "Move to trash",
+            "Empty Trash",
+            "Close without saving",
+        ]
+        .iter()
+        .any(|prefix| label.as_ref().starts_with(prefix));
+        // Controls behind a context menu cannot be used, but keep their
+        // appearance; only real dialogs dim what they cover.
+        let dimmed = !enabled
+            && !(self.menu_only_overlay() && self.control_enabled_behind(id.as_ref(), false, cx));
         let action: accessibility::Callback = std::rc::Rc::new(action);
         let (node, focus) = self.accessibility.control(
             id.as_ref(),
@@ -217,7 +228,7 @@ impl NotesView {
                     s
                 }
             })
-            .opacity(if enabled { 1. } else { 0.4 })
+            .opacity(if dimmed { 0.4 } else { 1. })
             .when(enabled, |s| s.cursor_pointer())
             .child(content)
             .child(decoration)
@@ -235,6 +246,10 @@ impl NotesView {
     /// prepared, and, except for navigation, while a document is loading.
     /// Editing controls are disabled for documents in the Trash.
     fn control_enabled(&self, id: &str, cx: &App) -> bool {
+        self.control_enabled_behind(id, self.blocking_overlay(), cx)
+    }
+    /// Whether `id` is usable, given whether a blocking overlay covers it.
+    fn control_enabled_behind(&self, id: &str, blocked: bool, cx: &App) -> bool {
         let window_control = id.starts_with("window-");
         let navigation = self.library_open
             || id.starts_with("tab-")
@@ -242,13 +257,23 @@ impl NotesView {
             || matches!(id, "library" | "new-tab" | "settings" | "search");
         let editing = EDITING_CONTROLS.contains(&id);
         (!self.controller.read_only() || self.library_open || !editing)
-            && (!self.blocking_overlay() || self.building_overlay || window_control)
+            && (!blocked || self.building_overlay || window_control)
             && (!self.controller.loading_note()
                 || navigation
                 || self.building_overlay
                 || window_control)
             && !self.update_preparing
             && self.control_ready(id, cx)
+    }
+    /// The only overlay is a context menu, which should not dim the window.
+    fn menu_only_overlay(&self) -> bool {
+        (self.document_menu.is_some() || self.folder_menu.is_some() || self.canvas_menu.is_some())
+            && !self.update_preparing
+            && self.modal.is_none()
+            && !self.controller.recognition_setup_needed()
+            && !self.settings_open
+            && !self.help_open
+            && self.controller.error.is_none()
     }
     /// Conditions specific to individual controls.
     fn control_ready(&self, id: &str, cx: &App) -> bool {
@@ -263,6 +288,10 @@ impl NotesView {
             }
             "update-check" => !self.updater.state.busy(),
             "canvas-paste" => self.canvas_menu.is_some_and(|menu| menu.can_paste),
+            "canvas-cut" | "canvas-copy" | "canvas-delete" => {
+                !self.controller.session().selection.is_empty()
+            }
+            "canvas-select-all" => !self.controller.page().objects.is_empty(),
             "delete-folder" => self
                 .folder_menu
                 .is_some_and(|(id, _)| self.controller.folder_deletion_reason(id).is_none()),
@@ -303,6 +332,19 @@ impl NotesView {
                 .any(|id| self.controller.math_updating(*id)),
             "undo" => self.controller.session().history.can_undo(),
             "redo" => self.controller.session().history.can_redo(),
+            "previous-page" => self.controller.session().page > 0,
+            "next-page" => {
+                self.controller.session().page + 1 < self.controller.session().document.pages.len()
+            }
+            "delete-page" => self.controller.session().document.pages.len() > 1,
+            "grid-view" => !self.list_forced,
+            "ui-smaller" => self.controller.settings.ui_scale > 0.85,
+            "ui-larger" => self.controller.settings.ui_scale < 1.55,
+            "cursor-smaller" => self.controller.settings.cursor_size > 4.5,
+            "cursor-larger" => self.controller.settings.cursor_size < 63.5,
+            "undo-library" => self.controller.can_undo_library(),
+            "radius-less" => self.controller.settings.appearance.radius() > 0.,
+            "radius-more" => self.controller.settings.appearance.radius() < 20.,
             "math-apply-latex" => {
                 self.math_inputs
                     .as_ref()
@@ -351,6 +393,7 @@ impl NotesView {
                 .controller
                 .validate_folder_move(*source, self.folder_destination)
                 .is_ok(),
+            Some((Modal::MovePage, _)) => self.move_page_destination.is_some(),
             Some((Modal::Recognition, _)) if self.controller.recognition_for_index => {
                 self.controller.can_index_review()
                     && !self.controller.recognition_pending

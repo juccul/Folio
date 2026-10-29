@@ -133,8 +133,46 @@ enum Modal {
     EditEquation(Id),
     MathPdfRegion,
     PadButtons,
+    /// Closing the window with edits that autosave-off has not saved.
+    UnsavedChanges,
+    Confirm(Confirm),
+}
+/// Irreversible actions confirmed in a dialog.
+#[derive(Clone, Copy)]
+enum Confirm {
+    DeletePermanently(Id),
+    EmptyTrash(Option<Id>),
 }
 impl Modal {
+    /// Whether the dialog edits text in its field.
+    fn has_field(&self) -> bool {
+        !matches!(
+            self,
+            Self::MovePage | Self::Templates | Self::UnsavedChanges | Self::Confirm(_)
+        )
+    }
+    fn submit_label(&self, controller: &Controller) -> &'static str {
+        match self {
+            Self::Search => "Search",
+            Self::Recognition if controller.recognition_for_index => "Keep ink and index",
+            Self::Recognition => "Replace writing",
+            Self::OpenDocument => "Open",
+            Self::MoveNotebook(_) | Self::MoveDocument(_) | Self::MovePage => "Move",
+            Self::NewDocument | Self::Notebook(_) => "Create",
+            Self::SaveTemplate | Self::SavePreset => "Save",
+            Self::Equation => "Insert",
+            Self::Confirm(Confirm::DeletePermanently(_)) => "Delete permanently",
+            Self::Confirm(Confirm::EmptyTrash(_)) => "Empty Trash",
+            Self::PdfPassword(..) => "Unlock",
+            Self::Crop => "Crop",
+            Self::Rename
+            | Self::RenameDocument(_)
+            | Self::RenameNotebook(_)
+            | Self::RenameTemplate(_)
+            | Self::RenamePreset(_) => "Rename",
+            _ => "Save",
+        }
+    }
     fn title(&self) -> &'static str {
         match self {
             Self::SaveTemplate => "Save page as template",
@@ -168,6 +206,9 @@ impl Modal {
             Self::MathPdfRegion => "PDF region: left, top, width, height",
             Self::PadButtons => "Pad buttons: comma-separated actions",
             Self::Equation => "Insert LaTeX equation",
+            Self::UnsavedChanges => "Save changes before closing?",
+            Self::Confirm(Confirm::DeletePermanently(_)) => "Delete permanently?",
+            Self::Confirm(Confirm::EmptyTrash(_)) => "Empty Trash?",
         }
     }
 }
@@ -196,10 +237,21 @@ pub struct NotesView {
     _appearance_subscription: Subscription,
     motion: std::cell::RefCell<motion::Motion>,
     building_overlay: bool,
+    /// The window is closing after an explicit save or discard choice.
+    closing: bool,
     settings_open: bool,
     settings_section: settings::Section,
     theme_colors_open: bool,
     modal_error: Option<String>,
+    /// Highlighted row of the search or open-document picker.
+    modal_cursor: usize,
+    move_page_destination: Option<Id>,
+    /// Menu control to focus once its menu has been built.
+    menu_focus: Option<String>,
+    /// Focused element missing from the last rendered frame.
+    lost_focus: Option<FocusHandle>,
+    /// Which toolbar control the Document actions popover opens from.
+    more_anchor: String,
     attention_error: Option<String>,
     attention_setup: bool,
     pen_settings: bool,
@@ -216,6 +268,7 @@ pub struct NotesView {
     library_open: bool,
     pages_open: bool,
     list_view: bool,
+    list_forced: bool,
     sort_by_name: bool,
     sort_reverse: bool,
     sort_open: bool,
@@ -223,7 +276,6 @@ pub struct NotesView {
     tab_scroll: ScrollHandle,
     tab_target: Option<(Id, usize, Pixels, f32)>,
     document_menu: Option<(Id, Point<Pixels>)>,
-    document_menu_folders: bool,
     folder_menu: Option<(Id, Point<Pixels>)>,
     folder_rows: Vec<Id>,
     folder_scroll: UniformListScrollHandle,
@@ -277,10 +329,18 @@ impl NotesView {
         let focus = cx.focus_handle();
         focus.focus(window);
         let entity = cx.entity().downgrade();
-        window.on_window_should_close(cx, move |_, cx| {
+        window.on_window_should_close(cx, move |window, cx| {
             entity
                 .update(cx, |view, cx| {
                     if view.update_preparing {
+                        return false;
+                    }
+                    if view.closing {
+                        return true;
+                    }
+                    view.commit_inline_text(cx);
+                    if view.needs_close_prompt() {
+                        view.modal(Modal::UnsavedChanges, window, cx);
                         return false;
                     }
                     view.store_workspace();
@@ -333,10 +393,16 @@ impl NotesView {
             _appearance_subscription: appearance_subscription,
             motion: Default::default(),
             building_overlay: false,
+            closing: false,
             settings_open: false,
             settings_section: settings::Section::default(),
             theme_colors_open: false,
             modal_error: None,
+            modal_cursor: 0,
+            move_page_destination: None,
+            menu_focus: None,
+            lost_focus: None,
+            more_anchor: "more".into(),
             attention_error: None,
             attention_setup: false,
             pen_settings: false,
@@ -353,6 +419,7 @@ impl NotesView {
             library_open: workspace.library_open,
             pages_open: workspace.pages_open,
             list_view: workspace.list_view,
+            list_forced: false,
             sort_by_name: workspace.sort_by_name,
             sort_reverse: workspace.sort_reverse,
             sort_open: false,
@@ -360,7 +427,6 @@ impl NotesView {
             tab_scroll: ScrollHandle::new(),
             tab_target: None,
             document_menu: None,
-            document_menu_folders: false,
             folder_menu: None,
             folder_rows: Vec::new(),
             folder_scroll: UniformListScrollHandle::new(),
@@ -531,6 +597,7 @@ impl NotesView {
             KeyBinding::new("ctrl-tab", NextTab, Some("FolioLibrary")),
             KeyBinding::new("ctrl-shift-tab", PreviousTab, Some("FolioLibrary")),
             KeyBinding::new("ctrl-n", NewNote, Some("FolioLibrary")),
+            KeyBinding::new("ctrl-z", Undo, Some("FolioLibrary")),
             KeyBinding::new("ctrl-o", Import, Some("FolioLibrary")),
             KeyBinding::new("ctrl-f", Search, Some("FolioLibrary")),
             KeyBinding::new("ctrl-,", Settings, Some("FolioLibrary")),
@@ -541,6 +608,7 @@ impl NotesView {
         cx.bind_keys([
             KeyBinding::new("ctrl-z", Undo, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-shift-z", Redo, Some("Folio && !FolioField")),
+            KeyBinding::new("ctrl-y", Redo, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-s", Save, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-n", NewNote, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-shift-n", NewPage, Some("Folio && !FolioField")),
@@ -554,6 +622,7 @@ impl NotesView {
             KeyBinding::new("escape", Escape, Some("FolioCanvasMenu")),
             KeyBinding::new("ctrl-a", SelectAll, Some("Folio && !FolioField")),
             KeyBinding::new("delete", Delete, Some("Folio && !FolioField")),
+            KeyBinding::new("backspace", Delete, Some("Folio && !FolioField")),
             KeyBinding::new("escape", Escape, Some("Folio && !FolioField")),
             KeyBinding::new("escape", Escape, Some("FolioDialog")),
             KeyBinding::new("escape", Escape, Some("FolioField")),
@@ -774,18 +843,48 @@ impl NotesView {
         };
         let multiline = matches!(modal, Modal::Recognition);
         let secret = matches!(modal, Modal::PdfPassword(..));
+        let placeholder = match modal {
+            Modal::Search => Some("Search titles, tags, text and handwriting"),
+            Modal::OpenDocument => Some("Filter documents by name"),
+            Modal::MoveNotebook(_) | Modal::MoveDocument(_) => Some("Filter folders"),
+            Modal::NewDocument => Some(""),
+            Modal::Notebook(_) => Some("Folder name"),
+            Modal::Tags | Modal::DocumentTags(_) => Some("Comma-separated tags"),
+            Modal::PdfPassword(..) => Some("Password"),
+            _ => None,
+        };
         let field = cx.new(|cx| {
             let mut field = Field::new(content, multiline, cx);
             field.secret = secret;
             field.theme = Theme::new(&self.controller.settings);
+            field.placeholder = placeholder.filter(|p| !p.is_empty()).map(Into::into);
+            // Typing replaces a prefilled single-line value, as in other
+            // dialogs; the move filters start empty.
+            if !multiline {
+                field.select_all_content();
+            }
             field
         });
-        // These pickers do not mount the field, so their keyboard focus stays
-        // on the dialog's root for Escape and focus navigation.
-        if matches!(modal, Modal::MovePage | Modal::Templates) {
-            self.focus.focus(window);
-        } else {
+        if matches!(modal, Modal::NewDocument) {
+            let untitled = self.controller.untitled_title();
+            field.update(cx, |field, _| field.placeholder = Some(untitled.into()));
+        }
+        self.modal_cursor = 0;
+        self.move_page_destination = None;
+        // Dialogs without a text field keep keyboard focus on their first
+        // control, or on the root for Escape.
+        if modal.has_field() {
             field.read(cx).focus.focus(window);
+        } else {
+            self.focus.focus(window);
+            self.menu_focus = Some(
+                match modal {
+                    Modal::Confirm(_) | Modal::MovePage => "cancel-modal",
+                    Modal::UnsavedChanges => "save-and-close",
+                    _ => "cancel-modal",
+                }
+                .into(),
+            );
         }
         self.subscriptions.clear();
         self.observe_notebook_setup(window, cx);
@@ -793,6 +892,11 @@ impl NotesView {
             this.modal_error = None;
             cx.notify();
         }));
+        self.subscriptions.push(
+            cx.subscribe(&field, |this, _, navigate: &field::Navigate, cx| {
+                this.navigate_modal(navigate.0, cx)
+            }),
+        );
         self.subscriptions
             .push(cx.subscribe(&field, |_, _, _: &FieldBoundsChanged, cx| cx.notify()));
         self.subscriptions.push(cx.subscribe_in(
@@ -860,7 +964,35 @@ impl NotesView {
                 }
             }
             Modal::PageBookmark => self.controller.bookmark_page(content),
-            Modal::MovePage => {}
+            Modal::MovePage => {
+                let Some(destination) = self.move_page_destination else {
+                    self.modal_error = Some("Choose a destination document.".into());
+                    cx.notify();
+                    return;
+                };
+                self.controller.move_page_to(destination);
+            }
+            Modal::UnsavedChanges => {
+                self.close_window(true, window, cx);
+                return;
+            }
+            Modal::Confirm(confirm) => match confirm {
+                Confirm::DeletePermanently(id) => {
+                    self.open_tabs.retain(|tab| *tab != id);
+                    self.controller.delete_permanently(id);
+                }
+                Confirm::EmptyTrash(folder) => {
+                    let ids: Vec<_> = self
+                        .controller
+                        .notes
+                        .iter()
+                        .filter(|n| n.trashed && (folder.is_none() || n.notebook == folder))
+                        .map(|n| n.id)
+                        .collect();
+                    self.open_tabs.retain(|tab| !ids.contains(tab));
+                    self.controller.empty_trash(folder);
+                }
+            },
             Modal::Recognition => {
                 let result = if self.controller.recognition_for_index {
                     self.controller.keep_ink_and_index(content)
@@ -893,7 +1025,10 @@ impl NotesView {
                 cx.notify();
                 return;
             }
-            Modal::Rename => self.controller.rename(content),
+            Modal::Rename => self.controller.manage_note(
+                self.controller.active,
+                folio_app::NoteAction::Rename(content),
+            ),
             Modal::RenameDocument(id) => self
                 .controller
                 .manage_note(id, folio_app::NoteAction::Rename(content)),
@@ -909,13 +1044,9 @@ impl NotesView {
                 ),
             ),
             Modal::OpenDocument => {
-                let found = self
-                    .controller
-                    .notes
-                    .iter()
-                    .find(|n| {
-                        !n.trashed && n.title.to_lowercase().contains(&content.to_lowercase())
-                    })
+                let matches = self.open_document_matches(cx);
+                let found = matches
+                    .get(self.modal_cursor.min(matches.len().saturating_sub(1)))
                     .map(|n| n.id);
                 if let Some(id) = found {
                     self.open_note(id);
@@ -969,19 +1100,35 @@ impl NotesView {
                         parts[0], parts[1], parts[2], parts[3],
                     )));
             }
-            Modal::Tags => self.controller.metadata(|m| {
-                m.tags = content
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect()
-            }),
+            Modal::Tags => self.controller.manage_note(
+                self.controller.active,
+                folio_app::NoteAction::Tags(
+                    content
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect(),
+                ),
+            ),
             Modal::Search => {
-                self.controller.search(content);
-                field.read(cx).focus.focus(window);
-                cx.notify();
-                return;
+                // Enter runs a new query, then opens the highlighted result.
+                let results = &self.controller.search_results;
+                if content.trim() == self.controller.search_query
+                    && self.controller.search_state == folio_app::SearchState::Complete
+                    && !results.is_empty()
+                {
+                    let result = &results[self.modal_cursor.min(results.len() - 1)];
+                    let (note, page) = (result.note, result.page);
+                    self.controller.navigate_search(note, page);
+                    self.show_editor();
+                } else {
+                    self.modal_cursor = 0;
+                    self.controller.search(content);
+                    field.read(cx).focus.focus(window);
+                    cx.notify();
+                    return;
+                }
             }
             Modal::SavePreset | Modal::RenamePreset(_) => {
                 let result = if let Modal::RenamePreset(id) = modal {
@@ -1564,16 +1711,18 @@ impl NotesView {
     }
     fn popover(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = Theme::new(&self.controller.settings);
-        let anchor_key = if self.pen_settings {
+        let anchor_key: String = if self.pen_settings {
             if self.controller.tool == Tool::Eraser {
-                "eraser"
+                "eraser".into()
             } else {
-                "pen-options"
+                "pen-options".into()
             }
+        } else if self.more_open {
+            self.more_anchor.clone()
         } else {
-            "more"
+            "more".into()
         };
-        let anchor = self.accessibility.control_bounds_for_key(anchor_key);
+        let anchor = self.accessibility.control_bounds_for_key(&anchor_key);
         let viewport = window.viewport_size();
         let margin = 8.;
         let width = (286. * self.controller.settings.ui_scale)
@@ -1606,7 +1755,7 @@ impl NotesView {
                 // make the same click immediately reopen the popover.
                 if this
                     .accessibility
-                    .control_bounds_for_key(anchor_key)
+                    .control_bounds_for_key(&anchor_key)
                     .is_some_and(|r| {
                         let x = f32::from(event.position.x) as f64;
                         let y = f32::from(event.position.y) as f64;
@@ -1674,17 +1823,10 @@ impl NotesView {
         };
         field.update(cx, |field, _| field.theme = theme);
         let search = matches!(modal, Modal::Search);
+        let picker = matches!(modal, Modal::Search | Modal::OpenDocument);
         let multiline = matches!(modal, Modal::Recognition);
+        let wide = picker || matches!(modal, Modal::NewDocument);
         let mut panel = div()
-            .flex_shrink_0()
-            .w(px(if search || matches!(modal, Modal::NewDocument) { 660. } else { 520. }))
-            .max_w_full()
-            .p_6()
-            .bg(rgb(theme.popover))
-            .rounded(px(theme.radius + 4.))
-            .border_1()
-            .border_color(theme.border)
-            .shadow_sm()
             .flex()
             .flex_col()
             .gap_4()
@@ -1703,9 +1845,39 @@ impl NotesView {
                 }))
             })
             .when(matches!(modal, Modal::NewDocument), |panel| panel.child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Name (optional)")))
-            .when(!matches!(modal, Modal::MovePage | Modal::Templates), |panel| panel.child(field.clone()));
+            .when(modal.has_field(), |panel| panel.child(field.clone()));
         if matches!(modal, Modal::PageSize) {
             panel = panel.child(self.page_size_options(cx));
+        }
+        if let Modal::UnsavedChanges = modal {
+            panel = panel.child(div().text_sm().child(
+                "Autosave is off. Documents with unsaved edits are marked with a dot in their tab.",
+            ));
+        }
+        if let Modal::Confirm(confirm) = &modal {
+            let message = match confirm {
+                Confirm::DeletePermanently(id) => format!(
+                    "“{}” will be deleted permanently. This cannot be undone.",
+                    self.controller
+                        .notes
+                        .iter()
+                        .find(|n| n.id == *id)
+                        .map_or("This document", |n| n.title.as_str())
+                ),
+                Confirm::EmptyTrash(folder) => {
+                    let count = self
+                        .controller
+                        .notes
+                        .iter()
+                        .filter(|n| n.trashed && (folder.is_none() || n.notebook == *folder))
+                        .count();
+                    format!(
+                        "{count} document{} in Trash will be deleted permanently. This cannot be undone.",
+                        if count == 1 { "" } else { "s" }
+                    )
+                }
+            };
+            panel = panel.child(div().text_sm().child(message));
         }
         if matches!(modal, Modal::MoveNotebook(_) | Modal::MoveDocument(_)) {
             let query = field.read(cx).content.to_lowercase();
@@ -1770,25 +1942,10 @@ impl NotesView {
                     ..
                 }
             );
-            panel = panel.child(self.color_selector(field, opacity, cx));
+            panel = panel.child(self.color_selector(field.clone(), opacity, cx));
         }
         if matches!(modal, Modal::Templates) {
-            panel = panel.child(self.template_picker(cx)).child(self.button(
-                "cancel-modal",
-                "Close",
-                false,
-                cx,
-                |this, w, cx| this.cancel_modal(w, cx),
-            ));
-            return div()
-                .occlude()
-                .absolute()
-                .inset_0()
-                .bg(rgba(0x00000070))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(panel);
+            panel = panel.child(self.template_picker(cx));
         }
         if matches!(modal, Modal::MovePage) {
             let mut destinations = div()
@@ -1797,7 +1954,7 @@ impl NotesView {
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
-                .gap_2();
+                .gap_1();
             for note in self
                 .controller
                 .notes
@@ -1810,17 +1967,15 @@ impl NotesView {
                     self.button(
                         format!("move-page-{id}"),
                         note.title,
-                        false,
+                        self.move_page_destination == Some(id),
                         cx,
-                        move |this, w, cx| {
-                            this.controller.move_page_to(id);
-                            this.close_modal(w, cx);
-                        },
+                        move |this, _, _| this.move_page_destination = Some(id),
                     )
-                    .justify_start(),
+                    .justify_start()
+                    .w_full(),
                 );
             }
-            panel = panel.child(div().text_sm().child("The destination is saved before removing the source. Undo in the source restores a copy.")).child(destinations);
+            panel = panel.child(div().text_sm().text_color(rgb(theme.muted)).child("Choose a destination, then press Move. The destination is saved before removing the source. Undo in the source restores a copy.")).child(destinations);
             if !self
                 .controller
                 .notes
@@ -1829,20 +1984,6 @@ impl NotesView {
             {
                 panel = panel.child("Create another document to move pages into it.");
             }
-            panel = panel.child(
-                self.button("cancel-modal", "Cancel", false, cx, |this, w, cx| {
-                    this.cancel_modal(w, cx)
-                }),
-            );
-            return div()
-                .occlude()
-                .absolute()
-                .inset_0()
-                .bg(rgba(0x00000070))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(panel);
         }
         if matches!(modal, Modal::NewDocument) {
             panel = panel.child(self.notebook_setup_options(cx));
@@ -1927,23 +2068,20 @@ impl NotesView {
             )));
         }
         if matches!(modal, Modal::OpenDocument) {
-            let query = self
-                .modal
-                .as_ref()
-                .unwrap()
-                .1
-                .read(cx)
-                .content
-                .to_lowercase();
             panel = panel.child(
-                self.button(
+                self.control(
                     "tab-create-note",
-                    "＋  Create new document",
+                    "Create new document",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(icon(Icon::Plus, theme.ink).size(rems(1.)))
+                        .child("Create new document")
+                        .into_any_element(),
                     false,
                     cx,
-                    |this, w, cx| {
-                        this.new_notebook(w, cx);
-                    },
+                    |this, w, cx| this.modal(Modal::NewDocument, w, cx),
                 )
                 .justify_start(),
             );
@@ -1954,19 +2092,49 @@ impl NotesView {
                 .flex()
                 .flex_col()
                 .gap_1();
-            for note in self
+            let details = self
                 .controller
-                .notes
-                .clone()
-                .into_iter()
-                .filter(|n| !n.trashed && n.title.to_lowercase().contains(&query))
-            {
-                let id = note.id;
+                .folder_details(self.controller.notebooks.iter().map(|folder| folder.id));
+            let matches = self.open_document_matches(cx);
+            let cursor = self.modal_cursor.min(matches.len().saturating_sub(1));
+            if matches.is_empty() {
                 results = results.child(
-                    self.button(
+                    div()
+                        .p_3()
+                        .text_sm()
+                        .text_color(rgb(theme.muted))
+                        .child("No matching documents"),
+                );
+            }
+            for (index, note) in matches.into_iter().enumerate() {
+                let id = note.id;
+                let mut detail = vec![workspace::edited_label(note.updated_at)];
+                if let Some(folder) = note.notebook.and_then(|f| details.get(&f)) {
+                    detail.insert(0, folder.path.clone());
+                }
+                if self.open_tabs.contains(&id) {
+                    detail.push("Open in a tab".into());
+                }
+                let detail = detail.join(" · ");
+                results = results.child(
+                    self.control(
                         format!("pick-document-{id}"),
-                        format!("Open {}", note.title),
-                        self.open_tabs.contains(&id),
+                        format!("Open {} · {detail}", note.title),
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_start()
+                            .min_w_0()
+                            .child(div().truncate().child(note.title.clone()))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(theme.muted))
+                                    .truncate()
+                                    .child(detail),
+                            )
+                            .into_any_element(),
+                        index == cursor,
                         cx,
                         move |this, w, cx| {
                             this.open_note(id);
@@ -1989,7 +2157,7 @@ impl NotesView {
                 .gap_1();
             let message = match &self.controller.search_state {
                 folio_app::SearchState::Idle => {
-                    "Enter a query and press Enter to search documents and indexed handwriting."
+                    "Press Enter to search titles, tags, typed text, equations and indexed handwriting."
                         .to_owned()
                 }
                 folio_app::SearchState::Searching => {
@@ -2007,12 +2175,12 @@ impl NotesView {
                         )
                     } else if count >= 100 {
                         format!(
-                            "Showing the first 100 matching pages for “{}”. Refine your query for more specific results.",
+                            "Showing the first 100 matching pages for “{}”. Use Up, Down and Enter to open a result.",
                             self.controller.search_query
                         )
                     } else {
                         format!(
-                            "{count} matching page{} for “{}”",
+                            "{count} matching page{} for “{}” · Use Up, Down and Enter to open a result",
                             if count == 1 { "" } else { "s" },
                             self.controller.search_query
                         )
@@ -2026,17 +2194,43 @@ impl NotesView {
                     .text_color(rgb(theme.muted))
                     .child(message),
             );
-            for r in self.controller.search_results.clone() {
+            let cursor = self
+                .modal_cursor
+                .min(self.controller.search_results.len().saturating_sub(1));
+            for (index, r) in self
+                .controller
+                .search_results
+                .clone()
+                .into_iter()
+                .enumerate()
+            {
                 let note = r.note;
                 let page = r.page;
                 let title = r.page_number.map_or_else(
                     || r.title.clone(),
                     |page| format!("{} · Page {page}", r.title),
                 );
+                let mut snippet = String::new();
+                let mut highlights = vec![];
+                for (part, matched) in r.snippet_parts() {
+                    let start = snippet.len();
+                    snippet.push_str(&part);
+                    if matched {
+                        highlights.push((
+                            start..snippet.len(),
+                            HighlightStyle {
+                                color: Some(rgb(theme.ink).into()),
+                                font_weight: Some(FontWeight::SEMIBOLD),
+                                background_color: Some(rgba((theme.accent << 8) | 0x30).into()),
+                                ..Default::default()
+                            },
+                        ));
+                    }
+                }
                 results = results.child(
                     self.control(
                         format!("result-{note}-{page}"),
-                        format!("Open result: {title} · {}", r.snippet),
+                        format!("Open result: {title} · {}", r.snippet_text()),
                         div()
                             .flex()
                             .flex_col()
@@ -2047,10 +2241,11 @@ impl NotesView {
                                 div()
                                     .text_sm()
                                     .text_color(rgb(theme.muted))
-                                    .child(r.snippet),
+                                    .child(StyledText::new(snippet).with_highlights(highlights)),
                             )
                             .into_any_element(),
-                        false,
+                        index == cursor
+                            && field.read(cx).content.trim() == self.controller.search_query,
                         cx,
                         move |this, window, cx| {
                             this.controller.navigate_search(note, page);
@@ -2065,82 +2260,152 @@ impl NotesView {
             }
             panel = panel.child(results);
         }
-        panel = panel.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(div().text_xs().text_color(rgb(theme.muted)).child(
-                    if matches!(modal, Modal::Recognition) {
-                        if self.controller.recognition_for_index {
-                            "Ctrl + Enter to index"
+        let hint = match modal {
+            Modal::Recognition if self.controller.recognition_for_index => "Ctrl + Enter to index",
+            Modal::Recognition => "Ctrl + Enter to replace",
+            _ if multiline => "Ctrl + Enter to save",
+            Modal::Search | Modal::OpenDocument => {
+                "Up/Down to choose · Enter to open · Escape to close"
+            }
+            _ if modal.has_field() => "Enter to confirm · Escape to close",
+            _ => "Escape to close",
+        };
+        let mut actions = div().flex().gap_2();
+        match &modal {
+            Modal::Templates => {
+                actions = actions.child(self.button(
+                    "cancel-modal",
+                    "Close",
+                    false,
+                    cx,
+                    |this, w, cx| this.cancel_modal(w, cx),
+                ));
+            }
+            Modal::UnsavedChanges => {
+                actions = actions
+                    .child(
+                        self.button("cancel-modal", "Cancel", false, cx, |this, w, cx| {
+                            this.cancel_modal(w, cx)
+                        }),
+                    )
+                    .child(self.button(
+                        "discard-and-close",
+                        "Close without saving",
+                        false,
+                        cx,
+                        |this, w, cx| this.close_window(false, w, cx),
+                    ))
+                    .child(self.button(
+                        "save-and-close",
+                        "Save and close",
+                        true,
+                        cx,
+                        |this, w, cx| this.close_window(true, w, cx),
+                    ));
+            }
+            _ => {
+                actions = actions
+                    .child(
+                        self.button("cancel-modal", "Cancel", false, cx, |this, w, cx| {
+                            this.cancel_modal(w, cx)
+                        }),
+                    )
+                    .child(self.button(
+                        "submit-modal",
+                        if self.equation_draft.is_some() && self.controller.equation_pending {
+                            "Rendering…"
                         } else {
-                            "Ctrl + Enter to replace"
-                        }
-                    } else if multiline {
-                        "Ctrl + Enter to save"
-                    } else {
-                        "Enter to confirm · Escape to close"
-                    },
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(
-                            self.button("cancel-modal", "Cancel", false, cx, |this, w, cx| {
-                                this.cancel_modal(w, cx)
-                            }),
-                        )
-                        .child(self.button(
-                            "submit-modal",
-                            if self.equation_draft.is_some() && self.controller.equation_pending {
-                                "Rendering…"
-                            } else if search {
-                                "Search"
-                            } else if matches!(modal, Modal::Recognition) {
-                                if self.controller.recognition_for_index {
-                                    "Keep ink and index"
-                                } else {
-                                    "Replace writing"
-                                }
-                            } else if matches!(modal, Modal::OpenDocument) {
-                                "Open"
-                            } else if matches!(
-                                modal,
-                                Modal::MoveNotebook(_) | Modal::MoveDocument(_)
-                            ) {
-                                "Move"
-                            } else if matches!(modal, Modal::NewDocument) {
-                                "Create document"
-                            } else {
-                                "Save"
-                            },
-                            true,
-                            cx,
-                            |this, w, cx| this.submit_modal(w, cx),
-                        )),
-                ),
-        );
+                            modal.submit_label(&self.controller)
+                        },
+                        true,
+                        cx,
+                        |this, w, cx| this.submit_modal(w, cx),
+                    ));
+            }
+        }
+        let footer = div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .items_center()
+            .justify_between()
+            .pt_4()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(div().text_xs().text_color(rgb(theme.muted)).child(hint))
+            .child(actions);
+        let max_height = (f32::from(window.viewport_size().height)
+            / self.controller.settings.ui_scale
+            - if picker { 96. } else { 48. })
+        .max(240.);
         div()
             .occlude()
             .absolute()
             .inset_0()
             .bg(rgba(0x00000070))
             .flex()
-            .items_center()
             .justify_center()
+            // Pickers stay anchored while results load so the query field does
+            // not move under the caret.
+            .when(picker, |overlay| overlay.items_start().pt(px(64.)))
+            .when(!picker, |overlay| overlay.items_center())
             .child(
                 div()
-                    .id("modal-panel")
-                    .max_h(px((f32::from(window.viewport_size().height)
-                        / self.controller.settings.ui_scale
-                        - 48.)
-                        .max(240.)))
-                    .overflow_y_scroll()
+                    .flex_shrink_0()
+                    .w(px(if wide { 660. } else { 520. }))
+                    .max_w_full()
+                    .max_h(px(max_height))
+                    .p_6()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .bg(rgb(theme.popover))
                     .rounded(px(theme.radius + 4.))
-                    .child(panel),
+                    .border_1()
+                    .border_color(theme.border)
+                    .shadow_sm()
+                    .child(
+                        div()
+                            .id("modal-panel")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(panel),
+                    )
+                    .child(footer),
             )
+    }
+    /// Documents listed by the Ctrl+T picker for its current query.
+    fn open_document_matches(&self, cx: &App) -> Vec<folio_document::NoteMetadata> {
+        let query = self
+            .modal
+            .as_ref()
+            .map(|(_, field)| field.read(cx).content.trim().to_lowercase())
+            .unwrap_or_default();
+        self.controller
+            .notes
+            .iter()
+            .filter(|n| !n.trashed && n.title.to_lowercase().contains(&query))
+            .cloned()
+            .collect()
+    }
+    /// Move the highlighted row of a picker dialog.
+    fn navigate_modal(&mut self, down: bool, cx: &mut Context<Self>) {
+        let count = match self.modal.as_ref().map(|(m, _)| m) {
+            Some(Modal::OpenDocument) => self.open_document_matches(cx).len(),
+            Some(Modal::Search) => self.controller.search_results.len(),
+            _ => return,
+        };
+        if count == 0 {
+            return;
+        }
+        let current = self.modal_cursor.min(count - 1);
+        self.modal_cursor = if down {
+            (current + 1) % count
+        } else {
+            (current + count - 1) % count
+        };
+        cx.notify();
     }
     /// Prepare synthetic 120 Hz input. Dispatch is performed without borrowing
     /// this entity, exactly as the native platform event loop dispatches frames.

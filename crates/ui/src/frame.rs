@@ -110,6 +110,12 @@ impl Render for NotesView {
                     ),
             );
         }
+        // Menus and dialogs without a field take focus on their first
+        // control once it has been built.
+        if let Some(key) = self.menu_focus.take() {
+            self.accessibility.focus_control(&key, window);
+        }
+        self.recover_lost_focus(window, cx);
         self.resume_poll(cx);
         self.accessibility.publish(self, window, cx);
         titlebar::frame(root, window)
@@ -117,6 +123,36 @@ impl Render for NotesView {
 }
 
 impl NotesView {
+    /// A control that disappears while focused (a menu item that closes its
+    /// menu, a section that is replaced) leaves keyboard focus outside the
+    /// window's key contexts, disabling every shortcut. Return focus to the
+    /// root once the focused element has been missing for a whole frame;
+    /// newly focused fields get that frame to render.
+    fn recover_lost_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !window
+            .focused(cx)
+            .is_some_and(|handle| handle != self.focus)
+        {
+            self.lost_focus = None;
+            return;
+        }
+        // Check against the frame being built now, once it has been drawn.
+        cx.on_next_frame(window, |this, window, cx| {
+            let Some(handle) = window.focused(cx) else {
+                return;
+            };
+            if handle == this.focus || this.focus.contains_focused(window, cx) {
+                this.lost_focus = None;
+            } else if this.lost_focus.as_ref() == Some(&handle) {
+                this.lost_focus = None;
+                this.focus.focus(window);
+                cx.notify();
+            } else {
+                this.lost_focus = Some(handle);
+                cx.notify();
+            }
+        });
+    }
     /// Advance panel animations. Each panel animates when its key changes,
     /// so switching between two contents of one panel also fades it.
     fn panel_opacity(&self) -> PanelOpacity {
@@ -147,7 +183,7 @@ impl NotesView {
             menu: motion.panel(
                 "menu-motion",
                 self.document_menu
-                    .map(|(id, _)| format!("{id}-{}", self.document_menu_folders))
+                    .map(|(id, _)| id.to_string())
                     .or_else(|| self.folder_menu.map(|(id, _)| format!("folder-{id}"))),
                 reduced,
             ),
@@ -501,14 +537,8 @@ impl NotesView {
             .bg(rgb(theme.bg))
             .text_color(rgb(theme.ink))
             .font_family("Noto Sans")
-            .on_action(cx.listener(|this, _: &Undo, _, cx| {
-                this.controller.undo();
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &Redo, _, cx| {
-                this.controller.redo();
-                cx.notify();
-            }))
+            .on_action(cx.listener(|this, _: &Undo, w, cx| this.step_history(false, w, cx)))
+            .on_action(cx.listener(|this, _: &Redo, w, cx| this.step_history(true, w, cx)))
             .on_action(cx.listener(|this, _: &Save, _, cx| {
                 this.controller.save();
                 cx.notify();
@@ -523,8 +553,9 @@ impl NotesView {
             .on_action(cx.listener(|_, _: &FocusNext, w, _| w.focus_next()))
             .on_action(cx.listener(|_, _: &FocusPrevious, w, _| w.focus_prev()))
             .on_action(cx.listener(|this, _: &NewNote, window, cx| {
-                this.new_notebook(window, cx);
-                cx.notify();
+                // Same dialog as the New document button; Enter accepts the
+                // defaults.
+                this.modal(Modal::NewDocument, window, cx);
             }))
             .on_action(cx.listener(|this, _: &NewPage, _, cx| {
                 this.controller.add_page();
@@ -551,53 +582,7 @@ impl NotesView {
                 this.controller.delete_selection();
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &Escape, w, cx| {
-                if this.tool_menu.take().is_some() {
-                    this.focus.focus(w);
-                    cx.notify();
-                    return;
-                }
-                if this.region_selection.take().is_some() {
-                    this.controller.status = "Region selection cancelled".into();
-                    cx.notify();
-                    return;
-                }
-                if this.inline_text.is_some() && this.modal.is_none() {
-                    this.finish_inline_text(w, cx);
-                    return;
-                }
-                if this.modal.is_some() {
-                    this.cancel_modal(w, cx)
-                } else {
-                    let dismissing_ui = this.settings_open
-                        || this.help_open
-                        || this.more_open
-                        || this.pen_settings
-                        || this.export_open
-                        || this.tool_menu.is_some()
-                        || this.document_menu.is_some()
-                        || this.folder_menu.is_some()
-                        || this.canvas_menu.is_some()
-                        || this.controller.error.is_some();
-                    if !dismissing_ui && this.controller.math_session.is_some() {
-                        this.controller.close_math_solver();
-                        this.clear_math_inputs(w);
-                    } else if !dismissing_ui {
-                        if this.controller.recognition_pending {
-                            this.controller.cancel_recognition();
-                        }
-                        this.controller.cancel();
-                        this.controller.session_mut().selection.clear();
-                    }
-                    this.settings_open = false;
-                    this.dismiss_popovers();
-                    this.help_open = false;
-                    this.document_menu = None;
-                    this.controller.error = None;
-                    this.focus.focus(w);
-                    cx.notify();
-                }
-            }))
+            .on_action(cx.listener(|this, _: &Escape, w, cx| this.escape(w, cx)))
             .on_action(cx.listener(|this, _: &Pen, _, cx| {
                 // The pen shortcut leaves the highlighter for the last writing style.
                 if this.controller.style.tool == InkTool::Highlighter {
@@ -675,11 +660,75 @@ impl NotesView {
                 cx.notify();
             }))
     }
-    /// Switch tools from a keyboard shortcut.
-    fn select_tool(&mut self, tool: Tool) {
+    /// Switch tools from a keyboard shortcut or the toolbar. Leaving the
+    /// selection tools clears the selection and its toolbars.
+    pub(super) fn select_tool(&mut self, tool: Tool) {
         self.dismiss_popovers();
         self.region_selection = None;
+        if !matches!(tool, Tool::Lasso | Tool::Rectangle) {
+            self.controller.session_mut().selection.clear();
+        }
         self.controller.set_tool(tool);
+    }
+    /// Escape closes the topmost layer only: an error, help, a dialog,
+    /// settings, a menu or popover, then cancels editing state.
+    fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.controller.error.is_some() && self.controller.interaction.is_none() {
+            self.controller.error = None;
+        } else if self.help_open {
+            self.help_open = false;
+        } else if self.modal.is_some() {
+            self.cancel_modal(window, cx);
+            return;
+        } else if self.settings_open {
+            self.settings_open = false;
+        } else if self.folder_menu.is_some() || self.document_menu.is_some() {
+            self.folder_menu = None;
+            self.document_menu = None;
+        } else if self.canvas_menu.is_some() {
+            self.canvas_menu = None;
+        } else if self.tool_menu.is_some() || self.sort_open {
+            self.tool_menu = None;
+            self.sort_open = false;
+        } else if self.more_open || self.pen_settings || self.export_open {
+            self.dismiss_popovers();
+        } else if self.region_selection.take().is_some() {
+            self.controller.status = "Region selection cancelled".into();
+        } else if self.inline_text.is_some() {
+            self.finish_inline_text(window, cx);
+            return;
+        } else if self.controller.math_session.is_some()
+            && self.controller.session().selection.is_empty()
+            && self.controller.interaction.is_none()
+        {
+            self.controller.close_math_solver();
+            self.clear_math_inputs(window);
+        } else {
+            if self.controller.recognition_pending {
+                self.controller.cancel_recognition();
+            }
+            self.controller.cancel();
+            self.controller.clear_selection();
+        }
+        self.focus.focus(window);
+        cx.notify();
+    }
+    /// Undo or redo: library organization changes in the library, document
+    /// edits in the editor.
+    pub(super) fn step_history(&mut self, redo: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.library_open {
+            if !redo {
+                self.controller.undo_library();
+            }
+        } else {
+            self.finish_inline_text(window, cx);
+            if redo {
+                self.controller.redo();
+            } else {
+                self.controller.undo();
+            }
+        }
+        cx.notify();
     }
     /// The editor: header, notices, the page canvas with its side panels, and footer.
     fn editor_column(

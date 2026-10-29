@@ -31,11 +31,20 @@ actions!(
         WordLeft,
         WordRight,
         SelectWordLeft,
-        SelectWordRight
+        SelectWordRight,
+        SelectHome,
+        SelectEnd,
+        DeleteWordLeft,
+        DeleteWordRight,
+        DocumentStart,
+        DocumentEnd
     ]
 );
 pub struct Submitted;
 impl EventEmitter<Submitted> for Field {}
+/// Up or Down in a single-line field, for pickers that list results below it.
+pub struct Navigate(pub bool);
+impl EventEmitter<Navigate> for Field {}
 pub struct FieldBoundsChanged;
 impl EventEmitter<FieldBoundsChanged> for Field {}
 #[derive(Clone, Debug, PartialEq)]
@@ -150,6 +159,9 @@ pub struct Field {
     scroll: Point<Pixels>,
     follow_caret: bool,
     scroll_max: Point<Pixels>,
+    /// Muted hint shown while the field is empty.
+    pub placeholder: Option<SharedString>,
+    context_menu: Option<Point<Pixels>>,
 }
 impl Field {
     pub fn new(content: String, multiline: bool, cx: &mut Context<Self>) -> Self {
@@ -159,7 +171,7 @@ impl Field {
             inline: None,
             inline_layout: None,
             inline_layout_key: None,
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             multiline,
             height: None,
             line_height: 26.,
@@ -177,7 +189,67 @@ impl Field {
             scroll: point(px(0.), px(0.)),
             scroll_max: point(px(0.), px(0.)),
             follow_caret: true,
+            placeholder: None,
+            context_menu: None,
         }
+    }
+    /// Select the whole content, so typing replaces a prefilled value.
+    pub fn select_all_content(&mut self) {
+        let end = self.content.len();
+        self.select(0, end);
+    }
+    fn head(&self) -> usize {
+        if self.selection_anchor == self.selection.start {
+            self.selection.end
+        } else {
+            self.selection.start
+        }
+    }
+    /// Start and end of the visual line containing `index`.
+    fn line_bounds(&self, index: usize) -> (usize, usize) {
+        if let Some(layout) = &self.inline_layout {
+            return layout
+                .lines
+                .iter()
+                .rev()
+                .find(|line| line.offset <= index)
+                .map_or((0, self.content.len()), |line| {
+                    (line.offset, line.offset + line.shaped.len())
+                });
+        }
+        let row = self
+            .layouts
+            .partition_point(|(offset, _)| *offset <= index)
+            .saturating_sub(1);
+        match self.layouts.get(row) {
+            Some((offset, _)) => {
+                let end = self
+                    .layouts
+                    .get(row + 1)
+                    .map_or(self.content.len(), |(next, _)| *next);
+                // A wrapped row ends before the next row's first character;
+                // a hard break ends before its newline.
+                let end = if end < self.content.len() || self.content[*offset..end].ends_with('\n')
+                {
+                    self.content[*offset..end]
+                        .strip_suffix('\n')
+                        .map_or(end, |line| offset + line.len())
+                } else {
+                    end
+                };
+                (*offset, end)
+            }
+            None => (0, self.content.len()),
+        }
+    }
+    /// Range of the word (or run of other characters) at `index`.
+    fn word_at(&self, index: usize) -> Range<usize> {
+        for (start, word) in self.content.split_word_bound_indices() {
+            if index >= start && index < start + word.len() {
+                return start..start + word.len();
+            }
+        }
+        index..index
     }
     pub fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
         self.content = content;
@@ -205,6 +277,12 @@ impl Field {
             KeyBinding::new("right", Right, Some("FolioField")),
             KeyBinding::new("home", Home, Some("FolioField")),
             KeyBinding::new("end", End, Some("FolioField")),
+            KeyBinding::new("shift-home", SelectHome, Some("FolioField")),
+            KeyBinding::new("shift-end", SelectEnd, Some("FolioField")),
+            KeyBinding::new("ctrl-home", DocumentStart, Some("FolioField")),
+            KeyBinding::new("ctrl-end", DocumentEnd, Some("FolioField")),
+            KeyBinding::new("ctrl-backspace", DeleteWordLeft, Some("FolioField")),
+            KeyBinding::new("ctrl-delete", DeleteWordRight, Some("FolioField")),
             KeyBinding::new("shift-left", SelectLeft, Some("FolioField")),
             KeyBinding::new("shift-right", SelectRight, Some("FolioField")),
             KeyBinding::new("up", Up, Some("FolioField")),
@@ -883,12 +961,48 @@ impl Render for Field {
                         return;
                     }
                     this.focus.focus(window);
+                    this.context_menu = None;
                     let i = this.index_at(event.position);
-                    this.select(i, i);
-                    this.selecting = true;
+                    match event.click_count {
+                        2 => {
+                            let word = this.word_at(i);
+                            this.select(word.start, word.end);
+                        }
+                        n if n >= 3 => {
+                            let (start, end) = if this.multiline {
+                                this.line_bounds(i)
+                            } else {
+                                (0, this.content.len())
+                            };
+                            this.select(start, end);
+                        }
+                        _ if event.modifiers.shift => this.select(this.selection_anchor, i),
+                        _ => this.select(i, i),
+                    }
+                    this.selecting = event.click_count < 2;
                     cx.stop_propagation();
                     cx.notify();
                 }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    if this.inline.is_some() {
+                        return;
+                    }
+                    this.focus.focus(window);
+                    let i = this.index_at(event.position);
+                    if !(this.selection.start..=this.selection.end).contains(&i) {
+                        this.select(i, i);
+                    }
+                    this.context_menu = Some(event.position);
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.selecting = false),
             )
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
                 if this.inline.is_some() {
@@ -906,6 +1020,10 @@ impl Render for Field {
                 cx.listener(|this, _, _, _| this.selecting = false),
             )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                // A release outside the field is not delivered here.
+                if event.pressed_button != Some(MouseButton::Left) {
+                    this.selecting = false;
+                }
                 if this.selecting {
                     let i = this.index_at(event.position);
                     this.select(this.selection_anchor, i);
@@ -919,6 +1037,13 @@ impl Render for Field {
                     this.selection.clone()
                 };
                 this.replace(r, "", cx)
+            }))
+            .on_action(cx.listener(|this, _: &super::Escape, _, cx| {
+                if this.context_menu.take().is_some() {
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
             }))
             .on_action(cx.listener(|this, _: &FieldUndo, _, cx| this.travel(false, cx)))
             .on_action(cx.listener(|this, _: &FieldRedo, _, cx| this.travel(true, cx)))
@@ -947,10 +1072,18 @@ impl Render for Field {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Up, _, cx| {
+                if !this.multiline {
+                    cx.emit(Navigate(false));
+                    return;
+                }
                 this.move_vertical(false, false);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Down, _, cx| {
+                if !this.multiline {
+                    cx.emit(Navigate(true));
+                    return;
+                }
                 this.move_vertical(true, false);
                 cx.notify();
             }))
@@ -963,34 +1096,49 @@ impl Render for Field {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Home, _, cx| {
-                let start = this
-                    .inline_layout
-                    .as_ref()
-                    .and_then(|layout| {
-                        layout
-                            .lines
-                            .iter()
-                            .rev()
-                            .find(|line| line.offset <= this.selection.end)
-                    })
-                    .map_or(0, |line| line.offset);
+                let (start, _) = this.line_bounds(this.head());
                 this.select(start, start);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &End, _, cx| {
-                let end = this
-                    .inline_layout
-                    .as_ref()
-                    .and_then(|layout| {
-                        layout
-                            .lines
-                            .iter()
-                            .rev()
-                            .find(|line| line.offset <= this.selection.end)
-                    })
-                    .map_or(this.content.len(), |line| line.offset + line.shaped.len());
+                let (_, end) = this.line_bounds(this.head());
                 this.select(end, end);
                 cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectHome, _, cx| {
+                let (start, _) = this.line_bounds(this.head());
+                this.select(this.selection_anchor, start);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectEnd, _, cx| {
+                let (_, end) = this.line_bounds(this.head());
+                this.select(this.selection_anchor, end);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &DocumentStart, _, cx| {
+                this.select(0, 0);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &DocumentEnd, _, cx| {
+                let end = this.content.len();
+                this.select(end, end);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &DeleteWordLeft, _, cx| {
+                let r = if this.selection.is_empty() {
+                    word_boundary(&this.content, this.selection.start, false)..this.selection.end
+                } else {
+                    this.selection.clone()
+                };
+                this.replace(r, "", cx)
+            }))
+            .on_action(cx.listener(|this, _: &DeleteWordRight, _, cx| {
+                let r = if this.selection.is_empty() {
+                    this.selection.start..word_boundary(&this.content, this.selection.end, true)
+                } else {
+                    this.selection.clone()
+                };
+                this.replace(r, "", cx)
             }))
             .on_action(cx.listener(|this, _: &SelectLeft, _, cx| {
                 this.move_cursor(false, true);
@@ -1045,6 +1193,118 @@ impl Render for Field {
                 multiline: self.multiline,
                 height: self.height,
             })
+            .when(self.inline.is_none(), |field| field.relative())
+            .when_some(
+                self.placeholder
+                    .clone()
+                    .filter(|_| self.content.is_empty() && self.inline.is_none()),
+                |field, hint| {
+                    field.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .p_3()
+                            .text_color(rgb(theme.muted))
+                            .child(hint),
+                    )
+                },
+            )
+            .when_some(self.context_menu, |field, position| {
+                field.child(deferred(
+                    anchored()
+                        .position(position)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(self.context_menu_panel(cx)),
+                ))
+            })
+    }
+}
+impl Field {
+    fn context_menu_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.theme;
+        let has_selection = !self.selection.is_empty() && !self.secret;
+        let can_paste = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .is_some_and(|text| !text.is_empty());
+        let item = |id: &'static str, label: &'static str, keys: &'static str, enabled: bool| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_6()
+                .px_3()
+                .py_1()
+                .rounded(px(6.))
+                .text_sm()
+                .when(!enabled, |s| s.opacity(0.4))
+                .when(enabled, |s| {
+                    s.cursor_pointer().hover(move |s| s.bg(rgb(theme.selected)))
+                })
+                .child(label)
+                .child(div().text_xs().text_color(rgb(theme.muted)).child(keys))
+        };
+        div()
+            .occlude()
+            .w(px(200.))
+            .p_1()
+            .flex()
+            .flex_col()
+            .rounded(px(theme.radius))
+            .border_1()
+            .border_color(theme.border)
+            .bg(rgb(theme.popover))
+            .text_color(rgb(theme.ink))
+            .shadow_md()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.context_menu = None;
+                cx.notify();
+            }))
+            .child(
+                item("field-cut", "Cut", "Ctrl+X", has_selection).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        if has_selection {
+                            window.dispatch_action(Box::new(Cut), cx);
+                        }
+                        this.context_menu = None;
+                    },
+                )),
+            )
+            .child(
+                item("field-copy", "Copy", "Ctrl+C", has_selection).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        if has_selection {
+                            window.dispatch_action(Box::new(Copy), cx);
+                        }
+                        this.context_menu = None;
+                    },
+                )),
+            )
+            .child(
+                item("field-paste", "Paste", "Ctrl+V", can_paste).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        if can_paste {
+                            window.dispatch_action(Box::new(Paste), cx);
+                        }
+                        this.context_menu = None;
+                    },
+                )),
+            )
+            .child(
+                item(
+                    "field-select-all",
+                    "Select all",
+                    "Ctrl+A",
+                    !self.content.is_empty(),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.select_all_content();
+                    this.context_menu = None;
+                    cx.notify();
+                })),
+            )
     }
 }
 fn caret_scroll(current: f32, caret: f32, extent: f32, viewport: f32, maximum: f32) -> f32 {

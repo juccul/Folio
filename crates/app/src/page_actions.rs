@@ -163,7 +163,7 @@ impl Controller {
     pub fn delete_page(&mut self) {
         self.finish();
         if self.session().document.pages.len() < 2 {
-            self.error = Some("A note must keep at least one page".into());
+            self.status = "A document must keep at least one page".into();
             return;
         }
         let index = self.session().page;

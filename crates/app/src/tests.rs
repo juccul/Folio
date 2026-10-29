@@ -32,6 +32,11 @@ fn draw_edit_undo_save_reload() {
         _ => panic!(),
     };
     assert_eq!(s.raw[0].tilt_x, 14.);
+    a.set_tool(Tool::Eraser);
+    a.select_all();
+    assert_eq!(a.tool, Tool::Lasso);
+    a.clear_selection();
+    assert_eq!(a.tool, Tool::Eraser); // Select All borrowed the lasso.
     a.select_all();
     a.transform_selection(Transform::translate(10., 40.), "move");
     assert_eq!(a.page().objects[&s.id].transform().tx, 10.);
@@ -194,6 +199,12 @@ fn search_waits_for_new_text_to_be_durably_indexed() {
     a.search("heliotrope".into());
     wait(&mut a);
     assert_eq!(a.search_results.len(), 1);
+    let parts = a.search_results[0].snippet_parts();
+    assert!(parts.contains(&("heliotrope".to_string(), true)));
+    assert_eq!(
+        a.search_results[0].snippet_text(),
+        "Freshly written heliotrope"
+    );
     let page = a.page().id;
     a.navigate_search(a.active, page);
     assert!(!a.search_highlights.is_empty());

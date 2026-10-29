@@ -101,8 +101,8 @@ impl NotesView {
     ) {
         self.folder_menu = None;
         self.document_menu = Some((id, at));
-        self.document_menu_folders = false;
         self.focus.focus(window);
+        self.menu_focus = Some("doc-menu-open".into());
         cx.notify();
     }
     pub(super) fn document_menu_panel(
@@ -120,11 +120,7 @@ impl NotesView {
         };
         let size = window.viewport_size();
         let width = 260.;
-        let height = if self.document_menu_folders {
-            330.
-        } else {
-            350.
-        };
+        let height = 350.;
         let x = f32::from(at.x).clamp(12., (f32::from(size.width) - width - 12.).max(12.));
         let y = f32::from(at.y).clamp(12., (f32::from(size.height) - height - 12.).max(12.));
         let mut menu = div()
@@ -156,78 +152,37 @@ impl NotesView {
                     .text_color(rgb(theme.muted))
                     .child(note.title),
             );
-        if self.document_menu_folders {
-            menu = menu.child(
-                self.button(
-                    "doc-menu-back",
-                    "‹  Document actions",
-                    false,
-                    cx,
-                    |this, _, _| this.document_menu_folders = false,
-                )
-                .justify_start(),
-            );
-            let mut folders = div()
-                .id("document-move-destinations")
-                .max_h(px(240.))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .gap_1();
-            let mut destinations = vec![(None, "All documents".to_owned())];
-            let details = self
-                .controller
-                .folder_details(self.controller.notebooks.iter().map(|folder| folder.id));
-            destinations.extend(
-                self.controller
-                    .notebooks
-                    .iter()
-                    .map(|n| (Some(n.id), details[&n.id].path.clone())),
-            );
-            for (folder, name) in destinations {
-                folders = folders.child(
-                    self.button(
-                        format!("doc-move-{folder:?}"),
-                        format!("Move to {name}"),
-                        note.notebook == folder,
-                        cx,
-                        move |this, _, _| {
-                            this.controller
-                                .manage_note(id, folio_app::NoteAction::Move(folder));
-                            this.document_menu = None;
-                        },
-                    )
-                    .justify_start()
-                    .w_full(),
-                );
+        let entries: Vec<(&str, &str, u8)> = if note.trashed {
+            vec![
+                ("open", "Open document", 0),
+                ("duplicate", "Duplicate", 2),
+                ("trash", "Restore document", 6),
+                ("delete", "Delete permanently…", 7),
+            ]
+        } else {
+            vec![
+                ("open", "Open document", 0),
+                ("rename", "Rename…", 1),
+                ("duplicate", "Duplicate", 2),
+                (
+                    "favorite",
+                    if note.favorite {
+                        "Remove from favorites"
+                    } else {
+                        "Add to favorites"
+                    },
+                    3,
+                ),
+                ("move", "Move to folder…", 4),
+                ("tags", "Edit tags…", 5),
+                ("trash", "Move to trash", 6),
+            ]
+        };
+        for (key, label, action) in entries {
+            // Separate the destructive action from everyday ones.
+            if (action == 6 && !note.trashed) || action == 7 {
+                menu = menu.child(div().h(px(1.)).mx_2().bg(theme.border));
             }
-            return menu.child(folders).into_any_element();
-        }
-        for (key, label, action) in [
-            ("open", "Open document", 0),
-            ("rename", "Rename…", 1),
-            ("duplicate", "Duplicate", 2),
-            (
-                "favorite",
-                if note.favorite {
-                    "Remove from favorites"
-                } else {
-                    "Add to favorites"
-                },
-                3,
-            ),
-            ("move", "Move to folder…", 4),
-            ("tags", "Edit tags…", 5),
-            (
-                "trash",
-                if note.trashed {
-                    "Restore document"
-                } else {
-                    "Move to trash"
-                },
-                6,
-            ),
-        ] {
             menu = menu.child(
                 self.button(
                     format!("doc-menu-{key}"),
@@ -235,11 +190,6 @@ impl NotesView {
                     false,
                     cx,
                     move |this, w, cx| {
-                        if action == 4 {
-                            this.document_menu = None;
-                            this.modal(Modal::MoveDocument(id), w, cx);
-                            return;
-                        }
                         this.document_menu = None;
                         match action {
                             0 => this.open_note(id),
@@ -250,7 +200,13 @@ impl NotesView {
                             3 => this
                                 .controller
                                 .manage_note(id, folio_app::NoteAction::Favorite),
+                            4 => this.modal(Modal::MoveDocument(id), w, cx),
                             5 => this.modal(Modal::DocumentTags(id), w, cx),
+                            7 => this.modal(
+                                Modal::Confirm(super::Confirm::DeletePermanently(id)),
+                                w,
+                                cx,
+                            ),
                             _ => {
                                 this.controller
                                     .manage_note(id, folio_app::NoteAction::Trash);
@@ -262,10 +218,7 @@ impl NotesView {
                     },
                 )
                 .justify_start()
-                .w_full()
-                .when(action == 6 && !note.trashed, |s| {
-                    s.text_color(rgb(theme.destructive))
-                }),
+                .w_full(),
             );
         }
         menu.into_any_element()

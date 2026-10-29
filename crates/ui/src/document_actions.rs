@@ -28,7 +28,6 @@ enum DocumentAction {
     Rename,
     Duplicate,
     EditTags,
-    Import,
     ToggleTrash,
     DeletePage,
     DuplicatePage,
@@ -49,11 +48,10 @@ enum DocumentAction {
 }
 impl DocumentAction {
     /// Menu order; each section shows its actions in this order.
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 20] = [
         Self::Rename,
         Self::Duplicate,
         Self::EditTags,
-        Self::Import,
         Self::ToggleTrash,
         Self::DeletePage,
         Self::DuplicatePage,
@@ -77,7 +75,6 @@ impl DocumentAction {
             Self::Rename
             | Self::Duplicate
             | Self::EditTags
-            | Self::Import
             | Self::ToggleTrash
             | Self::NewDocumentOptions => MoreSection::Document,
             Self::DeletePage
@@ -101,7 +98,6 @@ impl DocumentAction {
             Self::Rename => "rename-note",
             Self::Duplicate => "duplicate-note",
             Self::EditTags => "tags",
-            Self::Import => "import",
             Self::ToggleTrash => "trash-note",
             Self::DeletePage => "delete-page",
             Self::DuplicatePage => "duplicate-page",
@@ -123,21 +119,20 @@ impl DocumentAction {
     }
     fn label(self, trashed: bool) -> &'static str {
         match self {
-            Self::Rename => "Rename document",
+            Self::Rename => "Rename document…",
             Self::Duplicate => "Duplicate document",
-            Self::EditTags => "Edit tags",
-            Self::Import => "Import PDF or image",
+            Self::EditTags => "Edit tags…",
             Self::ToggleTrash if trashed => "Restore document",
             Self::ToggleTrash => "Move to trash",
             Self::DeletePage => "Delete current page",
             Self::DuplicatePage => "Duplicate current page",
             Self::BookmarkPage => "Name page bookmark…",
             Self::MovePage => "Move page to document…",
-            Self::PageSize => "Custom page size",
+            Self::PageSize => "Custom page size…",
             Self::ToggleInfinite => "Toggle infinite canvas",
             Self::InsertSpace => "Insert 80 units below selection",
             Self::RemoveSpace => "Remove 40 units below selection",
-            Self::InsertEquation => "Insert LaTeX equation",
+            Self::InsertEquation => "Insert LaTeX equation…",
             Self::MathSolver => "Math solver",
             Self::UseAsCover => "Use current page as cover",
             Self::SaveTemplate => "Save page as template…",
@@ -161,8 +156,9 @@ impl NotesView {
             DocumentAction::Rename => self.modal(Modal::Rename, window, cx),
             DocumentAction::Duplicate => self.controller.duplicate_note(),
             DocumentAction::EditTags => self.modal(Modal::Tags, window, cx),
-            DocumentAction::Import => self.import(cx),
-            DocumentAction::ToggleTrash => self.controller.metadata(|m| m.trashed = !m.trashed),
+            DocumentAction::ToggleTrash => self
+                .controller
+                .manage_note(self.controller.active, folio_app::NoteAction::Trash),
             DocumentAction::DeletePage => self.controller.delete_page(),
             DocumentAction::DuplicatePage => self.controller.duplicate_page(),
             DocumentAction::BookmarkPage => self.modal(Modal::PageBookmark, window, cx),
@@ -227,7 +223,8 @@ impl NotesView {
         }
         let trashed = self.controller.session().document.metadata.trashed;
         for action in DocumentAction::ALL {
-            if action.section() != section {
+            // Move to trash is listed last, apart from everyday actions.
+            if action.section() != section || action == DocumentAction::ToggleTrash {
                 continue;
             }
             panel = panel.child(
@@ -243,18 +240,6 @@ impl NotesView {
             );
         }
         match section {
-            MoreSection::Page => {
-                panel = panel.child(
-                    self.button(
-                        "page-from-template",
-                        "Add from template…",
-                        false,
-                        cx,
-                        |this, w, cx| this.modal(Modal::Templates, w, cx),
-                    )
-                    .justify_start(),
-                );
-            }
             MoreSection::Paper => {
                 let mut paper = div().flex().gap_1();
                 for (id, label, p) in [
@@ -281,13 +266,13 @@ impl NotesView {
                 panel = panel.child(
                     self.control(
                         "export",
-                        "Export document",
+                        "Export document ›",
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
                             .child(icon(Icon::Export, theme.muted))
-                            .child("Export document")
+                            .child("Export document ›")
                             .into_any_element(),
                         false,
                         cx,
@@ -329,7 +314,21 @@ impl NotesView {
                     );
                 }
             }
-            MoreSection::Math | MoreSection::Layout => {}
+            MoreSection::Page | MoreSection::Math | MoreSection::Layout => {}
+        }
+        if section == MoreSection::Document {
+            let action = DocumentAction::ToggleTrash;
+            panel = panel.child(div().h(px(1.)).mx_2().bg(theme.border)).child(
+                self.button(
+                    action.id(),
+                    action.label(trashed),
+                    false,
+                    cx,
+                    move |this, window, cx| this.run_document_action(action, window, cx),
+                )
+                .justify_start()
+                .text_sm(),
+            );
         }
         panel
     }

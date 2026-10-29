@@ -10,6 +10,38 @@ pub struct SearchResult {
     pub snippet: String,
     pub page_number: Option<usize>,
 }
+/// Snippets mark matches with these control characters.
+pub const MATCH_START: char = '\u{2}';
+pub const MATCH_END: char = '\u{3}';
+impl SearchResult {
+    /// The snippet as text runs, each flagged when it is a match.
+    pub fn snippet_parts(&self) -> Vec<(String, bool)> {
+        let mut parts = vec![];
+        let mut current = String::new();
+        let mut matched = false;
+        for character in self.snippet.chars() {
+            if character == MATCH_START || character == MATCH_END {
+                if !current.is_empty() {
+                    parts.push((std::mem::take(&mut current), matched));
+                }
+                matched = character == MATCH_START;
+            } else {
+                current.push(character);
+            }
+        }
+        if !current.is_empty() {
+            parts.push((current, matched));
+        }
+        parts
+    }
+    /// The snippet without match markers.
+    pub fn snippet_text(&self) -> String {
+        self.snippet
+            .chars()
+            .filter(|c| *c != MATCH_START && *c != MATCH_END)
+            .collect()
+    }
+}
 pub fn search(conn: &Connection, query: &str) -> rusqlite::Result<Vec<SearchResult>> {
     let mut expression = String::with_capacity(query.len());
     for (index, token) in query.split_whitespace().enumerate() {
@@ -28,7 +60,7 @@ pub fn search(conn: &Connection, query: &str) -> rusqlite::Result<Vec<SearchResu
     if expression.is_empty() {
         return Ok(vec![]);
     }
-    let mut q=conn.prepare_cached("SELECT note_id,page_id,title,snippet(search,4,'[',']','…',24) FROM search WHERE search MATCH ?1 ORDER BY bm25(search,0,0,3,2,1) LIMIT 100")?;
+    let mut q=conn.prepare_cached("SELECT note_id,page_id,title,snippet(search,4,char(2),char(3),'…',24) FROM search WHERE search MATCH ?1 ORDER BY bm25(search,0,0,3,2,1) LIMIT 100")?;
     let rows = q.query_map(params![expression], |r| {
         Ok((
             r.get::<_, String>(0)?,

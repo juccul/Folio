@@ -41,6 +41,14 @@ impl NotesView {
             can_paste,
         });
         self.focus.focus(window);
+        self.menu_focus = Some(
+            if self.controller.session().selection.is_empty() {
+                "canvas-paste"
+            } else {
+                "canvas-copy"
+            }
+            .into(),
+        );
         cx.stop_propagation();
         cx.notify();
     }
@@ -52,9 +60,10 @@ impl NotesView {
         let menu = self.canvas_menu.unwrap();
         let theme = Theme::new(&self.controller.settings);
         let size = window.viewport_size();
-        let width = 224. * self.controller.settings.ui_scale;
-        let height = 52. * self.controller.settings.ui_scale;
-        div()
+        let scale = self.controller.settings.ui_scale;
+        let width = 224. * scale;
+        let height = (5. * 42. + 14.) * scale;
+        let mut panel = div()
             .id("canvas-context-menu")
             .occlude()
             .absolute()
@@ -68,41 +77,97 @@ impl NotesView {
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .w(px(width))
             .p_1()
+            .flex()
+            .flex_col()
             .rounded(px(10.))
             .bg(rgb(theme.popover))
             .border_1()
             .border_color(theme.border)
-            .shadow_md()
-            .child(
-                self.control(
-                    "canvas-paste",
-                    "Paste",
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(icon(Icon::Paste, theme.ink).size(rems(1.125)))
-                        .child(div().flex_1().child("Paste"))
-                        .child(div().text_xs().text_color(rgb(theme.muted)).child("Ctrl+V"))
-                        .into_any_element(),
-                    false,
-                    cx,
-                    move |this, window, cx| {
-                        this.canvas_menu = None;
-                        this.paste_at(Some(menu.position), cx);
-                        this.focus.focus(window);
-                    },
-                )
-                .w_full()
-                .justify_start()
-                .text_sm()
-                .px_3()
-                .py_2()
-                .min_h(rems(2.5))
-                .rounded(px(6.))
-                .bg(transparent_black())
-                .hover(move |s| s.bg(rgb(theme.selected))),
+            .shadow_md();
+        let item = |this: &Self,
+                    id: &'static str,
+                    label: &'static str,
+                    keys: &'static str,
+                    kind: Icon,
+                    cx: &mut Context<Self>,
+                    action: fn(&mut Self, DocPoint, &mut Context<Self>)| {
+            this.control(
+                id,
+                label,
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(icon(kind, theme.ink).size(rems(1.125)))
+                    .child(div().flex_1().child(label))
+                    .child(div().text_xs().text_color(rgb(theme.muted)).child(keys))
+                    .into_any_element(),
+                false,
+                cx,
+                move |this, window, cx| {
+                    this.canvas_menu = None;
+                    action(this, menu.position, cx);
+                    this.focus.focus(window);
+                },
             )
+            .w_full()
+            .justify_start()
+            .text_sm()
+            .px_3()
+            .py_2()
+            .min_h(rems(2.5))
+            .rounded(px(6.))
+            .bg(transparent_black())
+            .hover(move |s| s.bg(rgb(theme.selected)))
+        };
+        panel = panel
+            .child(item(
+                self,
+                "canvas-cut",
+                "Cut",
+                "Ctrl+X",
+                Icon::Cut,
+                cx,
+                |this, _, cx| this.copy(true, cx),
+            ))
+            .child(item(
+                self,
+                "canvas-copy",
+                "Copy",
+                "Ctrl+C",
+                Icon::Copy,
+                cx,
+                |this, _, cx| this.copy(false, cx),
+            ))
+            .child(item(
+                self,
+                "canvas-paste",
+                "Paste",
+                "Ctrl+V",
+                Icon::Paste,
+                cx,
+                |this, position, cx| this.paste_at(Some(position), cx),
+            ))
+            .child(item(
+                self,
+                "canvas-delete",
+                "Delete",
+                "Delete",
+                Icon::Trash,
+                cx,
+                |this, _, _| this.controller.delete_selection(),
+            ))
+            .child(div().h(px(1.)).mx_2().my_1().bg(theme.border))
+            .child(item(
+                self,
+                "canvas-select-all",
+                "Select all",
+                "Ctrl+A",
+                Icon::Lasso,
+                cx,
+                |this, _, _| this.controller.select_all(),
+            ));
+        panel
     }
 }

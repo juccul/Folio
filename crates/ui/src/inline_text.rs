@@ -24,22 +24,30 @@ impl NotesView {
         if self.controller.read_only() {
             return;
         }
+        // Keep an open editor for this box; finish any other box first so
+        // its text is committed.
+        if let Some(editor) = &self.inline_text {
+            if editor.id == id {
+                editor.field.read(cx).focus.focus(window);
+                return;
+            }
+            self.commit_inline_text(cx);
+        }
         let Some(Object::Text(text)) = self.controller.page().objects.get(&id).map(|o| o.as_ref())
         else {
             return;
         };
-        let field = cx.new(|cx| Field::new(text.text.clone(), true, cx));
+        let field = cx.new(|cx| {
+            let mut field = Field::new(text.text.clone(), true, cx);
+            // Text boxes on the canvas are not dialog fields in the Tab order.
+            field.focus = field.focus.clone().tab_stop(false);
+            field
+        });
         let note = self.controller.active;
         let page = self.controller.page().id;
-        let change = cx.observe(&field, move |this, field, cx| {
-            // Editing is saved continuously. A stale editor cannot modify a
-            // different page/document after navigation or an undo removes it.
-            if this.controller.active == note && this.controller.page().id == page {
-                let content = field.read(cx).content.clone();
-                this.controller.edit_text(id, |text| text.text = content);
-                cx.notify();
-            }
-        });
+        // The editor paints its own text; the document receives it as one
+        // undoable edit when editing ends.
+        let change = cx.observe(&field, |_, _, cx| cx.notify());
         let submit = cx.subscribe_in(
             &field,
             window,
@@ -62,21 +70,24 @@ impl NotesView {
         cx.notify();
     }
     pub(super) fn finish_inline_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = &self.inline_text
-            && editor.note == self.controller.active
-            && editor.page == self.controller.page().id
-        {
-            let content = editor.field.read(cx).content.clone();
-            self.controller
-                .edit_text(editor.id, |text| text.text = content);
+        if self.inline_text.is_none() {
+            return;
         }
-        self.inline_text = None;
+        self.commit_inline_text(cx);
         self.focus.focus(window);
         cx.notify();
     }
+    /// Commit and close the inline editor, wherever its box now is.
+    pub(super) fn commit_inline_text(&mut self, cx: &mut Context<Self>) {
+        if let Some(editor) = self.inline_text.take() {
+            let content = editor.field.read(cx).content.clone();
+            self.controller
+                .finish_text_edit(editor.note, editor.page, editor.id, content);
+        }
+    }
     pub(super) fn inline_element(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.controller.read_only() {
-            self.inline_text = None;
+            self.commit_inline_text(cx);
             return None;
         }
         let editor = self.inline_text.as_ref()?;
@@ -101,7 +112,7 @@ impl NotesView {
             Some(cached.map_or_else(|| Arc::new(text.clone()), |style| style.text.clone()))
         });
         if !valid || text.is_none() {
-            self.inline_text = None;
+            self.commit_inline_text(cx);
             return None;
         }
         let text = text.unwrap();
@@ -148,10 +159,7 @@ impl NotesView {
             .map(|p| page_world.apply(p))
             .collect();
         let field = editor.field.clone();
-        field.update(cx, |field, cx| {
-            if field.content != text.text {
-                field.set_content(text.text.clone(), cx);
-            }
+        field.update(cx, |field, _| {
             field.theme = theme;
             field.inline = Some(InlineStyle {
                 text,
@@ -234,7 +242,7 @@ impl NotesView {
             .child(
                 self.button(
                     "font-size",
-                    format!("{} pt", text.font_size),
+                    format!("{} px", text.font_size),
                     false,
                     cx,
                     |this, w, cx| this.modal(super::Modal::FontSize, w, cx),

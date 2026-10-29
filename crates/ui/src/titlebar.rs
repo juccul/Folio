@@ -3,6 +3,32 @@
 use super::*;
 
 impl NotesView {
+    /// Closing would leave edits unsaved because autosave is off.
+    pub(super) fn needs_close_prompt(&self) -> bool {
+        !self.controller.settings.autosave && self.controller.has_unsaved_documents()
+    }
+    /// Close the window, saving document edits or discarding those that
+    /// autosave-off deferred. Folders and preferences are always kept.
+    pub(super) fn close_window(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_inline_text(cx);
+        self.store_workspace();
+        let result = if save {
+            self.controller.flush()
+        } else {
+            self.controller.close_discarding_documents()
+        };
+        match result {
+            Ok(()) => {
+                self.closing = true;
+                window.remove_window();
+            }
+            Err(error) => {
+                self.modal = None;
+                self.controller.error = Some(error);
+                cx.notify();
+            }
+        }
+    }
     pub fn titlebar_smoke_verify_home(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         if !self.library_open {
             return Err("The title bar Home button did not open the library".into());
@@ -113,16 +139,14 @@ impl NotesView {
                 cx,
                 |this, window, cx| {
                     this.finish_inline_text(window, cx);
-                    this.store_workspace();
-                    match this.controller.flush() {
-                        Ok(()) => window.remove_window(),
-                        Err(error) => {
-                            this.controller.error = Some(error);
-                            cx.notify();
-                        }
+                    if this.needs_close_prompt() {
+                        this.modal(super::Modal::UnsavedChanges, window, cx);
+                    } else {
+                        this.close_window(true, window, cx);
                     }
                 },
             )
+            .hover(|s| s.bg(rgb(0xc42b1c)).text_color(rgb(0xffffff)))
             .w(px(34.))
             .h(px(30.))
             .min_h(px(30.))

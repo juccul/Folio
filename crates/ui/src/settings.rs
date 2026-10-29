@@ -385,7 +385,40 @@ impl NotesView {
                     .bg(transparent_black()),
                 );
             }
-            body = body.child(self.settings_row(label, description).child(stepper));
+            let default = folio_app::Settings::default();
+            let changed = if kind == 0 {
+                (self.controller.settings.ui_scale - default.ui_scale).abs() > 0.01
+            } else {
+                (self.controller.settings.cursor_size - default.cursor_size).abs() > 0.01
+            };
+            let reset = changed.then(|| {
+                self.button(
+                    if kind == 0 {
+                        "ui-reset"
+                    } else {
+                        "cursor-reset"
+                    },
+                    "Reset",
+                    false,
+                    cx,
+                    move |this, _, _| {
+                        let default = folio_app::Settings::default();
+                        if kind == 0 {
+                            this.controller.settings.ui_scale = default.ui_scale;
+                        } else {
+                            this.controller.settings.cursor_size = default.cursor_size;
+                        }
+                        this.controller.store_settings();
+                    },
+                )
+                .text_xs()
+                .flex_shrink_0()
+            });
+            body = body.child(
+                self.settings_row(label, description)
+                    .children(reset)
+                    .child(stepper),
+            );
         }
         body
     }

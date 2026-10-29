@@ -57,6 +57,7 @@ use folio_ink::StrokeBuilder;
 use folio_input::{PenEvent, Phase, Tool as PenTool};
 pub use folio_math::{VectorCommand, VectorFormula};
 use folio_storage::{Delta, JournalEvent, Persistence, Store};
+pub use history::SaveState;
 pub use import_export::ExportSnapshot;
 pub use interaction::Interaction;
 pub use library_actions::NoteAction;
@@ -154,6 +155,8 @@ pub struct Controller {
     pending_navigation: Option<(Id, Id)>,
     /// Library actions waiting for their note to load.
     pending_actions: HashMap<Id, Vec<NoteAction>>,
+    /// Recent library organization changes, newest last.
+    library_undo: Vec<library_actions::LibraryUndo>,
     /// Empty document shown before the user writes anything; it is not in
     /// the library until it receives its first edit.
     bootstrap_document: Option<Id>,
@@ -164,8 +167,10 @@ pub struct Controller {
     pub settings: Settings,
     pub interaction: Option<Interaction>,
     pub cursor: Option<Point>,
-    /// The lasso was selected by a gesture and reverts to the pen afterwards.
+    /// The lasso was selected by a gesture or Select All and reverts to
+    /// `selection_return_tool` afterwards.
     temporary_selection: bool,
+    selection_return_tool: Tool,
     /// Second click on a selected text box, which opens its editor on release.
     text_click: Option<(Id, Point)>,
     /// Text tool press waiting for the UI to open an editor at this point.
@@ -342,6 +347,7 @@ impl Controller {
             last_draft: Instant::now(),
             last_cache_trim: Instant::now(),
             pending_actions: HashMap::new(),
+            library_undo: Vec::new(),
             pending_imports: HashMap::new(),
             library_imports: HashMap::new(),
             provisional_imports: bootstrap_document.into_iter().collect(),
@@ -360,6 +366,7 @@ impl Controller {
             active,
             tool: initial_tool,
             temporary_selection: false,
+            selection_return_tool: Tool::Pen,
             style,
             settings,
             filter: NoteFilter::All,
@@ -437,9 +444,10 @@ impl Controller {
             || !self.math_live_pending.is_empty()
             || self.pending_note.is_some()
     }
-    fn end_temporary_selection(&mut self) {
+    pub(crate) fn end_temporary_selection(&mut self) {
         if self.temporary_selection {
-            self.tool = Tool::Pen;
+            self.tool = self.selection_return_tool;
+            self.selection_return_tool = Tool::Pen;
             self.temporary_selection = false;
         }
     }

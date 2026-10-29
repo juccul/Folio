@@ -53,7 +53,7 @@ impl NotesView {
         let mut properties = setup.properties.clone();
         properties.color = paper_color(&setup.color.read(cx).content)?;
         let name = if name.trim().is_empty() {
-            "Untitled document".into()
+            self.controller.untitled_title()
         } else {
             name
         };
@@ -116,7 +116,7 @@ impl NotesView {
         let mut patterns = div().flex().gap_2().flex_wrap();
         for (id, title, paper) in [
             ("paper-blank", "Blank", Paper::Blank),
-            ("paper-lines", "Lines", Paper::Ruled),
+            ("paper-lines", "Ruled", Paper::Ruled),
             ("paper-grid", "Grid", Paper::Grid),
             ("paper-dots", "Dots", Paper::Dots),
         ] {

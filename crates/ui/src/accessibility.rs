@@ -300,7 +300,10 @@ fn semantic_node(key: &str, label: &str, active: bool, enabled: bool) -> Node {
         node.set_selected(active);
     }
     if key.starts_with("toggle-folder-")
-        || matches!(key, "select-options" | "insert-options" | "width-options")
+        || matches!(
+            key,
+            "select-options" | "insert-options" | "width-options" | "custom-color"
+        )
     {
         node.set_expanded(active);
     }
@@ -396,7 +399,10 @@ impl Accessibility {
             .borrow_mut()
             .entry(id)
             .or_insert_with(|| cx.focus_handle())
-            .clone();
+            .clone()
+            // GPUI reads the Tab order from the tracked handle itself, not
+            // from the element's tab_stop style.
+            .tab_stop(enabled && visible);
         if !visible {
             return (id, focus);
         }

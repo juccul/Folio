@@ -743,6 +743,17 @@ impl Store {
         }
         Ok(out)
     }
+    pub fn delete_note(&mut self, id: Id) -> Result<()> {
+        let note = id.to_string();
+        let tx = self.connection.transaction()?;
+        tx.execute(
+            "DELETE FROM search WHERE rowid IN (SELECT e.id FROM search_entries e JOIN pages p ON p.id=e.page_id WHERE p.note_id=?1)",
+            [&note],
+        )?;
+        tx.execute("DELETE FROM notes WHERE id=?1", [&note])?;
+        tx.commit()?;
+        Ok(())
+    }
     pub fn save_notebook(&self, n: &Notebook) -> Result<()> {
         self.connection.execute(
             "INSERT INTO notebooks VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
@@ -806,6 +817,7 @@ enum Work {
     Save(u64, Delta),
     Notebook(Notebook),
     DeleteNotebook(Id),
+    DeleteNote(Id),
     Settings(String),
     Checkpoint,
     Flush(mpsc::Sender<std::result::Result<(), String>>),
@@ -885,6 +897,16 @@ impl Persistence {
                                 });
                             } else {
                                 pending_deletes.remove(&id);
+                            }
+                        }
+                        Work::DeleteNote(id) => {
+                            failed.remove(&id);
+                            if let Err(e) = store.delete_note(id) {
+                                error = Some(e.to_string());
+                                let _ = tx.send(Receipt {
+                                    sequence: 0,
+                                    result: Err(e.to_string()),
+                                });
                             }
                         }
                         Work::Notebook(n) => {
@@ -1004,6 +1026,11 @@ impl Persistence {
     }
     pub fn delete_notebook(&self, id: Id) {
         let _ = self.sender.send(Work::DeleteNotebook(id));
+    }
+    /// Permanently remove a note with its pages, objects, history and
+    /// search entries.
+    pub fn delete_note(&self, id: Id) {
+        let _ = self.sender.send(Work::DeleteNote(id));
     }
     pub fn notebook(&self, n: Notebook) {
         let _ = self.sender.send(Work::Notebook(n));

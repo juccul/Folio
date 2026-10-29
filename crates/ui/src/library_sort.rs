@@ -54,9 +54,16 @@ impl NotesView {
                 cx.notify();
             }))
             .child(
-                self.button(
+                self.control(
                     "sort",
-                    format!("{current} ▾"),
+                    format!("Sort: {current}"),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(current)
+                        .child(icon(Icon::Down, theme.muted).size(rems(0.875)))
+                        .into_any_element(),
                     self.sort_open,
                     cx,
                     |this, _, _| this.sort_open = !this.sort_open,

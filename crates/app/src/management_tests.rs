@@ -146,7 +146,23 @@ fn library_actions_load_the_target_without_switching_or_touching_the_active_note
     assert_eq!(restored.metadata.tags, vec!["work"]);
     a.switch_note(target);
     a.undo();
+    // Library organization is outside the document's undo history; library
+    // undo reverts the most recent change instead.
+    assert!(!a.session().document.metadata.trashed);
+    a.undo_library();
     assert!(a.session().document.metadata.trashed);
+    assert_eq!(a.session().document.metadata.title, "Renamed");
+    // Permanent deletion removes the document and its storage.
+    a.delete_permanently(target);
+    a.flush().unwrap();
+    assert!(!a.notes.iter().any(|n| n.id == target));
+    assert!(
+        Store::open(&a.database)
+            .unwrap()
+            .load(target)
+            .unwrap()
+            .is_none()
+    );
 }
 #[test]
 fn background_pdf_import_is_pinned_while_other_notes_open() {
@@ -603,6 +619,29 @@ fn text_click_selects_then_edits_but_dragging_keeps_moving_the_box() {
     a.pointer(down);
     a.pointer(up);
     assert_eq!(a.pending_text_edit, Some(id));
+    // An editing session commits its text as one undoable edit.
+    let (note, page) = (a.active, a.page().id);
+    a.finish_text_edit(note, page, id, "edited once".into());
+    assert!(matches!(a.page().objects[&id].as_ref(), Object::Text(t) if t.text == "edited once"));
+    a.undo();
+    assert!(matches!(a.page().objects[&id].as_ref(), Object::Text(t) if t.text == "editable text"));
+    // A box left empty is discarded; a new one leaves no history behind.
+    let undo_steps = |a: &Controller| a.session().history.entries().filter(|e| e.1).count();
+    let history = undo_steps(&a);
+    let fresh = a.create_text_box(Point::new(300., 300.));
+    a.finish_text_edit(note, page, fresh, "  ".into());
+    assert!(!a.page().objects.contains_key(&fresh));
+    assert_eq!(undo_steps(&a), history);
+    // A new box and its text are one step: undo removes the box entirely.
+    let typed = a.create_text_box(Point::new(300., 300.));
+    a.finish_text_edit(note, page, typed, "typed".into());
+    assert_eq!(undo_steps(&a), history + 1);
+    a.undo();
+    assert!(!a.page().objects.contains_key(&typed));
+    a.finish_text_edit(note, page, id, String::new());
+    assert!(!a.page().objects.contains_key(&id));
+    a.undo();
+    assert!(a.page().objects.contains_key(&id));
 }
 
 #[test]
@@ -905,6 +944,9 @@ fn quick_documents_open_with_remembered_custom_paper_and_safe_defaults() {
     a.create_note();
     assert_eq!(a.page().properties, properties);
     assert_eq!(a.session().document.metadata.title, "Untitled document");
+    a.add_text("first".into(), Point::new(10., 10.));
+    a.create_note();
+    assert_eq!(a.session().document.metadata.title, "Untitled document 2");
     a.flush().unwrap();
     let root = a.data_dir.clone();
     drop(a);

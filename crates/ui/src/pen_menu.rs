@@ -229,13 +229,13 @@ impl NotesView {
                 for (id, label, section, kind) in [
                     (
                         "pen-menu-settings",
-                        "Pen settings…",
+                        "Pen settings",
                         Section::Settings,
                         Icon::Settings,
                     ),
                     (
                         "pen-menu-presets",
-                        "Manage presets…",
+                        "Manage presets",
                         Section::Presets,
                         Icon::More,
                     ),

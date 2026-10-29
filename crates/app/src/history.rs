@@ -1,6 +1,16 @@
 //! Committing commands, undo/redo and handing document changes to persistence.
 use super::*;
 
+/// Whether the library's changes have reached disk, for the save indicator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveState {
+    Saved,
+    Saving,
+    /// Autosave is off and edits wait for an explicit save.
+    Unsaved,
+    Failed,
+}
+
 impl Controller {
     fn defer_history_save(&mut self, note: Id) {
         if let Some(session) = self.sessions.get_mut(&note) {
@@ -42,7 +52,7 @@ impl Controller {
             }
         }
     }
-    fn refresh_metadata(&mut self, id: Id) {
+    pub(crate) fn refresh_metadata(&mut self, id: Id) {
         if let Some(session) = self.sessions.get(&id)
             && let Some(index) = self.notes.iter().position(|n| n.id == id)
         {
@@ -213,6 +223,38 @@ impl Controller {
             if let Some(session) = self.sessions.get_mut(&note) {
                 session.history_needs_save = false;
             }
+        }
+        self.persistence.flush()
+    }
+    pub fn save_state(&self) -> SaveState {
+        if self.save_error.is_some() || !self.dirty_notes.is_empty() {
+            SaveState::Failed
+        } else if self.sessions.values().any(|s| s.history_needs_save) {
+            SaveState::Unsaved
+        } else if self.saved < self.queued {
+            SaveState::Saving
+        } else {
+            SaveState::Saved
+        }
+    }
+    /// Whether `note` has edits that are not yet saved.
+    pub fn has_unsaved_changes(&self, note: Id) -> bool {
+        self.dirty_notes.contains(&note)
+            || self
+                .sessions
+                .get(&note)
+                .is_some_and(|session| session.history_needs_save)
+    }
+    /// Any open document has edits waiting for an explicit save.
+    pub fn has_unsaved_documents(&self) -> bool {
+        self.sessions.values().any(|s| s.history_needs_save)
+    }
+    /// Close without saving document edits: keep folders and preferences,
+    /// discard edits that autosave-off deferred.
+    pub fn close_discarding_documents(&mut self) -> Result<(), String> {
+        self.finish();
+        for session in self.sessions.values_mut() {
+            session.history_needs_save = false;
         }
         self.persistence.flush()
     }

@@ -7,9 +7,12 @@ impl NotesView {
         for (label, keys) in [
             ("Pen · Eraser · Lasso · Pan", "P · E · L · H"),
             ("Text · Shapes", "T · S"),
-            ("Undo / Redo", "Ctrl Z / Ctrl Shift Z"),
+            ("Undo / Redo", "Ctrl Z / Ctrl Shift Z or Ctrl Y"),
             ("Copy / Cut / Paste", "Ctrl C / X / V"),
-            ("Select all / Delete selection", "Ctrl A / Delete"),
+            (
+                "Select all / Delete selection",
+                "Ctrl A / Delete or Backspace",
+            ),
             ("Search / Save", "Ctrl F / Ctrl S"),
             ("New document / New page", "Ctrl N / Ctrl Shift N"),
             ("Open a tab / Library", "Ctrl T / Ctrl Shift L"),
@@ -17,8 +20,12 @@ impl NotesView {
                 "Close tab / Next / Previous",
                 "Ctrl W / Ctrl Tab / Ctrl Shift Tab",
             ),
+            ("Previous / Next page", "Ctrl Page Up / Ctrl Page Down"),
             ("Pages / Settings", "Ctrl Shift P / Ctrl ,"),
-            ("Fit page / Zoom", "Ctrl 0 / Ctrl scroll"),
+            ("Import / Export", "Ctrl O / Ctrl Shift E"),
+            ("Zoom in / Zoom out / Fit page", "Ctrl = / Ctrl − / Ctrl 0"),
+            ("Zoom / Pan", "Ctrl scroll / Middle-drag"),
+            ("Undo in the library", "Ctrl Z"),
         ] {
             shortcuts = shortcuts.child(
                 div()

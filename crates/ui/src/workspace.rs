@@ -3,14 +3,41 @@ use super::*;
 use folio_document::Page;
 use std::{collections::HashMap, sync::Arc};
 
-fn edited_label(updated: u64) -> String {
-    let minutes = folio_document::now_ms().saturating_sub(updated) / 60_000;
+pub(super) fn edited_label(updated: u64) -> String {
+    let now = folio_document::now_ms();
+    let minutes = now.saturating_sub(updated) / 60_000;
+    let plural = |n: u64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
     match minutes {
         0 => "Edited just now".into(),
-        1..=59 => format!("Edited {minutes} min ago"),
-        60..=1439 => format!("Edited {} h ago", minutes / 60),
-        _ => format!("Edited {} days ago", minutes / 1440),
+        1..=59 => format!("Edited {} ago", plural(minutes, "minute")),
+        60..=1439 => format!("Edited {} ago", plural(minutes / 60, "hour")),
+        1440..=2879 => "Edited yesterday".into(),
+        2880..=10079 => format!("Edited {} ago", plural(minutes / 1440, "day")),
+        10080..=40319 => format!("Edited {} ago", plural(minutes / 10080, "week")),
+        _ => format!("Edited {}", calendar_date(updated)),
     }
+}
+/// Day, month and year of a millisecond timestamp (UTC).
+fn calendar_date(ms: u64) -> String {
+    // Civil-from-days conversion (Howard Hinnant's algorithm).
+    let days = (ms / 86_400_000) as i64 + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    format!("{day} {} {year}", MONTHS[(month - 1) as usize])
 }
 
 pub(super) struct Hint(pub(super) SharedString, pub(super) Theme);
@@ -252,6 +279,15 @@ impl Render for PageDrag {
     }
 }
 impl NotesView {
+    /// Where a menu opened from control `key` appears: below the control, or
+    /// at the pointer when the control has not been laid out.
+    pub(super) fn menu_anchor(&self, key: &str, window: &Window) -> Point<Pixels> {
+        self.accessibility
+            .control_bounds_for_key(key)
+            .map_or(window.mouse_position(), |r| {
+                point(px(r.x0 as f32), px(r.y1 as f32 + 4.))
+            })
+    }
     /// Open a document without changing its model or viewport.
     pub fn show_editor(&mut self) {
         self.tool_menu = None;
@@ -287,18 +323,6 @@ impl NotesView {
         self.more_open = false;
         self.export_open = false;
         self.pen_settings = false;
-    }
-    pub(super) fn new_notebook(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.finish_inline_text(window, cx);
-        if self.modal.is_some() {
-            self.close_modal(window, cx);
-        }
-        self.controller.create_note();
-        self.controller.set_tool(Tool::Pen);
-        self.show_editor();
-        self.fit();
-        self.focus.focus(window);
-        cx.notify();
     }
     fn toolbar_hints_enabled(&self) -> bool {
         !self.blocking_overlay()
@@ -495,9 +519,12 @@ impl NotesView {
                 self.control(
                     format!("toggle-folder-{id}"),
                     format!("{} {path}", if collapsed { "Expand" } else { "Collapse" }),
-                    div()
-                        .child(if collapsed { "▸" } else { "▾" })
-                        .into_any_element(),
+                    icon(
+                        if collapsed { Icon::Forward } else { Icon::Down },
+                        theme.muted,
+                    )
+                    .size(rems(0.875))
+                    .into_any_element(),
                     !collapsed,
                     cx,
                     move |this, _, cx| {
@@ -527,7 +554,8 @@ impl NotesView {
                     false,
                     cx,
                     move |this, w, cx| {
-                        this.open_folder_menu(id, w.mouse_position(), w, cx);
+                        let at = this.menu_anchor(&format!("manage-folder-{id}"), w);
+                        this.open_folder_menu(id, at, w, cx);
                         cx.stop_propagation();
                     },
                 )
@@ -586,7 +614,7 @@ impl NotesView {
                 .hover(move |s| s.bg(rgb(theme.selected)))
                 .when(filter == NoteFilter::All, |s| {
                     self.folder_drop_target(s, None, cx).tooltip(move |_, cx| {
-                        cx.new(|_| Hint("Drop here to move to the top level".into(), theme))
+                        cx.new(|_| Hint("Drop here to remove from its folder".into(), theme))
                             .into()
                     })
                 }),
@@ -847,7 +875,8 @@ impl NotesView {
                     false,
                     cx,
                     move |this, w, cx| {
-                        this.open_document_menu(id, w.mouse_position(), w, cx);
+                        let at = this.menu_anchor(&format!("manage-note-{id}"), w);
+                        this.open_document_menu(id, at, w, cx);
                         cx.stop_propagation();
                     },
                 )
@@ -1042,10 +1071,10 @@ impl NotesView {
         let theme = Theme::new(&self.controller.settings);
         let compact =
             f32::from(window.viewport_size().width) / self.controller.settings.ui_scale < 900.;
-        let list_view = self.list_view
-            || (compact
-                && f32::from(window.viewport_size().height) / self.controller.settings.ui_scale
-                    < 450.);
+        // Short, narrow windows only fit the list; Grid is disabled there.
+        self.list_forced = compact
+            && f32::from(window.viewport_size().height) / self.controller.settings.ui_scale < 450.;
+        let list_view = self.list_view || self.list_forced;
         let title = match self.controller.filter {
             NoteFilter::All => "Documents".to_string(),
             NoteFilter::Favorites => "Favorites".into(),
@@ -1073,6 +1102,18 @@ impl NotesView {
             self.controller.filter == NoteFilter::Recent,
         );
         let count = notes.len();
+        let trash_folder = match self.controller.filter {
+            NoteFilter::NotebookTrash(folder) => Some(folder),
+            _ => None,
+        };
+        let trash_count = if matches!(
+            self.controller.filter,
+            NoteFilter::Trash | NoteFilter::NotebookTrash(_)
+        ) {
+            count
+        } else {
+            0
+        };
         let mut shelf = div()
             .id("library-shelf")
             .flex()
@@ -1127,7 +1168,13 @@ impl NotesView {
                     .text_3xl()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(theme.muted))
-                    .child("No documents"),
+                    .child(match self.controller.filter {
+                        NoteFilter::Trash | NoteFilter::NotebookTrash(_) => "Trash is empty",
+                        NoteFilter::Favorites => "No favorites yet",
+                        NoteFilter::Recent => "No recent documents",
+                        NoteFilter::Notebook(_) => "This folder is empty",
+                        NoteFilter::All => "No documents yet",
+                    }),
             );
         } else {
             shelf = shelf.child(list);
@@ -1199,7 +1246,9 @@ impl NotesView {
             .bg(rgb(theme.bg))
             .child(
                 div()
-                    .min_h(rems(4.5))
+                    // Room for the folder breadcrumb in every view, so the
+                    // shelf does not shift when a folder opens.
+                    .min_h(rems(5.25))
                     .py_2()
                     .flex_wrap()
                     .px_8()
@@ -1231,6 +1280,23 @@ impl NotesView {
                             .flex()
                             .items_center()
                             .gap_3()
+                            .when(trash_count > 0, |row| {
+                                row.child(self.button(
+                                    "empty-trash",
+                                    "Empty Trash…",
+                                    false,
+                                    cx,
+                                    move |this, w, cx| {
+                                        this.modal(
+                                            Modal::Confirm(super::Confirm::EmptyTrash(
+                                                trash_folder,
+                                            )),
+                                            w,
+                                            cx,
+                                        )
+                                    },
+                                ))
+                            })
                             .child(self.icon_button(
                                 "search",
                                 "Search all documents · Ctrl+F",
@@ -1317,10 +1383,33 @@ impl NotesView {
                     .flex_shrink_0()
                     .flex()
                     .items_center()
+                    .gap_2()
                     .text_xs()
                     .text_color(rgb(theme.muted))
-                    .child(self.controller.activity_status()),
+                    .child(self.controller.activity_status())
+                    .children(self.library_undo_button(cx)),
             )
+    }
+    /// "Undo" next to the status after a rename, move, favorite or Trash.
+    pub(super) fn library_undo_button(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let label = self.controller.library_undo_offer()?.to_owned();
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().child("·"))
+                .child(label)
+                .child(
+                    self.button("undo-library", "Undo", false, cx, |this, _, _| {
+                        this.controller.undo_library()
+                    })
+                    .text_xs()
+                    .py_0()
+                    .px_2()
+                    .min_h_0(),
+                ),
+        )
     }
     pub(super) fn document_tabs(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
@@ -1391,6 +1480,7 @@ impl NotesView {
                 continue;
             };
             let selected = !self.library_open && id == active;
+            let unsaved = self.controller.has_unsaved_changes(id);
             let drag = super::navigation::TabDrag {
                 id,
                 title: n.title.clone(),
@@ -1409,7 +1499,21 @@ impl NotesView {
                         .truncate()
                         .text_sm()
                         .child(n.title.clone()),
-                );
+                )
+                .when(unsaved, |content| {
+                    content.child(
+                        div()
+                            .size(px(7.))
+                            .flex_shrink_0()
+                            .rounded_full()
+                            .bg(rgb(theme.muted)),
+                    )
+                });
+            let tab_label = if unsaved {
+                format!("Open {} · unsaved changes", n.title)
+            } else {
+                format!("Open {}", n.title)
+            };
             tabs = tabs.child(
                 div()
                     .id(SharedString::from(format!("tab-surface-{id}")))
@@ -1428,15 +1532,42 @@ impl NotesView {
                     // The outer tab consumes presses after its child controls
                     // have registered clicks and tab drags.
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, w, cx| {
+                            this.open_document_menu(id, event.position, w, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    // Middle-click closes a tab, as in browsers and editors.
+                    .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_up(
+                        MouseButton::Middle,
+                        cx.listener(move |this, _, w, cx| {
+                            this.close_document_tab(id, w, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
                     .child(
                         self.control(
                             format!("tab-{id}"),
-                            format!("Open {}", n.title),
+                            tab_label,
                             content.into_any_element(),
                             selected,
                             cx,
                             move |this, _, _| this.open_note(id),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |_, event: &MouseDownEvent, w, cx| {
+                                if event.click_count == 2 {
+                                    // Open after this press has focused the tab,
+                                    // so the dialog's field keeps the focus.
+                                    cx.on_next_frame(w, move |this, w, cx| {
+                                        this.modal(Modal::RenameDocument(id), w, cx)
+                                    });
+                                }
+                            }),
                         )
                         .h(rems(1.75))
                         .min_h_0()
@@ -1469,7 +1600,7 @@ impl NotesView {
                     .child(
                         self.control(
                             format!("close-tab-{id}"),
-                            "Close tab",
+                            format!("Close {}", n.title),
                             icon(Icon::Close, theme.muted).into_any_element(),
                             false,
                             cx,
@@ -1569,7 +1700,10 @@ impl NotesView {
                 },
                 favorite,
                 cx,
-                |this, _, _| this.controller.metadata(|m| m.favorite = !m.favorite),
+                |this, _, _| {
+                    this.controller
+                        .manage_note(this.controller.active, folio_app::NoteAction::Favorite)
+                },
             ))
             .child(self.page_control_button(
                 "header-add-page",
@@ -1588,6 +1722,7 @@ impl NotesView {
                 |this, _, _| {
                     this.more_open = !this.more_open;
                     this.more_section = MoreSection::Document;
+                    this.more_anchor = "more".into();
                     this.export_open = false;
                     this.pen_settings = false;
                 },
@@ -1711,11 +1846,7 @@ impl NotesView {
                         pen_icon,
                         selected_pen,
                         cx,
-                        |this, _, _| {
-                            this.dismiss_popovers();
-                            this.region_selection = None;
-                            this.controller.set_tool(Tool::Pen);
-                        },
+                        |this, _, _| this.select_tool(Tool::Pen),
                     )
                     .bg(transparent_black()),
                 )
@@ -1728,8 +1859,7 @@ impl NotesView {
                         cx,
                         |this, _, _| {
                             let open = !this.pen_settings || this.controller.tool != Tool::Pen;
-                            this.dismiss_popovers();
-                            this.controller.set_tool(Tool::Pen);
+                            this.select_tool(Tool::Pen);
                             this.pen_settings = open;
                         },
                     )
@@ -1745,9 +1875,7 @@ impl NotesView {
             cx,
             |this, _, _| {
                 let options = this.controller.tool == Tool::Eraser && !this.pen_settings;
-                this.dismiss_popovers();
-                this.region_selection = None;
-                this.controller.set_tool(Tool::Eraser);
+                this.select_tool(Tool::Eraser);
                 this.pen_settings = options;
             },
         ));
@@ -1802,11 +1930,7 @@ impl NotesView {
                 kind,
                 self.controller.tool == tool,
                 cx,
-                move |this, _, _| {
-                    this.dismiss_popovers();
-                    this.region_selection = None;
-                    this.controller.set_tool(tool);
-                },
+                move |this, _, _| this.select_tool(tool),
             ));
         }
         let insert = div()
@@ -1840,15 +1964,15 @@ impl NotesView {
                 Icon::Undo,
                 false,
                 cx,
-                |this, _, _| this.controller.undo(),
+                |this, w, cx| this.step_history(false, w, cx),
             ))
             .child(self.editor_button(
                 "redo",
-                "Redo · Ctrl+Shift+Z",
+                "Redo · Ctrl+Shift+Z or Ctrl+Y",
                 Icon::Redo,
                 false,
                 cx,
-                |this, _, _| this.controller.redo(),
+                |this, w, cx| this.step_history(true, w, cx),
             ));
         let primary = div()
             .flex()
@@ -1894,14 +2018,17 @@ impl NotesView {
                         .bg(rgb(color)),
                 )
                 .child(icon(Icon::Down, theme.muted).size(rems(0.875)));
-            options = options.child(self.editor_setting_button(
-                "custom-color",
-                format!("Ink color #{color:06X}"),
-                color_content.into_any_element(),
-                false,
-                cx,
-                |this, window, cx| this.modal(Modal::Color, window, cx),
-            ));
+            options = options.child(
+                self.editor_setting_button(
+                    "custom-color",
+                    format!("Ink color #{color:06X}"),
+                    color_content.into_any_element(),
+                    self.tool_menu
+                        .is_some_and(|(menu, _)| menu == ToolMenu::Color),
+                    cx,
+                    |this, window, cx| this.toggle_tool_menu(ToolMenu::Color, window, cx),
+                ),
+            );
         }
         div()
             .id("editing-tools")
@@ -1999,7 +2126,22 @@ impl NotesView {
                                 cx,
                                 move |this, _, _| this.controller.change_page(index),
                             )
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                    this.controller.change_page(index);
+                                    this.dismiss_popovers();
+                                    this.more_section = MoreSection::Page;
+                                    this.more_anchor = format!("page-{page_id}");
+                                    this.more_open = true;
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }),
+                            )
                             .on_drag(PageDrag(page_id), |drag, _, _, cx| cx.new(|_| drag.clone()))
+                            .drag_over::<PageDrag>(move |s, _, _, _| {
+                                s.border_color(rgb(theme.accent)).bg(rgb(theme.selected))
+                            })
                             .on_drop(cx.listener(move |this, drag: &PageDrag, _, _| {
                                 this.controller.reorder_page(drag.0, page_id)
                             }))
@@ -2042,6 +2184,7 @@ impl NotesView {
                     .justify_between()
                     .child(
                         div()
+                            .flex_1()
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
                             .child(format!("Pages · {total}")),
@@ -2054,10 +2197,10 @@ impl NotesView {
                             false,
                             cx,
                             |this, _, _| {
+                                this.dismiss_popovers();
                                 this.more_section = MoreSection::Page;
+                                this.more_anchor = "page-options-panel".into();
                                 this.more_open = true;
-                                this.export_open = false;
-                                this.pen_settings = false;
                             },
                         )
                         .size(rems(1.75)),
@@ -2077,9 +2220,20 @@ impl NotesView {
             )
             .child(rows)
             .child(
-                self.button("add-page", "＋  Add page", true, cx, |this, _, _| {
-                    this.controller.add_page()
-                })
+                self.control(
+                    "add-page",
+                    "Add page",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(icon(Icon::Plus, theme.ink).size(rems(0.875)))
+                        .child("Add page")
+                        .into_any_element(),
+                    true,
+                    cx,
+                    |this, _, _| this.controller.add_page(),
+                )
                 .text_xs()
                 .m_2(),
             )
@@ -2111,8 +2265,7 @@ impl NotesView {
                         this.controller.change_page(p.saturating_sub(1));
                     },
                 )
-                .size(rems(1.75))
-                .when(page == 0, |s| s.opacity(0.35)),
+                .size(rems(1.75)),
             )
             .child(
                 self.button(
@@ -2137,33 +2290,47 @@ impl NotesView {
                         this.controller.change_page(p + 1);
                     },
                 )
-                .size(rems(1.75))
-                .when(page + 1 == total, |s| s.opacity(0.35)),
+                .size(rems(1.75)),
             )
             .child(div().flex_1())
-            .child(icon(
-                if self.controller.busy > 0
-                    || self.controller.recognition_pending
-                    || !self.controller.status.to_lowercase().contains("saved")
+            .child(match self.controller.save_state() {
+                folio_app::SaveState::Saved
+                    if self.controller.busy == 0 && !self.controller.recognition_pending =>
                 {
-                    Icon::Clock
-                } else {
-                    Icon::Check
-                },
-                theme.muted,
-            ))
+                    icon(Icon::Check, theme.muted).into_any_element()
+                }
+                folio_app::SaveState::Saved | folio_app::SaveState::Saving => {
+                    icon(Icon::Clock, theme.muted).into_any_element()
+                }
+                // A filled dot marks unsaved or failed saves instead of a check.
+                state => div()
+                    .size(px(8.))
+                    .mx(px(4.))
+                    .rounded_full()
+                    .bg(rgb(if state == folio_app::SaveState::Failed {
+                        theme.destructive
+                    } else {
+                        theme.muted
+                    }))
+                    .into_any_element(),
+            })
             .child(
                 div()
                     .text_xs()
                     .text_color(rgb(theme.muted))
                     .child(self.controller.activity_status()),
             )
+            .children(
+                self.library_undo_button(cx)
+                    .map(|undo| undo.text_xs().text_color(rgb(theme.muted))),
+            )
             .child(div().flex_1())
             .child(
                 self.button("zoom-out", "−", false, cx, |this, _, _| {
                     this.zoom(1. / 1.2)
                 })
-                .py_1(),
+                .py_1()
+                .tooltip(move |_, cx| cx.new(|_| Hint("Zoom out · Ctrl+−".into(), theme)).into()),
             )
             .child(
                 self.button(
@@ -2174,11 +2341,15 @@ impl NotesView {
                     |this, _, _| this.fit(),
                 )
                 .text_xs()
-                .py_1(),
+                .py_1()
+                .tooltip(move |_, cx| cx.new(|_| Hint("Fit page · Ctrl+0".into(), theme)).into()),
             )
             .child(
                 self.button("zoom-in", "+", false, cx, |this, _, _| this.zoom(1.2))
-                    .py_1(),
+                    .py_1()
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| Hint("Zoom in · Ctrl+=".into(), theme)).into()
+                    }),
             )
             .child(
                 self.icon_button(
@@ -2197,6 +2368,18 @@ impl NotesView {
 #[cfg(test)]
 mod thumbnail_tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    fn edited_labels_pluralize_and_fall_back_to_dates() {
+        let now = folio_document::now_ms();
+        let ago = |minutes: u64| edited_label(now - minutes * 60_000);
+        assert_eq!(ago(1), "Edited 1 minute ago");
+        assert_eq!(ago(120), "Edited 2 hours ago");
+        assert_eq!(ago(1500), "Edited yesterday");
+        assert_eq!(ago(3 * 1440), "Edited 3 days ago");
+        assert_eq!(ago(7 * 1440), "Edited 1 week ago");
+        assert_eq!(calendar_date(0), "1 Jan 1970");
+        assert_eq!(calendar_date(1_709_251_200_000), "1 Mar 2024");
+    }
     fn key(page: &Page) -> ThumbnailKey {
         ThumbnailKey {
             revision: page.revision,

@@ -130,6 +130,7 @@ impl NotesView {
         self.document_menu = None;
         self.folder_menu = Some((id, at));
         self.focus.focus(window);
+        self.menu_focus = Some("folder-menu-rename".into());
         cx.notify();
     }
 
@@ -204,7 +205,7 @@ impl NotesView {
                 .justify_start(),
             );
         }
-        menu = menu.child(
+        menu = menu.child(div().h(px(1.)).mx_2().bg(theme.border)).child(
             self.button(
                 "delete-folder",
                 "Delete empty folder",
