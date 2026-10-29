@@ -549,6 +549,9 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         WindowControls::default()
     }
     fn set_client_inset(&self, _inset: Pixels) {}
+    /// Folio extension: the cursor shown for tablet tools in proximity of this
+    /// window. Platforms whose tablets drive the system pointer ignore it.
+    fn set_tablet_cursor_style(&self, _style: CursorStyle) {}
     fn gpu_specs(&self) -> Option<GpuSpecs>;
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>);

@@ -1,6 +1,7 @@
 //! Folio extension: native, frame-atomic Wayland tablet input. Apache-2.0.
 use super::*;
 use crate::{TabletEvent, TabletPhase};
+use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
 use wayland_protocols::wp::tablet::zv2::client::{
     zwp_tablet_pad_group_v2, zwp_tablet_pad_ring_v2, zwp_tablet_pad_strip_v2, zwp_tablet_pad_v2,
     zwp_tablet_tool_v2, zwp_tablet_v2,
@@ -17,6 +18,49 @@ pub(super) struct TabletState {
     down: bool,
     pending: Vec<TabletPhase>,
     leaving: bool,
+    /// The tool and its proximity serial while it is over one of our surfaces.
+    proximity: Option<(zwp_tablet_tool_v2::ZwpTabletToolV2, u32)>,
+    cursor_style: Option<CursorStyle>,
+    cursor_shape: Option<WpCursorShapeDeviceV1>,
+    cursor: Option<Cursor>,
+}
+impl TabletState {
+    pub(super) fn over(&self, surface: &ObjectId) -> bool {
+        self.proximity.is_some()
+            && self
+                .window
+                .as_ref()
+                .is_some_and(|w| w.surface().id() == *surface)
+    }
+}
+/// Show `style` for a tool in proximity. The compositor shows no cursor for a
+/// tablet tool unless the client sets one, so this covers all of the window
+/// rather than only the canvas, which paints its own pen cursor.
+pub(super) fn set_tool_cursor(state: &mut WaylandClientState, id: &ObjectId, style: CursorStyle) {
+    let Some(t) = state.tablet_tools.get_mut(id) else {
+        return;
+    };
+    let (Some((tool, serial)), Some(window)) = (t.proximity.clone(), t.window.clone()) else {
+        return;
+    };
+    if t.cursor_style == Some(style) {
+        return;
+    }
+    t.cursor_style = Some(style);
+    if let CursorStyle::None = style {
+        tool.set_cursor(serial, None, 0, 0);
+    } else if let Some(manager) = &state.globals.cursor_shape_manager {
+        t.cursor_shape
+            .get_or_insert_with(|| manager.get_tablet_tool_v2(&tool, &state.globals.qh, ()))
+            .set_shape(serial, style.to_shape());
+    } else {
+        let scale = window.primary_output_scale();
+        t.cursor
+            .get_or_insert_with(|| state.cursor.duplicate(&state.globals))
+            .set_icon_with(style.to_icon_names(), scale, |surface, x, y| {
+                tool.set_cursor(serial, Some(surface), x, y)
+            });
+    }
 }
 delegate_noop!(WaylandClientStatePtr: ignore zwp_tablet_manager_v2::ZwpTabletManagerV2);
 impl Dispatch<zwp_tablet_seat_v2::ZwpTabletSeatV2, ()> for WaylandClientStatePtr {
@@ -118,18 +162,30 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
             None
         };
         let modifiers = state.modifiers;
+        let window_cursor = match &event {
+            zwp_tablet_tool_v2::Event::ProximityIn { surface, .. } => state
+                .tablet_cursor_styles
+                .get(&surface.id())
+                .copied()
+                .unwrap_or(CursorStyle::Arrow),
+            _ => CursorStyle::Arrow,
+        };
         let t = state.tablet_tools.entry(tool.id()).or_default();
         use zwp_tablet_tool_v2::Event;
         match event {
             Event::Type { tool_type } => {
                 t.eraser = matches!(tool_type, WEnum::Value(zwp_tablet_tool_v2::Type::Eraser))
             }
-            Event::ProximityIn { .. } => {
+            Event::ProximityIn { serial, .. } => {
                 t.window = window;
                 t.leaving = false;
                 t.pressure = 0.;
                 t.buttons = 0;
                 t.down = false;
+                // The compositor forgets the cursor when the tool leaves.
+                t.proximity = Some((tool.clone(), serial));
+                t.cursor_style = None;
+                set_tool_cursor(&mut state, &tool.id(), window_cursor);
             }
             Event::Motion { x, y } => t.position = point(px(x as f32), px(y as f32)),
             Event::Pressure { pressure } => t.pressure = pressure as f32 / 65535.,
@@ -200,6 +256,7 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
                     t.window = None;
                     t.down = false;
                     t.buttons = 0;
+                    t.proximity = None;
                 }
                 drop(state);
                 for event in events {
@@ -251,7 +308,13 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
                     phase: TabletPhase::Cancel,
                     modifiers,
                 };
-                state.tablet_tools.remove(&tool.id());
+                if let Some(shape) = state
+                    .tablet_tools
+                    .remove(&tool.id())
+                    .and_then(|t| t.cursor_shape)
+                {
+                    shape.destroy();
+                }
                 drop(state);
                 tool.destroy();
                 if let Some(window) = window {

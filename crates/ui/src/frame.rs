@@ -311,7 +311,7 @@ impl NotesView {
         canvas(
             move |bounds, window, cx| {
                 entity.update(cx, |view, cx| view.sync_canvas_bounds(bounds, cx));
-                window.insert_hitbox(bounds, HitboxBehavior::Normal).id
+                window.insert_hitbox(bounds, HitboxBehavior::Normal)
             },
             move |bounds, hitbox, window, cx| {
                 paint_entity.update(cx, |view, cx| {
@@ -321,7 +321,13 @@ impl NotesView {
                     view.paint_region(bounds, window);
                     view.diagnostics.painted();
                     view.resume_poll(cx);
+                    // The canvas paints its own pen cursor; elsewhere the pen
+                    // shows the system cursor.
+                    if view.controller.cursor.is_some() && !view.canvas_input_blocked() {
+                        window.set_tablet_cursor_style(CursorStyle::None, &hitbox);
+                    }
                 });
+                let hitbox = hitbox.id;
                 let tablet_entity = paint_entity.clone();
                 window.on_mouse_event(move |event: &TabletEvent, phase, window, cx| {
                     if phase.bubble()

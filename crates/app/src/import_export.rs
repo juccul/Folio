@@ -165,6 +165,7 @@ impl Controller {
                 path,
                 assets: self.assets.clone(),
                 position: Point::new(80., 80.),
+                select: false,
             }
         };
         if let Err(e) = self.workers.submit(job) {
@@ -244,7 +245,7 @@ impl Controller {
             password: Some(password),
         });
     }
-    pub(crate) fn image_imported(&mut self, note: Id, page: Id, object: Object) {
+    pub(crate) fn image_imported(&mut self, note: Id, page: Id, object: Object, select: bool) {
         self.import_finished(note);
         self.library_imports.remove(&note);
         if let Some(p) = self.sessions.get(&note).and_then(|s| s.document.page(page)) {
@@ -261,6 +262,14 @@ impl Controller {
                     index,
                 }],
             );
+            // Pasted images are ready to move or resize, unless the user has
+            // since left the page or started another interaction.
+            if select && note == self.active && page == self.page().id && self.interaction.is_none()
+            {
+                self.session_mut().selection = HashSet::from([id]);
+                self.tool = Tool::Lasso;
+                self.temporary_selection = false;
+            }
         }
     }
     /// Imported notebooks adopt their title and tags only when they fill an

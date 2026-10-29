@@ -165,10 +165,10 @@ Message-passing workers separate persistence, document/rendering processing and 
 
 ## Completed functionality
 
-- Native Wayland and X11 windows; pressure, tilt, eraser identity, buttons, hover and timestamps; cancellation on device removal. Native Wayland tablet-pad buttons are configurable, rings zoom and strips pan. Native touchpad pinch, rotation, translation and cancellation are separate from pen input. Pen proximity suppresses pointer emulation on the canvas.
+- Native Wayland and X11 windows; pressure, tilt, eraser identity, buttons, hover and timestamps; cancellation on device removal. Native Wayland tablet-pad buttons are configurable, rings zoom and strips pan. Native touchpad pinch, rotation, translation and cancellation are separate from pen input. Pen proximity suppresses pointer emulation on the canvas. On native Wayland the pen shows the system cursor over controls, menus and dialogs, while the canvas keeps Folio's own pen cursor.
 - Ballpoint, fountain, pencil, marker and highlighter; whole-object and segment erasers; saved presets, pressure curve, stabilization, opacity, recent/custom colors, configurable cursor size.
 - Fixed/infinite paper, custom sizes, blank/ruled/grid/dot backgrounds, pages, fit, zoom, pan and rotation.
-- Lasso/rectangle selection, move, corner drag resize, rotation handle, duplicate/cut/copy/paste/delete, restyling and command undo/redo. History survives reopening.
+- Lasso/rectangle selection, move, corner drag resize, rotation handle, duplicate/cut/copy/paste/delete, restyling and command undo/redo. History survives reopening. Pasted images are placed at the pointer (or the canvas menu position) and selected, ready to move or resize.
 - Notes, tags, favorites, recents and trash, with confirmed permanent deletion and Empty Trash; nested notebook/folder creation, rename, safe parent changes with cycle prevention and empty-folder deletion. Rename, tags, favorites, Trash and folder moves are library changes outside document undo history; the library's Undo (Ctrl+Z) reverts the latest one. Note entries, controls and dialog fields participate in keyboard focus traversal.
 - Inline text edits become one undo step when editing ends; a box left empty is removed.
 - Conservative scratch, encircle and hold-to-shape gestures. Destructive smart gestures require opt-in. Deterministic fitting covers lines, arrows, rectangles, squares, circles, ellipses, triangles, diamonds, open circular arcs and angular polylines.

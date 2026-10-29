@@ -466,6 +466,8 @@ pub(crate) type AnyMouseListener =
 pub(crate) struct CursorStyleRequest {
     pub(crate) hitbox_id: Option<HitboxId>,
     pub(crate) style: CursorStyle,
+    /// Folio extension: the request only applies to a tablet tool's cursor.
+    pub(crate) tablet: bool,
 }
 
 #[derive(Default, Eq, PartialEq)]
@@ -759,10 +761,11 @@ impl Frame {
         }
     }
 
-    pub(crate) fn cursor_style(&self, window: &Window) -> Option<CursorStyle> {
+    pub(crate) fn cursor_style(&self, window: &Window, tablet: bool) -> Option<CursorStyle> {
         self.cursor_styles
             .iter()
             .rev()
+            .filter(|request| tablet || !request.tablet)
             .fold_while(None, |style, request| match request.hitbox_id {
                 None => Done(Some(request.style)),
                 Some(hitbox_id) => Continue(
@@ -2369,6 +2372,19 @@ impl Window {
         self.next_frame.cursor_styles.push(CursorStyleRequest {
             hitbox_id: Some(hitbox.id),
             style,
+            tablet: false,
+        });
+    }
+
+    /// Folio extension: updates the cursor style shown for a tablet tool over
+    /// `hitbox`, leaving the mouse cursor unchanged. This method should only be
+    /// called during the paint phase of element drawing.
+    pub fn set_tablet_cursor_style(&mut self, style: CursorStyle, hitbox: &Hitbox) {
+        self.invalidator.debug_assert_paint();
+        self.next_frame.cursor_styles.push(CursorStyleRequest {
+            hitbox_id: Some(hitbox.id),
+            style,
+            tablet: true,
         });
     }
 
@@ -2381,6 +2397,7 @@ impl Window {
         self.next_frame.cursor_styles.push(CursorStyleRequest {
             hitbox_id: None,
             style,
+            tablet: false,
         })
     }
 
@@ -3697,10 +3714,17 @@ impl Window {
         if self.is_window_hovered() {
             let style = self
                 .rendered_frame
-                .cursor_style(self)
+                .cursor_style(self, false)
                 .unwrap_or(CursorStyle::Arrow);
             cx.platform.set_cursor_style(style);
         }
+        // Tablet tools track their own position and window, so their cursor is
+        // set independently of mouse hover.
+        let style = self
+            .rendered_frame
+            .cursor_style(self, true)
+            .unwrap_or(CursorStyle::Arrow);
+        self.platform_window.set_tablet_cursor_style(style);
     }
 
     /// Dispatch a given keystroke as though the user had typed it.

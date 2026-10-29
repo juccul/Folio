@@ -660,6 +660,10 @@ impl NotesView {
             || self.help_open
             || (self.controller.error.is_some() && self.controller.interaction.is_none())
     }
+    /// Whether an overlay keeps pointer and pen input away from the canvas.
+    fn canvas_input_blocked(&self) -> bool {
+        self.library_open || self.blocking_overlay() || self.tool_menu.is_some()
+    }
     fn open_settings(&mut self, window: &mut Window) {
         self.controller.finish();
         self.dismiss_popovers();
@@ -851,6 +855,7 @@ impl NotesView {
             Modal::Notebook(_) => Some("Folder name"),
             Modal::Tags | Modal::DocumentTags(_) => Some("Comma-separated tags"),
             Modal::PdfPassword(..) => Some("Password"),
+            Modal::Recognition => Some("Type the text for this writing"),
             _ => None,
         };
         let field = cx.new(|cx| {
@@ -1417,14 +1422,7 @@ impl NotesView {
         self.diagnostics.pen(event);
         self.last_tablet = Some(Instant::now());
         self.pen_in_range = !matches!(event.phase, TabletPhase::Leave | TabletPhase::Cancel);
-        if self.library_open
-            || self.blocking_overlay()
-            || self.tool_menu.is_some()
-            || self.modal.is_some()
-            || self.settings_open
-            || self.help_open
-            || (self.controller.error.is_some() && self.controller.interaction.is_none())
-        {
+        if self.canvas_input_blocked() {
             return;
         }
         let Some(bounds) = self.canvas_bounds else {
@@ -1489,13 +1487,7 @@ impl NotesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.library_open
-            || self.blocking_overlay()
-            || self.tool_menu.is_some()
-            || self.modal.is_some()
-            || self.settings_open
-            || self.help_open
-            || (self.controller.error.is_some() && self.controller.interaction.is_none())
+        if self.canvas_input_blocked()
             || self.controller.loading_note()
             || self.pen_in_range
             || self
@@ -2365,12 +2357,17 @@ impl NotesView {
                     .border_color(theme.border)
                     .shadow_sm()
                     .child(
+                        // A block scroll container leaves the text field's
+                        // percentage width unresolved when wrapped text
+                        // follows it, collapsing the field.
                         div()
                             .id("modal-panel")
                             .flex_1()
                             .min_h_0()
+                            .flex()
+                            .flex_col()
                             .overflow_y_scroll()
-                            .child(panel),
+                            .child(panel.flex_shrink_0()),
                     )
                     .child(footer),
             )

@@ -135,8 +135,9 @@ impl Controller {
             );
         }
     }
+    /// Paste an image at the pointer, if it is over the canvas.
     pub fn paste_image(&mut self, data: &[u8], extension: &str) {
-        self.paste_image_at(data, extension, Point::new(80., 80.));
+        self.paste_image_at(data, extension, self.cursor.unwrap_or(Point::new(80., 80.)));
     }
     pub fn paste_image_at(&mut self, data: &[u8], extension: &str, position: Point) {
         if self.read_only() {
@@ -158,6 +159,7 @@ impl Controller {
                     path,
                     assets: self.assets.clone(),
                     position,
+                    select: true,
                 };
                 if let Err(error) = self.workers.submit(job) {
                     self.error = Some(error);

@@ -124,7 +124,7 @@ fn context_paste_places_mixed_objects_at_anchor_and_undoes_once() {
     assert_eq!(a.page().objects, originals);
 }
 #[test]
-fn context_paste_image_retains_page_target_and_anchor() {
+fn paste_image_anchors_at_target_and_selects_it_on_its_page() {
     let mut a = app();
     a.create_note();
     let note = a.active;
@@ -146,6 +146,19 @@ fn context_paste_image_retains_page_target_and_anchor() {
         pasted.ordered_objects().next().unwrap().bounds().min,
         Point::new(420., 260.)
     );
+    assert!(a.page().objects.is_empty());
+    // Leaving the page before the import finished does not select there.
+    assert!(a.session().selection.is_empty());
+    // Ctrl+V pastes at the pointer, ready to move or resize.
+    a.tool = Tool::Pen;
+    a.cursor = Some(Point::new(120., 90.));
+    a.paste_image(bytes.get_ref(), "png");
+    wait(&mut a);
+    let id = *a.session().selection.iter().next().unwrap();
+    assert_eq!(a.session().selection.len(), 1);
+    assert_eq!(a.page().objects[&id].bounds().min, Point::new(120., 90.));
+    assert_eq!(a.tool, Tool::Lasso);
+    a.undo();
     assert!(a.page().objects.is_empty());
 }
 fn wait(a: &mut Controller) {

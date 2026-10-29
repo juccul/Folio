@@ -234,7 +234,12 @@ impl Controller {
                 self.apply_pdf(note, pages);
                 self.import_finished(note);
             }
-            Finished::Image { note, page, object } => self.image_imported(note, page, object),
+            Finished::Image {
+                note,
+                page,
+                object,
+                select,
+            } => self.image_imported(note, page, object, select),
             Finished::NotebookImported { note, document } => self.notebook_imported(note, document),
             Finished::ImportError { note, message } => {
                 self.library_import_failed(note, message);

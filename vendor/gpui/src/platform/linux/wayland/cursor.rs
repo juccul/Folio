@@ -91,12 +91,39 @@ impl Cursor {
         self.set_scaled_size(size);
     }
 
+    /// Folio extension: a separate cursor surface with this cursor's theme and
+    /// size. Each tablet tool needs its own surface for its cursor role.
+    pub fn duplicate(&self, globals: &Globals) -> Self {
+        let mut cursor = Self::new(&self.connection, globals, self.size);
+        if let Some(name) = self
+            .loaded_theme
+            .as_ref()
+            .and_then(|theme| theme.name.clone())
+        {
+            cursor.set_theme(name);
+        }
+        cursor
+    }
+
     pub fn set_icon(
         &mut self,
         wl_pointer: &WlPointer,
         serial_id: u32,
+        cursor_icon_names: &[&str],
+        scale: i32,
+    ) {
+        self.set_icon_with(cursor_icon_names, scale, |surface, x, y| {
+            wl_pointer.set_cursor(serial_id, Some(surface), x, y)
+        });
+    }
+
+    /// Attach the first available icon, calling `assign` to give the cursor
+    /// surface its role with the hotspot in surface coordinates.
+    pub fn set_icon_with(
+        &mut self,
         mut cursor_icon_names: &[&str],
         scale: i32,
+        assign: impl FnOnce(&WlSurface, i32, i32),
     ) {
         self.set_scaled_size(self.size * scale as u32);
 
@@ -138,12 +165,7 @@ impl Cursor {
 
         self.surface.set_buffer_scale(scale);
 
-        wl_pointer.set_cursor(
-            serial_id,
-            Some(&self.surface),
-            hot_x as i32 / scale,
-            hot_y as i32 / scale,
-        );
+        assign(&self.surface, hot_x as i32 / scale, hot_y as i32 / scale);
 
         self.surface.attach(Some(buffer), 0, 0);
         self.surface.damage(0, 0, width as i32, height as i32);

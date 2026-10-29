@@ -25,7 +25,7 @@ use wayland_protocols::{
 use wayland_protocols_plasma::blur::client::org_kde_kwin_blur;
 
 use crate::{
-    AnyWindowHandle, Bounds, Decorations, Globals, GpuSpecs, Modifiers, Output, Pixels,
+    AnyWindowHandle, Bounds, CursorStyle, Decorations, Globals, GpuSpecs, Modifiers, Output, Pixels,
     PlatformDisplay, PlatformInput, Point, PromptButton, PromptLevel, RequestFrameOptions,
     ResizeEdge, Size, Tiling, WaylandClientStatePtr, WindowAppearance, WindowBackgroundAppearance,
     WindowBounds, WindowControlArea, WindowControls, WindowDecorations, WindowParams, px, size,
@@ -1128,6 +1128,16 @@ impl PlatformWindow for WaylandWindow {
     fn update_ime_position(&self, bounds: Bounds<Pixels>) {
         let state = self.borrow();
         state.client.update_ime_position(bounds);
+    }
+
+    fn set_tablet_cursor_style(&self, style: CursorStyle) {
+        // Release the window state first: the cursor surface fallback reads
+        // the window's output scale.
+        let (client, surface) = {
+            let state = self.borrow();
+            (state.client.clone(), state.surface.id())
+        };
+        client.set_tablet_cursor_style(&surface, style);
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {

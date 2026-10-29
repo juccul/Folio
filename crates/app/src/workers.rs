@@ -93,6 +93,8 @@ pub enum Job {
         path: PathBuf,
         assets: PathBuf,
         position: Point,
+        /// Select the image once inserted, as for pasted images.
+        select: bool,
     },
     Equation {
         generation: u64,
@@ -174,6 +176,7 @@ pub enum Finished {
         note: Id,
         page: Id,
         object: Object,
+        select: bool,
     },
     Cancelled,
     PreviewError {
@@ -538,6 +541,7 @@ fn process(job: Job) -> Result<Finished, String> {
                 path,
                 assets,
                 position,
+                select,
             } => {
                 let reader = image::ImageReader::open(&path)?.with_guessed_format()?;
                 let size = reader.into_dimensions()?;
@@ -558,6 +562,7 @@ fn process(job: Job) -> Result<Finished, String> {
                 Finished::Image {
                     note,
                     page,
+                    select,
                     object: Object::Image(ImageObject {
                         id,
                         asset: target.file_name().unwrap().to_string_lossy().into_owned(),

@@ -204,6 +204,8 @@ pub(crate) struct WaylandClientState {
     gesture_window: Option<WaylandWindowStatePtr>,
     gesture_scale: f64,
     tablet_tools: HashMap<ObjectId, TabletState>,
+    /// Cursor style requested for tablet tools, by window surface.
+    tablet_cursor_styles: HashMap<ObjectId, CursorStyle>,
     tablet_pads:HashMap<ObjectId,PadState>,
     tablet_pad_groups:HashMap<ObjectId,ObjectId>,
     tablet_pad_controls:HashMap<ObjectId,PadControl>,
@@ -358,6 +360,24 @@ impl WaylandClientStatePtr {
         text_input.commit();
     }
 
+    /// Folio extension: the cursor for tablet tools over `surface`.
+    pub fn set_tablet_cursor_style(&self, surface: &ObjectId, style: CursorStyle) {
+        let client = self.get_client();
+        let mut state = client.borrow_mut();
+        if state.tablet_cursor_styles.insert(surface.clone(), style) == Some(style) {
+            return;
+        }
+        let tools = state
+            .tablet_tools
+            .iter()
+            .filter(|(_, t)| t.over(surface))
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in tools {
+            tablet::set_tool_cursor(&mut state, &id, style);
+        }
+    }
+
     pub fn handle_keyboard_layout_change(&self) {
         let client = self.get_client();
         let mut state = client.borrow_mut();
@@ -391,6 +411,7 @@ impl WaylandClientStatePtr {
         let mut client = self.get_client();
         let mut state = client.borrow_mut();
         let closed_window = state.windows.remove(surface_id).unwrap();
+        state.tablet_cursor_styles.remove(surface_id);
         if let Some(window) = state.mouse_focused_window.take()
             && !window.ptr_eq(&closed_window)
         {
@@ -574,6 +595,7 @@ impl WaylandClient {
             gesture_window: None,
             gesture_scale: 1.,
             tablet_tools: HashMap::default(),
+            tablet_cursor_styles: HashMap::default(),
             tablet_pads:HashMap::default(),tablet_pad_groups:HashMap::default(),tablet_pad_controls:HashMap::default(),
             _tablet_seat: tablet_seat,
             serial_tracker: SerialTracker::new(),
