@@ -1,10 +1,10 @@
-# Folio 0.1.6
+# Folio 0.1.7
 
-- Faster OCR preparation uses lighter ink supersampling and keeps image/PDF crops in memory. A smaller, bounded context reduces native model memory while preserving the supported input and output limits.
-- Repeated recognition of unchanged sources reuses a bounded result cache. Hovering an OCR control prepares an installed model; requests reuse that load, healthy models survive ordinary request errors, and successful device/fallback choices are remembered for the app session.
-- Live handwriting calculations start at the end of the existing 700 ms writing pause without waiting for the periodic linked-math scan. Review, correction, cancellation and undo workflows remain available.
-- Lower editor memory use releases inactive documents, obsolete previews and GPU resources sooner. Large-page geometry, sidebar navigation and text interaction avoid repeated work; worker cleanup and failed-load recovery are more robust.
-- Optional OCR timing traces correlate requests with completed visible UI frames. Native packs retain the quality profile by default; the explicit `fast-lines` profile trades some single-line text resolution for speed.
+- Keyboard use follows desktop conventions: Tab and Shift+Tab move through controls and dialog fields, shortcuts keep working after a menu closes, and Escape closes only the topmost menu or dialog. Backspace deletes a selection, Ctrl+Y redoes, and search and the document picker accept Up, Down and Enter.
+- A text box's edits are one undo step, and boxes left empty are removed. Text fields support double- and triple-click selection, Shift+click, Shift+Home/End, word deletion, a right-click menu and placeholders; dialogs select prefilled names.
+- Renaming, tags, favorites, Trash and folder moves have their own Undo in the library (also Ctrl+Z there) instead of entering a document's undo history. Trash adds Delete permanently and Empty Trash, both confirmed. New documents receive distinct names, and the document picker shows folders and edit times.
+- The save indicator reflects the actual save state. With autosave off, tabs mark unsaved documents and closing asks whether to save. The canvas menu offers Cut, Copy, Paste, Delete and Select all; ink color opens a swatch menu; tabs, page thumbnails and menus support common mouse actions; search results highlight their matches.
+- Menus and dialogs use consistent labels, keep their buttons visible, disable unavailable actions instead of reporting errors, and no longer list duplicate actions.
 
 Windows x64 setup EXE and portable ZIP, Linux x86_64 Flatpak, checksums and complete corresponding source are published together. Updates remain signed and user-initiated.
 
