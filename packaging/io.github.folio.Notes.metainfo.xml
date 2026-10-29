@@ -12,6 +12,9 @@
   <launchable type="desktop-id">io.github.folio.Notes.desktop</launchable>
   <supports><control>pointing</control><control>keyboard</control></supports>
   <releases>
+    <release version="0.1.8" date="2026-10-29">
+      <description><p>Fixes the recognition review dialog, pastes images at the pointer ready to move or resize, and shows the system pointer for a pen over controls and dialogs on native Wayland.</p></description>
+    </release>
     <release version="0.1.7" date="2026-10-29">
       <description><p>Desktop keyboard and mouse conventions throughout: Tab traversal, layered Escape, one-step text undo, library undo with permanent deletion, an unsaved-changes prompt when autosave is off, and fuller context menus.</p></description>
     </release>

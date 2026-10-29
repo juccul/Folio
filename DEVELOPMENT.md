@@ -1,8 +1,8 @@
-# Development status — Folio 0.1.7
+# Development status — Folio 0.1.8
 
 Updated 2026-10-29. Folio is a runnable Rust/GPUI Linux and Windows desktop application. Production certification still requires physical tablets and additional desktop/distribution sessions; synthetic events and CPU benchmarks do not establish hardware-to-display latency.
 
-Version 0.1.7 brings keyboard, text-editing, library and dialog behavior in line with desktop conventions: Tab traversal and layered Escape, one-step text-box undo, library-level undo with permanent deletion, an explicit save state with an unsaved-changes prompt, and fuller context menus. Windows setup/portable and signed Flatpak packages share the same release source. See `WINDOWS.md` for Windows Ink support and validation limits.
+Version 0.1.8 fixes the recognition review dialog, which could show its text field collapsed with the result hidden, pastes images at the pointer ready to move or resize, and shows the system pointer for a pen over controls and dialogs on native Wayland. Windows setup/portable and signed Flatpak packages share the same release source. See `WINDOWS.md` for Windows Ink support and validation limits.
 
 ## Continuous integration
 
