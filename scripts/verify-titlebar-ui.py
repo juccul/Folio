@@ -99,7 +99,7 @@ def main():
                 def picker_follows_tabs():
                     tab_ends=[]
                     for node in nodes():
-                        if node.get_role()==Atspi.Role.PUSH_BUTTON and node.get_name()=='Close tab':
+                        if node.get_role()==Atspi.Role.PUSH_BUTTON and node.get_name().startswith('Close ') and node.get_name()!='Close window':
                             r=node.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
                             tab_ends.append(r.x+r.width)
                     assert tab_ends
@@ -170,7 +170,7 @@ def main():
                 r=tab.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
                 before=geometry();drag(r.x+r.width/2,r.y+r.height/2,30,0)
                 assert geometry()==before,'Dragging a tab moved the window'
-                click('Open or create a document · Ctrl+T');click('＋  Create new document')
+                click('Open or create a document · Ctrl+T');click('Create new document')
                 for char in 'untitled note':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
                 click('Create notebook');wait('Open untitled note')
                 source=bounds('Open Math solver verification');destination=bounds('Open untitled note')
@@ -184,20 +184,20 @@ def main():
                 # Overflow must leave the picker visible and usable, while the
                 # window controls remain anchored to the right.
                 for _ in range(6):
-                    click('Open or create a document · Ctrl+T');click('＋  Create new document')
+                    click('Open or create a document · Ctrl+T');click('Create new document')
                     for char in 'untitled note':client.key('space' if char==' ' else char.lower(),1 if char.isupper() else 0)
                     click('Create notebook')
                 picker=bounds('Open or create a document · Ctrl+T')
                 controls=bounds('Minimize window');close=bounds('Close window')
                 assert 0 < picker[0] and picker[0]+picker[2] < controls[0],(picker,controls)
                 assert 0 <= geometry()[2]-close[0]-close[2] <= 20,(geometry(),close)
-                closing=[n for n in nodes() if n.get_role()==Atspi.Role.PUSH_BUTTON and n.get_name()=='Close tab']
+                closing=[n for n in nodes() if n.get_role()==Atspi.Role.PUSH_BUTTON and n.get_name().startswith('Close ') and n.get_name()!='Close window']
                 active_close=closing[-1].get_component_iface().get_extents(Atspi.CoordType.WINDOW)
                 assert 0 <= active_close.x and active_close.x+active_close.width < picker[0],(active_close,picker)
                 capture('overflow-tabs')
                 click('Open or create a document · Ctrl+T');wait('Cancel');click('Cancel')
                 for _ in range(6):
-                    closing=[n for n in nodes() if n.get_role()==Atspi.Role.PUSH_BUTTON and n.get_name()=='Close tab']
+                    closing=[n for n in nodes() if n.get_role()==Atspi.Role.PUSH_BUTTON and n.get_name().startswith('Close ') and n.get_name()!='Close window']
                     assert closing[-1].get_action_iface().do_action(0);time.sleep(.4)
                 picker_follows_tabs()
                 click('Maximize window');wait('Restore window');maximized=geometry()

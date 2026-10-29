@@ -324,6 +324,19 @@ impl NotesView {
         self.export_open = false;
         self.pen_settings = false;
     }
+    /// Quick creation from the tab picker, with the default page settings.
+    pub(super) fn new_notebook(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.finish_inline_text(window, cx);
+        if self.modal.is_some() {
+            self.close_modal(window, cx);
+        }
+        self.controller.create_note();
+        self.controller.set_tool(Tool::Pen);
+        self.show_editor();
+        self.fit();
+        self.focus.focus(window);
+        cx.notify();
+    }
     fn toolbar_hints_enabled(&self) -> bool {
         !self.blocking_overlay()
             && self.tool_menu.is_none()

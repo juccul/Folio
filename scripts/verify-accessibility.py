@@ -226,7 +226,7 @@ def main():
                         assert db.execute('SELECT count(*) FROM objects').fetchone()[0]==initial_objects, 'Settings shortcuts edited the document'
                     click('Accessibility');click('Reduce motion: Off');click('Close settings')
                     assert any(n.get_name()=='Copy' for n in controls()), 'Closing settings lost the selection'
-                    size_label=next((n.get_name() for n in controls() if n.get_name().endswith(' pt')),None)
+                    size_label=next((n.get_name() for n in controls() if n.get_name().endswith(' px')),None)
                     assert size_label, 'Missing selected-text font-size control'
                     click(size_label);client.key('a',4)
                     for char in 'nan':client.key(char)
@@ -267,16 +267,16 @@ def main():
                         assert db.execute('SELECT count(*) FROM objects').fetchone()[0]==initial_objects
                     print('POLISH_UI_OK: modal focus isolation, fieldless page-picker Escape, shortcut safety, selection preservation, inline validation, help and persisted reduced motion',flush=True)
                 if args.navigation:
-                    def rename_dialog(value):
+                    def rename_dialog(value,button='Rename'):
                         inputs=[n for n in walk(target) if n.get_role()==Atspi.Role.ENTRY]
                         assert inputs, 'Missing editable dialog field'
                         client.key('a',4)
                         for char in value:client.key('space' if char==' ' else ('comma' if char==',' else char.lower()),1 if char.isupper() else 0)
-                        click('Save')
+                        click(button)
                     click('Documents');click('Manage Reading list');click('Rename…');rename_dialog('reading archive')
                     assert any(n.get_name()=='Manage reading archive' for n in controls()), [n.get_name() for n in controls()]
                     click('Manage reading archive');click('Add to favorites')
-                    click('Manage reading archive');click('Edit tags…');rename_dialog('reference, papers')
+                    click('Manage reading archive');click('Edit tags…');rename_dialog('reference, papers','Save')
                     click('Manage reading archive');click('Move to folder…');click('Projects');click('Move')
                     click('Manage reading archive');click('Duplicate')
                     assert any(n.get_name()=='Manage reading archive (copy)' for n in controls())
@@ -284,9 +284,9 @@ def main():
                     click('Manage reading archive');click('Restore document');click('Documents')
                     click('Open Field notes');click('Open or create a document · Ctrl+T')
                     click('Open reading archive');assert not any(n.get_role()==Atspi.Role.ENTRY for n in walk(target))
-                    click('Open or create a document · Ctrl+T');click('＋  Create new document')
+                    click('Open or create a document · Ctrl+T');click('Create new document')
                     assert not any(n.get_role()==Atspi.Role.ENTRY for n in walk(target)), 'Quick creation unexpectedly opened a setup dialog'
-                    click('Document actions');click('Rename document');rename_dialog('untitled note')
+                    click('Document actions');click('Rename document…');rename_dialog('untitled note')
                     assert any(n.get_name()=='Open untitled note' for n in controls())
                     click('Library ·',True)
                     with sqlite3.connect(Path(root)/'notes.sqlite3') as db:

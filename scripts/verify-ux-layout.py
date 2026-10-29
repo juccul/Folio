@@ -262,7 +262,7 @@ def main():
                             click('Pen settings and presets')
                             assert any(n.get_name().startswith('Use preset ') for n in nodes())
                             capture('presets-saved');client.key('Escape')
-                            click('Document actions');click('Paper and canvas ›');click('Custom page size')
+                            click('Document actions');click('Paper and canvas ›');click('Custom page size…')
                             click('Letter');click('Inches');capture('physical-page-size');click('Save')
                             click('Document actions');click('Math and handwriting ›');click('Index page handwriting…')
                             assert any(n.get_name()=='Download and recognize' for n in nodes()), 'Missing explicit OCR setup choice'

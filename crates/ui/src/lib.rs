@@ -2081,7 +2081,7 @@ impl NotesView {
                         .into_any_element(),
                     false,
                     cx,
-                    |this, w, cx| this.modal(Modal::NewDocument, w, cx),
+                    |this, w, cx| this.new_notebook(w, cx),
                 )
                 .justify_start(),
             );
@@ -2119,7 +2119,7 @@ impl NotesView {
                 results = results.child(
                     self.control(
                         format!("pick-document-{id}"),
-                        format!("Open {} · {detail}", note.title),
+                        format!("Open {}", note.title),
                         div()
                             .flex()
                             .flex_col()

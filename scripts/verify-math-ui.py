@@ -161,7 +161,7 @@ def main():
                     return item.get_state_set().contains(Atspi.StateType.ENABLED)
                 client.key('a',4)
                 font_size = next(n.get_name() for n in nodes()
-                                 if n.get_role()==Atspi.Role.PUSH_BUTTON and n.get_name().endswith(' pt'))
+                                 if n.get_role()==Atspi.Role.PUSH_BUTTON and n.get_name().endswith(' px'))
                 click(font_size);fill('Font size','nan');click('Save')
                 time.sleep(.8)
                 assert any(n.get_name()=='Enter a font size between 6 and 180 canvas pixels.' for n in nodes()),'Layout updates cleared the validation error'

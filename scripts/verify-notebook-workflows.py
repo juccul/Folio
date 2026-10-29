@@ -174,7 +174,7 @@ def main():
                 assert len(pages(tutorial)) == 6
                 client.key('z', 4); wait_page_counts({tutorial: 5})
                 client.key('z', 5); wait_page_counts({tutorial: 6})
-                action('Add page from template…'); click('Rename…'); enter('reusable'); click('Save')
+                action('Add page from template…'); click('Rename…'); enter('reusable'); click('Rename')
                 action('Add page from template…'); click('Remove'); click('Close')
                 assert not json.loads(rows("SELECT data FROM settings WHERE key='preferences'")[0][0])['templates']
 

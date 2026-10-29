@@ -340,7 +340,7 @@ def capture_session(args):
                         capture('open-document', lambda: sequence(editor, 'Open or create a document · Ctrl+T'))
                         capture('editor-selection', lambda: sequence(editor, lambda: client.key('a', 4)))
                         capture('text-font', lambda: sequence(editor, lambda: client.key('a', 4), 'sans-serif'))
-                        capture('text-size', lambda: sequence(editor, lambda: client.key('a', 4), lambda: click(next(n.get_name() for n in nodes() if n.get_name().endswith(' pt')))))
+                        capture('text-size', lambda: sequence(editor, lambda: client.key('a', 4), lambda: click(next(n.get_name() for n in nodes() if n.get_name().endswith(' px')))))
                         capture('text-color', lambda: sequence(editor, lambda: client.key('a', 4), 'Text color'))
                         capture('editor-pdf', lambda: sequence(library, 'Open Demo PDF', lambda: time.sleep(2)))
                         capture('editor-image', lambda: sequence(library, 'Open Demo image', lambda: client.key('a', 4), lambda: time.sleep(2)))
