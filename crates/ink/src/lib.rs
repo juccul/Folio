@@ -479,6 +479,23 @@ pub fn swept_hit(stroke: &InkStroke, a: Point, b: Point, r: f32) -> bool {
             || hit_tapered_point(b, c, d, pair[0].radius, pair[1].radius, r)
     })
 }
+/// Whether an eraser of radius `r` sweeping from `a` to `b` touches the
+/// drawn outline of a shape (not its interior).
+pub fn swept_shape_hit(shape: &Shape, a: Point, b: Point, r: f32) -> bool {
+    let Some(inv) = shape.transform.inverse() else {
+        return false;
+    };
+    let a = inv.apply(a);
+    let b = inv.apply(b);
+    let reach = r / shape.transform.scale().max(0.001) + shape.style.width / 2.;
+    match shape.vertices.as_slice() {
+        [] => false,
+        [p] => segment_distance(*p, a, b) <= reach,
+        vertices => vertices
+            .windows(2)
+            .any(|pair| segment_pair_distance(a, b, pair[0], pair[1]) <= reach),
+    }
+}
 fn segments_cross(a: Point, b: Point, c: Point, d: Point) -> bool {
     let cross =
         |a: Point, b: Point, p: Point| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);

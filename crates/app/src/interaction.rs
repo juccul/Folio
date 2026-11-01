@@ -320,6 +320,8 @@ impl Controller {
             .filter(|id| {
                 page.objects.get(id).is_some_and(|o| match o.as_ref() {
                     Object::Stroke(s) => folio_ink::swept_hit(s, from, to, radius),
+                    // Shapes are whole objects in every mode, hit by their outline.
+                    Object::Shape(s) => folio_ink::swept_shape_hit(s, from, to, radius),
                     _ => whole_objects && o.bounds().expand(radius).contains(to),
                 })
             })
@@ -613,10 +615,12 @@ impl Controller {
             self.delete_ids(ids, "Erase strokes");
             return;
         }
-        // Replace each touched stroke with its surviving fragments, in place.
+        // Replace each touched stroke with its surviving fragments, in place;
+        // touched shapes go whole, with the hidden ink they were fitted from.
+        let ids = self.with_derived_sources(ids);
         let page = self.page();
         let mut changes = vec![];
-        for (index, id) in self.ordered_selection(ids) {
+        for (index, id) in self.ordered_selection(&ids) {
             if let Some(before) = page.objects.get(&id) {
                 changes.push(Change::Object {
                     page: page.id,

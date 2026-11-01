@@ -588,6 +588,56 @@ fn ink_erasers_protect_media_and_keep_their_own_radius() {
     insert(&mut a, original);
     a.add_text("Protect me".into(), Point::new(150., 90.));
     let text = *a.session().selection.iter().next().unwrap();
+    // A Smart Ink line crosses the eraser and hides the ink it was fitted
+    // from; the eraser sits inside a rectangle, far from its outline.
+    let mut source = StrokeBuilder::new(PenStyle::default());
+    for i in 0..40 {
+        source.push(StrokePoint::new(
+            Point::new(175., 60. + i as f32 * 2.),
+            0.5,
+            i * 8,
+        ));
+    }
+    let source = insert(&mut a, source.finish().unwrap());
+    let shape = |kind, vertices, source_strokes| Shape {
+        id: Id::new_v4(),
+        kind,
+        vertices,
+        style: PenStyle::default(),
+        transform: Transform::default(),
+        source_strokes,
+    };
+    let line = shape(
+        ShapeKind::Line,
+        vec![Point::new(175., 60.), Point::new(175., 140.)],
+        vec![source],
+    );
+    let corners = [
+        (60., 40.),
+        (290., 40.),
+        (290., 160.),
+        (60., 160.),
+        (60., 40.),
+    ];
+    let rectangle = shape(
+        ShapeKind::Rectangle,
+        corners.map(|(x, y)| Point::new(x, y)).to_vec(),
+        vec![],
+    );
+    let shapes = [line.clone(), rectangle.clone()];
+    let (line, rectangle) = (line.id, rectangle.id);
+    let page = a.page().id;
+    let shapes = shapes
+        .into_iter()
+        .map(|s| Change::Object {
+            page,
+            id: s.id,
+            before: None,
+            after: Some(Arc::new(Object::Shape(s))),
+            index: 0,
+        })
+        .collect();
+    a.commit("Shapes", shapes);
     a.style.width = 80.;
     assert_eq!(a.settings.eraser_radius, 10.);
     a.set_tool(Tool::Eraser);
@@ -602,19 +652,21 @@ fn ink_erasers_protect_media_and_keep_their_own_radius() {
         buttons: 0,
         timestamp: 1000,
     };
-    for mode in [EraserMode::Stroke, EraserMode::Segment] {
+    let before = a.page().objects.clone();
+    for mode in [EraserMode::Stroke, EraserMode::Segment, EraserMode::Object] {
         a.settings.eraser_mode = mode;
         a.pointer(event(Phase::Down));
         a.pointer(event(Phase::Up));
-        assert!(a.page().objects.contains_key(&text));
+        let objects = &a.page().objects;
+        assert_eq!(objects.contains_key(&text), mode != EraserMode::Object);
+        assert!(!objects.contains_key(&line) && !objects.contains_key(&source));
+        assert!(objects.contains_key(&rectangle));
+        a.undo();
+        assert_eq!(a.page().objects, before);
+        a.redo();
+        assert!(!a.page().objects.contains_key(&line));
         a.undo();
     }
-    a.settings.eraser_mode = EraserMode::Object;
-    a.pointer(event(Phase::Down));
-    a.pointer(event(Phase::Up));
-    assert!(!a.page().objects.contains_key(&text));
-    a.undo();
-    assert!(a.page().objects.contains_key(&text));
 }
 #[test]
 fn refinement_applies_a_consistent_toggle_to_mixed_strokes_and_skips_media() {
