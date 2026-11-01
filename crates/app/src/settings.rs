@@ -114,6 +114,8 @@ pub struct Settings {
     pub eraser_mode: EraserMode,
     pub eraser_radius: f32,
     pub recent_colors: Vec<Color>,
+    /// Smart Ink defaults to enabled. Saved profiles always record these
+    /// toggles, so explicit opt-outs persist across updates.
     pub scratch_erase: bool,
     pub hold_shapes: bool,
     pub encircle_select: bool,
@@ -314,9 +316,9 @@ impl Default for Settings {
             eraser_mode: EraserMode::Stroke,
             eraser_radius: 10.,
             recent_colors: vec![],
-            scratch_erase: false,
+            scratch_erase: true,
             hold_shapes: true,
-            encircle_select: false,
+            encircle_select: true,
             autosave: true,
             ocr_download_allowed: false,
             cursor_size: 12.,
@@ -342,6 +344,32 @@ mod tests {
         let reopened: Settings =
             serde_json::from_str(&serde_json::to_string(&fresh).unwrap()).unwrap();
         assert!(reopened.follow_system_theme);
+    }
+
+    #[test]
+    fn smart_ink_defaults_on_and_explicit_opt_outs_persist() {
+        let smart_ink = |s: &Settings| [s.scratch_erase, s.hold_shapes, s.encircle_select];
+        assert_eq!(smart_ink(&Settings::default()), [true; 3]);
+        // Profiles that predate a toggle never recorded an opt-out for it.
+        let legacy: Settings = serde_json::from_value(serde_json::json!({"dark": true})).unwrap();
+        assert_eq!(smart_ink(&legacy), [true; 3]);
+        let mut opted_out = Settings::default();
+        opted_out.scratch_erase = false;
+        opted_out.encircle_select = false;
+        for (saved, expected) in [
+            (serde_json::to_string(&opted_out).unwrap(), [false, true, false]),
+            (
+                r#"{"scratch_erase":false,"hold_shapes":false,"encircle_select":false}"#.into(),
+                [false; 3],
+            ),
+        ] {
+            let mut reopened: Settings = serde_json::from_str(&saved).unwrap();
+            reopened.normalize();
+            assert_eq!(smart_ink(&reopened), expected);
+            let resaved: Settings =
+                serde_json::from_str(&serde_json::to_string(&reopened).unwrap()).unwrap();
+            assert_eq!(smart_ink(&resaved), expected);
+        }
     }
 
     #[test]

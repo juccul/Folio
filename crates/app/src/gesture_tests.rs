@@ -315,6 +315,8 @@ fn overlapping_scratch_still_erases_without_enabled_held_selection() {
 #[test]
 fn disabled_gestures_highlighter_and_shape_tools_keep_their_ink() {
     with_app(|app| {
+        app.settings.encircle_select = false;
+        app.settings.scratch_erase = false;
         draw(app, &[Point::new(110., 155.), Point::new(170., 165.)], 0);
         draw(app, &oval(1.), 1000);
         assert_eq!(app.page().objects.len(), 2);
