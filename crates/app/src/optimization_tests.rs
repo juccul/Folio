@@ -107,6 +107,20 @@ fn preview_results_cannot_resurrect_edited_or_deleted_objects() {
     app.preview_pending.insert((note, page, id), old.clone());
     app.session_mut().selection.insert(id);
     app.transform_selection(Transform::translate(400., 0.), "Move text");
+    // Releasing a drag must not hide the object until its raster is rebuilt.
+    let moved = |app: &Controller, x| {
+        let cached = &app.previews[&(note, page, id)];
+        assert!(Arc::ptr_eq(&cached.object, &app.page().objects[&id]));
+        assert_eq!(cached.bounds, Rect::new(x, 20., 2., 2.));
+        assert!(pixels.upgrade().is_some(), "Moving keeps identical pixels");
+    };
+    moved(&app, 410.);
+    app.undo();
+    moved(&app, 10.);
+    app.redo();
+    moved(&app, 410.);
+    app.session_mut().selection.insert(id);
+    app.rotate_selection(0.5);
     assert!(
         pixels.upgrade().is_none(),
         "Editing releases obsolete pixels"

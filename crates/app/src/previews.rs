@@ -90,15 +90,24 @@ impl Controller {
                 .is_some_and(|source| Arc::ptr_eq(source, object))
         };
         // Ordinary edits touch only their own cache keys, even in large notes.
+        let mut moved = Vec::new();
         for change in &command.changes {
             if let Change::Object { page, id, .. } = change {
                 let key = (note, *page, *id);
-                if self
-                    .previews
-                    .get(&key)
-                    .is_some_and(|preview| !current(*page, &preview.object))
+                if let Some(preview) = self.previews.get_mut(&key)
+                    && !current(*page, &preview.object)
                 {
-                    self.previews.remove(&key);
+                    // A move only translates the raster. Keep its pixels so the
+                    // object does not vanish until a worker renders it again.
+                    let object = session
+                        .document
+                        .page(*page)
+                        .and_then(|page| page.objects.get(id));
+                    if object.is_some_and(|object| translate_preview(preview, object)) {
+                        moved.push((*page, *id, preview.bounds));
+                    } else {
+                        self.previews.remove(&key);
+                    }
                 }
                 if self
                     .preview_failed
@@ -125,6 +134,14 @@ impl Controller {
             self.preview_failed.retain(|(owner, page, _), object| {
                 *owner != note || !pages.contains(page) || current(*page, object)
             });
+        }
+        // Match `accept_preview`, which indexes the drawn raster bounds.
+        if let Some(session) = self.sessions.get_mut(&note) {
+            for (page, id, bounds) in moved {
+                if session.page().id == page && self.previews.contains_key(&(note, page, id)) {
+                    session.index.insert(id, bounds);
+                }
+            }
         }
     }
     pub(crate) fn accept_preview(&mut self, note: Id, page: Id, preview: RasterPreview) -> bool {
@@ -226,4 +243,25 @@ impl Controller {
             .and_then(|p| p.objects.get(&object.id()))
             .is_some_and(|current| Arc::ptr_eq(current, object))
     }
+}
+
+/// Rebase `preview` onto `object` when the edit only translated it.
+fn translate_preview(preview: &mut RasterPreview, object: &Arc<Object>) -> bool {
+    let (before, after) = (preview.object.transform(), object.transform());
+    if (before.a, before.b, before.c, before.d) != (after.a, after.b, after.c, after.d) {
+        return false;
+    }
+    let mut unmoved = object.as_ref().clone();
+    unmoved.set_transform(before);
+    if unmoved != *preview.object {
+        return false;
+    }
+    let shift = Point::new(after.tx - before.tx, after.ty - before.ty);
+    let Rect { min, max } = preview.bounds;
+    preview.bounds = Rect {
+        min: Point::new(min.x + shift.x, min.y + shift.y),
+        max: Point::new(max.x + shift.x, max.y + shift.y),
+    };
+    preview.object = object.clone();
+    true
 }
