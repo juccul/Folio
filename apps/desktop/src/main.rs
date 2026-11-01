@@ -5,6 +5,16 @@ use folio_ui::NotesView;
 use gpui::*;
 use std::{path::PathBuf, time::Duration};
 fn main() -> anyhow::Result<()> {
+    let startup = std::time::Instant::now();
+    let profile_startup = std::env::var_os("FOLIO_PROFILE_STARTUP").is_some();
+    let mark = move |stage: &str| {
+        if profile_startup {
+            eprintln!(
+                "FOLIO_STARTUP {stage}: {:.3} ms",
+                startup.elapsed().as_secs_f64() * 1000.
+            );
+        }
+    };
     let args: Vec<_> = std::env::args().collect();
     if args.iter().any(|s| s == "--version" || s == "-V") {
         println!("Folio {}", env!("CARGO_PKG_VERSION"));
@@ -120,10 +130,13 @@ fn main() -> anyhow::Result<()> {
             }
         })?
     };
+    mark("before_platform");
     let application = Application::new().with_assets(folio_ui::IconAssets);
+    mark("platform_ready");
     let result = library
         .join()
         .unwrap_or_else(|_| Err("Opening the library failed unexpectedly.".into()));
+    mark("library_ready");
     let mut controller = match result {
         Ok(controller) => controller,
         Err(error) => {
@@ -165,6 +178,7 @@ fn main() -> anyhow::Result<()> {
         controller.import_as_note(file);
     }
     application.run(move |cx| {
+        mark("event_loop");
         NotesView::bindings(cx);
         if titlebar_smoke { NotesView::titlebar_smoke_bindings(cx); }
         let bounds = Bounds::centered(None, size(px(1320.), px(860.)), cx);
@@ -181,9 +195,14 @@ fn main() -> anyhow::Result<()> {
             } else {
                 NotesView::new(controller,window,cx)
             };
+            mark("view_ready");
+            if profile_startup {
+                window.on_next_frame(move |_, _| mark("first_frame"));
+            }
             if open_editor { view.show_editor(); }
             view
         })).expect("Open GPUI window");
+        mark("window_ready");
         cx.on_window_closed(|cx|cx.quit()).detach();
         cx.activate(true);
         if single_instance {

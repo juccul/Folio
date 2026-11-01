@@ -243,6 +243,30 @@ pub struct Store {
     pub connection: Connection,
     path: PathBuf,
 }
+
+/// Warm the bounded prefix of a large database before SQLite's page-by-page
+/// integrity scan. Large buffered reads avoid thousands of small cold reads;
+/// SQLite still validates every page, including the WAL, in its own snapshot.
+fn read_ahead_for_integrity(path: &Path) {
+    use std::io::Read;
+
+    let Ok(file) = std::fs::File::open(path) else {
+        return;
+    };
+    if !file.metadata().is_ok_and(|m| m.len() >= 4 * 1024 * 1024) {
+        return;
+    }
+    let mut file = file.take(64 * 1024 * 1024);
+    let mut buffer = vec![0; 1024 * 1024];
+    // This is only an I/O hint. SQLite remains responsible for reporting any
+    // read error through the normal recovery path.
+    while let Ok(count) = file.read(&mut buffer) {
+        if count == 0 {
+            break;
+        }
+    }
+}
+
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
@@ -273,6 +297,7 @@ impl Store {
    CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,data TEXT NOT NULL);
    CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(note_id UNINDEXED,page_id UNINDEXED,title,tags,body,tokenize='unicode61 remove_diacritics 2');
    COMMIT;")?;
+        read_ahead_for_integrity(&path);
         let check: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
         if check != "ok" {
             return Err(Error::Invalid(format!(
@@ -1789,10 +1814,38 @@ mod resilience_tests {
         let mut store = Store::open(&database).unwrap();
         let document = Document::new("Recovered journal");
         store.save(&Delta::full(&document)).unwrap();
+        // Exercise startup read-ahead on a database larger than its threshold,
+        // with a newer committed WAL value that must win over the main file.
+        let padding = "x".repeat(5 * 1024 * 1024);
+        store
+            .save_setting("large-setting", &serde_json::to_string(&padding).unwrap())
+            .unwrap();
         store.checkpoint().unwrap();
+        store.save_setting("large-setting", "\"from WAL\"").unwrap();
+        let reader = Store::open(&database).unwrap();
+        assert_eq!(
+            reader
+                .setting::<String>("large-setting")
+                .unwrap()
+                .as_deref(),
+            Some("from WAL")
+        );
+        assert_eq!(
+            reader.load(document.metadata.id).unwrap().unwrap(),
+            document
+        );
+        drop(reader);
         drop(store);
-        std::fs::write(&database, b"broken database").unwrap();
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&database)
+                .unwrap();
+            file.write_all(b"broken database").unwrap();
+        }
         let before = std::fs::read(&database).unwrap();
+        assert!(Store::open(&database).is_err());
         let report = recovery::recover(&root).unwrap();
         assert!(report.snapshot.is_some());
         assert_eq!(report.recovered_notes, 1);
@@ -1801,6 +1854,10 @@ mod resilience_tests {
         assert_eq!(
             recovered.load(document.metadata.id).unwrap().unwrap(),
             document
+        );
+        assert_eq!(
+            recovered.setting::<String>("large-setting").unwrap(),
+            Some(padding)
         );
     }
     #[test]

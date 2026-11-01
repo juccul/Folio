@@ -196,6 +196,8 @@ GPUI 0.2.2 is pinned/vendored; native input and GPU sprite extensions are record
 
 Library initialization runs on a startup worker while the main thread initializes GPUI graphics and fonts. The window opens after both finish; integrity checks and workspace restoration complete before editing begins, and library failures still open the recovery window.
 
+For databases of at least 4 MiB, startup reads ahead through at most the first 64 MiB using a reusable 1 MiB buffer before SQLite's whole-database `quick_check`. This reduces small cold reads without skipping validation or changing WAL/FULL durability. Read-ahead is best effort; SQLite still reports storage errors normally. Set `FOLIO_PROFILE_STARTUP=1` when launching to log elapsed milliseconds from entry into `main` through platform setup, library readiness, window construction and the first frame callback. These CPU milestones exclude process loading and compositor/display presentation; measure visible startup in a private desktop for comparisons.
+
 ## Validation and measurements
 
 Run `cargo test --locked --workspace -- --test-threads=2`, `cargo fmt --all -- --check`, and `python3 scripts/check-documentation.py`. Workspace tests cover document compatibility, raw-data preservation, ink/gesture geometry, undo/redo/reopen, storage recovery and rollback, search, recognition review, solver cancellation and stale results, and UI cache/field behavior. Native smoke replay and accessibility checks use private desktop sessions and throwaway documents; synthetic checks do not establish physical tablet reliability.
