@@ -555,7 +555,7 @@ impl Controller {
         ids
     }
     /// Commit `stroke`, plus a shape fitted to it when there is one. With shape
-    /// intent, a line drawn from an existing line can join it into an arrow.
+    /// intent, a head or shaft drawn at recent lines can join them into an arrow.
     fn commit_stroke(
         &mut self,
         stroke: InkStroke,
@@ -587,15 +587,18 @@ impl Controller {
         let mut sources = vec![id];
         if let Some(joined) = joined {
             sources.splice(0..0, joined.sources);
-            if matches!(joined.previous.as_ref(), Object::Shape(_)) {
-                let previous_id = joined.previous.id();
-                changes.push(Change::Object {
-                    page,
-                    id: previous_id,
-                    before: Some(joined.previous),
-                    after: None,
-                    index: self.session().order_positions[&previous_id],
-                });
+            // Fitted lines are replaced by the arrow; raw ink becomes its source.
+            for previous in joined.previous {
+                if matches!(previous.as_ref(), Object::Shape(_)) {
+                    let previous_id = previous.id();
+                    changes.push(Change::Object {
+                        page,
+                        id: previous_id,
+                        before: Some(previous),
+                        after: None,
+                        index: self.session().order_positions[&previous_id],
+                    });
+                }
             }
         }
         if let Some(fit) = fit {

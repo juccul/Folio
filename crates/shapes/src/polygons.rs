@@ -37,12 +37,18 @@ pub(crate) fn line(points: &[Point]) -> Option<Fit> {
 }
 
 pub(crate) fn arrow(points: &[Point]) -> Option<Fit> {
-    let corners = geometry::simplify(points, 0.035);
-    if !(4..=7).contains(&corners.len()) {
-        return None;
-    }
-    arrow_graph(points, &corners, &[corners[0], *corners.last()?])
+    // Hand-drawn wobble adds spurious corners at a fine tolerance; coarser
+    // passes still expose the tail, tip and barbs. The fitted arrow model, not
+    // the corner count, decides whether the stroke is an arrow.
+    ARROW_CORNER_TOLERANCES.iter().find_map(|&epsilon| {
+        let corners = geometry::simplify(points, epsilon);
+        if !(4..=9).contains(&corners.len()) {
+            return None;
+        }
+        arrow_graph(points, &corners, &[corners[0], *corners.last()?])
+    })
 }
+pub(crate) const ARROW_CORNER_TOLERANCES: [f32; 3] = [0.035, 0.05, 0.07];
 
 pub(crate) fn arrow_graph(points: &[Point], tips: &[Point], tails: &[Point]) -> Option<Fit> {
     let mut best: Option<Fit> = None;
@@ -77,9 +83,12 @@ pub(crate) fn arrow_graph(points: &[Point], tips: &[Point], tails: &[Point]) -> 
             if side(left) > -length * 0.055 || side(right) < length * 0.055 {
                 continue;
             }
-            let vertices = [tail, tip, left, tip, right];
-            let (error, worst) = geometry::residual(points, &vertices, false);
-            if error > 0.03 || worst > 0.07 {
+            // Accept both an open head and a closed triangular head.
+            let (error, worst) = [[tail, tip, left, tip, right], [tail, tip, left, right, tip]]
+                .iter()
+                .map(|vertices| geometry::residual(points, vertices, false))
+                .min_by(|a, b| a.0.total_cmp(&b.0))?;
+            if error > 0.03 || worst > 0.08 {
                 continue;
             }
             let depth = (back(left) + back(right)) * 0.5;

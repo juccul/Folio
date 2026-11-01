@@ -286,39 +286,48 @@ fn explicit_shape_tool_still_snaps_on_lift_without_a_hold() {
     });
 }
 #[test]
-fn held_two_stroke_arrow_keeps_both_sources_and_undo_restores_the_shaft() {
-    with_app(|app| {
-        let shaft = [Point::new(452., 301.), Point::new(517., 203.)];
-        let head = [
-            Point::new(480., 214.),
-            Point::new(517., 203.),
-            Point::new(532., 257.),
-        ];
-        begin(app, &shaft);
-        hold(app);
-        finish(app, shaft[1]);
-        let original = app.page().objects.clone();
-        assert_eq!(shapes(app)[0].kind, ShapeKind::Line);
-        begin(app, &head);
-        hold(app);
-        app.tick();
-        finish(app, head[2]);
-        assert_eq!(shapes(app).len(), 1);
-        let arrow = shapes(app)[0];
-        assert_eq!(arrow.kind, ShapeKind::Arrow);
-        assert_eq!(arrow.source_strokes.len(), 2);
-        for id in &arrow.source_strokes {
-            assert!(matches!(app.page().objects[id].as_ref(), Object::Stroke(_)));
-        }
-        app.undo();
-        assert_eq!(app.page().objects, original);
-        app.redo();
-        assert_eq!(shapes(app)[0].kind, ShapeKind::Arrow);
-        app.flush().unwrap();
-        let store = Store::open(&app.database).unwrap();
-        let restored = store.load(app.active).unwrap().unwrap();
-        assert!(restored.pages[0].objects.values().any(|o|matches!(o.as_ref(),Object::Shape(s) if s.kind==ShapeKind::Arrow&&s.source_strokes.len()==2)));
-    });
+fn held_multi_stroke_arrows_keep_all_sources_and_undo_restores_the_lines() {
+    let tail = Point::new(452., 301.);
+    let tip = Point::new(517., 203.);
+    let left = Point::new(480., 214.);
+    let right = Point::new(532., 257.);
+    let near_tip = Point::new(512., 210.);
+    for traces in [
+        vec![vec![tail, tip], vec![left, tip, right]],
+        vec![vec![left, tip, right], vec![tip, tail]],
+        vec![vec![tail, tip], vec![left, tip], vec![right, tip]],
+        vec![vec![tip, right], vec![tip, left], vec![tail, near_tip]],
+    ] {
+        with_app(|app| {
+            let (last, earlier) = traces.split_last().unwrap();
+            for trace in earlier {
+                begin(app, trace);
+                hold(app);
+                finish(app, *trace.last().unwrap());
+            }
+            let original = app.page().objects.clone();
+            assert!(shapes(app).iter().all(|s| s.kind != ShapeKind::Arrow));
+            begin(app, last);
+            hold(app);
+            app.tick();
+            finish(app, *last.last().unwrap());
+            assert_eq!(shapes(app).len(), 1, "{traces:?}");
+            let arrow = shapes(app)[0];
+            assert_eq!(arrow.kind, ShapeKind::Arrow);
+            assert_eq!(arrow.source_strokes.len(), traces.len());
+            for id in &arrow.source_strokes {
+                assert!(matches!(app.page().objects[id].as_ref(), Object::Stroke(_)));
+            }
+            app.undo();
+            assert_eq!(app.page().objects, original);
+            app.redo();
+            assert_eq!(shapes(app)[0].kind, ShapeKind::Arrow);
+            app.flush().unwrap();
+            let store = Store::open(&app.database).unwrap();
+            let restored = store.load(app.active).unwrap().unwrap();
+            assert!(restored.pages[0].objects.values().any(|o|matches!(o.as_ref(),Object::Shape(s) if s.kind==ShapeKind::Arrow&&s.source_strokes.len()==traces.len())));
+        });
+    }
 }
 #[test]
 fn held_arc_serializes_and_reloads_as_an_open_shape_with_original_ink() {
@@ -344,7 +353,7 @@ fn held_arc_serializes_and_reloads_as_an_open_shape_with_original_ink() {
 }
 #[test]
 fn arrow_join_requires_a_recent_matching_trace_and_shape_intent() {
-    for case in ["old", "different_preset", "no_hold"] {
+    for case in ["old", "different_preset", "no_hold", "unrelated"] {
         with_app(|app| {
             let shaft = [Point::new(452., 301.), Point::new(517., 203.)];
             begin(app, &shaft);
@@ -364,16 +373,23 @@ fn arrow_join_requires_a_recent_matching_trace_and_shape_intent() {
             } else if case == "different_preset" {
                 app.style.width *= 2.;
             }
-            let head = [
+            let mut head = vec![
                 Point::new(480., 214.),
                 Point::new(517., 203.),
                 Point::new(532., 257.),
             ];
+            if case == "unrelated" {
+                // One barb plus nearby unrelated ink is not a two-sided head.
+                let other = [Point::new(540., 190.), Point::new(560., 250.)];
+                begin(app, &other);
+                finish(app, other[1]);
+                head.pop();
+            }
             begin(app, &head);
             if case != "no_hold" {
                 hold(app);
             }
-            finish(app, head[2]);
+            finish(app, *head.last().unwrap());
             assert!(app.page().objects.contains_key(&line));
             assert!(shapes(app).iter().all(|s| s.kind != ShapeKind::Arrow));
         });
