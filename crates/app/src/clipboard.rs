@@ -128,10 +128,13 @@ impl Controller {
                 }
                 Err(e) => self.error = Some(e.to_string()),
             }
-        } else {
+        } else if !text.is_empty() {
+            // Like pasted images, pasted text is ready to move or resize.
             let position =
                 position.unwrap_or_else(|| self.paste_position(text_boxes::TEXT_BOX_SIZE));
             self.add_text(text, position);
+            self.tool = Tool::Lasso;
+            self.temporary_selection = false;
         }
     }
     /// Paste an image at the pointer, if it is over the canvas, otherwise in

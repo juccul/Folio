@@ -176,6 +176,33 @@ fn paste_image_anchors_at_target_and_selects_it_on_its_page() {
     assert_eq!(a.tool, Tool::Lasso);
     a.undo();
     assert!(a.page().objects.is_empty());
+    // Plain text pastes the same way at the hovering pen, and the selected
+    // box moves with a mouse drag.
+    a.set_tool(Tool::Pen);
+    a.pointer(event(200., 150., Phase::Hover));
+    a.paste_text_or_objects("Pasted text".into());
+    let id = *a.session().selection.iter().next().unwrap();
+    assert_eq!(a.session().selection.len(), 1);
+    assert_eq!(a.page().objects[&id].bounds().min, a.cursor.unwrap());
+    assert_eq!(a.tool, Tool::Lasso);
+    let pasted = a.page().objects[&id].bounds().min;
+    let mouse = |x, y, phase| PenEvent {
+        device: Device::Mouse,
+        ..event(x, y, phase)
+    };
+    a.pointer(mouse(210., 160., Phase::Down));
+    a.pointer(mouse(250., 190., Phase::Move));
+    a.pointer(mouse(250., 190., Phase::Up));
+    let moved = a.page().objects[&id].bounds().min;
+    assert!((moved.x - pasted.x - 40.).abs() < 0.01 && (moved.y - pasted.y - 30.).abs() < 0.01);
+    a.undo();
+    assert_eq!(a.page().objects[&id].bounds().min, pasted);
+    a.undo();
+    assert!(a.page().objects.is_empty());
+    a.redo();
+    assert_eq!(a.page().objects[&id].bounds().min, pasted);
+    a.undo();
+    assert!(a.page().objects.is_empty());
     // A pointer position scrolled out of view, as when the pointer left the
     // window, centers the image in the panned and zoomed view instead.
     let image = image::DynamicImage::new_rgba8(1000, 600);
