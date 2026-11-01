@@ -103,10 +103,10 @@ def main():
                         client.key('space' if char == ' ' else char)
                 def action(label):
                     click('Document actions')
-                    if label == 'Index page handwriting…':
+                    if label == 'Index handwriting on this page…':
                         click('Math and handwriting ›')
-                    elif label in {'Name page bookmark…', 'Duplicate current page', 'Use current page as cover', 'Move page to document…', 'Save page as template…', 'Add page from template…'}:
-                        click('Current page ›')
+                    elif label in {'Name bookmark…', 'Duplicate page', 'Use as document cover', 'Move to another document…', 'Save as template…', 'Add page from template…'}:
+                        click('Page ›')
                     click(label)
                 def capture(name):
                     time.sleep(1.)  # Allow asynchronous text/thumbnail raster jobs to settle.
@@ -129,7 +129,7 @@ def main():
                     return next(json.loads(row[0]) for row in rows('SELECT metadata FROM notes')
                                 if json.loads(row[0])['title'] == title)
 
-                action('Index page handwriting…')
+                action('Index handwriting on this page…')
                 wait('Keep ink and index')
                 enter('verified ink'); capture('index-review')
                 click('Keep ink and index')
@@ -148,18 +148,18 @@ def main():
                 tutorial = metadata('Welcome to Folio')['id']
                 assert len(pages(tutorial)) == 4
                 capture('starter-notebook')
-                action('Name page bookmark…'); enter('practice'); click('Save')
+                action('Name bookmark…'); enter('practice'); click('Save')
                 assert json.loads(pages(tutorial)[0][1])['properties']['bookmark'] == 'practice'
-                action('Duplicate current page')
+                action('Duplicate page')
                 assert len(pages(tutorial)) == 5
-                action('Use current page as cover')
+                action('Use as document cover')
                 assert metadata('Welcome to Folio')['cover_page'] in {p[0] for p in pages(tutorial)}
-                action('Move page to document…'); capture('move-page-picker'); click('Field notes')
+                action('Move to another document…'); capture('move-page-picker'); click('Field notes')
                 assert len(pages(tutorial)) == 4 and len(pages(note)) == original_pages + 1, (len(pages(tutorial)), len(pages(note)))
                 client.key('z', 4)
                 wait_page_counts({tutorial: 5, note: original_pages + 1})
 
-                action('Save page as template…'); enter('practice page'); click('Save')
+                action('Save as template…'); enter('practice page'); click('Save')
                 for _ in range(100):
                     preferences = json.loads(rows("SELECT data FROM settings WHERE key='preferences'")[0][0])
                     if preferences.get('templates'):

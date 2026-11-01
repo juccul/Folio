@@ -94,6 +94,20 @@ define_icons! {
     List => "List.svg",
     Sliders => "Sliders.svg",
     Help => "Help.svg",
+    Tag => "Tag.svg",
+    Page => "Page.svg",
+    NewPage => "NewPage.svg",
+    MovePage => "MovePage.svg",
+    Bookmark => "Bookmark.svg",
+    Template => "Template.svg",
+    SpaceInsert => "SpaceInsert.svg",
+    SpaceRemove => "SpaceRemove.svg",
+    Infinite => "Infinite.svg",
+    Ruler => "Ruler.svg",
+    TextScan => "TextScan.svg",
+    PaperRuled => "PaperRuled.svg",
+    PaperGrid => "PaperGrid.svg",
+    PaperDots => "PaperDots.svg",
 }
 
 pub fn icon(kind: Icon, color: u32) -> Svg {

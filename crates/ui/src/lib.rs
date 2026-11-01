@@ -1780,37 +1780,7 @@ impl NotesView {
             .flex_col()
             .gap_2();
         if self.export_open {
-            panel = panel.child(self.export_appearance(window, cx));
-            panel = panel.child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_xs()
-                    .text_color(rgb(theme.muted))
-                    .child("Export"),
-            );
-            for (id, label, kind) in [
-                ("export-pdf", "PDF · all pages", ExportKind::Pdf),
-                (
-                    "export-notebook",
-                    "Editable document · with assets",
-                    ExportKind::Notebook,
-                ),
-                ("export-svg", "SVG · current page", ExportKind::Svg),
-                ("export-png", "PNG · current page", ExportKind::Png),
-                (
-                    "export-text",
-                    "Plain text · typed content",
-                    ExportKind::Text,
-                ),
-            ] {
-                panel = panel.child(
-                    self.button(id, label, false, cx, move |this, _, cx| {
-                        this.export(kind, cx)
-                    })
-                    .justify_start(),
-                );
-            }
+            panel = panel.p_1p5().child(self.export_menu(window, cx));
         } else if self.more_open {
             panel = self.document_actions_menu(panel, cx);
         } else if self.pen_settings && self.controller.tool == Tool::Eraser {

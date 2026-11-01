@@ -8,7 +8,7 @@ Copyright (c) 2020–2026 Paweł Kuna.
 - Original SVGs: `icons/outline/` at the revision above
 - Full license and copyright notice: [LICENSE.txt](LICENSE.txt)
 
-Folio embeds 37 Tabler Outline SVGs in `crates/ui/assets/icons/`. The original 2px stroke is adjusted to 1.65 on the 24×24 grid, and GPUI applies the current interface color at rendering time. All other source geometry is retained.
+Folio embeds 51 Tabler Outline SVGs in `crates/ui/assets/icons/`. The original 2px stroke is adjusted to 1.65 on the 24×24 grid, and GPUI applies the current interface color at rendering time. All other source geometry is retained.
 
 The scissors icon (`Cut.svg`) is an original Folio drawing in the same line style, licensed under GPL-3.0-or-later. `Copy.svg` uses the same Tabler `copy.svg` geometry as Restore.
 
@@ -57,5 +57,21 @@ The filled favorite state in `StarFilled.svg` is derived from the existing `star
 | List | `list.svg` |
 | Sliders | `adjustments-horizontal.svg` |
 | Help | `help-circle.svg` |
+| Tag | `tag.svg` |
+| Page | `file.svg` |
+| NewPage | `file-plus.svg` |
+| MovePage | `file-arrow-right.svg` |
+| Bookmark | `bookmark.svg` |
+| Template | `template.svg` |
+| SpaceInsert | `row-insert-bottom.svg` |
+| SpaceRemove | `row-remove.svg` |
+| Infinite | `infinity.svg` |
+| Ruler | `ruler-measure.svg` |
+| TextScan | `text-scan-2.svg` |
+| PaperRuled | `baseline-density-medium.svg` |
+| PaperGrid | `grid-4x4.svg` |
+| PaperDots | `grid-dots.svg` |
+
+The fourteen icons from Tag to PaperDots come from the `@tabler/icons` 3.46.0 package's `icons/outline/` directory under the same license, with the same stroke adjustment.
 
 Math.svg, Calculator.svg, Crop.svg and Paste.svg are original Folio drawings in the same outline style, licensed under the project license.

@@ -347,14 +347,14 @@ def capture_session(args):
                         capture('image-crop', lambda: sequence(library, 'Open Demo image', lambda: client.key('a', 4), 'Crop…'))
                         capture('image-crop-coordinates', lambda: sequence(library, 'Open Demo image', lambda: client.key('a', 4), 'Crop with numbers…'))
                         capture('edit-equation', lambda: sequence(library, 'Open Demo equation', lambda: client.key('a', 4), 'Edit equation'))
-                        for section in (None, 'Current page', 'Paper and canvas', 'Math and handwriting', 'Page layout'):
+                        for section in (None, 'Page', 'Math and handwriting'):
                             capture('editor-actions-' + ('document' if section is None else section.lower().replace(' ', '-')), lambda section=section: more(section))
                         for name, section, label in [
-                            ('page-bookmark', 'Current page', 'Name page bookmark…'),
-                            ('page-move', 'Current page', 'Move page to document…'),
-                            ('page-save-template', 'Current page', 'Save page as template…'),
-                            ('page-templates', 'Current page', 'Add page from template…'),
-                            ('page-size', 'Paper and canvas', 'Custom page size'),
+                            ('page-bookmark', 'Page', 'Name bookmark…'),
+                            ('page-move', 'Page', 'Move to another document…'),
+                            ('page-save-template', 'Page', 'Save as template…'),
+                            ('page-templates', 'Page', 'Add page from template…'),
+                            ('page-size', 'Page', 'Page size…'),
                             ('insert-equation', 'Math and handwriting', 'Insert LaTeX equation'),
                         ]:
                             capture(name, lambda section=section, label=label: sequence(lambda: more(section), label))

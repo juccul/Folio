@@ -280,43 +280,7 @@ impl NotesView {
         self.control(
             id,
             format!("{label}: {}", if on { "On" } else { "Off" }),
-            canvas(
-                |_, _, _| {},
-                move |bounds, _, window, _| {
-                    let height = f32::from(bounds.size.height);
-                    let inset = height * 0.15;
-                    let diameter = height - inset * 2.;
-                    window.paint_quad(
-                        fill(
-                            bounds,
-                            rgb(super::theme::mix(theme.selected, theme.accent, progress)),
-                        )
-                        .corner_radii(px(height * 0.5)),
-                    );
-                    let knob = Bounds::new(
-                        point(
-                            bounds.origin.x
-                                + px(inset + (f32::from(bounds.size.width) - height) * progress),
-                            bounds.origin.y + px(inset),
-                        ),
-                        size(px(diameter), px(diameter)),
-                    );
-                    window.paint_quad(
-                        fill(
-                            knob,
-                            rgb(super::theme::mix(
-                                theme.muted,
-                                theme.primary_foreground,
-                                progress,
-                            )),
-                        )
-                        .corner_radii(px(diameter * 0.5)),
-                    );
-                },
-            )
-            .w(rems(2.25))
-            .h(rems(1.25))
-            .into_any_element(),
+            switch_track(theme, progress).into_any_element(),
             on,
             cx,
             move |this, _, _| {
@@ -330,4 +294,43 @@ impl NotesView {
         .bg(transparent_black())
         .flex_shrink_0()
     }
+}
+/// The track and knob of an on/off switch, `progress` from off (0) to on (1).
+pub(super) fn switch_track(theme: Theme, progress: f32) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let height = f32::from(bounds.size.height);
+            let inset = height * 0.15;
+            let diameter = height - inset * 2.;
+            window.paint_quad(
+                fill(
+                    bounds,
+                    rgb(super::theme::mix(theme.selected, theme.accent, progress)),
+                )
+                .corner_radii(px(height * 0.5)),
+            );
+            let knob = Bounds::new(
+                point(
+                    bounds.origin.x + px(inset + (f32::from(bounds.size.width) - height) * progress),
+                    bounds.origin.y + px(inset),
+                ),
+                size(px(diameter), px(diameter)),
+            );
+            window.paint_quad(
+                fill(
+                    knob,
+                    rgb(super::theme::mix(
+                        theme.muted,
+                        theme.primary_foreground,
+                        progress,
+                    )),
+                )
+                .corner_radii(px(diameter * 0.5)),
+            );
+        },
+    )
+    .w(rems(2.25))
+    .h(rems(1.25))
+    .flex_shrink_0()
 }

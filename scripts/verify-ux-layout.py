@@ -262,9 +262,9 @@ def main():
                             click('Pen settings and presets')
                             assert any(n.get_name().startswith('Use preset ') for n in nodes())
                             capture('presets-saved');client.key('Escape')
-                            click('Document actions');click('Paper and canvas ›');click('Custom page size…')
+                            click('Document actions');click('Page ›');click('Page size…')
                             click('Letter');click('Inches');capture('physical-page-size');click('Save')
-                            click('Document actions');click('Math and handwriting ›');click('Index page handwriting…')
+                            click('Document actions');click('Math and handwriting ›');click('Index handwriting on this page…')
                             assert any(n.get_name()=='Download and recognize' for n in nodes()), 'Missing explicit OCR setup choice'
                             capture('ocr-consent');click('Cancel')
                             assert not (data/'recognition/glm-ocr-q8-b11457').exists(), 'Setup downloaded files without consent'

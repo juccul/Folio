@@ -112,7 +112,8 @@ fn ink_svg(svg: &str, palette: theme::CanvasTheme) -> String {
     output
 }
 impl NotesView {
-    pub(super) fn export_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    /// The Export popover: color appearance with a preview, then formats.
+    pub(super) fn export_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
         let page = self.controller.page();
         let key = (
@@ -152,43 +153,63 @@ impl NotesView {
             })
             .detach();
         }
-        let mut panel = div()
+        let mut menu = div()
             .flex()
             .flex_col()
-            .gap_2()
-            .child(div().text_sm().child("PDF, SVG and PNG appearance"));
-        for (id, label, mode) in [
-            ("export-original", "Original colors", Appearance::Original),
-            ("export-visible", "Visible appearance", Appearance::Visible),
-            (
-                "export-print",
-                "Light paper for printing",
-                Appearance::Print,
-            ),
+            .gap(px(1.))
+            .child(self.menu_row(
+                "export-back",
+                "‹ Document actions".into(),
+                div().font_weight(FontWeight::SEMIBOLD).child("Export"),
+                Icon::Back,
+                theme.muted,
+                None,
+                cx,
+                |this, _, _| {
+                    this.dismiss_popovers();
+                    this.more_section = MoreSection::Document;
+                    this.more_open = true;
+                },
+            ))
+            .child(document_actions::separator(theme))
+            .child(document_actions::heading(theme, "Colors in PDF, SVG and PNG"));
+        let mut modes = div().flex().gap_1().px_1();
+        for (id, label, text, mode) in [
+            ("export-original", "Original colors", "Original", Appearance::Original),
+            ("export-visible", "Visible appearance", "As shown", Appearance::Visible),
+            ("export-print", "Light paper for printing", "Print", Appearance::Print),
         ] {
-            panel = panel.child(
-                self.button(
+            let active = self.export_options.appearance == mode;
+            modes = modes.child(
+                self.control(
                     id,
                     label,
-                    self.export_options.appearance == mode,
+                    div().text_xs().child(text).into_any_element(),
+                    active,
                     cx,
                     move |this, _, _| this.export_options.appearance = mode,
                 )
-                .justify_start()
-                .text_xs(),
+                .flex_1()
+                .min_w_0()
+                .px_1()
+                .min_h(rems(1.75))
+                .py_1()
+                .when(active, |s| s.border_color(rgb(theme.accent))),
             );
         }
-        panel = panel.child(div().text_xs().child(format!(
-            "Preview · page {} of {}",
-            self.controller.session().page + 1,
-            self.controller.session().document.pages.len()
-        )));
         let mut preview = div()
-            .h(px(130.))
+            .h(px(150.))
+            .mx_1()
+            .mt_1()
+            .p_2()
             .flex()
             .items_center()
             .justify_center()
-            .overflow_hidden();
+            .overflow_hidden()
+            .rounded(px(theme.radius))
+            .bg(rgb(theme.surface))
+            .border_1()
+            .border_color(theme.border);
         if let Some(image) = &self.export_options.image {
             preview = preview.child(
                 img(image.clone())
@@ -197,7 +218,7 @@ impl NotesView {
             );
         } else {
             preview = preview.child(
-                div().text_xs().child(
+                div().text_xs().text_color(rgb(theme.muted)).child(
                     self.export_options
                         .error
                         .clone()
@@ -205,7 +226,54 @@ impl NotesView {
                 ),
             );
         }
-        panel.child(preview).child(div().text_xs().child("Editable documents retain original colors and all pages. Text export contains typed content from all pages. PDF backgrounds and photographs keep their colors."))
+        menu = menu.child(modes).child(preview).child(
+            div()
+                .px_2()
+                .pt_1()
+                .text_xs()
+                .text_color(rgb(theme.muted))
+                .child(format!(
+                    "Preview of page {} of {}. Editable documents and text keep original colors.",
+                    self.controller.session().page + 1,
+                    self.controller.session().document.pages.len()
+                )),
+        );
+        menu = menu
+            .child(document_actions::separator(theme))
+            .child(document_actions::heading(theme, "Export as"));
+        for (id, label, text, scope, kind, export) in [
+            ("export-pdf", "PDF · all pages", "PDF", "All pages", Icon::Page, ExportKind::Pdf),
+            (
+                "export-notebook",
+                "Editable document · with assets",
+                "Editable document",
+                "With assets",
+                Icon::Book,
+                ExportKind::Notebook,
+            ),
+            ("export-svg", "SVG · current page", "SVG", "This page", Icon::Shapes, ExportKind::Svg),
+            ("export-png", "PNG · current page", "PNG", "This page", Icon::Image, ExportKind::Png),
+            (
+                "export-text",
+                "Plain text · typed content",
+                "Plain text",
+                "Typed text",
+                Icon::Text,
+                ExportKind::Text,
+            ),
+        ] {
+            menu = menu.child(self.menu_row(
+                id,
+                label.into(),
+                div().child(text),
+                kind,
+                theme.muted,
+                Some(document_actions::hint(theme, scope).into_any_element()),
+                cx,
+                move |this, _, cx| this.export(export, cx),
+            ));
+        }
+        menu
     }
 }
 #[cfg(test)]
