@@ -1920,6 +1920,7 @@ dependencies = [
  "folio-storage",
  "folio-ui",
  "folio-update",
+ "futures",
  "gpui",
 ]
 

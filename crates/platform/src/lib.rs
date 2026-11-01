@@ -6,6 +6,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+mod instance;
+pub use instance::{activate_running_instance, listen_for_activation};
 pub fn data_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("FOLIO_DATA_DIR") {
         return PathBuf::from(p);
@@ -778,13 +780,28 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn lock_rejects_second_writer_and_releases_on_drop() {
+    fn lock_rejects_second_writer_and_hands_launches_to_the_owner() {
         let root = directory("lock");
         let first = lock_data_dir(&root).unwrap();
         assert_eq!(
             lock_data_dir(&root).unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
         );
+        assert!(!activate_running_instance(&root, Some("token")));
+        let (sender, tokens) = std::sync::mpsc::channel();
+        listen_for_activation(&root, move |token| sender.send(token).is_ok()).unwrap();
+        assert!(activate_running_instance(&root, Some("launcher\ntoken")));
+        assert!(activate_running_instance(&root, None));
+        assert_eq!(tokens.recv().unwrap().as_deref(), Some("launchertoken"));
+        assert_eq!(tokens.recv().unwrap(), None);
+        // A new lock owner replaces a socket left behind by its predecessor; an
+        // owner that cannot activate (e.g. while quitting) does not confirm.
+        #[cfg(unix)]
+        {
+            listen_for_activation(&root, |_| false).unwrap();
+            assert!(!activate_running_instance(&root, None));
+            assert!(tokens.try_recv().is_err());
+        }
         drop(first);
         drop(lock_data_dir(&root).unwrap());
         std::fs::remove_dir_all(root).unwrap();

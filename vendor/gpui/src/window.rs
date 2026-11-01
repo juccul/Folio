@@ -4326,6 +4326,16 @@ impl Window {
         self.platform_window.activate();
     }
 
+    /// Activate the window on behalf of another launch, passing its startup
+    /// token when available. Compositors may still decline focus and request
+    /// attention instead.
+    pub fn activate_window_with_token(&self, token: Option<&str>) {
+        match token {
+            Some(token) => self.platform_window.activate_with_token(token),
+            None => self.platform_window.activate(),
+        }
+    }
+
     /// Minimize the current window at the platform level.
     pub fn minimize_window(&self) {
         self.platform_window.minimize();

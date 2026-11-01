@@ -479,6 +479,11 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         answers: &[PromptButton],
     ) -> Option<oneshot::Receiver<usize>>;
     fn activate(&self);
+    /// Activate with a launcher's startup token (`XDG_ACTIVATION_TOKEN` or
+    /// `DESKTOP_STARTUP_ID`) so focus-stealing prevention can honor it.
+    fn activate_with_token(&self, _token: &str) {
+        self.activate();
+    }
     fn is_active(&self) -> bool;
     fn is_hovered(&self) -> bool;
     fn set_title(&mut self, title: &str);

@@ -768,6 +768,34 @@ enum WmHintPropertyState {
 }
 
 impl X11Window {
+    fn activate_at(&self, time: u32) {
+        let data = [1, time, 0, 0, 0];
+        let message = xproto::ClientMessageEvent::new(
+            32,
+            self.0.x_window,
+            self.0.state.borrow().atoms._NET_ACTIVE_WINDOW,
+            data,
+        );
+        self.0
+            .xcb
+            .send_event(
+                false,
+                self.0.state.borrow().x_root_window,
+                xproto::EventMask::SUBSTRUCTURE_REDIRECT | xproto::EventMask::SUBSTRUCTURE_NOTIFY,
+                message,
+            )
+            .log_err();
+        self.0
+            .xcb
+            .set_input_focus(
+                xproto::InputFocus::POINTER_ROOT,
+                self.0.x_window,
+                xproto::Time::CURRENT_TIME,
+            )
+            .log_err();
+        xcb_flush(&self.0.xcb);
+    }
+
     pub fn new(
         handle: AnyWindowHandle,
         client: X11ClientStatePtr,
@@ -1292,31 +1320,16 @@ impl PlatformWindow for X11Window {
     }
 
     fn activate(&self) {
-        let data = [1, xproto::Time::CURRENT_TIME.into(), 0, 0, 0];
-        let message = xproto::ClientMessageEvent::new(
-            32,
-            self.0.x_window,
-            self.0.state.borrow().atoms._NET_ACTIVE_WINDOW,
-            data,
-        );
-        self.0
-            .xcb
-            .send_event(
-                false,
-                self.0.state.borrow().x_root_window,
-                xproto::EventMask::SUBSTRUCTURE_REDIRECT | xproto::EventMask::SUBSTRUCTURE_NOTIFY,
-                message,
-            )
-            .log_err();
-        self.0
-            .xcb
-            .set_input_focus(
-                xproto::InputFocus::POINTER_ROOT,
-                self.0.x_window,
-                xproto::Time::CURRENT_TIME,
-            )
-            .log_err();
-        xcb_flush(&self.0.xcb);
+        self.activate_at(xproto::Time::CURRENT_TIME.into());
+    }
+
+    fn activate_with_token(&self, token: &str) {
+        // Startup IDs end in `_TIME<timestamp>` from the launching user event.
+        let time = token
+            .rsplit_once("_TIME")
+            .and_then(|(_, time)| time.parse().ok())
+            .unwrap_or(xproto::Time::CURRENT_TIME.into());
+        self.activate_at(time);
     }
 
     fn is_active(&self) -> bool {

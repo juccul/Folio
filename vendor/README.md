@@ -13,6 +13,7 @@ These directories retain full upstream sources and notices.
 - `window.rs`/`platform/blade/shaders.wgsl`: GPU affine image painting and transformed clipping. PDF/images/text stay aligned with ink during rotation and drag transforms. This renderer extension targets Linux's Blade backend.
 - `elements/img.rs`: expose cached asynchronous raster loading to the canvas.
 - `taffy.rs`: f32 casts for the resolved Taffy layout version.
+- `platform.rs`/`window.rs`/`platform/linux/{wayland,x11}/window.rs`: `activate_window_with_token` activates with a launcher's xdg-activation token (Wayland) or startup-ID timestamp (X11) for single-instance handoff.
 - `platform/windows/pen.rs`/`events.rs`/`window.rs`: Windows Ink pointer history with pressure, tilt, eraser/barrel identity, cancellation, DPI conversion, duplicate mouse filtering, and compatible control events; deferred native title-bar movement and edge resizing.
 - `platform/windows/shaders.hlsl`: affine polychrome image transforms and local rounded clipping, matching the shared scene layout.
 - `platform/windows/window.rs`: an application-owned `WM_GETOBJECT` handler for the AccessKit Windows accessibility adapter.

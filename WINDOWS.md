@@ -25,7 +25,7 @@ It creates a ZIP under `artifacts/dist`, containing `bin/folio.exe`, embedded Py
 
 Extract the entire ZIP into a writable folder and launch `bin/folio.exe`. Keep the sibling `python`, `math-solver`, and `pdf` directories together. Moving the complete folder preserves worker paths. Packaging on Windows automatically includes the matching x64 Visual C++ redistributable DLLs from the installed build tools. When packaging on Linux, pass those DLLs with repeated `--extra-dll PATH` arguments. The release package includes them beside `folio.exe`.
 
-Notes and downloaded OCR assets live under `%LOCALAPPDATA%\Folio`. `--data-dir PATH` and `FOLIO_DATA_DIR` override this. Launching a second writer for the same directory is rejected. The installer keeps this data when uninstalled.
+Notes and downloaded OCR assets live under `%LOCALAPPDATA%\Folio`. `--data-dir PATH` and `FOLIO_DATA_DIR` override this. Launching Folio again for the same directory, including from a shortcut or the taskbar, activates the running window (restoring it if minimized) through a per-library local named pipe instead of opening a second instance. The installer keeps this data when uninstalled.
 
 ## Optional OCR
 

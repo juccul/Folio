@@ -93,6 +93,11 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
+    // Fixtures, recovery and update restarts always start their own process.
+    let single_instance = !(smoke || titlebar_smoke || recover || restart_after_update);
+    if single_instance && activate_running_instance(&data_dir) {
+        return Ok(());
+    }
     let open_editor =
         smoke || titlebar_smoke || new_note || open_note.is_some() || !files.is_empty();
     let result = if !explicit_path
@@ -170,6 +175,25 @@ fn main() -> anyhow::Result<()> {
         })).expect("Open GPUI window");
         cx.on_window_closed(|cx|cx.quit()).detach();
         cx.activate(true);
+        if single_instance {
+            let (requests, mut received) = futures::channel::mpsc::unbounded::<(Option<String>, std::sync::mpsc::Sender<()>)>();
+            let listening = folio_platform::listen_for_activation(&data_dir, move |token| {
+                let (done, activated) = std::sync::mpsc::channel();
+                requests.unbounded_send((token, done)).is_ok()
+                    && activated.recv_timeout(Duration::from_secs(2)).is_ok()
+            });
+            if let Err(error) = listening {
+                eprintln!("Folio could not accept activation from later launches: {error}");
+            }
+            cx.spawn(async move |cx| {
+                use futures::StreamExt;
+                while let Some((token, done)) = received.next().await {
+                    if window.update(cx, |_, window, _| window.activate_window_with_token(token.as_deref())).is_ok() {
+                        let _ = done.send(());
+                    }
+                }
+            }).detach();
+        }
         if smoke {
             cx.spawn(async move |cx| {
                 cx.background_executor().timer(Duration::from_millis(600)).await;
@@ -271,6 +295,30 @@ fn main() -> anyhow::Result<()> {
         }
     });
     Ok(())
+}
+
+/// Hand this launch to the instance already running for `data_dir`. While
+/// another process holds the library lock but is not answering yet (starting
+/// or exiting), keep retrying briefly instead of opening a broken window.
+fn activate_running_instance(data_dir: &std::path::Path) -> bool {
+    let token = ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok().filter(|token| !token.is_empty()));
+    let start = std::time::Instant::now();
+    loop {
+        if folio_platform::activate_running_instance(data_dir, token.as_deref()) {
+            return true;
+        }
+        match folio_platform::lock_data_dir(data_dir) {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    && start.elapsed() < Duration::from_secs(10) =>
+            {
+                std::thread::sleep(Duration::from_millis(100))
+            }
+            _ => return false,
+        }
+    }
 }
 
 fn validate_titlebar_fixture_directory(path: &std::path::Path) -> anyhow::Result<()> {
