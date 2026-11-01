@@ -267,8 +267,7 @@ impl Controller {
             if select && note == self.active && page == self.page().id && self.interaction.is_none()
             {
                 self.session_mut().selection = HashSet::from([id]);
-                self.tool = Tool::Lasso;
-                self.temporary_selection = false;
+                self.borrow_lasso();
             }
         }
     }

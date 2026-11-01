@@ -153,6 +153,18 @@ impl Controller {
             self.interaction = Some(handle);
             return false;
         }
+        let selection_hit = self
+            .selection_bounds()
+            .is_some_and(|r| r.expand(8.).contains(p));
+        // Pressing away from a borrowed selection (a gesture, Select All or a
+        // paste) returns to the previous tool. An ink stroke starts at this
+        // press, but a tap itself must not leave a dot.
+        let dismiss_selection = self.temporary_selection && tool == Tool::Lasso && !selection_hit;
+        if dismiss_selection {
+            self.session_mut().selection.clear();
+            self.end_temporary_selection();
+            tool = self.tool;
+        }
         self.text_click = None;
         if let Some(id) = self.text_box_at(p, tool, event.device) {
             // A second click on the only selected text box edits it on release.
@@ -160,22 +172,17 @@ impl Controller {
                 self.text_click = Some((id, p));
             }
             self.session_mut().selection = HashSet::from([id]);
-            self.tool = Tool::Lasso;
-            self.temporary_selection = false;
+            // Selecting text within a borrowed lasso keeps its return tool.
+            if self.tool != Tool::Lasso {
+                self.tool = Tool::Lasso;
+                self.temporary_selection = false;
+            }
             self.interaction = Some(Interaction::Move { start: p, end: p });
             return false;
         }
-        let selection_hit = self
-            .selection_bounds()
-            .is_some_and(|r| r.expand(8.).contains(p));
-        // Tapping away from a gesture-made selection returns to the pen, but
-        // that tap itself must not leave a dot.
-        let dismiss_selection = self.temporary_selection && tool == Tool::Lasso && !selection_hit;
-        if dismiss_selection {
-            self.session_mut().selection.clear();
-            self.tool = Tool::Pen;
-            self.temporary_selection = false;
-            tool = Tool::Pen;
+        // Only ink tools continue the dismissing press.
+        if dismiss_selection && !matches!(tool, Tool::Pen | Tool::Shape) {
+            return false;
         }
         if tool == Tool::Pen {
             self.begin_bootstrap_writing();

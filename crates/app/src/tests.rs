@@ -145,7 +145,7 @@ fn paste_image_anchors_at_target_and_selects_it_on_its_page() {
     a.create_note();
     let note = a.active;
     let page = a.page().id;
-    let image = image::DynamicImage::new_rgba8(4, 3);
+    let image = image::DynamicImage::new_rgba8(80, 60);
     let mut bytes = std::io::Cursor::new(Vec::new());
     image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
     a.paste_image_at(bytes.get_ref(), "png", Point::new(420., 260.));
@@ -174,8 +174,28 @@ fn paste_image_anchors_at_target_and_selects_it_on_its_page() {
     assert_eq!(a.session().selection.len(), 1);
     assert_eq!(a.page().objects[&id].bounds().min, Point::new(120., 90.));
     assert_eq!(a.tool, Tool::Lasso);
+    // Dragging inside the selection moves it and keeps the borrowed lasso; a
+    // stroke started outside returns to the pen and inks from pen-down.
+    a.session_mut().viewport.zoom = 2.;
+    a.session_mut().viewport.pan = Point::new(30., -20.);
+    let inside = a.page().objects[&id].bounds().center();
+    drag(&mut a, inside, Point::new(10., 0.));
+    assert_eq!(a.tool, Tool::Lasso);
+    assert_eq!(a.session().selection, HashSet::from([id]));
+    assert_eq!(a.page().objects[&id].bounds().min, Point::new(130., 90.));
+    let start = Point::new(220., 160.);
+    drag(&mut a, start, Point::new(30., 5.));
+    assert_eq!(a.tool, Tool::Pen);
+    assert!(a.session().selection.is_empty());
+    let Object::Stroke(stroke) = a.page().ordered_objects().last().unwrap().as_ref() else {
+        panic!("the outside press must ink, not select");
+    };
+    assert!(stroke.raw[0].position().distance(start) < 0.01);
+    a.undo();
+    a.undo();
     a.undo();
     assert!(a.page().objects.is_empty());
+    a.session_mut().viewport = Viewport::default();
     // Plain text pastes the same way at the hovering pen, and the selected
     // box moves with a mouse drag.
     a.set_tool(Tool::Pen);
@@ -230,6 +250,42 @@ fn paste_image_anchors_at_target_and_selects_it_on_its_page() {
     assert!(a.page().objects.is_empty());
     a.redo();
     assert_eq!(a.page().objects.len(), 1);
+    a.undo();
+    assert!(a.page().objects.is_empty());
+    a.session_mut().viewport.zoom = 2.;
+    a.session_mut().viewport.pan = Point::new(30., -20.);
+    // Pasted text borrows the lasso the same way and returns to the shape
+    // tool it interrupted, including off the paper of an infinite page.
+    a.session_mut().page_mut().properties.infinite = true;
+    a.set_tool(Tool::Shape);
+    a.paste_text_or_objects_at("Pasted".into(), Point::new(40., 40.));
+    assert_eq!(a.tool, Tool::Lasso);
+    drag(&mut a, Point::new(60., 60.), Point::new(20., 10.));
+    assert_eq!(a.tool, Tool::Lasso);
+    assert_eq!(a.page().objects.len(), 1);
+    drag(&mut a, Point::new(-80., -60.), Point::new(40., 0.));
+    assert_eq!(a.tool, Tool::Shape);
+    assert!(a.session().selection.is_empty());
+    assert!(
+        a.page()
+            .ordered_objects()
+            .any(|o| matches!(o.as_ref(), Object::Shape(_)))
+    );
+}
+/// A pen drag from document point `from` by `delta`.
+fn drag(a: &mut Controller, from: Point, delta: Point) {
+    for (i, phase) in [Phase::Down, Phase::Move, Phase::Move, Phase::Up]
+        .into_iter()
+        .enumerate()
+    {
+        let t = i as f32 / 3.;
+        let p = Point::new(from.x + delta.x * t, from.y + delta.y * t);
+        a.pointer(PenEvent {
+            position: a.session().viewport.to_screen(p),
+            timestamp: i as u64 * 12,
+            ..event(0., 0., phase)
+        });
+    }
 }
 fn wait(a: &mut Controller) {
     let start = Instant::now();

@@ -35,8 +35,12 @@ impl Controller {
             .filter(|id| !hidden.contains(id))
             .collect();
         self.session_mut().selection = ids;
-        // Select All borrows the lasso; clearing the selection returns to
-        // the tool that was in use.
+        self.borrow_lasso();
+    }
+    /// Switch to the lasso for a selection made without it, as by Select All
+    /// or a paste. Clearing the selection, or pressing away from it, returns
+    /// to the tool that was in use.
+    pub(crate) fn borrow_lasso(&mut self) {
         if !matches!(self.tool, Tool::Lasso | Tool::Rectangle) && !self.temporary_selection {
             self.selection_return_tool = self.tool;
             self.temporary_selection = true;

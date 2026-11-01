@@ -169,7 +169,7 @@ pub struct Controller {
     pub cursor: Option<Point>,
     /// Size of the visible canvas in screen pixels, kept current by the UI.
     pub view_size: Point,
-    /// The lasso was selected by a gesture or Select All and reverts to
+    /// The lasso was selected by a gesture, Select All or a paste and reverts to
     /// `selection_return_tool` afterwards.
     temporary_selection: bool,
     selection_return_tool: Tool,

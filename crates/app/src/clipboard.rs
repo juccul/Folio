@@ -80,8 +80,7 @@ impl Controller {
         }
         self.commit("Paste objects", changes);
         self.session_mut().selection = ids;
-        self.tool = Tool::Lasso;
-        self.temporary_selection = false;
+        self.borrow_lasso();
     }
     pub fn encode_clipboard(&self) -> Option<String> {
         let objects = self.copy_objects();
@@ -129,12 +128,11 @@ impl Controller {
                 Err(e) => self.error = Some(e.to_string()),
             }
         } else if !text.is_empty() {
-            // Like pasted images, pasted text is ready to move or resize.
             let position =
                 position.unwrap_or_else(|| self.paste_position(text_boxes::TEXT_BOX_SIZE));
             self.add_text(text, position);
-            self.tool = Tool::Lasso;
-            self.temporary_selection = false;
+            // Pasted text is selected, ready to move or edit.
+            self.borrow_lasso();
         }
     }
     /// Paste an image at the pointer, if it is over the canvas, otherwise in
