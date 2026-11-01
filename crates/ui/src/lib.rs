@@ -1290,7 +1290,7 @@ impl NotesView {
         }
         cx.notify();
     }
-    fn paste(&mut self, cx: &mut Context<Self>) {
+    fn paste(&mut self, window: &Window, cx: &mut Context<Self>) {
         if let Some(menu) = self.canvas_menu {
             if !menu.can_paste {
                 return;
@@ -1298,6 +1298,20 @@ impl NotesView {
             self.canvas_menu = None;
             self.paste_at(Some(menu.position), cx);
         } else {
+            // The last hover position is stale once the pointer has left the
+            // canvas or the window, or the view has scrolled since; the
+            // controller then places pasted content in the visible canvas.
+            let hovered = self.pen_in_range || window.is_window_hovered();
+            let pointer = self.canvas_bounds.filter(|_| hovered).and_then(|bounds| {
+                let position = window.mouse_position();
+                bounds.contains(&position).then(|| {
+                    self.controller.session().viewport.to_document(DocPoint::new(
+                        f32::from(position.x - bounds.origin.x),
+                        f32::from(position.y - bounds.origin.y),
+                    ))
+                })
+            });
+            self.controller.cursor = pointer;
             self.paste_at(None, cx);
         }
     }

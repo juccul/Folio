@@ -359,6 +359,11 @@ impl Drop for Workers {
         }
     }
 }
+/// Size of an imported image on the page: at most 500 wide, never enlarged.
+pub(crate) fn placed_image_size(width: u32, height: u32) -> Point {
+    let scale = (500. / width as f32).min(1.);
+    Point::new(width as f32 * scale, height as f32 * scale)
+}
 fn process(job: Job) -> Result<Finished, String> {
     (|| -> Result<Finished, Box<dyn std::error::Error>> {
         Ok(match job {
@@ -558,7 +563,7 @@ fn process(job: Job) -> Result<Finished, String> {
                 }
                 let id = Id::new_v4();
                 let target = folio_platform::copy_asset(&path, &assets, &id.to_string(), &ext)?;
-                let scale = (500. / size.0 as f32).min(1.);
+                let placed = placed_image_size(size.0, size.1);
                 Finished::Image {
                     note,
                     page,
@@ -569,8 +574,8 @@ fn process(job: Job) -> Result<Finished, String> {
                         rect: Rect::new(
                             position.x,
                             position.y,
-                            size.0 as f32 * scale,
-                            size.1 as f32 * scale,
+                            placed.x,
+                            placed.y,
                         ),
                         transform: Transform::default(),
                         crop: None,

@@ -1,6 +1,9 @@
 //! Typed text boxes.
 use super::*;
 
+/// Size of a new text box.
+pub(crate) const TEXT_BOX_SIZE: Point = Point { x: 360., y: 160. };
+
 impl Controller {
     pub fn add_text(&mut self, text: String, position: Point) {
         if !text.is_empty() {
@@ -17,7 +20,7 @@ impl Controller {
         let object = Object::Text(TextBlock {
             id: Id::new_v4(),
             text,
-            rect: Rect::new(position.x, position.y, 360., 160.),
+            rect: Rect::new(position.x, position.y, TEXT_BOX_SIZE.x, TEXT_BOX_SIZE.y),
             transform: Transform::default(),
             font_family: "sans-serif".into(),
             font_size: 20.,

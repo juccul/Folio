@@ -129,15 +129,43 @@ impl Controller {
                 Err(e) => self.error = Some(e.to_string()),
             }
         } else {
-            self.add_text(
-                text,
-                position.or(self.cursor).unwrap_or(Point::new(100., 100.)),
-            );
+            let position =
+                position.unwrap_or_else(|| self.paste_position(text_boxes::TEXT_BOX_SIZE));
+            self.add_text(text, position);
         }
     }
-    /// Paste an image at the pointer, if it is over the canvas.
+    /// Paste an image at the pointer, if it is over the canvas, otherwise in
+    /// the visible canvas.
     pub fn paste_image(&mut self, data: &[u8], extension: &str) {
-        self.paste_image_at(data, extension, self.cursor.unwrap_or(Point::new(80., 80.)));
+        let size = image::ImageReader::new(std::io::Cursor::new(data))
+            .with_guessed_format()
+            .ok()
+            .and_then(|reader| reader.into_dimensions().ok())
+            .map_or(Point::new(0., 0.), |(w, h)| placed_image_size(w, h));
+        let position = self.paste_position(size);
+        self.paste_image_at(data, extension, position);
+    }
+    /// Where content of `size` pasted without a target goes: at the pointer
+    /// while it is over the visible canvas, otherwise centered in the visible
+    /// canvas with the top-left corner of oversized content kept in view.
+    pub fn paste_position(&self, size: Point) -> Point {
+        const MARGIN: f32 = 16.;
+        let viewport = self.session().viewport;
+        let view = self.view_size;
+        if let Some(cursor) = self.cursor {
+            let p = viewport.to_screen(cursor);
+            if (0. ..=view.x).contains(&p.x) && (0. ..=view.y).contains(&p.y) {
+                return cursor;
+            }
+        }
+        let center = viewport.to_document(Point::new(view.x / 2., view.y / 2.));
+        let mut position = Point::new(center.x - size.x / 2., center.y - size.y / 2.);
+        if viewport.rotation == 0. {
+            let corner = viewport.to_document(Point::new(MARGIN, MARGIN));
+            position.x = position.x.max(corner.x);
+            position.y = position.y.max(corner.y);
+        }
+        position
     }
     pub fn paste_image_at(&mut self, data: &[u8], extension: &str, position: Point) {
         if self.read_only() {

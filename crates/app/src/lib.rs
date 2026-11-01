@@ -167,6 +167,8 @@ pub struct Controller {
     pub settings: Settings,
     pub interaction: Option<Interaction>,
     pub cursor: Option<Point>,
+    /// Size of the visible canvas in screen pixels, kept current by the UI.
+    pub view_size: Point,
     /// The lasso was selected by a gesture or Select All and reverts to
     /// `selection_return_tool` afterwards.
     temporary_selection: bool,
@@ -372,6 +374,7 @@ impl Controller {
             filter: NoteFilter::All,
             interaction: None,
             cursor: None,
+            view_size: Point::new(800., 600.),
             status: "All changes saved".into(),
             error: None,
             save_error: None,

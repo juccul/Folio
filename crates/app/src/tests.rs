@@ -119,6 +119,22 @@ fn context_paste_places_mixed_objects_at_anchor_and_undoes_once() {
     assert_eq!(text.bounds().min, target);
     a.undo();
     assert_eq!(a.page().objects, originals);
+    // Ctrl+V with the pointer outside the window centers the text box in the
+    // scrolled view and selects it.
+    a.cursor = None;
+    a.session_mut().viewport = Viewport {
+        zoom: 1.,
+        pan: Point::new(0., -500.),
+        rotation: 0.,
+    };
+    a.paste_text_or_objects("Plain clipboard text".into());
+    let id = *a.session().selection.iter().next().unwrap();
+    assert_eq!(a.page().objects[&id].bounds().min, Point::new(220., 720.));
+    a.undo();
+    assert_eq!(a.page().objects, originals);
+    a.redo();
+    assert_eq!(a.page().objects[&id].bounds().min, Point::new(220., 720.));
+    a.undo();
     a.session_mut().document.metadata.trashed = true;
     a.paste_text_or_objects_at(clipboard, target);
     assert_eq!(a.page().objects, originals);
@@ -160,6 +176,33 @@ fn paste_image_anchors_at_target_and_selects_it_on_its_page() {
     assert_eq!(a.tool, Tool::Lasso);
     a.undo();
     assert!(a.page().objects.is_empty());
+    // A pointer position scrolled out of view, as when the pointer left the
+    // window, centers the image in the panned and zoomed view instead.
+    let image = image::DynamicImage::new_rgba8(1000, 600);
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+    let paste = |a: &mut Controller, zoom: f32| {
+        a.session_mut().viewport = Viewport {
+            zoom,
+            pan: Point::new(-300., -2000.),
+            rotation: 0.,
+        };
+        a.cursor = Some(Point::new(120., 90.));
+        a.paste_image(bytes.get_ref(), "png");
+        wait(a);
+        let id = *a.session().selection.iter().next().unwrap();
+        a.page().objects[&id].bounds()
+    };
+    let bounds = paste(&mut a, 0.5);
+    assert_eq!(bounds.min, Point::new(1150., 4450.));
+    assert_eq!((bounds.width(), bounds.height()), (500., 300.));
+    // Larger than the view, it keeps its top-left corner in sight.
+    assert_eq!(paste(&mut a, 2.).min, Point::new(158., 1008.));
+    a.undo();
+    a.undo();
+    assert!(a.page().objects.is_empty());
+    a.redo();
+    assert_eq!(a.page().objects.len(), 1);
 }
 fn wait(a: &mut Controller) {
     let start = Instant::now();

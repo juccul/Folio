@@ -464,6 +464,8 @@ impl NotesView {
                 }
             });
         }
+        self.controller.view_size =
+            DocPoint::new(f32::from(bounds.size.width), f32::from(bounds.size.height));
         self.canvas_bounds = Some(bounds);
         self.canvas_document = Some(canvas_document);
     }
@@ -580,7 +582,7 @@ impl NotesView {
             .on_action(cx.listener(|this, _: &Search, w, cx| this.modal(Modal::Search, w, cx)))
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(false, cx)))
             .on_action(cx.listener(|this, _: &Cut, _, cx| this.copy(true, cx)))
-            .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
+            .on_action(cx.listener(|this, _: &Paste, window, cx| this.paste(window, cx)))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| {
                 this.controller.select_all();
                 cx.notify();
