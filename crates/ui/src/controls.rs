@@ -79,7 +79,7 @@ impl NotesView {
         let window_control = id.as_ref().starts_with("window-");
         let enabled = self.control_enabled(id.as_ref(), cx);
         let hover_id = id.clone();
-        let hover = self.motion.borrow().hover_value(id.as_ref());
+        let hover = self.motion.borrow_mut().hover_value(id.as_ref());
         let resting = if active {
             theme.selected
         } else {

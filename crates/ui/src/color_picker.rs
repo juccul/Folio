@@ -469,6 +469,7 @@ impl NotesView {
         }
         for value in palette {
             let draft = field.clone();
+            let selected = color.rgb() == value;
             swatches = swatches.child(
                 self.control(
                     format!("picker-swatch-{value}"),
@@ -477,10 +478,10 @@ impl NotesView {
                         .size(px(24.))
                         .rounded(px(3.))
                         .bg(rgb(value))
-                        .border_1()
-                        .border_color(theme.border)
+                        .when(selected, |swatch| swatch.border_2().border_color(rgb(theme.ring)))
+                        .when(!selected, |swatch| swatch.border_1().border_color(theme.border))
                         .into_any_element(),
-                    color.rgb() == value,
+                    selected,
                     cx,
                     move |_, _, cx| {
                         let alpha = if opacity {

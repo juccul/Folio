@@ -21,6 +21,7 @@ impl Render for NotesView {
         self.cancel_region_after_navigation();
         self.building_overlay = false;
         self.accessibility.begin();
+        self.motion.borrow_mut().begin_frame();
         self.open_pending_dialogs(window, cx);
         let alpha = self.panel_opacity();
         self.track_recognition_frame(alpha.modal, window, cx);

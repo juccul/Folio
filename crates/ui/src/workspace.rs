@@ -408,7 +408,7 @@ impl NotesView {
         .bg(rgb(super::theme::mix(
             resting,
             theme.selected,
-            self.motion.borrow().hover_value(id),
+            self.motion.borrow_mut().hover_value(id),
         )))
         .when(self.toolbar_hints_enabled(), |button| {
             button.tooltip(move |_, cx| cx.new(|_| Hint(hint.into(), theme)).into())
@@ -455,7 +455,7 @@ impl NotesView {
                     super::theme::mix(theme.chrome, theme.ink, 0.045)
                 },
                 theme.selected,
-                self.motion.borrow().hover_value(id),
+                self.motion.borrow_mut().hover_value(id),
             )))
     }
     fn folder_row(

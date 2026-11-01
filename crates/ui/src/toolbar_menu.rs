@@ -229,18 +229,22 @@ impl NotesView {
                     }
                 }
                 for color in colors {
+                    let selected = self.controller.style.color == color;
                     swatches = swatches.child(
                         self.control(
                             format!("ink-swatch-{}", color.rgb()),
                             format!("Ink color {}", color.hex()),
+                            // The ring marks the selection; the background
+                            // tint alone is shared with hover.
                             div()
                                 .size(rems(1.25))
                                 .rounded_full()
-                                .border_1()
-                                .border_color(rgb(theme.muted))
+                                .when(selected, |dot| dot.border_2())
+                                .when(!selected, |dot| dot.border_1())
+                                .border_color(rgb(if selected { theme.ring } else { theme.muted }))
                                 .bg(rgb(color.rgb()))
                                 .into_any_element(),
-                            self.controller.style.color == color,
+                            selected,
                             cx,
                             move |this, w, cx| {
                                 this.controller.set_color(color);

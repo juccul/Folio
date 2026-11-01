@@ -37,11 +37,18 @@ impl Tween {
     }
 }
 
+/// A control's hover tween and the frame that last drew the control.
+struct Hover {
+    tween: Tween,
+    drawn: u64,
+}
+
 #[derive(Default)]
 pub(super) struct Motion {
     values: HashMap<String, Tween>,
-    hovers: HashMap<String, Tween>,
+    hovers: HashMap<String, Hover>,
     panels: HashMap<&'static str, String>,
+    frame: u64,
 }
 impl Motion {
     pub fn value(&mut self, key: &str, target: f32, reduced: bool, now: Instant) -> f32 {
@@ -65,22 +72,38 @@ impl Motion {
         if !self.hovers.contains_key(key) {
             self.hovers.insert(
                 key.into(),
-                Tween {
-                    from: 0.,
-                    to: 0.,
-                    started: now,
+                Hover {
+                    tween: Tween {
+                        from: 0.,
+                        to: 0.,
+                        started: now,
+                    },
+                    drawn: self.frame,
                 },
             );
         }
-        self.hovers
-            .get_mut(key)
-            .unwrap()
-            .retarget(if hovered { 1. } else { 0. }, reduced, now);
+        self.hovers.get_mut(key).unwrap().tween.retarget(
+            if hovered { 1. } else { 0. },
+            reduced,
+            now,
+        );
     }
-    pub fn hover_value(&self, key: &str) -> f32 {
-        self.hovers
-            .get(key)
-            .map_or(0., |t| t.sample(Instant::now()))
+    /// The hover amount of a control being drawn in the current frame.
+    pub fn hover_value(&mut self, key: &str) -> f32 {
+        let frame = self.frame;
+        self.hovers.get_mut(key).map_or(0., |h| {
+            h.drawn = frame;
+            h.tween.sample(Instant::now())
+        })
+    }
+    /// Start a frame, forgetting the hover of controls the previous frame did
+    /// not draw. GPUI drops a removed element's hover state without reporting
+    /// that the pointer left, so a control shown again (a swatch in a reopened
+    /// menu) would otherwise keep the hover tint it had when it disappeared.
+    pub fn begin_frame(&mut self) {
+        let previous = self.frame;
+        self.frame += 1;
+        self.hovers.retain(|_, h| h.drawn == previous);
     }
     pub fn panel(&mut self, key: &'static str, signature: Option<String>, reduced: bool) -> f32 {
         let now = Instant::now();
@@ -103,7 +126,9 @@ impl Motion {
         self.value(key, 1., reduced, now)
     }
     pub fn settle(&mut self) {
-        for tween in self.values.values_mut().chain(self.hovers.values_mut()) {
+        for tween in self.values
+            .values_mut()
+            .chain(self.hovers.values_mut().map(|h| &mut h.tween)) {
             tween.from = tween.to;
         }
     }
@@ -111,7 +136,7 @@ impl Motion {
     fn running(&self) -> bool {
         self.values
             .values()
-            .chain(self.hovers.values())
+            .chain(self.hovers.values().map(|h| &h.tween))
             .any(|t| t.running(Instant::now()))
     }
     pub fn advance(&mut self) -> bool {
@@ -120,12 +145,14 @@ impl Motion {
     pub fn needs_frame(&self) -> bool {
         self.values
             .values()
-            .chain(self.hovers.values())
+            .chain(self.hovers.values().map(|h| &h.tween))
             .any(|t| t.from != t.to)
     }
     fn advance_at(&mut self, now: Instant) -> bool {
         let mut changed = false;
-        for tween in self.values.values_mut().chain(self.hovers.values_mut()) {
+        for tween in self.values
+            .values_mut()
+            .chain(self.hovers.values_mut().map(|h| &mut h.tween)) {
             if tween.from != tween.to {
                 changed = true;
                 if !tween.running(now) {
@@ -140,7 +167,7 @@ impl Motion {
         if self.values.len() + self.hovers.len() > 512 {
             let now = Instant::now();
             self.values.retain(|_, t| t.running(now));
-            self.hovers.retain(|_, t| t.running(now));
+            self.hovers.retain(|_, h| h.tween.running(now));
         }
     }
 }
@@ -211,6 +238,16 @@ mod tests {
         motion.settle();
         assert_eq!(motion.value("control", 1., false, now), 1.);
         assert!(!motion.running());
+        // A drawn control keeps its hover across frames. One that disappears
+        // while hovered (a swatch in a menu its click closes) gets no leave
+        // event, so it must not reappear with the old tint.
+        motion.hover("swatch", true, true);
+        motion.begin_frame();
+        assert_eq!(motion.hover_value("control"), 1.);
+        motion.begin_frame();
+        assert_eq!(motion.hover_value("control"), 1.);
+        motion.begin_frame();
+        assert_eq!(motion.hover_value("swatch"), 0.);
     }
     #[test]
     fn idle_hover_cache_is_bounded() {
