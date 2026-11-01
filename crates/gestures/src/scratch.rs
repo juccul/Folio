@@ -65,7 +65,8 @@ fn scratch_on_axis(path: &[Point], bounds: Rect, length: f32, axis: Point) -> Op
     let perpendicular: Vec<f32> = path.iter().map(|p| -p.x * axis.y + p.y * axis.x).collect();
     let span = projection.iter().copied().fold(f32::NEG_INFINITY, f32::max)
         - projection.iter().copied().fold(f32::INFINITY, f32::min);
-    if span < 14. || length < span * 2.3 {
+    // Letter-sized gestures are mostly handwriting; deliberate scrubs are larger.
+    if span < 16. || length < span * 2.3 {
         return None;
     }
     let threshold = span * 0.12;
@@ -125,7 +126,8 @@ fn scratch_on_axis(path: &[Point], bounds: Rect, length: f32, axis: Point) -> Op
         .copied()
         .fold(f32::NEG_INFINITY, f32::max)
         - perpendicular.iter().copied().fold(f32::INFINITY, f32::min);
-    // Three passes suffice in a narrow corridor. For wider scribbles require
+    // Three passes suffice in a narrow corridor; narrow N/Z letters are wider
+    // than a deliberate flat scrub. For wider scribbles require
     // repeated traversal of the same area, rather than the advancing legs of
     // an ordinary W/M. Unequal-length passes and circular scribbles are valid.
     let centers = passes
@@ -169,7 +171,7 @@ fn scratch_on_axis(path: &[Point], bounds: Rect, length: f32, axis: Point) -> Op
         && centers
             .windows(2)
             .all(|pair| (pair[1] - pair[0]).abs() <= span * 1.5);
-    let revisiting = spread <= span * 0.45 || passes.len() >= 4 && revisits >= 2;
+    let revisiting = spread <= span * 0.38 || passes.len() >= 4 && revisits >= 2;
     if passes.len() < 3 || !revisiting && !advancing_scrub {
         return None;
     }
@@ -197,7 +199,9 @@ fn scratch_on_axis(path: &[Point], bounds: Rect, length: f32, axis: Point) -> Op
         bounds,
         baseline: geometry::principal_axis(path),
         confidence: 0.85 + passes.len().min(7) as f32 * 0.02,
-        required_crossings: if revisiting { 1 } else { 3 },
+        // A handwriting stroke that merely touches a neighboring letter once
+        // must not erase it; a compact scrub crosses its target repeatedly.
+        required_crossings: if revisiting { 2 } else { 3 },
         regions,
         // Recognition uses substantial passes, but short legs and exit tails
         // still erase what they actually cross once intent has been validated.
@@ -229,7 +233,8 @@ fn scratch_on_axis(path: &[Point], bounds: Rect, length: f32, axis: Point) -> Op
 impl Scratch {
     /// Validate destructive intent against existing ink before using the swept
     /// area. An advancing wave in empty space or touching ink once remains
-    /// drawing; compact retracing already supplies stronger geometric intent.
+    /// drawing; compact retracing supplies stronger geometric intent, so two
+    /// crossing passes suffice.
     /// One cursive stroke can supply all crossings; object count is irrelevant.
     pub fn targets(&self, objects: &[&Object]) -> Vec<Id> {
         let paths = objects

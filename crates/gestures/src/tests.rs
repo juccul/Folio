@@ -356,12 +356,41 @@ fn handwriting_hooks_strikes_and_tremor_are_not_scratch() {
     assert!(wave.targets(&[]).is_empty());
     let incidental = stroke(&[Point::new(-5., -20.), Point::new(2., 20.)]);
     assert!(wave.targets(&[&incidental]).is_empty());
-    for path in [jitter, w.to_vec(), oval(1., 40., 20.), zigzag(2, 24, 0.)] {
+    let polyline = |corners: &[(f32, f32)]| {
+        corners
+            .windows(2)
+            .flat_map(|pair| {
+                let (a, b) = (
+                    Point::new(pair[0].0, pair[0].1),
+                    Point::new(pair[1].0, pair[1].1),
+                );
+                (0..8).map(move |i| a.lerp(b, i as f32 / 8.))
+            })
+            .chain(corners.last().map(|&(x, y)| Point::new(x, y)))
+            .collect::<Vec<_>>()
+    };
+    let narrow_n = polyline(&[(0., 30.), (2., 0.), (10., 30.), (12., 0.)]);
+    let flat_z = polyline(&[(0., 0.), (30., 0.), (0., 10.), (30., 10.)]);
+    // Borderline: a letter-sized three-pass scribble.
+    let tiny = polyline(&[(0., 0.), (15., 2.), (0., 4.), (15., 6.)]);
+    for path in [
+        jitter,
+        w.to_vec(),
+        oval(1., 40., 20.),
+        zigzag(2, 24, 0.),
+        narrow_n,
+        flat_z,
+        tiny,
+    ] {
         assert!(
             scratch(&samples(&path)).is_none(),
             "unexpected scratch: {path:?}"
         );
     }
+    // A compact candidate whose first stroke only touches a neighboring mark.
+    let compact = scratch(&samples(&zigzag(3, 24, 0.))).unwrap();
+    let neighbor = stroke(&[Point::new(-1., -3.), Point::new(-1., 0.)]);
+    assert!(compact.targets(&[&neighbor]).is_empty());
 }
 
 #[test]
@@ -590,6 +619,15 @@ fn three_pass_uneven_and_circular_scribbles_trigger() {
         oval(2., 35., 30.),
     ] {
         assert!(scratch(&samples(&path)).is_some(), "{path:?}");
+    }
+    // Obvious small and word-sized scribbles still erase the ink they cross.
+    for width in [17., 40., 80.] {
+        let path = (0..=3)
+            .map(|i| Point::new(if i % 2 == 0 { 0. } else { width }, i as f32 * 2.))
+            .collect::<Vec<_>>();
+        let gesture = scratch(&samples(&path)).unwrap_or_else(|| panic!("width={width}"));
+        let word = stroke(&[Point::new(-5., 3.), Point::new(width + 5., 3.)]);
+        assert_eq!(gesture.targets(&[&word]), vec![word.id()], "width={width}");
     }
 }
 
