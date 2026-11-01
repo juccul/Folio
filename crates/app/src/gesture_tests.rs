@@ -151,7 +151,15 @@ fn gapped_encircle_selects_and_can_immediately_move_ink_without_drawing_the_loop
         );
         assert_eq!(app.session().selection, HashSet::from([original.id()]));
         assert_eq!(app.tool, Tool::Lasso);
-        draw(app, &[Point::new(140., 160.), Point::new(160., 175.)], 3000);
+        let bounds = app.selection_bounds().unwrap();
+        begin_loop(app, &[Point::new(140., 160.), Point::new(160., 175.)], 3000);
+        // The selection toolbar follows the uncommitted drag on every frame.
+        let live = app.live_selection_bounds().unwrap();
+        assert!((live.min.x - bounds.min.x - 20.).abs() < 0.01);
+        assert!((live.min.y - bounds.min.y - 15.).abs() < 0.01);
+        assert_eq!(app.selection_bounds().unwrap(), bounds);
+        app.pointer(frame(app, Point::new(160., 175.), Phase::Up, 3024));
+        assert_eq!(app.live_selection_bounds(), app.selection_bounds());
         assert_eq!(app.page().objects.len(), 1);
         assert_eq!(
             app.page().objects[&original.id()].transform(),

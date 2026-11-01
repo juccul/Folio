@@ -92,12 +92,18 @@ impl NotesView {
             .canvas_bounds
             .map(|b| (f32::from(b.size.width), f32::from(b.size.height)))
             .unwrap_or((1000., 700.));
-        let bounds = self.controller.selection_bounds().unwrap_or_default();
+        // Follow the drag preview so the row tracks the selection every frame.
+        let r = self.controller.live_selection_bounds().unwrap_or_default();
         let viewport = self.controller.session().viewport;
-        let bounds = folio_document::Rect::from_points([
-            viewport.to_screen(bounds.min),
-            viewport.to_screen(bounds.max),
-        ]);
+        let bounds = folio_document::Rect::from_points(
+            [
+                r.min,
+                Point::new(r.max.x, r.min.y),
+                r.max,
+                Point::new(r.min.x, r.max.y),
+            ]
+            .map(|p| viewport.to_screen(p)),
+        );
         selection::toolbar_origin(
             bounds,
             canvas_size,

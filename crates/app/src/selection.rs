@@ -10,6 +10,21 @@ impl Controller {
             .map(|o| o.bounds())
             .reduce(|a, b| a.union(b))
     }
+    /// Selection bounds as drawn this frame, including an in-progress move,
+    /// resize or rotation that has not been committed yet.
+    pub fn live_selection_bounds(&self) -> Option<Rect> {
+        let r = self.selection_bounds()?;
+        let t = self.interaction_transform();
+        Some(Rect::from_points(
+            [
+                r.min,
+                Point::new(r.max.x, r.min.y),
+                r.max,
+                Point::new(r.min.x, r.max.y),
+            ]
+            .map(|p| t.apply(p)),
+        ))
+    }
     pub fn select_all(&mut self) {
         let hidden = self.page().hidden_sources();
         let ids = self
