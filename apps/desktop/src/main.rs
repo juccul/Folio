@@ -100,38 +100,49 @@ fn main() -> anyhow::Result<()> {
     }
     let open_editor =
         smoke || titlebar_smoke || new_note || open_note.is_some() || !files.is_empty();
-    let result = if !explicit_path
-        && data_dir != folio_platform::default_data_dir()
-        && !data_dir.join("notes.sqlite3").is_file()
-    {
-        Err(format!(
-            "The chosen startup library is unavailable: {}. Reconnect its drive or open an existing library with --data-dir.",
-            data_dir.display()
-        ))
-    } else {
-        Controller::open_for_ui(data_dir.clone(), open_editor)
+    // Opening the library (integrity check, settings, first document) and
+    // GPUI's platform setup (GPU and fonts) are independent; overlap them.
+    let library = {
+        let data_dir = data_dir.clone();
+        std::thread::Builder::new()
+            .name("folio-startup".into())
+            .spawn(move || {
+            if !explicit_path
+                && data_dir != folio_platform::default_data_dir()
+                && !data_dir.join("notes.sqlite3").is_file()
+            {
+                Err(format!(
+                    "The chosen startup library is unavailable: {}. Reconnect its drive or open an existing library with --data-dir.",
+                    data_dir.display()
+                ))
+            } else {
+                Controller::open_for_ui(data_dir, open_editor)
+            }
+        })?
     };
+    let application = Application::new().with_assets(folio_ui::IconAssets);
+    let result = library
+        .join()
+        .unwrap_or_else(|_| Err("Opening the library failed unexpectedly.".into()));
     let mut controller = match result {
         Ok(controller) => controller,
         Err(error) => {
-            Application::new()
-                .with_assets(folio_ui::IconAssets)
-                .run(move |cx| {
-                    cx.open_window(
-                        WindowOptions {
-                            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                                None,
-                                size(px(900.), px(600.)),
-                                cx,
-                            ))),
-                            ..Default::default()
-                        },
-                        |window, cx| {
-                            cx.new(|cx| folio_ui::RecoveryView::new(data_dir, error, window, cx))
-                        },
-                    )
-                    .expect("open recovery window");
-                });
+            application.run(move |cx| {
+                cx.open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            size(px(900.), px(600.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        cx.new(|cx| folio_ui::RecoveryView::new(data_dir, error, window, cx))
+                    },
+                )
+                .expect("open recovery window");
+            });
             return Ok(());
         }
     };
@@ -153,7 +164,7 @@ fn main() -> anyhow::Result<()> {
     for file in files {
         controller.import_as_note(file);
     }
-    Application::new().with_assets(folio_ui::IconAssets).run(move |cx| {
+    application.run(move |cx| {
         NotesView::bindings(cx);
         if titlebar_smoke { NotesView::titlebar_smoke_bindings(cx); }
         let bounds = Bounds::centered(None, size(px(1320.), px(860.)), cx);

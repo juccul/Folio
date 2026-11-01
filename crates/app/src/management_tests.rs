@@ -987,6 +987,13 @@ fn background_operations_report_identity_completion_failure_and_reject_duplicate
 
 #[test]
 fn workspace_preferences_restore_documents_and_page_ids_and_allow_opt_out() {
+    // Startup builds the controller on a worker and hands it to the UI thread.
+    let reopen = |root, editor_requested| {
+        std::thread::spawn(move || Controller::open_for_ui(root, editor_requested))
+            .join()
+            .unwrap()
+            .unwrap()
+    };
     let mut a = app();
     let root = a.data_dir.clone();
     let first = a.active;
@@ -1008,7 +1015,7 @@ fn workspace_preferences_restore_documents_and_page_ids_and_allow_opt_out() {
     a.store_settings();
     a.flush().unwrap();
     drop(a);
-    let mut a = Controller::open_for_ui(root.clone(), false).unwrap();
+    let mut a = reopen(root.clone(), false);
     assert_eq!(a.active, second);
     assert_eq!(a.page().id, page);
     assert_eq!(a.settings.workspace.open_tabs, vec![first, second]);
@@ -1019,7 +1026,7 @@ fn workspace_preferences_restore_documents_and_page_ids_and_allow_opt_out() {
     let expected = a.session().document.clone();
     let history = serde_json::to_value(&a.session().history).unwrap();
     drop(a);
-    let mut a = Controller::open_for_ui(root.clone(), false).unwrap();
+    let mut a = reopen(root.clone(), false);
     assert!(a.is_bootstrap_document(a.active));
     assert!(!a.sessions.contains_key(&first) && !a.sessions.contains_key(&second));
     assert_eq!(a.settings.workspace.open_tabs, vec![first, second]);
@@ -1034,7 +1041,7 @@ fn workspace_preferences_restore_documents_and_page_ids_and_allow_opt_out() {
     a.store_settings();
     a.flush().unwrap();
     drop(a);
-    let mut a = Controller::open_for_ui(root.clone(), false).unwrap();
+    let mut a = reopen(root.clone(), false);
     assert!(a.is_bootstrap_document(a.active));
     assert_eq!(a.session().page, 0);
     a.settings.reopen_documents = true;
@@ -1043,7 +1050,7 @@ fn workspace_preferences_restore_documents_and_page_ids_and_allow_opt_out() {
     a.store_settings();
     a.flush().unwrap();
     drop(a);
-    let a = Controller::open_for_ui(root, true).unwrap();
+    let a = reopen(root, true);
     assert_eq!(a.session().page, 0);
     assert!(a.notes.iter().any(|n| n.id == a.active));
 }
