@@ -224,7 +224,16 @@ impl Controller {
         };
         true
     }
-    /// A resize corner or the rotation handle of the current selection.
+    /// Whether the selection contains an image. Its corners then resize
+    /// uniformly, and its side handles stretch one axis.
+    pub fn selection_has_image(&self) -> bool {
+        let page = self.page();
+        self.session().selection.iter().any(|id| {
+            matches!(page.objects.get(id).map(|o| o.as_ref()), Some(Object::Image(_)))
+        })
+    }
+    /// A resize corner, an image side handle or the rotation handle of the
+    /// current selection.
     fn selection_handle_at(&self, p: Point) -> Option<Interaction> {
         let bounds = self.selection_bounds()?;
         let zoom = self.session().viewport.zoom;
@@ -234,20 +243,39 @@ impl Controller {
             bounds.max,
             Point::new(bounds.min.x, bounds.max.y),
         ];
+        let image = self.selection_has_image();
         if let Some((i, corner)) = corners
             .iter()
             .enumerate()
             .find(|(_, corner)| corner.distance(p) < 10. / zoom)
         {
-            let page = self.page();
-            let uniform = self.session().selection.iter().any(|id| {
-                matches!(page.objects.get(id).map(|o| o.as_ref()), Some(Object::Image(_)))
-            });
             return Some(Interaction::Resize {
                 anchor: corners[(i + 2) % 4],
                 start: *corner,
                 end: p,
-                uniform,
+                uniform: image,
+            });
+        }
+        // Side midpoints are anchored at the opposite side. Their unchanged
+        // axis has no extent from the anchor, so only the other one scales.
+        let center = bounds.center();
+        let sides = [
+            Point::new(center.x, bounds.min.y),
+            Point::new(bounds.max.x, center.y),
+            Point::new(center.x, bounds.max.y),
+            Point::new(bounds.min.x, center.y),
+        ];
+        if image
+            && let Some((i, side)) = sides
+                .iter()
+                .enumerate()
+                .find(|(_, side)| side.distance(p) < 10. / zoom)
+        {
+            return Some(Interaction::Resize {
+                anchor: sides[(i + 2) % 4],
+                start: *side,
+                end: p,
+                uniform: false,
             });
         }
         let handle = Point::new(bounds.center().x, bounds.min.y - 24. / zoom);

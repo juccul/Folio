@@ -1025,7 +1025,20 @@ impl Painter {
                 if let Some(path) = line_path(&points, 1.2, true) {
                     window.paint_path(path, rgb(theme.accent));
                 }
-                for p in points.iter().take(4) {
+                // Images also get side handles that stretch one axis.
+                let sides = controller
+                    .selection_has_image()
+                    .then(|| {
+                        (0..4).map(|i| {
+                            DocPoint::new(
+                                (points[i].x + points[i + 1].x) * 0.5,
+                                (points[i].y + points[i + 1].y) * 0.5,
+                            )
+                        })
+                    })
+                    .into_iter()
+                    .flatten();
+                for p in points.iter().take(4).copied().chain(sides) {
                     window.paint_quad(quad(
                         Bounds::new(
                             point_px(DocPoint::new(p.x - 3., p.y - 3.)),

@@ -581,6 +581,42 @@ fn resize_and_rotation_handles_create_reversible_commands() {
         assert_eq!(a.page().objects[&id].bounds(), resized);
         a.undo();
     }
+    // Image side handles stretch only their axis about the opposite side,
+    // outward or inward.
+    let center = bounds.center();
+    for (side, delta, size) in [
+        (Point::new(bounds.max.x, center.y), Point::new(60., 25.), (160., 50.)),
+        (Point::new(center.x, bounds.max.y), Point::new(-30., 40.), (100., 90.)),
+        (Point::new(bounds.min.x, center.y), Point::new(-50., -10.), (150., 50.)),
+        (Point::new(center.x, bounds.min.y), Point::new(20., 30.), (100., 20.)),
+    ] {
+        a.session_mut().selection.insert(id);
+        let end = Point::new(side.x + delta.x, side.y + delta.y);
+        a.pointer(event(side, Phase::Down));
+        assert!(matches!(
+            a.interaction,
+            Some(Interaction::Resize { uniform: false, .. })
+        ));
+        a.pointer(event(end, Phase::Move));
+        a.pointer(event(end, Phase::Up));
+        let resized = a.page().objects[&id].bounds();
+        assert!((resized.width() - size.0).abs() < 1e-3, "{resized:?}");
+        assert!((resized.height() - size.1).abs() < 1e-3, "{resized:?}");
+        // The opposite side stays where it was.
+        let opposite = Point::new(2. * center.x - side.x, 2. * center.y - side.y);
+        assert!(
+            (opposite.x - resized.min.x).abs() < 1e-3
+                || (opposite.x - resized.max.x).abs() < 1e-3
+                || opposite.x == center.x
+        );
+        assert!(
+            (opposite.y - resized.min.y).abs() < 1e-3
+                || (opposite.y - resized.max.y).abs() < 1e-3
+                || opposite.y == center.y
+        );
+        a.undo();
+        assert_eq!(a.page().objects[&id], image);
+    }
 }
 fn ink() -> InkStroke {
     let mut b = StrokeBuilder::new(PenStyle::default());
