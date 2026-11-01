@@ -12,6 +12,9 @@
   <launchable type="desktop-id">io.github.folio.Notes.desktop</launchable>
   <supports><control>pointing</control><control>keyboard</control></supports>
   <releases>
+    <release version="0.1.9" date="2026-11-02">
+      <description><p>Faster startup, smoother image and text selection and resizing, compact document actions and settings, improved ink gestures, and a math solver that stays warm between requests.</p></description>
+    </release>
     <release version="0.1.8" date="2026-10-29">
       <description><p>Fixes the recognition review dialog, pastes images at the pointer ready to move or resize, and shows the system pointer for a pen over controls and dialogs on native Wayland.</p></description>
     </release>
