@@ -120,11 +120,33 @@ fn preview_results_cannot_resurrect_edited_or_deleted_objects() {
     app.redo();
     moved(&app, 410.);
     app.session_mut().selection.insert(id);
+    let unrotated = app.page().objects[&id].clone();
     app.rotate_selection(0.5);
     assert!(
         pixels.upgrade().is_none(),
         "Editing releases obsolete pixels"
     );
+    // Until the fresh raster is ready, the painter carries the released one
+    // by the transform between the two objects. Other edits get none.
+    let rotated = app.page().objects[&id].clone();
+    let relative = crate::relative_transform(&unrotated, &rotated).unwrap();
+    let expected = rotated.transform();
+    let carried = relative.compose(unrotated.transform());
+    for (a, b) in [
+        (carried.a, expected.a),
+        (carried.b, expected.b),
+        (carried.c, expected.c),
+        (carried.d, expected.d),
+        (carried.tx, expected.tx),
+        (carried.ty, expected.ty),
+    ] {
+        assert!((a - b).abs() < 1e-3);
+    }
+    let mut edited = rotated.as_ref().clone();
+    if let Object::Text(text) = &mut edited {
+        text.text.push('!');
+    }
+    assert!(crate::relative_transform(&rotated, &edited).is_none());
     assert!(!app.preview_failed.contains_key(&(note, page, id)));
     assert!(app.preview_pending.contains_key(&(note, page, id)));
     assert!(!app.accept_preview(note, page, preview(old)));

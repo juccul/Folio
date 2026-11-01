@@ -62,7 +62,7 @@ pub use import_export::ExportSnapshot;
 pub use interaction::Interaction;
 pub use library_actions::NoteAction;
 pub use math_solver::{MathReport, MathRequest, MathSession, MathStep};
-pub use previews::RasterPreview;
+pub use previews::{RasterPreview, relative_transform};
 pub use recognition::{RecognitionKind, RecognitionReview, RecognitionTiming};
 pub use session::Session;
 pub use settings::{EraserMode, PageTemplate, PenPreset, Settings, WorkspacePreferences};

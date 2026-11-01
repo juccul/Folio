@@ -172,6 +172,11 @@ struct CachedRaster {
     data: Arc<Vec<u8>>,
     image: Arc<RenderImage>,
     appearance: Option<RasterAppearance>,
+    /// The object and bounds the raster was made for. After an edit that
+    /// only changes the transform, the image stays on screen, transformed,
+    /// until the fresh raster replaces it.
+    object: Arc<Object>,
+    bounds: Rect,
 }
 #[derive(Default)]
 pub struct Painter {
@@ -614,10 +619,16 @@ impl Painter {
         self.retain_rasters(
             |id, cache| {
                 visible_ids.contains(&id)
-                    && controller
+                    && (controller
                         .previews
                         .get(&(controller.active, page_id, id))
                         .is_some_and(|preview| Arc::ptr_eq(&preview.bgra, &cache.data))
+                        || controller.session().document.pages[page_index]
+                            .objects
+                            .get(&id)
+                            .is_some_and(|object| {
+                                folio_app::relative_transform(&cache.object, object).is_some()
+                            }))
             },
             |image| {
                 let _ = window.drop_image(image);
@@ -837,24 +848,24 @@ impl Painter {
                         }
                     }
                     _ => {
-                        if let Some(preview) = controller
+                        let appearance = match object.as_ref() {
+                            Object::Equation(e)
+                                if e.math_link
+                                    .as_ref()
+                                    .is_some_and(|l| l.operation == "graph") =>
+                            {
+                                Some(RasterAppearance::Graph(graph_palette))
+                            }
+                            Object::Text(_) | Object::Equation(_) => {
+                                Some(RasterAppearance::Ink(canvas_theme))
+                            }
+                            _ => None,
+                        };
+                        let preview = controller
                             .previews
                             .get(&(controller.active, page_id, object.id()))
-                            .filter(|preview| Arc::ptr_eq(&preview.object, object))
-                        {
-                            let appearance = match object.as_ref() {
-                                Object::Equation(e)
-                                    if e.math_link
-                                        .as_ref()
-                                        .is_some_and(|l| l.operation == "graph") =>
-                                {
-                                    Some(RasterAppearance::Graph(graph_palette))
-                                }
-                                Object::Text(_) | Object::Equation(_) => {
-                                    Some(RasterAppearance::Ink(canvas_theme))
-                                }
-                                _ => None,
-                            };
+                            .filter(|preview| Arc::ptr_eq(&preview.object, object));
+                        if let Some(preview) = preview {
                             let valid = self.rasters.get(&object.id()).is_some_and(|cache| {
                                 Arc::ptr_eq(&cache.data, &preview.bgra)
                                     && cache.appearance == appearance
@@ -862,20 +873,30 @@ impl Painter {
                             if !valid {
                                 self.request_raster(object.id(), page_id, preview, appearance, cx);
                             }
-                            if let Some(image) = self.rasters.get(&object.id()).filter(|image| {
-                                Arc::ptr_eq(&image.data, &preview.bgra)
-                                    && image.appearance == appearance
-                            }) {
-                                let transform = world.compose(movement);
-                                let _ = window.paint_image_transformed(
-                                    gpui_bounds(preview.bounds),
-                                    Default::default(),
-                                    image.image.clone(),
-                                    0,
-                                    false,
-                                    gpu_transform(transform),
-                                );
-                            }
+                        }
+                        // The current raster, or the previous one carried onto
+                        // the edited transform until the current one is ready.
+                        let placement = self
+                            .rasters
+                            .get(&object.id())
+                            .filter(|image| image.appearance == appearance)
+                            .and_then(|image| match preview {
+                                Some(preview) if Arc::ptr_eq(&image.data, &preview.bgra) => {
+                                    Some((image, preview.bounds, Transform::default()))
+                                }
+                                _ => folio_app::relative_transform(&image.object, object)
+                                    .map(|relative| (image, image.bounds, relative)),
+                            });
+                        if let Some((image, bounds, relative)) = placement {
+                            let transform = world.compose(movement).compose(relative);
+                            let _ = window.paint_image_transformed(
+                                gpui_bounds(bounds),
+                                Default::default(),
+                                image.image.clone(),
+                                0,
+                                false,
+                                gpu_transform(transform),
+                            );
                         }
                     }
                 }
@@ -1209,6 +1230,7 @@ impl Painter {
         let (width, height) = (preview.width, preview.height);
         let data = request.data.clone();
         let object = preview.object.clone();
+        let (source, bounds) = (preview.object.clone(), preview.bounds);
         let task = cx.background_executor().spawn(async move {
             if let Some(RasterAppearance::Graph(palette)) = appearance
                 && let Object::Equation(equation) = object.as_ref()
@@ -1263,6 +1285,8 @@ impl Painter {
                             data: request.data,
                             image,
                             appearance,
+                            object: source,
+                            bounds,
                         },
                     ) {
                         // This entity update runs outside a window update, so
@@ -1772,6 +1796,14 @@ mod tests {
                     },
                     image,
                     appearance: None,
+                    object: Arc::new(Object::Image(folio_document::ImageObject {
+                        id,
+                        asset: "image.png".into(),
+                        rect: Rect::new(0., 0., 1., 1.),
+                        transform: Transform::default(),
+                        crop: None,
+                    })),
+                    bounds: Rect::default(),
                 },
             );
         }

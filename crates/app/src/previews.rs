@@ -251,9 +251,7 @@ fn translate_preview(preview: &mut RasterPreview, object: &Arc<Object>) -> bool 
     if (before.a, before.b, before.c, before.d) != (after.a, after.b, after.c, after.d) {
         return false;
     }
-    let mut unmoved = object.as_ref().clone();
-    unmoved.set_transform(before);
-    if unmoved != *preview.object {
+    if relative_transform(&preview.object, object).is_none() {
         return false;
     }
     let shift = Point::new(after.tx - before.tx, after.ty - before.ty);
@@ -264,4 +262,16 @@ fn translate_preview(preview: &mut RasterPreview, object: &Arc<Object>) -> bool 
     };
     preview.object = object.clone();
     true
+}
+
+/// The document-space transform that carries `before` onto `after`, when the
+/// two differ only in their transforms. A raster of `before` drawn with it
+/// shows `after` until a fresh raster is ready.
+pub fn relative_transform(before: &Object, after: &Object) -> Option<Transform> {
+    let mut unmoved = after.clone();
+    unmoved.set_transform(before.transform());
+    (unmoved == *before)
+        .then(|| before.transform().inverse())
+        .flatten()
+        .map(|inverse| after.transform().compose(inverse))
 }
