@@ -9,7 +9,7 @@ use std::{
     process::{Child, ChildStdin, Stdio},
     sync::{
         Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
 };
@@ -54,8 +54,6 @@ pub struct MathStep {
     pub status: String,
     pub children: Vec<MathStep>,
     #[serde(skip)]
-    pub preview: Option<PathBuf>,
-    #[serde(skip)]
     pub rendered_svg: Option<String>,
     #[serde(skip)]
     pub vector: Option<Arc<folio_math::VectorFormula>>,
@@ -84,8 +82,6 @@ pub struct MathReport {
     pub interpretation: Option<String>,
     pub assignment: Option<String>,
     pub assignment_value: Option<String>,
-    #[serde(skip)]
-    pub preview: Option<PathBuf>,
     #[serde(skip)]
     pub rendered_svg: Option<String>,
     #[serde(skip)]
@@ -150,6 +146,11 @@ struct Task {
     request: MathRequest,
     purpose: Purpose,
 }
+enum Job {
+    Solve(Task),
+    /// Start the service before the first request; never produces a completion.
+    Warm(PathBuf),
+}
 struct Completion {
     generation: u64,
     request: MathRequest,
@@ -162,11 +163,15 @@ struct ProcessClient {
     pack: PathBuf,
 }
 pub(super) struct Service {
-    sender: Option<mpsc::SyncSender<Task>>,
+    sender: Option<mpsc::SyncSender<Job>>,
     results: mpsc::Receiver<Completion>,
     process: Arc<Mutex<Option<Child>>>,
     generation: Arc<AtomicU64>,
+    /// Set while the worker owes a response, so cancellation only kills real work.
+    in_flight: Arc<AtomicBool>,
 }
+/// Matches the OCR model's idle release; a resident SymPy process holds RAM.
+const IDLE_STOP: Duration = Duration::from_secs(300);
 fn stop(process: &Mutex<Option<Child>>) {
     if let Some(mut child) = process.lock().unwrap().take() {
         let _ = child.kill();
@@ -190,24 +195,12 @@ fn cached_formula(
     cache.insert(latex.to_owned(), rendered.clone());
     Ok(rendered)
 }
-fn prepare_report(report: &mut MathReport, root: &std::path::Path) {
+fn prepare_report(report: &mut MathReport) {
     // A report commonly repeats its answer in the final step and nested rules.
     // Keep reuse local to this bounded report rather than retaining formulas forever.
     let mut formulas = FormulaCache::new();
     if let Some(graph) = &report.graph {
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        graph.svg.hash(&mut hash);
-        let path = root.join(format!("{:016x}.png", hash.finish()));
-        let saved = path.is_file()
-            || (|| {
-                std::fs::create_dir_all(root).ok()?;
-                folio_export::raster_svg(&graph.svg, 2.)
-                    .ok()?
-                    .save_png(&path)
-                    .ok()
-            })()
-            .is_some();
-        report.preview = saved.then_some(path);
+        // The panel rasterizes graphs itself with the page palette.
         report.rendered_svg = Some(graph.svg.clone());
     } else if let Ok((svg, vector)) = cached_formula(&report.answer_latex, &mut formulas) {
         report.rendered_svg = Some(svg);
@@ -228,132 +221,194 @@ fn prepare_steps(steps: &mut [MathStep], remaining: &mut usize, formulas: &mut F
         prepare_steps(&mut step.children, remaining, formulas);
     }
 }
+fn start_process(
+    pack_path: &PathBuf,
+    process: &Mutex<Option<Child>>,
+) -> Result<ProcessClient, String> {
+    stop(process);
+    #[derive(Deserialize)]
+    struct Pack {
+        python: PathBuf,
+        worker: PathBuf,
+    }
+    let pack: Pack = serde_json::from_slice(
+        &std::fs::read(pack_path).map_err(|e| format!("Offline math pack is missing: {e}"))?,
+    )
+    .map_err(|e| format!("Invalid math pack: {e}"))?;
+    let root = pack_path.parent().ok_or("Invalid math pack path")?;
+    let absolute = |path: PathBuf| {
+        if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        }
+    };
+    let mut child = folio_platform::command(absolute(pack.python))
+        .arg("-u")
+        .arg(absolute(pack.worker))
+        .arg("--config")
+        .arg(pack_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn_background()
+        .map_err(|e| format!("Cannot start offline math: {e}"))?;
+    let input = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    *process.lock().unwrap() = Some(child);
+    let (lines_tx, output) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = Vec::new();
+            let value = match reader
+                .by_ref()
+                .take(4_194_305)
+                .read_until(b'\n', &mut line)
+            {
+                Ok(0) => Err("Math worker stopped; try again".into()),
+                Ok(_) if line.len() > 4_194_304 => Err("Math response is too large".into()),
+                Ok(_) => String::from_utf8(line).map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            let failed = value.is_err();
+            if lines_tx.send(value).is_err() || failed {
+                break;
+            }
+        }
+    });
+    Ok(ProcessClient {
+        input,
+        output,
+        pack: pack_path.clone(),
+    })
+}
+/// Reuse a live process for the same pack, otherwise start one.
+fn ensure_client<'a>(
+    client: &'a mut Option<ProcessClient>,
+    pack: &PathBuf,
+    process: &Mutex<Option<Child>>,
+) -> Result<&'a mut ProcessClient, String> {
+    let alive = process
+        .lock()
+        .unwrap()
+        .as_mut()
+        .is_some_and(|p: &mut Child| p.try_wait().ok().flatten().is_none());
+    if !alive || client.as_ref().is_none_or(|c| &c.pack != pack) {
+        *client = None;
+        *client = Some(start_process(pack, process)?);
+    }
+    Ok(client.as_mut().unwrap())
+}
+/// One request/response line. Any error leaves the protocol out of sync.
+fn exchange(
+    client: &mut ProcessClient,
+    request: &MathRequest,
+) -> Result<serde_json::Value, String> {
+    serde_json::to_writer(&mut client.input, request).map_err(|e| e.to_string())?;
+    client
+        .input
+        .write_all(b"\n")
+        .and_then(|_| client.input.flush())
+        .map_err(|e| e.to_string())?;
+    let line = client
+        .output
+        .recv_timeout(Duration::from_secs(15))
+        .map_err(|_| "Math solver timed out; try a smaller problem".to_string())??;
+    serde_json::from_str(&line).map_err(|e| e.to_string())
+}
 impl Service {
     pub fn new() -> Self {
-        let (sender, jobs) = mpsc::sync_channel::<Task>(32);
+        let (sender, jobs) = mpsc::sync_channel::<Job>(32);
         let (tx, results) = mpsc::sync_channel(8);
         let process = Arc::new(Mutex::new(None));
         let generation = Arc::new(AtomicU64::new(0));
-        let previews = std::env::temp_dir().join(format!("folio-math-{}", Id::new_v4()));
+        let in_flight = Arc::new(AtomicBool::new(false));
         let worker_process = process.clone();
         let worker_generation = generation.clone();
-        let worker_previews = previews.clone();
+        let worker_in_flight = in_flight.clone();
         std::thread::Builder::new()
             .name("folio-math-solver".into())
             .spawn(move || {
                 let mut client: Option<ProcessClient> = None;
-                while let Ok(task) = jobs.recv() {
-                    if task.generation != worker_generation.load(Ordering::Acquire) {
-                        continue;
-                    }
-                    let result =
-                        (|| {
-                            if let Purpose::Edit { latex, .. } = &task.purpose {
-                                let (svg, vector) = formula(latex)?;
-                                return Ok(MathReport {
-                                    answer: latex.clone(),
-                                    answer_latex: latex.clone(),
-                                    title: "Edited result".into(),
-                                    message: "LaTeX edited manually; this answer has not been verified by the solver.".into(),
-                                    status: "edited".into(),
-                                    rendered_svg: Some(svg),
-                                    vector: Some(vector),
-                                    ..Default::default()
+                loop {
+                    let task = match jobs.recv_timeout(IDLE_STOP) {
+                        Ok(Job::Solve(task)) => task,
+                        // Dropping the service sets the final generation; skip queued warmups.
+                        Ok(Job::Warm(_))
+                            if worker_generation.load(Ordering::SeqCst) == u64::MAX =>
+                        {
+                            continue;
+                        }
+                        Ok(Job::Warm(pack)) => {
+                            // A trivial solve loads SymPy's solver modules; outline
+                            // rendering initializes the math font. Cancellation leaves
+                            // this short request running instead of killing the process.
+                            let _ = formula("x");
+                            let warmed = ensure_client(&mut client, &pack, &worker_process)
+                                .and_then(|c| {
+                                    exchange(
+                                        c,
+                                        &MathRequest {
+                                            expression: "2x+3=7".into(),
+                                            ..Default::default()
+                                        },
+                                    )
                                 });
-                            }
-                            let alive =
-                                worker_process.lock().unwrap().as_mut().is_some_and(
-                                    |p: &mut Child| p.try_wait().ok().flatten().is_none(),
-                                );
-                            if !alive || client.as_ref().is_none_or(|c| c.pack != task.pack) {
+                            if warmed.is_err() {
                                 stop(&worker_process);
                                 client = None;
-                                #[derive(Deserialize)]
-                                struct Pack {
-                                    python: PathBuf,
-                                    worker: PathBuf,
-                                }
-                                let pack: Pack =
-                                    serde_json::from_slice(&std::fs::read(&task.pack).map_err(
-                                        |e| format!("Offline math pack is missing: {e}"),
-                                    )?)
-                                    .map_err(|e| format!("Invalid math pack: {e}"))?;
-                                let root = task.pack.parent().ok_or("Invalid math pack path")?;
-                                let absolute = |path: PathBuf| {
-                                    if path.is_absolute() {
-                                        path
-                                    } else {
-                                        root.join(path)
-                                    }
-                                };
-                                let mut child = folio_platform::command(absolute(pack.python))
-                                    .arg("-u")
-                                    .arg(absolute(pack.worker))
-                                    .arg("--config")
-                                    .arg(&task.pack)
-                                    .stdin(Stdio::piped())
-                                    .stdout(Stdio::piped())
-                                    .stderr(Stdio::inherit())
-                                    .spawn_background()
-                                    .map_err(|e| format!("Cannot start offline math: {e}"))?;
-                                let input = child.stdin.take().unwrap();
-                                let stdout = child.stdout.take().unwrap();
-                                *worker_process.lock().unwrap() = Some(child);
-                                let (lines_tx, output) = mpsc::sync_channel(1);
-                                std::thread::spawn(move || {
-                                    let mut reader = BufReader::new(stdout);
-                                    loop {
-                                        let mut line = Vec::new();
-                                        let value = match reader
-                                            .by_ref()
-                                            .take(4_194_305)
-                                            .read_until(b'\n', &mut line)
-                                        {
-                                            Ok(0) => Err("Math worker stopped; try again".into()),
-                                            Ok(_) if line.len() > 4_194_304 => {
-                                                Err("Math response is too large".into())
-                                            }
-                                            Ok(_) => {
-                                                String::from_utf8(line).map_err(|e| e.to_string())
-                                            }
-                                            Err(e) => Err(e.to_string()),
-                                        };
-                                        let failed = value.is_err();
-                                        if lines_tx.send(value).is_err() || failed {
-                                            break;
-                                        }
-                                    }
-                                });
-                                client = Some(ProcessClient {
-                                    input,
-                                    output,
-                                    pack: task.pack.clone(),
-                                });
                             }
-                            if task.generation != worker_generation.load(Ordering::Acquire) {
-                                return Err("Math solving cancelled".into());
-                            }
-                            let c = client.as_mut().unwrap();
-                            serde_json::to_writer(&mut c.input, &task.request)
-                                .map_err(|e| e.to_string())?;
-                            c.input
-                                .write_all(b"\n")
-                                .and_then(|_| c.input.flush())
-                                .map_err(|e| e.to_string())?;
-                            let line = c.output.recv_timeout(Duration::from_secs(15)).map_err(
-                                |_| "Math solver timed out; try a smaller problem".to_string(),
-                            )??;
-                            let value: serde_json::Value =
-                                serde_json::from_str(&line).map_err(|e| e.to_string())?;
-                            if let Some(error) = value.get("error").and_then(|e| e.as_str()) {
-                                return Err(error.to_string());
-                            }
-                            let mut report: MathReport =
-                                serde_json::from_value(value).map_err(|e| e.to_string())?;
-                            prepare_report(&mut report, &worker_previews);
-                            Ok(report)
-                        })();
-                    if result.is_err() {
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            stop(&worker_process);
+                            client = None;
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    if task.generation != worker_generation.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    // Only transport/protocol failures restart the process; solver
+                    // input errors and cancellations keep the warm service.
+                    let mut restart = false;
+                    let result = (|| {
+                        if let Purpose::Edit { latex, .. } = &task.purpose {
+                            let (svg, vector) = formula(latex)?;
+                            return Ok(MathReport {
+                                answer: latex.clone(),
+                                answer_latex: latex.clone(),
+                                title: "Edited result".into(),
+                                message: "LaTeX edited manually; this answer has not been verified by the solver.".into(),
+                                status: "edited".into(),
+                                rendered_svg: Some(svg),
+                                vector: Some(vector),
+                                ..Default::default()
+                            });
+                        }
+                        restart = true;
+                        let c = ensure_client(&mut client, &task.pack, &worker_process)?;
+                        // Publish in-flight work before rechecking the generation, so
+                        // a concurrent cancel either is observed here or kills the request.
+                        worker_in_flight.store(true, Ordering::SeqCst);
+                        if task.generation != worker_generation.load(Ordering::SeqCst) {
+                            restart = false;
+                            return Err("Math solving cancelled".into());
+                        }
+                        let value = exchange(c, &task.request)?;
+                        restart = false;
+                        if let Some(error) = value.get("error").and_then(|e| e.as_str()) {
+                            return Err(error.to_string());
+                        }
+                        let mut report: MathReport =
+                            serde_json::from_value(value).map_err(|e| e.to_string())?;
+                        prepare_report(&mut report);
+                        Ok(report)
+                    })();
+                    worker_in_flight.store(false, Ordering::SeqCst);
+                    if restart {
                         stop(&worker_process);
                         client = None;
                     }
@@ -370,7 +425,6 @@ impl Service {
                     }
                 }
                 stop(&worker_process);
-                let _ = std::fs::remove_dir_all(worker_previews);
             })
             .expect("start math solver");
         Self {
@@ -378,25 +432,41 @@ impl Service {
             results,
             process,
             generation,
+            in_flight,
         }
     }
+    /// Discard queued and running work. An idle process stays warm.
     fn cancel(&self, generation: u64) {
-        self.generation.store(generation, Ordering::Release);
-        stop(&self.process);
+        self.generation.store(generation, Ordering::SeqCst);
+        if self.in_flight.load(Ordering::SeqCst) {
+            stop(&self.process);
+        }
     }
     fn submit(&self, task: Task) -> Result<(), String> {
         self.sender
             .as_ref()
             .ok_or("Math solver stopped")?
-            .try_send(task)
+            .try_send(Job::Solve(task))
             .map_err(|_| "Math solver queue is full; try again".into())
+    }
+    /// Start the process ahead of the first request; does nothing if it is running.
+    fn warm(&self, pack: PathBuf) {
+        let running = self
+            .process
+            .lock()
+            .unwrap()
+            .as_mut()
+            .is_some_and(|p| p.try_wait().ok().flatten().is_none());
+        if !running && let Some(sender) = &self.sender {
+            let _ = sender.try_send(Job::Warm(pack));
+        }
     }
 }
 impl Drop for Service {
     fn drop(&mut self) {
-        self.cancel(u64::MAX);
+        self.generation.store(u64::MAX, Ordering::SeqCst);
+        stop(&self.process);
         self.sender.take();
-        // The worker removes these after it exits, avoiding a preview-write race.
     }
 }
 impl Controller {
@@ -450,6 +520,8 @@ impl Controller {
     pub fn open_math_solver(&mut self) -> Result<(), String> {
         self.finish();
         self.cancel_math_solver();
+        // Overlap the Python/SymPy startup with OCR or reviewing the problem.
+        self.math_service.warm(self.math_pack());
         let sources = self.math_sources();
         let text = math_source_text(&sources);
         let mut request = MathRequest {
@@ -519,6 +591,7 @@ impl Controller {
             return Err("Source writing changed; recognize again".into());
         }
         self.cancel_math_solver();
+        self.math_service.warm(self.math_pack());
         self.math_session = Some(MathSession {
             request: MathRequest {
                 expression: text,
@@ -1472,7 +1545,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        prepare_report(&mut report, std::path::Path::new("unused-no-graph"));
+        prepare_report(&mut report);
         let answer = report.vector.as_ref().unwrap();
         for step in [
             &report.steps[0],
@@ -1521,6 +1594,9 @@ mod tests {
             app.math_session.as_ref().unwrap().error
         );
     }
+    fn worker_pid(app: &Controller) -> Option<u32> {
+        app.math_service.process.lock().unwrap().as_ref().map(Child::id)
+    }
     fn clean(mut app: Controller, root: PathBuf) {
         app.close_math_solver();
         app.flush().unwrap();
@@ -1536,13 +1612,12 @@ mod tests {
         run(&mut app, "2x+3=11", "auto");
         let report = app.math_session.as_ref().unwrap().report.as_ref().unwrap();
         assert_eq!(report.answer, "{4}");
-        assert!(report.preview.is_none());
         assert!(!report.vector.as_ref().unwrap().paths.is_empty());
         assert!(
             report
                 .steps
                 .iter()
-                .all(|step| step.preview.is_none() && step.vector.is_some())
+                .all(|step| step.vector.is_some())
         );
         assert_eq!(app.page().objects, originals);
         app.insert_math_result(true, false).unwrap();
@@ -1585,7 +1660,7 @@ mod tests {
         let report = app.math_session.as_ref().unwrap().report.as_ref().unwrap();
         assert_eq!(report.answer_latex, latex);
         assert_eq!(report.status, "edited");
-        assert!(report.vector.is_some() && report.preview.is_none());
+        assert!(report.vector.is_some());
         assert!(report.steps.is_empty() && report.assignment.is_none());
         assert!(app.insert_math_result(false, true).is_err());
         let before = app.page().objects.clone();
@@ -1650,6 +1725,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(app.math_session.as_ref().unwrap().report.is_none());
+        // A cancelled request cannot leave a stale response for the next one.
+        run(&mut app, "3x=12", "auto");
+        let report = app.math_session.as_ref().unwrap().report.as_ref().unwrap();
+        assert_eq!(report.answer, "{4}");
         clean(app, root);
     }
     #[test]
@@ -1740,6 +1819,54 @@ mod tests {
             "incorrect"
         );
         assert!(app.insert_math_result(false, false).is_err());
+        // Reopening the panel and solver input errors keep the warm process;
+        // respawning Python and importing SymPy dominated every solve.
+        let pid = worker_pid(&app).unwrap();
+        app.open_math_solver().unwrap();
+        app.run_math_solver(MathRequest {
+            expression: "x+".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        wait(&mut app);
+        assert!(app.math_session.as_ref().unwrap().error.is_some());
+        run(&mut app, "x^2-5x+6=0", "auto");
+        let report = app.math_session.as_ref().unwrap().report.as_ref().unwrap();
+        assert_eq!(report.answer, "{2, 3}");
+        assert_eq!(worker_pid(&app), Some(pid));
+        clean(app, root);
+    }
+    /// `cargo test -p folio-app benchmark_panel_solve_latency -- --ignored --nocapture`
+    /// reports controller latency from opening the panel to a prepared report.
+    #[test]
+    #[ignore]
+    fn benchmark_panel_solve_latency() {
+        let cases = [
+            ("2+3*4=", "auto"),
+            ("2x+3=7", "auto"),
+            ("x^2-5x+6=0", "auto"),
+            ("(x+1)^2", "simplify"),
+            ("x^3*sin(x)", "differentiate"),
+            ("x*e^x", "integrate"),
+            ("x+y=3; x-y=1", "auto"),
+            ("x^2-4>0", "auto"),
+            ("y=x^2", "graph"),
+            ("sin(x)^2+cos(x)^2", "simplify"),
+        ];
+        let (mut app, root) = fixture();
+        // Opening the panel prestarts the service while the problem is reviewed.
+        app.open_math_solver().unwrap();
+        std::thread::sleep(Duration::from_secs(1));
+        for round in ["first", "repeat"] {
+            for (expression, operation) in cases {
+                let start = Instant::now();
+                run(&mut app, expression, operation);
+                println!(
+                    "{round:6} {operation:13} {expression:20} {:8.1} ms",
+                    start.elapsed().as_secs_f64() * 1000.
+                );
+            }
+        }
         clean(app, root);
     }
     #[test]
