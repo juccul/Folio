@@ -34,6 +34,8 @@ pub enum Interaction {
         anchor: Point,
         start: Point,
         end: Point,
+        /// Scale both axes equally, preserving image aspect ratios.
+        uniform: bool,
     },
     Rotate {
         center: Point,
@@ -228,10 +230,15 @@ impl Controller {
             .enumerate()
             .find(|(_, corner)| corner.distance(p) < 10. / zoom)
         {
+            let page = self.page();
+            let uniform = self.session().selection.iter().any(|id| {
+                matches!(page.objects.get(id).map(|o| o.as_ref()), Some(Object::Image(_)))
+            });
             return Some(Interaction::Resize {
                 anchor: corners[(i + 2) % 4],
                 start: *corner,
                 end: p,
+                uniform,
             });
         }
         let handle = Point::new(bounds.center().x, bounds.min.y - 24. / zoom);
@@ -419,9 +426,15 @@ impl Controller {
                 Transform::translate(end.x - start.x, end.y - start.y),
                 "Move selection",
             ),
-            Interaction::Resize { anchor, start, end } => {
-                self.resize_selection(resize_transform(anchor, start, end), "Resize selection")
-            }
+            Interaction::Resize {
+                anchor,
+                start,
+                end,
+                uniform,
+            } => self.resize_selection(
+                resize_transform(anchor, start, end, uniform),
+                "Resize selection",
+            ),
             Interaction::Rotate { center, start, end } => {
                 self.transform_selection(rotation_transform(center, start, end), "Rotate selection")
             }
@@ -739,9 +752,12 @@ impl Controller {
             Some(Interaction::Move { start, end }) => {
                 Transform::translate(end.x - start.x, end.y - start.y)
             }
-            Some(Interaction::Resize { anchor, start, end }) => {
-                resize_transform(*anchor, *start, *end)
-            }
+            Some(Interaction::Resize {
+                anchor,
+                start,
+                end,
+                uniform,
+            }) => resize_transform(*anchor, *start, *end, *uniform),
             Some(Interaction::Rotate { center, start, end }) => {
                 rotation_transform(*center, *start, *end)
             }
@@ -765,8 +781,9 @@ fn push_lasso_point(points: &mut Vec<Point>, p: Point) {
         points.push(p);
     }
 }
-/// Scale about `anchor` so that `start` moves to `end`, per axis.
-fn resize_transform(anchor: Point, start: Point, end: Point) -> Transform {
+/// Scale about `anchor` so that `start` moves to `end`, per axis. A uniform
+/// resize projects `end` onto the anchor-to-corner diagonal instead.
+fn resize_transform(anchor: Point, start: Point, end: Point, uniform: bool) -> Transform {
     let ratio = |original: f32, current: f32| {
         if original.abs() < 0.001 {
             1.
@@ -774,8 +791,14 @@ fn resize_transform(anchor: Point, start: Point, end: Point) -> Transform {
             (current / original).clamp(0.05, 20.)
         }
     };
-    let sx = ratio(start.x - anchor.x, end.x - anchor.x);
-    let sy = ratio(start.y - anchor.y, end.y - anchor.y);
+    let (dx, dy) = (start.x - anchor.x, start.y - anchor.y);
+    let (sx, sy) = if uniform {
+        let length = dx * dx + dy * dy;
+        let s = ratio(length, (end.x - anchor.x) * dx + (end.y - anchor.y) * dy);
+        (s, s)
+    } else {
+        (ratio(dx, end.x - anchor.x), ratio(dy, end.y - anchor.y))
+    };
     Transform::translate(anchor.x, anchor.y)
         .compose(Transform {
             a: sx,

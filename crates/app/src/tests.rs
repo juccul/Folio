@@ -402,6 +402,59 @@ fn resize_and_rotation_handles_create_reversible_commands() {
     };
     assert!(Arc::ptr_eq(&restored.raw, &original.raw));
     assert!(Arc::ptr_eq(&restored.path, &original.path));
+
+    // Image corners scale uniformly about the opposite corner for mouse and
+    // pen, including drags past the minimum size.
+    a.session_mut().selection.clear();
+    let id = Id::new_v4();
+    let page = a.page().id;
+    let image = Arc::new(Object::Image(folio_document::ImageObject {
+        id,
+        asset: "missing.png".into(),
+        rect: Rect::new(300., 300., 100., 50.),
+        transform: Transform::default(),
+        crop: None,
+    }));
+    a.commit(
+        "Image",
+        vec![Change::Object {
+            page,
+            id,
+            before: None,
+            after: Some(image.clone()),
+            index: 1,
+        }],
+    );
+    let bounds = image.bounds();
+    let anchor = Point::new(bounds.min.x, bounds.max.y);
+    let corner = Point::new(bounds.max.x, bounds.min.y);
+    for (device, end) in [
+        (folio_input::Device::Mouse, Point::new(corner.x + 100., corner.y)),
+        (folio_input::Device::Tablet, Point::new(corner.x, corner.y + 30.)),
+        (folio_input::Device::Mouse, Point::new(anchor.x - 80., anchor.y + 60.)),
+    ] {
+        a.session_mut().selection.insert(id);
+        let event = |position, phase| PenEvent {
+            device,
+            ..event(position, phase)
+        };
+        a.pointer(event(corner, Phase::Down));
+        a.pointer(event(end, Phase::Move));
+        let live = a.interaction_transform();
+        a.pointer(event(end, Phase::Up));
+        let resized = a.page().objects[&id].bounds();
+        assert!(live.apply(bounds.min).distance(resized.min) < 1e-3);
+        assert!((resized.width() / resized.height() - 2.).abs() < 1e-3);
+        assert!((resized.min.x - anchor.x).abs() < 1e-3);
+        assert!((resized.max.y - anchor.y).abs() < 1e-3);
+        assert!(resized.width() >= bounds.width() * 0.05 - 1e-3);
+        assert_ne!(resized, bounds);
+        a.undo();
+        assert_eq!(a.page().objects[&id], image);
+        a.redo();
+        assert_eq!(a.page().objects[&id].bounds(), resized);
+        a.undo();
+    }
 }
 fn ink() -> InkStroke {
     let mut b = StrokeBuilder::new(PenStyle::default());
