@@ -817,3 +817,78 @@ fn detached_letter_marks_are_found_for_sideways_and_diagonal_words() {
         });
     }
 }
+
+#[test]
+fn stationary_pen_long_press_selects_text_and_images_but_taps_and_strokes_stay_ink() {
+    for infinite in [false, true] {
+        for zoom in [1., 3.] {
+            with_app(|app| {
+                if infinite {
+                    app.page_size(800., 1000., true);
+                }
+                app.session_mut().viewport.zoom = zoom;
+                app.add_text("Label".into(), Point::new(40., 40.));
+                let text = app.page().order[0];
+                app.session_mut().selection.clear();
+                let image = Id::new_v4();
+                let object = Object::Image(ImageObject {
+                    id: image,
+                    asset: "missing.png".into(),
+                    rect: Rect::new(40., 260., 100., 80.),
+                    transform: Transform::default(),
+                    crop: None,
+                });
+                app.commit(
+                    "Image",
+                    vec![Change::Object {
+                        page: app.page().id,
+                        id: image,
+                        before: None,
+                        after: Some(Arc::new(object)),
+                        index: 1,
+                    }],
+                );
+                let on_image = Point::new(80., 300.);
+                let on_text = Point::new(100., 100.);
+                let jitter = |p: Point| Point::new(p.x + 3. / zoom, p.y - 3. / zoom);
+
+                // A short tap stays a dot.
+                draw(app, &[on_image, on_image], 1000);
+                assert!(app.session().selection.is_empty());
+                assert_eq!(app.page().objects.len(), 3);
+                app.undo();
+
+                // A jittery hold selects the image before lift, without ink.
+                app.pointer(frame(app, on_image, Phase::Down, 2000));
+                app.pointer(frame(app, jitter(on_image), Phase::Move, 2100));
+                hold(app);
+                app.tick();
+                assert_eq!(app.session().selection, HashSet::from([image]));
+                assert_eq!(app.tool, Tool::Lasso);
+                app.pointer(frame(app, jitter(on_image), Phase::Up, 2800));
+                assert_eq!(app.page().objects.len(), 2);
+                // Tapping away returns to the pen, as for encircle selection.
+                draw(app, &[Point::new(300., 500.); 2], 3000);
+                assert!(app.session().selection.is_empty());
+                assert_eq!(app.tool, Tool::Pen);
+
+                // A hold on text selects it even if the release beats the tick.
+                app.pointer(frame(app, on_text, Phase::Down, 4000));
+                app.pointer(frame(app, jitter(on_text), Phase::Move, 4100));
+                hold(app);
+                app.pointer(frame(app, jitter(on_text), Phase::Up, 4800));
+                assert_eq!(app.session().selection, HashSet::from([text]));
+                assert_eq!(app.page().objects.len(), 2);
+                app.clear_selection();
+
+                // Moving into a stroke cancels detection even if it ends held.
+                let stroke = [on_text, Point::new(130., 110.), Point::new(160., 120.)];
+                draw_held(app, &stroke, 5000);
+                assert!(app.session().selection.is_empty());
+                assert_eq!(app.tool, Tool::Pen);
+                // The held stroke stays ink, snapped to a line with its source.
+                assert!(app.page().objects.len() > 2);
+            });
+        }
+    }
+}

@@ -4,6 +4,8 @@ use super::*;
 pub(crate) const INK_HOLD_DELAY: Duration = Duration::from_millis(550);
 const INK_ENDPOINT_SLOP: f32 = 4.;
 const SHAPE_PREVIEW_SLOP: f32 = 16.;
+/// Screen-pixel radius a pen long press may wander from its touchdown point.
+const LONG_PRESS_SLOP: f32 = 8.;
 
 pub enum Interaction {
     Ink {
@@ -256,22 +258,44 @@ impl Controller {
         if !selects_text {
             return None;
         }
+        self.text_or_image_at(p, false)
+    }
+    /// The topmost text box (or image, when `images` is set) under `p`.
+    fn text_or_image_at(&self, p: Point, images: bool) -> Option<Id> {
         let session = self.session();
         session
             .index
             .query(Rect::new(p.x, p.y, 0., 0.))
             .into_iter()
             .filter_map(|id| {
-                let Object::Text(t) = session.page().objects.get(&id)?.as_ref() else {
-                    return None;
+                let (rect, transform) = match session.page().objects.get(&id)?.as_ref() {
+                    Object::Text(t) => (t.rect, t.transform),
+                    Object::Image(i) if images => (i.rect, i.transform),
+                    _ => return None,
                 };
-                let inverse = t.transform.inverse()?;
-                t.rect
-                    .contains(inverse.apply(p))
-                    .then(|| (session.order_positions.get(&id).copied().unwrap_or(0), t.id))
+                let inverse = transform.inverse()?;
+                rect.contains(inverse.apply(p))
+                    .then(|| (session.order_positions.get(&id).copied().unwrap_or(0), id))
             })
             .max_by_key(|(rank, _)| *rank)
             .map(|(_, id)| id)
+    }
+    /// The text box or image a stationary pen press started on, if the
+    /// samples never wandered further than jitter from the touchdown point.
+    fn long_press_target(&self, points: &[Point]) -> Option<Id> {
+        let start = *points.first()?;
+        let slop = LONG_PRESS_SLOP / self.session().viewport.zoom;
+        if points.iter().any(|p| p.distance(start) > slop) {
+            return None;
+        }
+        self.text_or_image_at(start, true)
+    }
+    /// Select one object as a gesture-made selection that returns to the pen.
+    fn select_by_gesture(&mut self, ids: HashSet<Id>, stroke: Id) {
+        self.session_mut().selection = ids;
+        self.tool = Tool::Lasso;
+        self.temporary_selection = true;
+        self.clear_ink_draft(stroke);
     }
     fn clamp_to_page(&self, p: Point) -> Point {
         let properties = &self.page().properties;
@@ -448,16 +472,21 @@ impl Controller {
         let points =
             || points.get_or_init(|| stroke.raw.iter().map(|p| p.position()).collect::<Vec<_>>());
         let smart_pen = self.tool == Tool::Pen && stroke.style.tool != InkTool::Highlighter;
+        // A stationary long press on a text box or image selects it.
+        if smart_pen
+            && held
+            && let Some(id) = self.long_press_target(points())
+        {
+            self.select_by_gesture(HashSet::from([id]), stroke.id);
+            return;
+        }
         // A deliberate endpoint hold identifies selection intent. Narrow,
         // overdrawn ovals can also resemble a scratch; never erase their
         // enclosed ink before honoring that selection.
         if smart_pen && self.settings.encircle_select && held {
             let ids = self.encircled_ids(points());
             if !ids.is_empty() {
-                self.session_mut().selection = ids;
-                self.tool = Tool::Lasso;
-                self.temporary_selection = true;
-                self.clear_ink_draft(stroke.id);
+                self.select_by_gesture(ids, stroke.id);
                 return;
             }
         }
@@ -639,12 +668,12 @@ impl Controller {
         }
         self.last_draft = Instant::now();
     }
-    /// Holding the pen still at the end of a stroke either completes an
-    /// encircle selection immediately or shows a shape-fit preview.
+    /// Holding the pen still either selects the text box or image under a
+    /// stationary press, completes an encircle selection immediately or
+    /// shows a shape-fit preview.
     pub(crate) fn detect_ink_hold(&mut self) -> bool {
         let smart_pen = self.tool == Tool::Pen && self.style.tool != InkTool::Highlighter;
-        let watching = self.settings.hold_shapes && self.tool == Tool::Shape
-            || smart_pen && (self.settings.hold_shapes || self.settings.encircle_select);
+        let watching = self.settings.hold_shapes && self.tool == Tool::Shape || smart_pen;
         let Some(Interaction::Ink {
             builder,
             last_move,
@@ -663,6 +692,12 @@ impl Controller {
             .iter()
             .map(|p| p.position())
             .collect::<Vec<_>>();
+        if smart_pen && let Some(id) = self.long_press_target(&points) {
+            let stroke = builder.id();
+            self.interaction = None;
+            self.select_by_gesture(HashSet::from([id]), stroke);
+            return true;
+        }
         if smart_pen && self.settings.encircle_select && !self.encircled_ids(&points).is_empty() {
             self.finish();
             return true;
