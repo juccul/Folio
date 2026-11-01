@@ -1052,15 +1052,23 @@ impl Painter {
                 } else {
                     controller.settings.cursor_size * 0.5
                 };
-                if let Some(path) = line_path(
-                    &folio_ink::circle(center, r, 32)
-                        .into_iter()
-                        .chain(std::iter::once(DocPoint::new(center.x + r, center.y)))
-                        .collect::<Vec<_>>(),
-                    1.,
-                    false,
-                ) {
-                    window.paint_path(path, alpha(theme.muted, 0.65));
+                let on_page = properties.infinite
+                    || Rect::new(0., 0., properties.width, properties.height).contains(cursor);
+                let background = if on_page {
+                    canvas_theme.paper
+                } else {
+                    theme.bg
+                };
+                let (ring, halo) = super::theme::cursor_colors(background);
+                let circle = folio_ink::circle(center, r, 32)
+                    .into_iter()
+                    .chain(std::iter::once(DocPoint::new(center.x + r, center.y)))
+                    .collect::<Vec<_>>();
+                if let Some(path) = line_path(&circle, 3., false) {
+                    window.paint_path(path, alpha(halo, 0.7));
+                }
+                if let Some(path) = line_path(&circle, 1., false) {
+                    window.paint_path(path, rgb(ring));
                 }
             }
         });

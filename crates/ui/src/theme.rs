@@ -240,6 +240,20 @@ pub fn mix(a: u32, b: u32, amount: f32) -> u32 {
     };
     (channel(16) << 16) | (channel(8) << 8) | channel(0)
 }
+/// Pen cursor ring and halo for the background under the pointer. The ring is
+/// the inverted background, or black/white where inversion stays mid-gray; the
+/// halo inverts the ring so it remains outlined over ink, patterns and images.
+pub fn cursor_colors(background: u32) -> (u32, u32) {
+    let mut ring = !background & 0xffffff;
+    if contrast(ring, background) < 3. {
+        ring = if contrast(0xffffff, background) >= contrast(0x000000, background) {
+            0xffffff
+        } else {
+            0x000000
+        };
+    }
+    (ring, !ring & 0xffffff)
+}
 fn luminance(color: u32) -> f32 {
     let channel = |shift: u32| {
         let x = ((color >> shift) & 255) as f32 / 255.;
@@ -273,6 +287,13 @@ mod tests {
             assert_eq!(graph.paper, paper);
             assert!(contrast(canvas.ink(0x2b3934), paper) >= 3.);
             assert!(contrast(graph.labels, paper) >= 4.5);
+        }
+        assert_eq!(cursor_colors(0xffffff), (0x000000, 0xffffff));
+        assert_eq!(cursor_colors(0x1a3c8c).0, 0xe5c373);
+        for paper in [0xffffff, 0x000000, 0x808080, 0x7f7f7f, 0x1a3c8c, 0xe03030, 0x30c060] {
+            let (ring, halo) = cursor_colors(paper);
+            assert!(contrast(ring, paper) >= 3., "{paper:06x}");
+            assert!(contrast(ring, halo) >= 3., "{paper:06x}");
         }
         assert_eq!(
             theme.canvas_for_page(&folio_document::PageProperties::default()),
