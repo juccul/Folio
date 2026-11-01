@@ -22,7 +22,7 @@ For dual-licensed dependencies, select MIT where offered, otherwise Apache-2.0 w
 - Krilla/krilla-svg: MIT or Apache-2.0, searchable subset-font vector PDF overlays; lopdf: MIT, original PDF object preservation and decryption. AccessKit/Unix adapter: MIT or Apache-2.0, local AT-SPI controls bridge.
 - System fonts, Vulkan drivers, glibc, XCB and xkbcommon come from the Linux installation and are not copied into the binary bundle. Their distro packages retain their respective licenses.
 
-The UI uses 51 embedded Tabler Outline SVGs by Paweł Kuna, licensed under MIT, with stroke width adjusted to 1.65. Source mappings, the pinned revision, upstream attribution and full license are retained in [third_party/licenses/tabler-icons](third_party/licenses/tabler-icons). The matching marker icon and notebook cover artwork are original Folio vector drawings under GPL-3.0-or-later. Goodnotes documentation was consulted for layout; no Goodnotes assets or source are redistributed.
+The UI uses 53 embedded Tabler Outline SVGs by Paweł Kuna, licensed under MIT, with stroke width adjusted to 1.65. Source mappings, the pinned revision, upstream attribution and full license are retained in [third_party/licenses/tabler-icons](third_party/licenses/tabler-icons). The matching marker icon and notebook cover artwork are original Folio vector drawings under GPL-3.0-or-later. Goodnotes documentation was consulted for layout; no Goodnotes assets or source are redistributed.
 
 The ink/geometric algorithms are original implementations. No perfect-freehand, Xournal++ or Rnote source was copied. [DEVELOPMENT.md](DEVELOPMENT.md) explains the design references and tradeoffs.
 

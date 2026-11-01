@@ -184,7 +184,7 @@ def main():
                 click('Close check')
                 assert not any(n.get_name() == 'Save input report…' for n in controls())
                 click('Settings'); click('Library')
-                wait('Back up library…'); wait('Restore backup…')
+                wait('Back up…'); wait('Restore…')
                 capture('backup-controls'); click('Close settings')
                 client.key('s', 4)
                 print('NOTEBOOK_WORKFLOWS_OK: reviewed ink index/search, starter, bookmarks, duplicate/move/undo, cover, template lifecycle, input-check controls, backup controls', flush=True)

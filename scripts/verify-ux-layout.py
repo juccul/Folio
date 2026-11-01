@@ -253,7 +253,7 @@ def main():
                         click('Writing');inside('Scratch to erase: Off');click('Scratch to erase: Off');inside('Scratch to erase: On');capture('settings-writing')
                         click('Scratch to erase: On')
                         click('Accessibility');inside('Reduce motion: On');capture('settings-accessibility')
-                        click('Library');inside('Open another library…');capture('settings-library')
+                        click('Library');inside('Open another…');capture('settings-library')
                         click('Close settings')
                         if scale==1. and width==1366:
                             click('Pen settings and presets');capture('presets')

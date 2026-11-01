@@ -143,16 +143,49 @@ impl NotesView {
         } else {
             "Update"
         };
-        div().flex().flex_col()
-            .child(self.settings_row("Installed version", env!("CARGO_PKG_VERSION")))
-            .child(div().mt_4().text_sm().text_color(rgb(theme.muted)).child(if supported { description } else { "Use your distribution's package manager to update this build.".into() }))
-            .when(supported, |body| body.child(div().flex().flex_wrap().gap_2().mt_4()
-                .child(self.button("update-check", "Check for updates", false, cx, |this, _, _| this.updater.check()))
-                .when(self.updater.state.can_download() || self.updater.state.can_restart(), |row| row.child(self.button("update-settings-action", action, true, cx, |this, window, cx| {
-                    this.settings_open = false; this.update_action(window, cx);
-                })))
-            ))
-            .child(div().mt_4().text_xs().text_color(rgb(theme.muted)).child("Folio checks release metadata periodically. Updates download only after you click Update. Restart saves your documents and creates a library backup first."))
+        let version = self.settings_row("Installed version", "").child(
+            div()
+                .flex_shrink_0()
+                .text_sm()
+                .text_color(rgb(theme.muted))
+                .child(env!("CARGO_PKG_VERSION")),
+        );
+        let status = if supported {
+            self.settings_row("Status", &description)
+                .child(self.settings_action("update-check", "Check now", cx, |this, _, _| {
+                    this.updater.check()
+                }))
+                .when(
+                    self.updater.state.can_download() || self.updater.state.can_restart(),
+                    |row| {
+                        row.child(
+                            self.button("update-settings-action", action, true, cx, |this, window, cx| {
+                                this.settings_open = false;
+                                this.update_action(window, cx);
+                            })
+                            .flex_shrink_0()
+                            .px_3()
+                            .py_1(),
+                        )
+                    },
+                )
+        } else {
+            self.settings_row(
+                "Status",
+                "Use your distribution's package manager to update this build.",
+            )
+        };
+        div()
+            .flex()
+            .flex_col()
+            .child(self.settings_group(None, [version, status]))
+            .child(
+                div()
+                    .px_1()
+                    .text_xs()
+                    .text_color(rgb(theme.muted))
+                    .child("Folio checks release metadata periodically. Updates download only after you choose Update. Restarting saves your documents and backs up the library first."),
+            )
     }
 }
 

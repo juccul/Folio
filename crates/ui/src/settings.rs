@@ -31,23 +31,24 @@ impl Section {
     }
 }
 impl NotesView {
+    /// A setting's label and description, with its control appended by the
+    /// caller. Rows sit inside a [`Self::settings_group`] card.
     pub(super) fn settings_row(&self, label: &str, description: &str) -> Div {
         let theme = Theme::new(&self.controller.settings);
         div()
             .w_full()
             .flex()
             .items_center()
-            .gap_5()
-            .py_4()
-            .border_b_1()
-            .border_color(theme.border)
+            .gap_4()
+            .px_4()
+            .py_3()
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap(px(2.))
                     .child(
                         div()
                             .text_sm()
@@ -64,18 +65,110 @@ impl NotesView {
                     }),
             )
     }
-    fn settings_heading(&self, label: &str) -> Div {
+    /// Rows framed as one card with dividers, under an optional heading.
+    pub(super) fn settings_group(
+        &self,
+        heading: Option<&str>,
+        rows: impl IntoIterator<Item = Div>,
+    ) -> Div {
         let theme = Theme::new(&self.controller.settings);
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .rounded(px(theme.radius.max(6.)))
+            .border_1()
+            .border_color(theme.border)
+            .bg(rgb(theme.bg))
+            .overflow_hidden();
+        for (index, row) in rows.into_iter().enumerate() {
+            card = card.child(row.when(index > 0, |row| row.border_t_1().border_color(theme.border)));
+        }
         div()
-            .mt_5()
-            .mb_1()
-            .text_sm()
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(rgb(theme.ink))
-            .child(label.to_owned())
+            .flex()
+            .flex_col()
+            .gap_2()
+            .mb_6()
+            .when_some(heading, |group, heading| {
+                group.child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(theme.muted))
+                        .child(heading.to_owned()),
+                )
+            })
+            .child(card)
+    }
+    /// A secondary action button with a visible outline.
+    pub(super) fn settings_action(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> Stateful<Div> {
+        let theme = Theme::new(&self.controller.settings);
+        self.button(id, label, false, cx, action)
+            .flex_shrink_0()
+            .px_3()
+            .py_1()
+            .border_color(theme.border)
+    }
+    /// An outlined − value + control. `step` receives −1 or +1.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn settings_stepper(
+        &self,
+        (less, less_label): (&'static str, &'static str),
+        (more, more_label): (&'static str, &'static str),
+        value: String,
+        cx: &mut Context<Self>,
+        step: impl Fn(&mut Self, f32) + Clone + 'static,
+    ) -> Div {
+        let theme = Theme::new(&self.controller.settings);
+        let mut stepper = div()
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .p(px(2.))
+            .rounded(px(theme.radius.max(6.)))
+            .border_1()
+            .border_color(theme.border)
+            .bg(rgb(theme.popover));
+        for (id, label, sign) in [(less, less_label, -1.), (more, more_label, 1.)] {
+            if sign > 0. {
+                stepper = stepper.child(
+                    div()
+                        .w(rems(3.5))
+                        .text_sm()
+                        .text_align(TextAlign::Center)
+                        .child(value.clone()),
+                );
+            }
+            let step = step.clone();
+            stepper = stepper.child(
+                self.control(
+                    id,
+                    label,
+                    div()
+                        .child(if sign < 0. { "−" } else { "+" })
+                        .into_any_element(),
+                    false,
+                    cx,
+                    move |this, _, _| {
+                        step(this, sign);
+                        this.controller.store_settings();
+                    },
+                )
+                .size(rems(1.875))
+                .p_0()
+                .bg(transparent_black()),
+            );
+        }
+        stepper
     }
     fn writing_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let mut body = div().flex().flex_col();
+        let mut gestures = Vec::new();
         for (id, label, description, enabled, kind) in [
             (
                 "scratch-toggle",
@@ -99,212 +192,176 @@ impl NotesView {
                 3,
             ),
         ] {
-            body = body.child(
-                self.settings_row(label, description)
-                    .child(self.appearance_switch(id, label, enabled, cx, move |this| {
-                        let s = &mut this.controller.settings;
-                        match kind {
-                            1 => s.scratch_erase = !s.scratch_erase,
-                            2 => s.hold_shapes = !s.hold_shapes,
-                            _ => s.encircle_select = !s.encircle_select,
-                        }
-                    })),
-            );
+            gestures.push(self.settings_row(label, description).child(self.appearance_switch(
+                id,
+                label,
+                enabled,
+                cx,
+                move |this| {
+                    let s = &mut this.controller.settings;
+                    match kind {
+                        1 => s.scratch_erase = !s.scratch_erase,
+                        2 => s.hold_shapes = !s.hold_shapes,
+                        _ => s.encircle_select = !s.encircle_select,
+                    }
+                },
+            )));
         }
-        body.child(
-            self.settings_row(
+        let pad = self
+            .settings_row(
                 "Tablet pad",
                 "Customize the buttons on your drawing tablet.",
             )
-            .child(
-                self.button("pad-buttons", "Configure…", false, cx, |this, w, cx| {
-                    this.modal(Modal::PadButtons, w, cx)
-                })
-                .flex_shrink_0(),
-            ),
-        )
+            .child(self.settings_action("pad-buttons", "Configure…", cx, |this, w, cx| {
+                this.modal(Modal::PadButtons, w, cx)
+            }));
+        div()
+            .flex()
+            .flex_col()
+            .child(self.settings_group(Some("Smart Ink gestures"), gestures))
+            .child(self.settings_group(Some("Tablet"), [pad]))
     }
     fn library_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(theme.muted))
-                    .child("Current library"),
+        let location = self
+            .settings_row(
+                "Current library",
+                &self.controller.data_dir.display().to_string(),
             )
+            .child(self.settings_action(
+                "switch-library",
+                "Open another…",
+                cx,
+                |this, w, cx| this.switch_library_dialog(w, cx),
+            ))
             .child(
-                div()
-                    .mt_2()
-                    .p_3()
-                    .rounded(px(6.))
-                    .bg(rgb(theme.bg))
-                    .text_xs()
-                    .child(self.controller.data_dir.display().to_string()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .mt_3()
-                    .child(self.button(
-                        "switch-library",
-                        "Open another library…",
-                        false,
-                        cx,
-                        |this, w, cx| this.switch_library_dialog(w, cx),
-                    ))
-                    .child(self.button(
-                        "default-library",
-                        "Use by default",
-                        false,
-                        cx,
-                        |this, _, _| {
-                            if let Err(e) = this.controller.use_library_by_default() {
-                                this.controller.error = Some(e);
-                            }
-                        },
-                    )),
-            )
-            .child(self.settings_heading("Saving & startup"))
-            .child(
-                self.settings_row("Autosave", "Save after each completed edit.")
-                    .child(self.appearance_switch(
-                        "autosave-toggle",
-                        "Autosave",
-                        self.controller.settings.autosave,
-                        cx,
-                        |this| {
-                            this.controller
-                                .set_autosave(!this.controller.settings.autosave)
-                        },
-                    )),
-            )
-            .child(
-                self.settings_row(
-                    "Reopen documents",
-                    "Continue with your previous tabs and pages.",
-                )
+                self.settings_action("default-library", "Use by default", cx, |this, _, _| {
+                    if let Err(e) = this.controller.use_library_by_default() {
+                        this.controller.error = Some(e);
+                    }
+                }),
+            );
+        let saving = [
+            self.settings_row("Autosave", "Save after each completed edit.")
                 .child(self.appearance_switch(
-                    "reopen-documents",
-                    "Reopen documents",
-                    self.controller.settings.reopen_documents,
+                    "autosave-toggle",
+                    "Autosave",
+                    self.controller.settings.autosave,
                     cx,
                     |this| {
-                        this.controller.settings.reopen_documents =
-                            !this.controller.settings.reopen_documents
+                        this.controller
+                            .set_autosave(!this.controller.settings.autosave)
                     },
                 )),
+            self.settings_row(
+                "Reopen documents",
+                "Continue with your previous tabs and pages.",
             )
-            .child(self.settings_heading("Backup & restore"))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(theme.muted))
-                    .child("Backups include documents, folders, assets and editing history."),
+            .child(self.appearance_switch(
+                "reopen-documents",
+                "Reopen documents",
+                self.controller.settings.reopen_documents,
+                cx,
+                |this| {
+                    this.controller.settings.reopen_documents =
+                        !this.controller.settings.reopen_documents
+                },
+            )),
+        ];
+        let mut backup = vec![
+            self.settings_row(
+                "Back up library",
+                "Includes documents, folders, assets and editing history.",
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .mt_3()
-                    .child(self.button(
-                        "backup-library",
-                        "Back up library…",
-                        false,
-                        cx,
-                        |this, _, cx| this.backup_dialog(cx),
-                    ))
-                    .child(self.button(
-                        "restore-library",
-                        "Restore backup…",
-                        false,
-                        cx,
-                        |this, _, cx| this.restore_dialog(cx),
-                    )),
-            );
-        if let Some(path) = &self.controller.restored_library {
-            body = body
-                .child(
-                    div()
-                        .mt_3()
-                        .text_xs()
-                        .child(format!("Restored to {}", path.display())),
-                )
-                .child(self.button(
-                    "open-restored-library",
-                    "Open restored library",
-                    true,
+            .child(self.settings_action(
+                "backup-library",
+                "Back up…",
+                cx,
+                |this, _, cx| this.backup_dialog(cx),
+            )),
+            self.settings_row("Restore a backup", "Restores into a new library folder.")
+                .child(self.settings_action(
+                    "restore-library",
+                    "Restore…",
                     cx,
-                    |this, w, cx| this.open_restored_library(w, cx),
-                ));
+                    |this, _, cx| this.restore_dialog(cx),
+                )),
+        ];
+        if let Some(path) = &self.controller.restored_library {
+            backup.push(
+                self.settings_row("Restored library", &path.display().to_string())
+                    .child(
+                        self.button(
+                            "open-restored-library",
+                            "Open restored library",
+                            true,
+                            cx,
+                            |this, w, cx| this.open_restored_library(w, cx),
+                        )
+                        .flex_shrink_0()
+                        .px_3()
+                        .py_1(),
+                    ),
+            );
         }
-        body = body
-            .child(self.settings_heading("Maintenance"))
-            .child(
-                self.settings_row(
-                    "Recovery snapshot",
-                    "Keep a recovery point for the current document.",
-                )
-                .child(
-                    self.button("checkpoint-settings", "Create", false, cx, |this, _, _| {
-                        this.controller.recovery_checkpoint()
-                    })
-                    .flex_shrink_0(),
-                ),
+        let maintenance = [
+            self.settings_row(
+                "Recovery snapshot",
+                "Keep a recovery point for the current document.",
             )
-            .child(
-                self.settings_row(
-                    "Unused assets",
-                    "Quarantine files once all edits have saved.",
-                )
-                .child(
-                    self.button(
-                        "cleanup-assets-settings",
-                        "Clean up",
-                        false,
-                        cx,
-                        |this, _, _| this.controller.cleanup_assets(),
-                    )
-                    .flex_shrink_0(),
-                ),
+            .child(self.settings_action(
+                "checkpoint-settings",
+                "Create",
+                cx,
+                |this, _, _| this.controller.recovery_checkpoint(),
+            )),
+            self.settings_row(
+                "Unused assets",
+                "Quarantine files once all edits have saved.",
             )
-            .child(self.settings_heading("Activity"))
-            .child(
+            .child(self.settings_action(
+                "cleanup-assets-settings",
+                "Clean up",
+                cx,
+                |this, _, _| this.controller.cleanup_assets(),
+            )),
+        ];
+        let mut status = vec![
+            self.settings_row("Saving", "").child(
                 div()
+                    .flex_shrink_0()
                     .text_xs()
                     .text_color(rgb(theme.muted))
                     .child(self.controller.activity_status()),
-            )
-            .child(div().mt_2().text_xs().text_color(rgb(theme.muted)).child(
+            ),
+            self.settings_row(
+                "Handwriting recognition",
                 if self.controller.recognition_ready() {
-                    "Handwriting recognition is ready offline."
+                    "Ready offline."
                 } else {
-                    "Handwriting recognition will offer setup when you first use it."
+                    "Offers setup when you first use it."
                 },
-            ));
+            ),
+        ];
         for task in self.controller.tasks.iter().rev().take(8) {
             let state = match &task.state {
                 folio_app::TaskState::Running => "Running…".into(),
                 folio_app::TaskState::Complete => "Completed".into(),
                 folio_app::TaskState::Failed(e) => format!("Failed: {e}"),
             };
-            body = body.child(
-                div()
-                    .mt_2()
-                    .text_xs()
-                    .child(format!("{} · {state}", task.label)),
-            );
+            status.push(self.settings_row(&task.label, &state));
         }
-        body
+        div()
+            .flex()
+            .flex_col()
+            .child(self.settings_group(Some("Location"), [location]))
+            .child(self.settings_group(Some("Saving and startup"), saving))
+            .child(self.settings_group(Some("Backup and restore"), backup))
+            .child(self.settings_group(Some("Maintenance"), maintenance))
+            .child(self.settings_group(Some("Status"), status))
     }
     fn accessibility_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = Theme::new(&self.controller.settings);
-        let mut body = div().flex().flex_col().child(
+        let mut rows = vec![
             self.settings_row(
                 "Reduce motion",
                 "Keep transitions and interface movement to a minimum.",
@@ -318,92 +375,40 @@ impl NotesView {
                     this.controller.settings.reduce_motion = !this.controller.settings.reduce_motion
                 },
             )),
-        );
-        for (label, description, kind, value) in [
-            (
-                "Interface size",
-                "Resize text, buttons and toolbars.",
-                0,
-                format!("{:.0}%", self.controller.settings.ui_scale * 100.),
-            ),
+        ];
+        let default = folio_app::Settings::default();
+        for (label, description, interface) in [
+            ("Interface size", "Resize text, buttons and toolbars.", true),
             (
                 "Pen cursor size",
                 "Make the cursor easier to see on the page.",
-                1,
-                format!("{:.0} px", self.controller.settings.cursor_size),
+                false,
             ),
         ] {
-            let (less, more) = if kind == 0 {
-                ("ui-smaller", "ui-larger")
+            let settings = &self.controller.settings;
+            let (value, changed, less, more) = if interface {
+                (
+                    format!("{:.0}%", settings.ui_scale * 100.),
+                    (settings.ui_scale - default.ui_scale).abs() > 0.01,
+                    ("ui-smaller", "Decrease Interface size"),
+                    ("ui-larger", "Increase Interface size"),
+                )
             } else {
-                ("cursor-smaller", "cursor-larger")
-            };
-            let mut stepper = div()
-                .flex()
-                .items_center()
-                .flex_shrink_0()
-                .gap_1()
-                .rounded(px(6.))
-                .bg(rgb(theme.bg));
-            for (id, sign) in [(less, -1.), (more, 1.)] {
-                if sign > 0. {
-                    stepper = stepper.child(
-                        div()
-                            .w(rems(3.5))
-                            .text_sm()
-                            .text_align(TextAlign::Center)
-                            .child(value.clone()),
-                    );
-                }
-                stepper = stepper.child(
-                    self.control(
-                        id,
-                        format!(
-                            "{} {label}",
-                            if sign < 0. { "Decrease" } else { "Increase" }
-                        ),
-                        div()
-                            .child(if sign < 0. { "−" } else { "+" })
-                            .into_any_element(),
-                        false,
-                        cx,
-                        move |this, _, _| {
-                            if kind == 0 {
-                                this.controller.settings.ui_scale =
-                                    (this.controller.settings.ui_scale + sign * 0.1)
-                                        .clamp(0.8, 1.6);
-                            } else {
-                                this.controller.settings.cursor_size =
-                                    (this.controller.settings.cursor_size + sign * 2.)
-                                        .clamp(4., 64.);
-                            }
-                            this.controller.store_settings();
-                        },
-                    )
-                    .size(rems(2.))
-                    .p_0()
-                    .bg(transparent_black()),
-                );
-            }
-            let default = folio_app::Settings::default();
-            let changed = if kind == 0 {
-                (self.controller.settings.ui_scale - default.ui_scale).abs() > 0.01
-            } else {
-                (self.controller.settings.cursor_size - default.cursor_size).abs() > 0.01
+                (
+                    format!("{:.0} px", settings.cursor_size),
+                    (settings.cursor_size - default.cursor_size).abs() > 0.01,
+                    ("cursor-smaller", "Decrease Pen cursor size"),
+                    ("cursor-larger", "Increase Pen cursor size"),
+                )
             };
             let reset = changed.then(|| {
-                self.button(
-                    if kind == 0 {
-                        "ui-reset"
-                    } else {
-                        "cursor-reset"
-                    },
+                self.settings_action(
+                    if interface { "ui-reset" } else { "cursor-reset" },
                     "Reset",
-                    false,
                     cx,
                     move |this, _, _| {
                         let default = folio_app::Settings::default();
-                        if kind == 0 {
+                        if interface {
                             this.controller.settings.ui_scale = default.ui_scale;
                         } else {
                             this.controller.settings.cursor_size = default.cursor_size;
@@ -412,15 +417,21 @@ impl NotesView {
                     },
                 )
                 .text_xs()
-                .flex_shrink_0()
             });
-            body = body.child(
+            rows.push(
                 self.settings_row(label, description)
                     .children(reset)
-                    .child(stepper),
+                    .child(self.settings_stepper(less, more, value, cx, move |this, sign| {
+                        let s = &mut this.controller.settings;
+                        if interface {
+                            s.ui_scale = (s.ui_scale + sign * 0.1).clamp(0.8, 1.6);
+                        } else {
+                            s.cursor_size = (s.cursor_size + sign * 2.).clamp(4., 64.);
+                        }
+                    })),
             );
         }
-        body
+        div().flex().flex_col().child(self.settings_group(None, rows))
     }
     pub(super) fn settings_panel(
         &mut self,
@@ -441,22 +452,34 @@ impl NotesView {
             .border_color(theme.border)
             .bg(rgb(theme.sidebar))
             .flex_shrink_0();
-        for (key, target) in [
-            ("appearance", Section::Appearance),
-            ("writing", Section::Writing),
-            ("library", Section::Library),
-            ("accessibility", Section::Accessibility),
-            ("updates", Section::Updates),
+        for (key, target, kind) in [
+            ("appearance", Section::Appearance, Icon::Palette),
+            ("writing", Section::Writing, Icon::Pen),
+            ("library", Section::Library, Icon::Library),
+            ("accessibility", Section::Accessibility, Icon::Accessible),
+            ("updates", Section::Updates, Icon::Import),
         ] {
+            let active = target == section;
             navigation = navigation.child(
-                self.button(
+                self.control(
                     format!("settings-section-{key}"),
                     target.title(),
-                    target == section,
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            icon(kind, if active { theme.ink } else { theme.muted })
+                                .size(rems(1.125)),
+                        )
+                        .child(target.title())
+                        .into_any_element(),
+                    active,
                     cx,
                     move |this, _, _| this.settings_section = target,
                 )
                 .justify_start()
+                .py_1p5()
                 .bg(rgb(if section == target {
                     theme.selected
                 } else {
@@ -495,7 +518,7 @@ impl NotesView {
                     .child(
                         div()
                             .mt_1()
-                            .mb_4()
+                            .mb_5()
                             .text_sm()
                             .text_color(rgb(theme.muted))
                             .child(section.description()),

@@ -9,10 +9,12 @@ impl NotesView {
         let follows = self.controller.settings.appearance.canvas_follows_theme;
         let mut modes = div()
             .flex()
-            .gap_1()
-            .p_1()
-            .rounded(px(7.))
-            .bg(rgb(theme.bg))
+            .gap(px(2.))
+            .p(px(2.))
+            .rounded(px(theme.radius.max(6.)))
+            .border_1()
+            .border_color(theme.border)
+            .bg(rgb(theme.popover))
             .flex_shrink_0();
         for (id, label, value) in [
             ("system-theme", "System", None),
@@ -48,162 +50,44 @@ impl NotesView {
                         this.controller.store_settings();
                     },
                 )
-                .px_4()
+                .px_3()
                 .py_1()
-                .rounded(px(5.))
-                .bg(rgb(if selected { theme.selected } else { theme.bg })),
+                .min_h(rems(1.875))
+                .bg(rgb(if selected { theme.selected } else { theme.popover })),
             );
         }
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .child(
-                self.settings_row(
-                    "Color theme",
-                    "System follows your device. Light and dark palettes are saved separately.",
-                )
-                .child(modes),
+        let mut theme_rows = vec![
+            self.settings_row(
+                "Color theme",
+                "System follows your device. Light and dark palettes are saved separately.",
             )
-            .child(
-                self.settings_row(
-                    "Paper follows theme",
-                    "Match the page to your light or dark workspace.",
-                )
-                .child(self.appearance_switch(
-                    "canvas-theme",
-                    "Paper follows appearance",
-                    follows,
+            .child(modes),
+            self.settings_row("Interface corners", "Choose how rounded controls appear.")
+                .child(self.settings_stepper(
+                    ("radius-less", "Decrease corner radius"),
+                    ("radius-more", "Increase corner radius"),
+                    format!("{} px", theme.radius as u32),
                     cx,
-                    |this| {
-                        this.controller.settings.appearance.canvas_follows_theme =
-                            !this.controller.settings.appearance.canvas_follows_theme;
+                    |this, sign| {
+                        let appearance = &mut this.controller.settings.appearance;
+                        appearance.radius = (appearance.radius() + sign * 2.).clamp(0., 20.);
                     },
                 )),
-            );
-        if !follows {
-            body = body.child(
-                self.settings_row(
-                    "Paper color",
-                    "Use a fixed color for pages without a custom background.",
-                )
-                .child(
-                    self.control(
-                        "paper-color",
-                        "Custom paper color",
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .size(rems(1.))
-                                    .rounded(px(3.))
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .bg(rgb(theme.canvas.paper)),
-                            )
-                            .child(format!("#{:06X}", theme.canvas.paper))
-                            .into_any_element(),
-                        false,
-                        cx,
-                        |this, w, cx| this.modal(Modal::CanvasColor, w, cx),
-                    )
-                    .flex_shrink_0(),
-                ),
-            );
-        }
-        body = body
-            .child(
-                self.settings_row(
-                    "Keep ink readable",
-                    "Adapt ink contrast on screen. Export colors stay original.",
-                )
-                .child(self.appearance_switch(
-                    "adapt-ink",
-                    "Keep ink readable",
-                    self.controller.settings.appearance.adapt_ink,
-                    cx,
-                    |this| {
-                        this.controller.settings.appearance.adapt_ink =
-                            !this.controller.settings.appearance.adapt_ink;
+            self.settings_row("Custom palette", "Fine-tune the colors of this theme.")
+                .child(self.settings_action(
+                    "customize-theme",
+                    if self.theme_colors_open {
+                        "Hide colors"
+                    } else {
+                        "Edit colors…"
                     },
+                    cx,
+                    |this, _, _| this.theme_colors_open = !this.theme_colors_open,
                 )),
-            )
-            .child(
-                self.settings_row("Interface corners", "Choose how rounded controls appear.")
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .flex_shrink_0()
-                            .gap_1()
-                            .rounded(px(6.))
-                            .bg(rgb(theme.bg))
-                            .child(
-                                self.control(
-                                    "radius-less",
-                                    "Decrease corner radius",
-                                    div().child("−").into_any_element(),
-                                    false,
-                                    cx,
-                                    |this, _, _| {
-                                        this.controller.settings.appearance.radius =
-                                            (this.controller.settings.appearance.radius() - 2.)
-                                                .max(0.);
-                                        this.controller.store_settings();
-                                    },
-                                )
-                                .size(rems(2.))
-                                .p_0()
-                                .bg(transparent_black()),
-                            )
-                            .child(
-                                div()
-                                    .w(rems(3.5))
-                                    .text_sm()
-                                    .text_align(TextAlign::Center)
-                                    .child(format!("{} px", theme.radius as u32)),
-                            )
-                            .child(
-                                self.control(
-                                    "radius-more",
-                                    "Increase corner radius",
-                                    div().child("+").into_any_element(),
-                                    false,
-                                    cx,
-                                    |this, _, _| {
-                                        this.controller.settings.appearance.radius =
-                                            (this.controller.settings.appearance.radius() + 2.)
-                                                .min(20.);
-                                        this.controller.store_settings();
-                                    },
-                                )
-                                .size(rems(2.))
-                                .p_0()
-                                .bg(transparent_black()),
-                            ),
-                    ),
-            )
-            .child(
-                self.settings_row("Custom palette", "Fine-tune the colors of this theme.")
-                    .child(
-                        self.button(
-                            "customize-theme",
-                            if self.theme_colors_open {
-                                "Hide colors"
-                            } else {
-                                "Edit colors…"
-                            },
-                            self.theme_colors_open,
-                            cx,
-                            |this, _, _| this.theme_colors_open = !this.theme_colors_open,
-                        )
-                        .flex_shrink_0(),
-                    ),
-            );
+        ];
         if self.theme_colors_open {
             let palette = self.controller.settings.appearance.palette(dark);
-            let mut colors = div().flex().flex_col().gap_1().mt_3();
+            let mut colors = div().flex().flex_col().gap(px(1.)).px_2().pb_2();
             for token in ThemeToken::ALL {
                 let color = palette[&token];
                 colors = colors.child(
@@ -238,29 +122,98 @@ impl NotesView {
                     )
                     .w_full()
                     .justify_start()
+                    .min_h(rems(2.))
+                    .py_1()
                     .bg(transparent_black()),
                 );
             }
-            body = body.child(colors);
+            // Part of the palette row, without a divider between them.
+            let last = theme_rows.pop().unwrap();
+            theme_rows.push(div().flex().flex_col().child(last).child(colors));
         }
-        body.child(
-            div().mt_5().flex().justify_start().child(
-                self.button(
+        let mut paper_rows = vec![
+            self.settings_row(
+                "Paper follows theme",
+                "Match the page to your light or dark workspace.",
+            )
+            .child(self.appearance_switch(
+                "canvas-theme",
+                "Paper follows appearance",
+                follows,
+                cx,
+                |this| {
+                    this.controller.settings.appearance.canvas_follows_theme =
+                        !this.controller.settings.appearance.canvas_follows_theme;
+                },
+            )),
+        ];
+        if !follows {
+            paper_rows.push(
+                self.settings_row(
+                    "Paper color",
+                    "Use a fixed color for pages without a custom background.",
+                )
+                .child(
+                    self.control(
+                        "paper-color",
+                        "Custom paper color",
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .size(rems(1.))
+                                    .rounded(px(3.))
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .bg(rgb(theme.canvas.paper)),
+                            )
+                            .child(format!("#{:06X}", theme.canvas.paper))
+                            .into_any_element(),
+                        false,
+                        cx,
+                        |this, w, cx| this.modal(Modal::CanvasColor, w, cx),
+                    )
+                    .flex_shrink_0()
+                    .px_3()
+                    .py_1()
+                    .border_color(theme.border),
+                ),
+            );
+        }
+        paper_rows.push(
+            self.settings_row(
+                "Keep ink readable",
+                "Adapt ink contrast on screen. Export colors stay original.",
+            )
+            .child(self.appearance_switch(
+                "adapt-ink",
+                "Keep ink readable",
+                self.controller.settings.appearance.adapt_ink,
+                cx,
+                |this| {
+                    this.controller.settings.appearance.adapt_ink =
+                        !this.controller.settings.appearance.adapt_ink;
+                },
+            )),
+        );
+        div()
+            .flex()
+            .flex_col()
+            .child(self.settings_group(Some("Theme"), theme_rows))
+            .child(self.settings_group(Some("Paper and ink"), paper_rows))
+            .child(
+                div().flex().child(self.settings_action(
                     "reset-appearance",
                     "Reset appearance",
-                    false,
                     cx,
                     |this, _, _| {
                         this.controller.settings.appearance = Appearance::default();
                         this.controller.store_settings();
                     },
-                )
-                .text_xs()
-                .text_color(rgb(theme.muted))
-                .bg(transparent_black())
-                .px_0(),
-            ),
-        )
+                )),
+            )
     }
     pub(super) fn appearance_switch(
         &self,

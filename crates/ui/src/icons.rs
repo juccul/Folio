@@ -108,6 +108,8 @@ define_icons! {
     PaperRuled => "PaperRuled.svg",
     PaperGrid => "PaperGrid.svg",
     PaperDots => "PaperDots.svg",
+    Palette => "Palette.svg",
+    Accessible => "Accessible.svg",
 }
 
 pub fn icon(kind: Icon, color: u32) -> Svg {
