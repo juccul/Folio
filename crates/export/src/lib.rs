@@ -207,9 +207,10 @@ fn image_svg(name: &str, r: Rect, assets: &Path) -> Result<String> {
         r.height()
     ))
 }
-pub fn page_svg(page: &Page, assets: &Path, paper: bool) -> Result<String> {
+/// The area a page exports: the paper, or everything drawn on an infinite page.
+fn export_region(page: &Page) -> Rect {
     let p = &page.properties;
-    let region = if p.infinite {
+    if p.infinite {
         page.objects
             .values()
             .map(|o| o.bounds())
@@ -218,7 +219,72 @@ pub fn page_svg(page: &Page, assets: &Path, paper: bool) -> Result<String> {
             .expand(24.)
     } else {
         Rect::new(0., 0., p.width, p.height)
+    }
+}
+/// Infinite thumbnails show the opening content in a page-shaped window,
+/// between half and one paper size, rather than shrinking an unbounded canvas.
+fn preview_region(page: &Page) -> Rect {
+    let p = &page.properties;
+    if !p.infinite {
+        return export_region(page);
+    }
+    let hidden = page.hidden_sources();
+    let mut bounds = page
+        .ordered_objects()
+        .filter(|o| !hidden.contains(&o.id()))
+        .map(|o| o.bounds());
+    let Some(mut content) = bounds.next() else {
+        return Rect::new(0., 0., p.width, p.height);
     };
+    let mut first = content;
+    for bounds in bounds {
+        content = content.union(bounds);
+        if bounds
+            .min
+            .y
+            .total_cmp(&first.min.y)
+            .then(bounds.min.x.total_cmp(&first.min.x))
+            .is_lt()
+        {
+            first = bounds;
+        }
+    }
+    let content = content.expand(24.);
+    let aspect = (p.width / p.height.max(1.)).clamp(0.2, 5.);
+    let width = content
+        .width()
+        .min(content.height() * aspect)
+        .clamp(p.width * 0.5, p.width);
+    let height = width / aspect;
+    // Center compact content and crop larger drawings from the upper left.
+    let x = if content.width() <= width {
+        content.min.x - (width - content.width()) / 2.
+    } else {
+        content.min.x
+    };
+    let y = if content.height() <= height {
+        content.min.y - (height - content.height()) / 2.
+    } else {
+        content.min.y
+    };
+    let region = Rect::new(x, y, width, height);
+    if page
+        .ordered_objects()
+        .filter(|o| !hidden.contains(&o.id()))
+        .any(|o| o.bounds().intersects(region))
+    {
+        region
+    } else {
+        // Opposite corners of a sparse canvas can have no content between
+        // them. In that case, anchor the crop on the topmost visible object.
+        Rect::new(first.min.x - 24., first.min.y - 24., width, height)
+    }
+}
+pub fn page_svg(page: &Page, assets: &Path, paper: bool) -> Result<String> {
+    page_svg_in(page, assets, paper, export_region(page))
+}
+fn page_svg_in(page: &Page, assets: &Path, paper: bool, region: Rect) -> Result<String> {
+    let p = &page.properties;
     let mut body = if paper {
         paper_svg(p, region, assets)?
     } else {
@@ -372,14 +438,25 @@ fn svg_options() -> resvg::usvg::Options<'static> {
         ..Default::default()
     }
 }
-/// Bounded rendering shared by export previews and document thumbnails.
+/// Render the full exported area with a bounded output resolution.
 pub fn raster_page_limited(
     page: &Page,
     assets: &Path,
     edge: u32,
 ) -> Result<resvg::tiny_skia::Pixmap> {
-    let svg = page_svg(page, assets, true)?;
-    let tree = resvg::usvg::Tree::from_str(&svg, &page_options(page))?;
+    raster_svg_limited(page, &page_svg(page, assets, true)?, edge)
+}
+/// A thumbnail of `preview_region`, with its longest edge at most `edge` pixels.
+pub fn raster_page_thumbnail(
+    page: &Page,
+    assets: &Path,
+    edge: u32,
+) -> Result<resvg::tiny_skia::Pixmap> {
+    let svg = page_svg_in(page, assets, true, preview_region(page))?;
+    raster_svg_limited(page, &svg, edge)
+}
+fn raster_svg_limited(page: &Page, svg: &str, edge: u32) -> Result<resvg::tiny_skia::Pixmap> {
+    let tree = resvg::usvg::Tree::from_str(svg, &page_options(page))?;
     let scale = edge.clamp(1, 2048) as f32 / tree.size().width().max(tree.size().height()).max(1.);
     raster_tree(&tree, scale)
 }
@@ -506,6 +583,9 @@ mod tests {
             reference.data()
         );
         assert!(preview.width().max(preview.height()) <= 128);
+        // Paper pages preview exactly what they export.
+        let thumbnail = raster_page_thumbnail(&page, Path::new("."), 128).unwrap();
+        assert_eq!(thumbnail.data(), preview.data());
         for scale in [0., -1., f32::NAN, f32::INFINITY] {
             assert!(raster_svg(&svg, scale).is_err());
         }
@@ -607,6 +687,60 @@ mod tests {
         assert_eq!((green.red(), green.green(), green.blue()), (0, 255, 0));
         let smaller = raster_page_limited(&page, &root, 24).unwrap();
         assert!(smaller.width() <= 24 && smaller.height() <= 24);
+        let thumbnail = raster_page_thumbnail(&page, &root, 100).unwrap();
+        assert_eq!(thumbnail.data(), preview.data());
+        // Tall, wide and diagonally scattered infinite content keeps a readable
+        // opening thumbnail, including when the topmost content is far right
+        // or the whole drawing lives at negative coordinates.
+        for (x, y) in [(0., 3000.), (3000., 0.), (3000., 3000.), (-3000., 3000.)] {
+            for origin in [(0., 0.), (-4000., -5000.)] {
+                let mut infinite = page.clone();
+                infinite.properties.infinite = true;
+                infinite.properties.height = 140.;
+                let mut distant = infinite.objects[&infinite.order[1]].as_ref().clone();
+                distant.set_id(Id::new_v4());
+                if let Object::Equation(equation) = &mut distant {
+                    equation.transform = Transform::translate(x, y);
+                }
+                infinite.order.push(distant.id());
+                infinite
+                    .objects
+                    .insert(distant.id(), std::sync::Arc::new(distant));
+                for object in infinite.objects.values_mut() {
+                    let object = std::sync::Arc::make_mut(object);
+                    let transform = match object {
+                        Object::Image(image) => &mut image.transform,
+                        Object::Equation(equation) => &mut equation.transform,
+                        _ => unreachable!(),
+                    };
+                    transform.tx += origin.0;
+                    transform.ty += origin.1;
+                }
+                let region = preview_region(&infinite);
+                assert!(region.width() <= infinite.properties.width);
+                assert!(region.height() <= infinite.properties.height);
+                let thumbnail = raster_page_thumbnail(&infinite, &root, 128).unwrap();
+                let aspect = infinite.properties.width / infinite.properties.height;
+                assert!(
+                    (thumbnail.width() as f32 / thumbnail.height() as f32 - aspect).abs() < 0.01
+                );
+                let blue_pixels = |raster: &resvg::tiny_skia::Pixmap| {
+                    raster
+                        .pixels()
+                        .iter()
+                        .filter(|p| p.blue() == 255 && p.red() == 0)
+                        .count()
+                };
+                assert!(
+                    blue_pixels(&thumbnail) > 100,
+                    "Opening content must remain visible"
+                );
+                let exported = raster_page_limited(&infinite, &root, 128).unwrap();
+                assert!(blue_pixels(&exported) < blue_pixels(&thumbnail));
+                let exported_region = export_region(&infinite);
+                assert!(exported_region.width() > 3000. || exported_region.height() > 3000.);
+            }
+        }
         // An equation can contain SVG text inside its encoded image, so page
         // classification must preserve fonts even without outer text objects.
         page.objects.clear();

@@ -238,7 +238,7 @@ impl NotesView {
             let task = cx.background_executor().spawn(async move {
                 let mut page = source.as_ref().clone();
                 export_options::apply(&mut page, theme, export_options::Appearance::Visible);
-                folio_export::raster_page_limited(&page, &assets, 384)
+                folio_export::raster_page_thumbnail(&page, &assets, 384)
                     .map(|p| {
                         let aspect = p.width() as f32 / p.height() as f32;
                         (graph::image(p.width(), p.height(), p.take()), aspect)
