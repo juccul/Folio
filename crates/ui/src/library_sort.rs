@@ -46,14 +46,7 @@ impl NotesView {
             .unwrap()
             .1
             .clone();
-        let mut anchor = div()
-            .id("sort-anchor")
-            .relative()
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.sort_open = false;
-                cx.notify();
-            }))
-            .child(
+        let mut anchor = div().id("sort-anchor").relative().child(
                 self.control(
                     "sort",
                     format!("Sort: {current}"),
@@ -77,6 +70,23 @@ impl NotesView {
                 .top_full()
                 .w(rems(17.))
                 .occlude()
+                // The menu lies outside its anchor, so it closes on presses
+                // outside itself; the Sort button toggles it on its own.
+                .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    let (x, y) = (
+                        f32::from(event.position.x) as f64,
+                        f32::from(event.position.y) as f64,
+                    );
+                    if this
+                        .accessibility
+                        .control_bounds_for_key("sort")
+                        .is_some_and(|r| x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1)
+                    {
+                        return;
+                    }
+                    this.sort_open = false;
+                    cx.notify();
+                }))
                 .p_2()
                 .rounded(px(theme.corner_md()))
                 .glass(theme, theme.popover)
