@@ -23,7 +23,7 @@ impl NotesView {
             ("Previous / Next page", "Ctrl Page Up / Ctrl Page Down"),
             ("Pages / Settings", "Ctrl Shift P / Ctrl ,"),
             ("Import / Export", "Ctrl O / Ctrl Shift E"),
-            ("Zoom in / Zoom out / Fit page", "Ctrl = / Ctrl − / Ctrl 0"),
+            ("Zoom in / Zoom out / Fit page", "Ctrl + / Ctrl − / Ctrl 0"),
             ("Zoom / Pan", "Ctrl scroll / Middle-drag"),
             ("Undo in the library", "Ctrl Z"),
         ] {

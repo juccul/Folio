@@ -659,7 +659,10 @@ impl NotesView {
             KeyBinding::new("h", Hand, Some("Folio && !FolioField")),
             KeyBinding::new("t", Text, Some("Folio && !FolioField")),
             KeyBinding::new("s", Shapes, Some("Folio && !FolioField")),
+            KeyBinding::new("ctrl-+", ZoomIn, Some("Folio && !FolioField")),
+            // The same key without Shift, as in other apps.
             KeyBinding::new("ctrl-=", ZoomIn, Some("Folio && !FolioField")),
+            KeyBinding::new("ctrl-shift-=", ZoomIn, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl--", ZoomOut, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-0", FitPage, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-pageup", PreviousPage, Some("Folio && !FolioField")),

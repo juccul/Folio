@@ -2330,7 +2330,7 @@ impl NotesView {
                 self.button("zoom-in", "+", false, cx, |this, _, _| this.zoom(1.2))
                     .py_1()
                     .tooltip(move |_, cx| {
-                        cx.new(|_| Hint("Zoom in · Ctrl+=".into(), theme)).into()
+                        cx.new(|_| Hint("Zoom in · Ctrl++".into(), theme)).into()
                     }),
             )
             .child(
