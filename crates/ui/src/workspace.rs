@@ -1683,7 +1683,13 @@ impl NotesView {
                             content.into_any_element(),
                             selected,
                             cx,
-                            move |this, _, _| this.open_note(id),
+                            move |this, _, _| {
+                                // A completed drag reorders tabs without also
+                                // activating the tab as a normal click.
+                                if this.tab_drag.as_ref().is_none_or(|drag| !drag.moving) {
+                                    this.open_note(id);
+                                }
+                            },
                         )
                         .on_mouse_down(
                             MouseButton::Left,
@@ -1752,7 +1758,9 @@ impl NotesView {
                     });
                     let released = entity.clone();
                     window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                        if phase.capture() {
+                        // Leave the drag state available to click handlers,
+                        // then finish after they have handled this release.
+                        if phase.bubble() {
                             released.update(cx, |this, cx| this.drop_tab(cx));
                         }
                     });

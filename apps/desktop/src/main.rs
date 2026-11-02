@@ -277,6 +277,14 @@ fn main() -> anyhow::Result<()> {
                     for event in events {cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;cx.background_executor().timer(Duration::from_millis(20)).await;}
                     cx.background_executor().timer(Duration::from_millis(150)).await;
                     window.update(cx,|view,_,_|view.navigation_smoke_verify(a,b))?.map_err(anyhow::Error::msg)?;
+                    // Reordering must suppress only the drag's release click;
+                    // subsequent ordinary tab clicks still activate documents.
+                    for (label,id) in [("Open Smoke A",a),("Open Smoke B",b)] {
+                        let events=window.update(cx,|view,_,_|view.navigation_smoke_click(label,false))?.map_err(anyhow::Error::msg)?;
+                        for event in events {cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;cx.background_executor().timer(Duration::from_millis(20)).await;}
+                        cx.background_executor().timer(Duration::from_millis(150)).await;
+                        if !window.update(cx,|view,_,_|view.controller.active==id)? { anyhow::bail!("Clicking a tab after dragging did not activate its document"); }
+                    }
                     window.update(cx,|view,window,cx|view.region_smoke_setup(window,cx))?.map_err(anyhow::Error::msg)?;
                     cx.background_executor().timer(Duration::from_millis(150)).await;
                     let events=window.update(cx,|view,_,_|view.region_smoke_events())?.map_err(anyhow::Error::msg)?;
