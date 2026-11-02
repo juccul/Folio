@@ -183,6 +183,10 @@ fn formula(latex: &str) -> Result<(String, Arc<folio_math::VectorFormula>), Stri
     let vector = folio_math::VectorFormula::from_svg(&svg).map_err(|e| e.to_string())?;
     Ok((svg, Arc::new(vector)))
 }
+/// Typeset LaTeX into vector outlines for display. Call off the UI thread.
+pub fn typeset(latex: &str) -> Result<Arc<folio_math::VectorFormula>, String> {
+    formula(latex).map(|(_, vector)| vector)
+}
 type FormulaCache = HashMap<String, (String, Arc<folio_math::VectorFormula>)>;
 fn cached_formula(
     latex: &str,

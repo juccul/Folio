@@ -639,6 +639,7 @@ impl Accessibility {
                 || matches!(modal, Modal::CanvasColor | Modal::ThemeColor { .. }))
             && !view.help_open
             && !matches!(modal, Modal::MovePage | Modal::Templates)
+            && view.modal_field_visible()
         {
             let field = field.read(cx);
             let mut node = Node::new(if field.secret {
@@ -722,7 +723,7 @@ impl Accessibility {
             .into_iter()
             .zip(
                 inputs
-                    .visible_fields()
+                    .visible_fields(cx)
                     .into_iter()
                     .chain([inputs.latex_open]),
             ) {

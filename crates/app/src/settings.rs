@@ -122,6 +122,8 @@ pub struct Settings {
     pub autosave: bool,
     pub ocr_download_allowed: bool,
     pub cursor_size: f32,
+    /// Solve math in the solver panel as soon as a problem is entered or read.
+    pub math_auto_solve: bool,
 }
 
 impl Settings {
@@ -322,6 +324,7 @@ impl Default for Settings {
             autosave: true,
             ocr_download_allowed: false,
             cursor_size: 12.,
+            math_auto_solve: true,
         }
     }
 }

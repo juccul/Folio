@@ -232,6 +232,12 @@ pub struct NotesView {
     poll_task: Option<Task<()>>,
     poll_idle: bool,
     canvas_ease: CanvasEase,
+    /// Vector paths of typeset formulas, by formula.
+    formula_cache: std::cell::RefCell<math_panel::FormulaCache>,
+    /// The typeset recognized math in the review dialog.
+    review_typeset: math_panel::Typeset,
+    /// Whether the review dialog shows the recognized LaTeX source.
+    review_editing: bool,
     region_selection: Option<region::Selection>,
     pub controller: Controller,
     math_inputs: Option<math_panel::Inputs>,
@@ -391,6 +397,9 @@ impl NotesView {
             poll_task: None,
             poll_idle: false,
             canvas_ease: CanvasEase::default(),
+            formula_cache: Default::default(),
+            review_typeset: Default::default(),
+            review_editing: false,
             region_selection: None,
             controller,
             math_inputs: None,
@@ -894,9 +903,14 @@ impl NotesView {
         }
         self.modal_cursor = 0;
         self.move_page_destination = None;
+        self.review_editing = false;
         // Dialogs without a text field keep keyboard focus on their first
-        // control, or on the root for Escape.
-        if modal.has_field() {
+        // control, or on the root for Escape. Recognized math opens on its
+        // rendered formula, with the actions in reach of the keyboard.
+        if matches!(modal, Modal::Recognition) && self.reviewing_math() {
+            self.focus.focus(window);
+            self.menu_focus = Some("submit-modal".into());
+        } else if modal.has_field() {
             field.read(cx).focus.focus(window);
         } else {
             self.focus.focus(window);
@@ -1893,7 +1907,7 @@ impl NotesView {
                 }))
             })
             .when(matches!(modal, Modal::NewDocument), |panel| panel.child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Name (optional)")))
-            .when(modal.has_field(), |panel| panel.child(field.clone()));
+            .when(self.modal_field_visible(), |panel| panel.child(field.clone()));
         if matches!(modal, Modal::PageSize) {
             panel = panel.child(self.page_size_options(cx));
         }
@@ -2037,45 +2051,30 @@ impl NotesView {
             panel = panel.child(self.notebook_setup_options(cx));
         }
         if matches!(modal, Modal::Recognition) {
-            let math = self
-                .controller
-                .recognition_review
-                .as_ref()
-                .is_some_and(|r| r.kind == RecognitionKind::Math);
+            let math = self.reviewing_math();
+            if math {
+                panel = panel.child(self.review_preview(field.read(cx).content.clone(), cx));
+            }
             panel = panel.child(div().text_sm().text_color(rgb(theme.muted)).child(if math {
-                "Check and edit the LaTeX. Copy keeps your ink; replacement inserts a rendered, editable equation."
+                "Check the detected math, and edit it if anything is wrong. Copy keeps your ink; replacement inserts a rendered, editable equation."
             } else {
                 "Review and correct the text. Make searchable attaches it to the original ink; replacement inserts typed text. Both can be undone."
-            })).child(self.button("copy-recognized-text", "Copy text", false, cx, |this, _, cx| {
-                if let Some((Modal::Recognition, field)) = &this.modal {
-                    cx.write_to_clipboard(ClipboardItem::new_string(field.read(cx).content.clone()));
-                    this.controller.status = "Recognized text copied".into();
-                }
-            }));
-            if !math && self.controller.can_index_review() {
-                panel = panel.child(self.button(
-                    "keep-ink-index",
-                    "Keep ink and make searchable",
-                    false,
-                    cx,
-                    |this, w, cx| {
-                        let text = this
-                            .modal
-                            .as_ref()
-                            .map(|(_, field)| field.read(cx).content.clone())
-                            .unwrap_or_default();
-                        match this.controller.keep_ink_and_index(text) {
-                            Ok(()) => this.close_modal(w, cx),
-                            Err(e) => {
-                                this.modal_error = Some(e);
-                                cx.notify();
-                            }
+            })).child(
+                div().flex().flex_wrap().gap_2()
+                    .when(math, |row| row.child(self.button(
+                        "edit-recognized-math",
+                        if self.review_editing { "Done editing" } else { "Edit LaTeX" },
+                        self.review_editing,
+                        cx,
+                        |this, window, cx| this.toggle_review_editing(window, cx),
+                    )))
+                    .child(self.button("copy-recognized-text", if math { "Copy LaTeX" } else { "Copy text" }, false, cx, |this, _, cx| {
+                        if let Some((Modal::Recognition, field)) = &this.modal {
+                            cx.write_to_clipboard(ClipboardItem::new_string(field.read(cx).content.clone()));
+                            this.controller.status = "Recognized text copied".into();
                         }
-                    },
-                ));
-            }
-            if math {
-                panel = panel.child(self.button(
+                    }))
+                    .when(math, |row| row.child(self.button(
                     "solve-recognized-math",
                     "Solve with steps",
                     false,
@@ -2093,6 +2092,28 @@ impl NotesView {
                             }
                             Err(error) => {
                                 this.modal_error = Some(error);
+                                cx.notify();
+                            }
+                        }
+                    },
+                ))),
+            );
+            if !math && self.controller.can_index_review() {
+                panel = panel.child(self.button(
+                    "keep-ink-index",
+                    "Keep ink and make searchable",
+                    false,
+                    cx,
+                    |this, w, cx| {
+                        let text = this
+                            .modal
+                            .as_ref()
+                            .map(|(_, field)| field.read(cx).content.clone())
+                            .unwrap_or_default();
+                        match this.controller.keep_ink_and_index(text) {
+                            Ok(()) => this.close_modal(w, cx),
+                            Err(e) => {
+                                this.modal_error = Some(e);
                                 cx.notify();
                             }
                         }
@@ -2310,6 +2331,7 @@ impl NotesView {
         }
         let hint = match modal {
             Modal::Recognition if self.controller.recognition_for_index => "Ctrl + Enter to index",
+            Modal::Recognition if !self.modal_field_visible() => "Escape to close",
             Modal::Recognition => "Ctrl + Enter to replace",
             _ if multiline => "Ctrl + Enter to save",
             Modal::Search | Modal::OpenDocument => {

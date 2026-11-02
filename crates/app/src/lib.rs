@@ -61,7 +61,7 @@ pub use history::SaveState;
 pub use import_export::ExportSnapshot;
 pub use interaction::Interaction;
 pub use library_actions::NoteAction;
-pub use math_solver::{MathReport, MathRequest, MathSession, MathStep};
+pub use math_solver::{MathReport, MathRequest, MathSession, MathStep, typeset};
 pub use previews::{RasterPreview, relative_transform};
 pub use recognition::{RecognitionKind, RecognitionReview, RecognitionTiming};
 pub use session::Session;

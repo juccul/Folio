@@ -2,8 +2,17 @@
 //! No mathematical computation runs on the UI thread.
 use super::*;
 use folio_app::{MathReport, MathRequest, MathStep, VectorCommand, VectorFormula};
-use std::{cell::RefCell, collections::HashMap, sync::Arc};
-type FormulaCache = HashMap<usize, (Arc<VectorFormula>, Arc<Vec<gpui::Path<Pixels>>>)>;
+use std::{collections::HashMap, sync::Arc};
+pub(super) type FormulaCache = HashMap<usize, (Arc<VectorFormula>, Arc<Vec<gpui::Path<Pixels>>>)>;
+/// Typeset lines of LaTeX, or `None` when the source cannot be typeset.
+pub(super) type Formulas = Option<Arc<Vec<Arc<VectorFormula>>>>;
+/// LaTeX typeset off the UI thread: the last finished source and the one
+/// being typeset.
+#[derive(Default)]
+pub(super) struct Typeset {
+    done: Option<(String, Formulas)>,
+    pending: Option<String>,
+}
 #[derive(Clone, PartialEq)]
 struct GraphKey {
     svg: String,
@@ -43,7 +52,6 @@ pub(super) struct Inputs {
     return_focus: bool,
     result_source: String,
     result_observed: String,
-    formula_cache: RefCell<FormulaCache>,
     graph_preview: Option<GraphPreview>,
     graph_pending: Option<GraphKey>,
     retired_images: Vec<Arc<RenderImage>>,
@@ -55,6 +63,13 @@ pub(super) struct Inputs {
     insert_open: bool,
     methods_open: bool,
     pub(super) guided: bool,
+    /// Whether the problem shows its editable source instead of the
+    /// typeset formula.
+    pub(super) problem_editing: bool,
+    problem_typeset: Typeset,
+    /// When the next automatic calculation runs.
+    auto_due: Option<Instant>,
+    auto_timer: Option<Task<()>>,
     feedback: Option<String>,
     scroll: ScrollHandle,
     guide_anchor: ScrollAnchor,
@@ -62,9 +77,10 @@ pub(super) struct Inputs {
     _subscriptions: Vec<Subscription>,
 }
 impl Inputs {
-    pub(super) fn visible_fields(&self) -> [bool; 4] {
+    pub(super) fn visible_fields(&self, cx: &App) -> [bool; 4] {
         [
-            !self.latex_open,
+            !self.latex_open
+                && (self.problem_editing || self.expression.read(cx).content.trim().is_empty()),
             self.settings_open && !self.latex_open,
             self.mode == Mode::Check && !self.latex_open,
             self.mode == Mode::Graph && !self.latex_open,
@@ -203,11 +219,14 @@ impl NotesView {
                     inputs.expression.update(cx, |field, cx| {
                         field.set_content(session.request.expression.clone(), cx)
                     });
+                    inputs.problem_editing = false;
+                    inputs.auto_due = Some(Instant::now());
                 }
                 if inputs.next_line.read(cx).content != session.request.next_line {
                     inputs.next_line.update(cx, |field, cx| {
                         field.set_content(session.request.next_line.clone(), cx)
                     });
+                    inputs.auto_due = Some(Instant::now());
                 }
                 inputs.revision = session.revision;
             }
@@ -240,6 +259,8 @@ impl NotesView {
                 field
             })
         };
+        // A problem read from the page is solved as soon as the panel opens.
+        let has_problem = !request.expression.trim().is_empty();
         let expression = make(request.expression, true, cx);
         let variable = make(request.variable, false, cx);
         let next_line = make(request.next_line, true, cx);
@@ -337,13 +358,20 @@ impl NotesView {
                         inputs.feedback = None;
                         inputs.guided = false;
                     }
+                    this.schedule_auto_solve(cx);
                 }
                 cx.notify();
             }));
             subscriptions.push(cx.subscribe_in(
                 entity,
                 window,
-                |this, _, _: &Submitted, window, cx| this.run_primary_math(window, cx),
+                |this, _, _: &Submitted, window, cx| {
+                    if let Some(inputs) = &mut this.math_inputs {
+                        inputs.problem_editing = false;
+                        inputs.auto_due = None;
+                    }
+                    this.run_primary_math(window, cx)
+                },
             ));
             subscriptions
                 .push(cx.subscribe(entity, |_, _, _: &FieldBoundsChanged, cx| cx.notify()));
@@ -361,7 +389,6 @@ impl NotesView {
             latex_open: false,
             applying_latex: false,
             return_focus: false,
-            formula_cache: RefCell::new(HashMap::new()),
             graph_preview: None,
             graph_pending: None,
             retired_images: Vec::new(),
@@ -373,6 +400,10 @@ impl NotesView {
             insert_open: false,
             methods_open: false,
             guided: false,
+            problem_editing: !has_problem,
+            problem_typeset: Typeset::default(),
+            auto_due: has_problem.then(Instant::now),
+            auto_timer: None,
             feedback: None,
             scroll,
             guide_anchor,
@@ -400,6 +431,11 @@ impl NotesView {
         Ok(request)
     }
     fn run_primary_math(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_primary(true, window, cx);
+    }
+    /// Run the selected calculation. Automatic runs leave keyboard focus in
+    /// the field being typed in.
+    fn run_primary(&mut self, take_focus: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(inputs) = &self.math_inputs else {
             return;
         };
@@ -421,9 +457,18 @@ impl NotesView {
             }
             Mode::Solution => inputs.operation.clone(),
         };
-        self.run_math(&operation, window, cx);
+        self.run_math_with_focus(&operation, take_focus, window, cx);
     }
     fn run_math(&mut self, operation: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_math_with_focus(operation, true, window, cx);
+    }
+    fn run_math_with_focus(
+        &mut self,
+        operation: &str,
+        take_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(inputs) = &mut self.math_inputs {
             inputs.feedback = None;
             inputs.guided = false;
@@ -439,7 +484,9 @@ impl NotesView {
         {
             session.error = Some(error);
         }
-        self.focus.focus(window);
+        if take_focus {
+            self.focus.focus(window);
+        }
         cx.notify();
     }
     fn math_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
@@ -462,6 +509,7 @@ impl NotesView {
             inputs.insert_open = false;
             inputs.feedback = None;
             inputs.guided = false;
+            inputs.auto_due = Some(Instant::now());
             inputs.scroll.set_offset(point(px(0.), px(0.)));
             if mode == Mode::Check {
                 inputs.next_line.read(cx).focus.focus(window);
@@ -504,8 +552,18 @@ impl NotesView {
                     .gap_3()
                     .child(
                         div()
+                            .flex_shrink_0()
+                            .min_w(rems(1.375))
+                            .h(rems(1.375))
+                            .px_1()
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(theme.raised())
+                            .border_1()
+                            .border_color(theme.glass_edge())
                             .text_xs()
-                            .text_color(rgb(theme.accent))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(index.clone()),
                     )
@@ -559,13 +617,47 @@ impl NotesView {
             .flex_col()
             .gap_2()
             .p_3()
-            .rounded_md()
-            .bg(rgb(theme.selected))
+            .rounded(px(theme.radius))
+            .bg(theme.raised())
+            .border_1()
+            .border_color(theme.glass_edge())
             .child(
                 div()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Calculation settings"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_sm().child("Solve as you type"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(theme.muted))
+                                    .child("Show answers without pressing Solve."),
+                            ),
+                    )
+                    .child(self.appearance_switch(
+                        "math-auto-solve",
+                        "Solve automatically",
+                        self.controller.settings.math_auto_solve,
+                        cx,
+                        |this| {
+                            let auto = !this.controller.settings.math_auto_solve;
+                            this.controller.settings.math_auto_solve = auto;
+                            if let Some(inputs) = &mut this.math_inputs {
+                                inputs.auto_due = auto.then(Instant::now);
+                            }
+                        },
+                    )),
             )
             .child(
                 div()
@@ -616,6 +708,9 @@ impl NotesView {
                             }
                             session.report = None;
                             session.error = None;
+                        }
+                        if let Some(inputs) = &mut this.math_inputs {
+                            inputs.auto_due = Some(Instant::now());
                         }
                         cx.notify();
                     },
@@ -747,18 +842,13 @@ impl NotesView {
             .update(cx, |field, cx| field.set_content(next, cx));
         self.run_primary_math(window, cx);
     }
-    fn native_formula(
+    pub(super) fn native_formula(
         &self,
         formula: Arc<VectorFormula>,
         height: f32,
         color: u32,
     ) -> impl IntoElement {
-        let mut cache = self
-            .math_inputs
-            .as_ref()
-            .unwrap()
-            .formula_cache
-            .borrow_mut();
+        let mut cache = self.formula_cache.borrow_mut();
         if cache.len() >= 128 {
             cache.clear();
         }
@@ -832,7 +922,7 @@ impl NotesView {
             .graph_preview
             .as_ref()
             .filter(|preview| preview.key == key);
-        let mut element = div().w_full().rounded_md().bg(rgb(palette.paper)).p_2();
+        let mut element = div().w_full().rounded(px(Theme::new(&self.controller.settings).radius)).bg(rgb(palette.paper)).p_2();
         if let Some(cached) = cached {
             return if let Some(image) = &cached.image {
                 element.child(
@@ -949,11 +1039,17 @@ impl NotesView {
             return editor.child(div().text_xs().text_color(rgb(theme.muted)).child("Edited answers are saved as static formulas. Solve the problem again to verify the answer."));
         }
         if let Some(vector) = &report.vector {
-            result = result.child(div().w_full().py_2().child(self.native_formula(
-                vector.clone(),
-                42.,
-                theme.ink,
-            )));
+            result = result.child(
+                div()
+                    .w_full()
+                    .px_3()
+                    .py_4()
+                    .rounded(px(theme.corner_md()))
+                    .bg(rgba((theme.accent << 8) | 0x12))
+                    .border_1()
+                    .border_color(rgba((theme.accent << 8) | 0x38))
+                    .child(self.native_formula(vector.clone(), 42., theme.ink)),
+            );
         } else if let Some(graph) = &report.graph {
             result = result.child(self.graph_preview(&graph.svg, cx));
         } else {
@@ -1125,8 +1221,8 @@ impl NotesView {
                 result = result.child(
                     div()
                         .p_3()
-                        .rounded_md()
-                        .bg(rgb(theme.selected))
+                        .rounded(px(theme.radius))
+                        .bg(theme.raised())
                         .text_sm()
                         .child(format!("Next step hint: {}", next.explanation)),
                 );
@@ -1347,8 +1443,8 @@ impl NotesView {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .bg(rgb(theme.selected))
-                .rounded_md()
+                .bg(theme.raised())
+                .rounded(px(theme.radius))
                 .p_2()
                 .child(
                     div()
@@ -1489,6 +1585,7 @@ impl NotesView {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         self.sync_math_inputs(window, cx);
+        self.auto_solve(window, cx);
         if self
             .math_inputs
             .as_mut()
@@ -1499,7 +1596,7 @@ impl NotesView {
         let theme = Theme::new(&self.controller.settings);
         let viewport_width = f32::from(window.viewport_size().width);
         let width = (viewport_width * 0.34)
-            .clamp(320., 420.)
+            .clamp(340., 440.)
             .max(320. * self.controller.settings.ui_scale)
             .min(viewport_width * 0.5);
         let mut panel = div()
@@ -1509,8 +1606,8 @@ impl NotesView {
             .flex_shrink_0()
             .min_h_0()
             .border_l_1()
-            .border_color(theme.border)
-            .bg(rgb(theme.surface))
+            .border_color(theme.glass_edge())
+            .glass_fill(theme, theme.sidebar)
             .flex()
             .flex_col();
         let Some(inputs) = &self.math_inputs else {
@@ -1529,8 +1626,12 @@ impl NotesView {
             inputs.settings_open,
             inputs.source_open,
         );
-        let empty = expression.read(cx).content.trim().is_empty();
+        let problem_text = expression.read(cx).content.clone();
+        let empty = problem_text.trim().is_empty();
+        let problem_editing = inputs.problem_editing || empty;
         let editing = inputs.latex_open;
+        let auto = self.controller.settings.math_auto_solve;
+        let waiting = inputs.auto_due.is_some();
         let session = self.controller.math_session.as_ref().unwrap();
         let (pending, report, error) = (
             session.pending,
@@ -1541,47 +1642,60 @@ impl NotesView {
         let can_run = !pending && !reading && inputs.can_run(cx);
         let header = div()
             .flex_shrink_0()
-            .px_4()
-            .py_2()
+            .pl_4()
+            .pr_2()
+            .pt_2()
+            .pb_1()
             .flex()
             .items_center()
-            .justify_between()
-            .child(div().font_weight(FontWeight::SEMIBOLD).child(if editing {
-                "Edit answer"
-            } else {
-                "Math solver"
-            }))
+            .gap_2()
+            .child(icon(Icon::Math, theme.accent))
             .child(
                 div()
-                    .flex()
-                    .gap_1()
-                    .when(!editing, |controls| {
-                        controls.child(
-                            self.math_toggle(
-                                "math-settings",
-                                "Settings",
-                                settings_open,
-                                |i| &mut i.settings_open,
-                                cx,
-                            )
-                            .py_1(),
-                        )
-                    })
-                    .child(
-                        self.button(
-                            "close-math-solver",
-                            "Close",
-                            false,
-                            cx,
-                            |this, window, cx| {
-                                this.controller.close_math_solver();
-                                this.clear_math_inputs(window);
-                                this.focus.focus(window);
-                                cx.notify();
-                            },
-                        )
-                        .py_1(),
-                    ),
+                    .flex_1()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(if editing {
+                        "Edit answer"
+                    } else {
+                        "Math solver"
+                    }),
+            )
+            .when(!editing, |header| {
+                header.child(
+                    self.icon_button(
+                        "math-settings",
+                        "Settings",
+                        Icon::Sliders,
+                        settings_open,
+                        cx,
+                        |this, _, cx| {
+                            if let Some(inputs) = &mut this.math_inputs {
+                                inputs.settings_open = !inputs.settings_open;
+                                if inputs.settings_open {
+                                    inputs.scroll.set_offset(point(px(0.), px(0.)));
+                                }
+                            }
+                            cx.notify();
+                        },
+                    )
+                    .size(rems(2.)),
+                )
+            })
+            .child(
+                self.icon_button(
+                    "close-math-solver",
+                    "Close",
+                    Icon::Close,
+                    false,
+                    cx,
+                    |this, window, cx| {
+                        this.controller.close_math_solver();
+                        this.clear_math_inputs(window);
+                        this.focus.focus(window);
+                        cx.notify();
+                    },
+                )
+                .size(rems(2.)),
             );
         panel = panel.child(header);
         if editing && let Some(report) = &report {
@@ -1598,7 +1712,17 @@ impl NotesView {
                 )
                 .child(self.math_result_actions(report, cx));
         }
-        let mut tabs = div().flex().flex_wrap().px_4().gap_2().pb_2();
+        // Mode switcher: one segmented control.
+        let mut tabs = div()
+            .mx_4()
+            .mb_3()
+            .p(px(3.))
+            .flex()
+            .gap(px(3.))
+            .rounded(px(theme.corner_md()))
+            .bg(theme.raised())
+            .border_1()
+            .border_color(theme.glass_edge());
         for (id, label, value) in [
             ("math-solution-tab", "Solution", Mode::Solution),
             ("math-graph-tab", "Graph", Mode::Graph),
@@ -1610,9 +1734,15 @@ impl NotesView {
                 })
                 .flex_1()
                 .min_w_0()
+                .min_h(rems(1.75))
                 .text_xs()
                 .px_2()
-                .py_1(),
+                .py_1()
+                .rounded(px((theme.corner_md() - 3.).max(0.)))
+                .when(mode == value, |tab| {
+                    tab.font_weight(FontWeight::MEDIUM)
+                        .border_color(theme.glass_edge())
+                }),
             );
         }
         panel = panel.child(tabs);
@@ -1621,6 +1751,74 @@ impl NotesView {
             Mode::Check => "Original problem",
             Mode::Solution => "Problem",
         };
+        let read_selection = |this: &mut Self, cx: &mut Context<Self>| {
+            if let Err(error) = this
+                .controller
+                .read_math_selection(RecognitionKind::Math, false)
+                && let Some(session) = &mut this.controller.math_session
+            {
+                session.error = Some(error);
+            }
+            cx.notify();
+        };
+        let label_row = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                div()
+                    .flex_1()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(theme.muted))
+                    .child(problem_label),
+            )
+            .child(
+                self.button(
+                    "math-use-selection",
+                    "Use selection",
+                    false,
+                    cx,
+                    move |this, _, cx| read_selection(this, cx),
+                )
+                .text_xs()
+                .min_h(rems(1.75))
+                .px_2()
+                .py_0(),
+            )
+            .child(
+                self.control(
+                    "math-source",
+                    "Read options",
+                    icon(Icon::Down, theme.ink).into_any_element(),
+                    source_open,
+                    cx,
+                    |this, _, cx| {
+                        if let Some(inputs) = &mut this.math_inputs {
+                            inputs.source_open = !inputs.source_open;
+                        }
+                        cx.notify();
+                    },
+                )
+                .min_h(rems(1.75))
+                .py_0()
+                .px_1(),
+            )
+            .when(!empty, |row| {
+                row.child(
+                    self.button(
+                        "math-edit-problem",
+                        if problem_editing { "Done" } else { "Edit" },
+                        problem_editing,
+                        cx,
+                        |this, window, cx| this.toggle_problem_editing(window, cx),
+                    )
+                    .text_xs()
+                    .min_h(rems(1.75))
+                    .px_2()
+                    .py_0(),
+                )
+            });
         let mut editor = div()
             .flex_shrink_0()
             .px_4()
@@ -1628,60 +1826,16 @@ impl NotesView {
             .flex()
             .flex_col()
             .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(problem_label),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_1()
-                            .child(
-                                self.button(
-                                    "math-use-selection",
-                                    "Use selection",
-                                    false,
-                                    cx,
-                                    |this, _, cx| {
-                                        if let Err(error) = this
-                                            .controller
-                                            .read_math_selection(RecognitionKind::Math, false)
-                                            && let Some(session) = &mut this.controller.math_session
-                                        {
-                                            session.error = Some(error);
-                                        }
-                                        cx.notify();
-                                    },
-                                )
-                                .py_1(),
-                            )
-                            .child(
-                                self.control(
-                                    "math-source",
-                                    "Read options",
-                                    icon(Icon::Down, theme.ink).into_any_element(),
-                                    source_open,
-                                    cx,
-                                    |this, _, cx| {
-                                        if let Some(inputs) = &mut this.math_inputs {
-                                            inputs.source_open = !inputs.source_open;
-                                        }
-                                        cx.notify();
-                                    },
-                                )
-                                .py_1()
-                                .px_2(),
-                            ),
-                    ),
-            )
-            .child(div().w_full().flex_shrink_0().child(expression));
+            .child(label_row);
+        if problem_editing {
+            editor = editor.child(div().w_full().flex_shrink_0().child(expression));
+            if !empty {
+                // A live preview of the formula being typed.
+                editor = editor.child(self.problem_card(&problem_text, report.as_ref(), true, cx));
+            }
+        } else {
+            editor = editor.child(self.problem_card(&problem_text, report.as_ref(), false, cx));
+        }
         if source_open {
             let mut sources = div()
                 .flex()
@@ -1692,16 +1846,7 @@ impl NotesView {
                     "Read selected math",
                     false,
                     cx,
-                    |this, _, cx| {
-                        if let Err(error) = this
-                            .controller
-                            .read_math_selection(RecognitionKind::Math, false)
-                            && let Some(session) = &mut this.controller.math_session
-                        {
-                            session.error = Some(error);
-                        }
-                        cx.notify();
-                    },
+                    move |this, _, cx| read_selection(this, cx),
                 ))
                 .child(self.button(
                     "math-read-text",
@@ -1745,7 +1890,12 @@ impl NotesView {
                         .flex()
                         .items_center()
                         .gap_3()
-                        .child(div().text_xs().child("x range"))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(theme.muted))
+                                .child("x range"),
+                        )
                         .child(div().flex_1().child(range)),
                 );
             }
@@ -1760,6 +1910,7 @@ impl NotesView {
                                 div()
                                     .text_xs()
                                     .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(theme.muted))
                                     .child("Your next step"),
                             )
                             .child(
@@ -1779,7 +1930,10 @@ impl NotesView {
                                         cx.notify();
                                     },
                                 )
-                                .py_1(),
+                                .text_xs()
+                                .min_h(rems(1.75))
+                                .px_2()
+                                .py_0(),
                             ),
                     )
                     .child(div().w_full().flex_shrink_0().child(next_line));
@@ -1800,27 +1954,85 @@ impl NotesView {
                 _ => "Solve problem",
             },
         };
-        if pending || reading {
-            editor = editor.child(
+        let operation_chip = (mode == Mode::Solution).then(|| {
+            self.control(
+                "math-more-actions",
+                format!("Operation: {}", operation_name(&operation)),
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .child(div().text_sm().child(if reading {
-                        self.controller.recognition_status.clone()
-                    } else {
-                        "Solving…".to_string()
-                    }))
-                    .child(
-                        self.button("cancel-math", "Cancel", false, cx, |this, _, cx| {
-                            this.controller.cancel_math_solver();
-                            cx.notify();
+                    .gap_1()
+                    .child(operation_name(&operation))
+                    .child(icon(Icon::Down, theme.muted))
+                    .into_any_element(),
+                actions_open,
+                cx,
+                |this, _, cx| {
+                    if let Some(inputs) = &mut this.math_inputs {
+                        inputs.actions_open = !inputs.actions_open;
+                        inputs.settings_open = false;
+                        inputs.scroll.set_offset(point(px(0.), px(0.)));
+                    }
+                    cx.notify();
+                },
+            )
+            .text_xs()
+            .min_h(rems(1.875))
+            .px_2()
+            .py_0()
+            .border_1()
+            .border_color(theme.glass_edge())
+        });
+        let mut status_row = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .children(operation_chip)
+            .child(div().flex_1());
+        if pending || reading {
+            status_row = status_row
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(theme.muted))
+                        .child(if reading {
+                            self.controller.recognition_status.clone()
+                        } else {
+                            "Solving…".to_string()
                         }),
-                    ),
+                )
+                .child(
+                    self.button("cancel-math", "Cancel", false, cx, |this, _, cx| {
+                        this.controller.cancel_math_solver();
+                        cx.notify();
+                    })
+                    .text_xs()
+                    .min_h(rems(1.875))
+                    .px_2()
+                    .py_0(),
+                );
+        } else if auto && (waiting || report.is_some()) {
+            // Solving automatically: show where the result stands instead of
+            // a redundant button.
+            status_row = status_row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(rgb(theme.muted))
+                    .when(report.is_some() && !waiting, |status| {
+                        status.child(icon(Icon::Check, theme.muted).size(rems(0.875)))
+                    })
+                    .child(if waiting {
+                        "Solves as you type"
+                    } else {
+                        "Solved automatically"
+                    }),
             );
-        } else {
-            let primary = self
-                .button(
+        } else if !empty {
+            status_row = status_row.child(
+                self.button(
                     "math-primary",
                     primary_label,
                     true,
@@ -1830,46 +2042,13 @@ impl NotesView {
                 .font_weight(FontWeight::SEMIBOLD)
                 .bg(rgb(theme.accent))
                 .text_color(rgb(theme.primary_foreground))
-                .opacity(if can_run { 1. } else { 0.4 });
-            if mode == Mode::Solution {
-                editor = editor.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            self.control(
-                                "math-more-actions",
-                                format!("Operation: {}", operation_name(&operation)),
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap_1()
-                                    .child(operation_name(&operation))
-                                    .child(icon(Icon::Down, theme.ink))
-                                    .into_any_element(),
-                                actions_open,
-                                cx,
-                                |this, _, cx| {
-                                    if let Some(inputs) = &mut this.math_inputs {
-                                        inputs.actions_open = !inputs.actions_open;
-                                        inputs.settings_open = false;
-                                        inputs.scroll.set_offset(point(px(0.), px(0.)));
-                                    }
-                                    cx.notify();
-                                },
-                            )
-                            .flex_1()
-                            .min_w_0()
-                            .px_2(),
-                        )
-                        .child(primary.flex_1().min_w_0().px_2()),
-                );
-            } else {
-                editor = editor.child(primary.w_full());
-            }
+                .opacity(if can_run { 1. } else { 0.4 })
+                .min_h(rems(1.875))
+                .px_3()
+                .py_0(),
+            );
         }
+        editor = editor.child(status_row);
         panel = panel.child(editor);
         let mut body = div()
             .w_full()
@@ -1884,8 +2063,10 @@ impl NotesView {
                 .flex_col()
                 .gap_1()
                 .p_2()
-                .rounded_md()
-                .bg(rgb(theme.selected))
+                .rounded(px(theme.radius))
+                .bg(theme.raised())
+                .border_1()
+                .border_color(theme.glass_edge())
                 .child(
                     div()
                         .text_xs()
@@ -1912,6 +2093,7 @@ impl NotesView {
                                 inputs.operation = value.into();
                                 inputs.actions_open = false;
                                 inputs.feedback = None;
+                                inputs.auto_due = Some(Instant::now());
                             }
                             cx.notify();
                         },
@@ -1927,9 +2109,11 @@ impl NotesView {
         if let Some(error) = error {
             body = body.child(
                 div()
-                    .rounded_md()
+                    .rounded(px(theme.radius))
                     .p_3()
-                    .bg(rgb(theme.selected))
+                    .border_1()
+                    .border_color(rgba((theme.destructive << 8) | 0x55))
+                    .bg(rgba((theme.destructive << 8) | 0x14))
                     .text_sm()
                     .text_color(rgb(theme.destructive))
                     .child(error),
@@ -1961,7 +2145,11 @@ impl NotesView {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .py_3()
+                        .p_4()
+                        .rounded(px(theme.radius))
+                        .bg(theme.raised())
+                        .border_1()
+                        .border_color(theme.glass_edge())
                         .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
                         .child(div().text_sm().text_color(rgb(theme.muted)).child(help))
                         .child(div().text_xs().text_color(rgb(theme.muted)).child(example))
@@ -1973,11 +2161,11 @@ impl NotesView {
                                 cx,
                                 |this, window, cx| this.use_math_example(window, cx),
                             )
-                            .justify_start(),
+                            .justify_start()
+                            .px_2(),
                         ),
                 );
-            }
-            if !empty {
+            } else if !auto {
                 body = body.child(
                     div()
                         .text_xs()
@@ -1992,7 +2180,7 @@ impl NotesView {
                 .flex_1()
                 .min_h_0()
                 .border_t_1()
-                .border_color(theme.border)
+                .border_color(theme.glass_edge())
                 .overflow_y_scroll()
                 .track_scroll(&scroll)
                 .child(body),
@@ -2003,6 +2191,248 @@ impl NotesView {
             panel = panel.child(self.math_result_actions(report, cx));
         }
         panel
+    }
+    /// The problem, typeset. Plain text is shown for prose and for anything
+    /// the typesetter cannot read. Clicking the card edits the problem.
+    fn problem_card(
+        &mut self,
+        text: &str,
+        report: Option<&MathReport>,
+        preview: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let theme = Theme::new(&self.controller.settings);
+        // A solved report holds the parser's normalized LaTeX for this exact
+        // problem; edits clear the report.
+        let source = report
+            .filter(|report| report.interpretation.is_none() && !report.input_latex.is_empty())
+            .map(|report| report.input_latex.clone())
+            .unwrap_or_else(|| text.trim().to_string());
+        let formulas = if automatic_operation(&source) == "interpret" {
+            None
+        } else {
+            self.typeset(
+                |view| view.math_inputs.as_mut().map(|i| &mut i.problem_typeset),
+                &source,
+                cx,
+            )
+        };
+        let mut card = div()
+            .id(if preview {
+                "math-problem-preview"
+            } else {
+                "math-problem-card"
+            })
+            .w_full()
+            .min_h(rems(3.5))
+            .px_3()
+            .py_2()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_1()
+            .rounded(px(theme.radius))
+            .bg(theme.raised())
+            .border_1()
+            .border_color(theme.glass_edge());
+        match formulas {
+            Some(formulas) => {
+                for formula in formulas.iter() {
+                    let height = (formula.height / formula.width.max(1.) * 300.).clamp(28., 56.);
+                    card = card.child(self.native_formula(formula.clone(), height, theme.ink));
+                }
+            }
+            None => {
+                card = card.child(
+                    div()
+                        .w_full()
+                        .text_sm()
+                        .text_color(rgb(if preview { theme.muted } else { theme.ink }))
+                        .child(text.trim().to_string()),
+                );
+            }
+        }
+        if preview {
+            return card.opacity(0.85);
+        }
+        card.cursor_pointer()
+            .hover(move |card| card.border_color(rgb(theme.ring)))
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_problem_editing(window, cx)))
+    }
+    /// Typeset LaTeX off the UI thread, one formula per line, caching it in
+    /// the `slot` that `slot` finds again once the work completes. Until
+    /// then the previous formula stays visible, so typing does not flicker.
+    pub(super) fn typeset(
+        &mut self,
+        slot: fn(&mut Self) -> Option<&mut Typeset>,
+        source: &str,
+        cx: &mut Context<Self>,
+    ) -> Formulas {
+        let typeset = slot(self)?;
+        if source.trim().is_empty() {
+            return None;
+        }
+        if let Some((key, formulas)) = &typeset.done
+            && key == source
+        {
+            return formulas.clone();
+        }
+        if typeset.pending.as_deref() != Some(source) {
+            typeset.pending = Some(source.to_string());
+            let key = source.to_string();
+            let task_key = key.clone();
+            let task = cx.background_executor().spawn(async move {
+                task_key
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(|line| folio_app::typeset(line).ok())
+                    .collect::<Option<Vec<_>>>()
+                    .filter(|formulas| !formulas.is_empty())
+                    .map(Arc::new)
+            });
+            cx.spawn(async move |view, cx| {
+                let formulas = task.await;
+                let _ = view.update(cx, |view, cx| {
+                    if let Some(typeset) = slot(view)
+                        && typeset.pending.as_ref() == Some(&key)
+                    {
+                        typeset.pending = None;
+                        typeset.done = Some((key, formulas));
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+        typeset
+            .done
+            .as_ref()
+            .and_then(|(_, formulas)| formulas.clone())
+    }
+    /// Whether the open review dialog shows recognized math.
+    pub(super) fn reviewing_math(&self) -> bool {
+        self.controller
+            .recognition_review
+            .as_ref()
+            .is_some_and(|review| review.kind == RecognitionKind::Math)
+    }
+    /// Whether the dialog shows its text field. Recognized math shows its
+    /// rendered formula until the user chooses to edit the LaTeX.
+    pub(super) fn modal_field_visible(&self) -> bool {
+        match &self.modal {
+            Some((Modal::Recognition, _)) => self.review_editing || !self.reviewing_math(),
+            Some((modal, _)) => modal.has_field(),
+            None => false,
+        }
+    }
+    pub(super) fn toggle_review_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.review_editing = !self.review_editing;
+        if let Some((_, field)) = &self.modal {
+            if self.review_editing {
+                field.read(cx).focus.focus(window);
+            } else {
+                self.focus.focus(window);
+                self.menu_focus = Some("edit-recognized-math".into());
+            }
+        }
+        cx.notify();
+    }
+    /// The recognized math, typeset. Clicking it edits the LaTeX.
+    pub(super) fn review_preview(
+        &mut self,
+        latex: String,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let theme = Theme::new(&self.controller.settings);
+        let formulas = self.typeset(|view| Some(&mut view.review_typeset), &latex, cx);
+        let mut card = div()
+            .id("recognized-math-preview")
+            .w_full()
+            .min_h(rems(5.))
+            .px_4()
+            .py_3()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .rounded(px(theme.corner_md()))
+            .bg(theme.raised())
+            .border_1()
+            .border_color(theme.glass_edge());
+        match formulas {
+            Some(formulas) => {
+                for formula in formulas.iter() {
+                    let height = (formula.height / formula.width.max(1.) * 420.).clamp(36., 96.);
+                    card = card.child(self.native_formula(formula.clone(), height, theme.ink));
+                }
+            }
+            None if self.review_typeset.pending.is_some() => {}
+            None => {
+                card = card
+                    .child(div().text_sm().child(latex.trim().to_string()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(theme.muted))
+                            .child("This LaTeX cannot be previewed. Edit it to fix it."),
+                    );
+            }
+        }
+        if self.review_editing {
+            return card;
+        }
+        card.cursor_pointer()
+            .hover(move |card| card.border_color(rgb(theme.ring)))
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_review_editing(window, cx)))
+    }
+    fn toggle_problem_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(inputs) = &mut self.math_inputs else {
+            return;
+        };
+        inputs.problem_editing = !inputs.problem_editing;
+        if inputs.problem_editing {
+            inputs.expression.read(cx).focus.focus(window);
+        } else {
+            self.focus.focus(window);
+        }
+        cx.notify();
+    }
+    /// Run the pending automatic calculation once its input has settled.
+    fn auto_solve(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let auto = self.controller.settings.math_auto_solve;
+        let Some(inputs) = &mut self.math_inputs else {
+            return;
+        };
+        let Some(due) = inputs.auto_due else {
+            return;
+        };
+        if !auto || inputs.latex_open {
+            inputs.auto_due = None;
+            return;
+        }
+        // Wait for recognition to fill the problem in, and for typing to pause.
+        if self.controller.recognition_pending || Instant::now() < due {
+            return;
+        }
+        inputs.auto_due = None;
+        if inputs.can_run(cx) {
+            self.run_primary(false, window, cx);
+        }
+    }
+    /// Solve again after typing pauses.
+    fn schedule_auto_solve(&mut self, cx: &mut Context<Self>) {
+        let Some(inputs) = &mut self.math_inputs else {
+            return;
+        };
+        let delay = Duration::from_millis(650);
+        inputs.auto_due = Some(Instant::now() + delay);
+        inputs.auto_timer = Some(cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = view.update(cx, |_, cx| cx.notify());
+        }));
     }
 }
 
