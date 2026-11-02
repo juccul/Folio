@@ -56,6 +56,19 @@ pub use painting::CanvasFrame;
 use std::time::{Duration, Instant};
 use theme::Theme;
 
+/// A mouse-wheel scroll or zoom of the canvas still easing toward its target.
+#[derive(Default)]
+struct CanvasEase {
+    /// Remaining pan, in screen pixels.
+    pan: DocPoint,
+    /// Remaining zoom, as a natural logarithm of the factor.
+    zoom: f32,
+    /// The point zoom keeps in place, relative to the canvas.
+    anchor: DocPoint,
+    /// The last frame that advanced the motion, while it is running.
+    last: Option<Instant>,
+}
+
 actions!(
     folio,
     [
@@ -218,6 +231,7 @@ pub struct NotesView {
     update_preparing: bool,
     poll_task: Option<Task<()>>,
     poll_idle: bool,
+    canvas_ease: CanvasEase,
     region_selection: Option<region::Selection>,
     pub controller: Controller,
     math_inputs: Option<math_panel::Inputs>,
@@ -374,6 +388,7 @@ impl NotesView {
             update_preparing: false,
             poll_task: None,
             poll_idle: false,
+            canvas_ease: CanvasEase::default(),
             region_selection: None,
             controller,
             math_inputs: None,
@@ -1692,22 +1707,79 @@ impl NotesView {
             return;
         }
         let delta = event.delta.pixel_delta(px(30.));
+        // Wheel notches ease into place; touchpads already move smoothly and
+        // follow the fingers directly.
+        let ease =
+            matches!(event.delta, ScrollDelta::Lines(_)) && !self.controller.settings.reduce_motion;
         if event.modifiers.control {
             let anchor = DocPoint::new(
                 f32::from(event.position.x) - f32::from(bounds.origin.x),
                 f32::from(event.position.y) - f32::from(bounds.origin.y),
             );
-            self.controller
-                .session_mut()
-                .viewport
-                .zoom_at((f32::from(delta.y) * 0.008).exp(), anchor);
+            let zoom = f32::from(delta.y) * 0.008;
+            if ease {
+                self.canvas_ease.zoom += zoom;
+                self.canvas_ease.anchor = anchor;
+            } else {
+                self.controller
+                    .session_mut()
+                    .viewport
+                    .zoom_at(zoom.exp(), anchor);
+            }
+        } else if ease {
+            self.canvas_ease.pan.x += f32::from(delta.x);
+            self.canvas_ease.pan.y += f32::from(delta.y);
         } else {
             let v = &mut self.controller.session_mut().viewport;
             v.pan.x += f32::from(delta.x);
             v.pan.y += f32::from(delta.y);
         }
-        self.synchronize_page_view();
+        if ease {
+            self.canvas_ease.last.get_or_insert_with(Instant::now);
+        } else {
+            self.synchronize_page_view();
+        }
         cx.notify();
+    }
+    /// Advance an eased wheel scroll or zoom of the canvas by one frame.
+    fn advance_canvas_ease(&mut self, window: &mut Window) {
+        let Some(last) = self.canvas_ease.last else {
+            return;
+        };
+        if self.controller.interaction.is_some() || self.library_open {
+            self.canvas_ease = CanvasEase::default();
+            return;
+        }
+        let now = Instant::now();
+        let fraction = 1. - (-now.saturating_duration_since(last).as_secs_f32() / 0.045).exp();
+        let settle = |remaining: f32, threshold: f32| {
+            if remaining.abs() < threshold {
+                remaining
+            } else {
+                remaining * fraction
+            }
+        };
+        let ease = &mut self.canvas_ease;
+        let pan = DocPoint::new(settle(ease.pan.x, 0.5), settle(ease.pan.y, 0.5));
+        let zoom = settle(ease.zoom, 0.0005);
+        ease.pan.x -= pan.x;
+        ease.pan.y -= pan.y;
+        ease.zoom -= zoom;
+        let anchor = ease.anchor;
+        let viewport = &mut self.controller.session_mut().viewport;
+        viewport.pan.x += pan.x;
+        viewport.pan.y += pan.y;
+        if zoom != 0. {
+            viewport.zoom_at(zoom.exp(), anchor);
+        }
+        self.synchronize_page_view();
+        let ease = &mut self.canvas_ease;
+        if ease.pan.x == 0. && ease.pan.y == 0. && ease.zoom == 0. {
+            ease.last = None;
+        } else {
+            ease.last = Some(now);
+            window.request_animation_frame();
+        }
     }
     fn synchronize_page_view(&mut self) {
         if let Some(bounds) = self.canvas_bounds {

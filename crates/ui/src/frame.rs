@@ -19,6 +19,7 @@ impl Render for NotesView {
         self.controller.refresh_default_ink();
         self.apply_equation_result(window, cx);
         self.cancel_region_after_navigation();
+        self.advance_canvas_ease(window);
         self.building_overlay = false;
         self.accessibility.begin();
         self.motion.borrow_mut().begin_frame();
@@ -27,6 +28,7 @@ impl Render for NotesView {
         self.track_recognition_frame(alpha.modal, window, cx);
         let theme = Theme::new(&self.controller.settings);
         window.set_rem_size(px(16. * self.controller.settings.ui_scale));
+        window.set_smooth_scrolling(!self.controller.settings.reduce_motion);
         // Build order matters: controls register for accessibility as they are built.
         let center = self.canvas_area(cx);
         let mut root = self.root_element(cx);

@@ -876,9 +876,26 @@ pub struct Window {
     pub(crate) pending_input_observers: SubscriberSet<(), AnyObserver>,
     prompt: Option<RenderablePromptHandle>,
     pub(crate) client_inset: Option<Pixels>,
+    smooth_scrolls: Vec<SmoothScroll>,
+    smooth_scroll_tick: Option<Instant>,
+    smooth_scrolling: bool,
     #[cfg(any(feature = "inspector", debug_assertions))]
     inspector: Option<Entity<Inspector>>,
 }
+
+/// A mouse-wheel scroll still easing toward its destination.
+struct SmoothScroll {
+    offset: std::rc::Weak<RefCell<Point<Pixels>>>,
+    remaining: Point<Pixels>,
+    /// The offset this animation last set; any other value means the
+    /// container clamped it at an edge or something else moved it.
+    expected: Point<Pixels>,
+    view: EntityId,
+}
+
+/// Time constant of wheel easing: a wheel step is about 95% complete after
+/// three time constants.
+const SMOOTH_SCROLL_TIME_CONSTANT: f32 = 0.045;
 
 #[derive(Clone, Debug, Default)]
 struct ModifierState {
@@ -1259,6 +1276,9 @@ impl Window {
             pending_input_observers: SubscriberSet::new(),
             prompt: None,
             client_inset: None,
+            smooth_scrolls: Vec::new(),
+            smooth_scroll_tick: None,
+            smooth_scrolling: true,
             image_cache_stack: Vec::new(),
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
@@ -1647,6 +1667,99 @@ impl Window {
     /// Schedule the given closure to be run directly after the current frame is rendered.
     pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
         RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
+    }
+
+    /// Whether mouse-wheel scrolling in scrollable elements eases toward its
+    /// destination instead of jumping. Precise (touchpad) scrolling always
+    /// follows the fingers directly.
+    pub fn smooth_scrolling(&self) -> bool {
+        self.smooth_scrolling
+    }
+
+    /// Enable or disable easing of mouse-wheel scrolling, for example to
+    /// respect a reduced-motion preference.
+    pub fn set_smooth_scrolling(&mut self, enabled: bool) {
+        self.smooth_scrolling = enabled;
+        if !enabled {
+            for scroll in self.smooth_scrolls.drain(..) {
+                if let Some(offset) = scroll.offset.upgrade() {
+                    *offset.borrow_mut() += scroll.remaining;
+                }
+            }
+            self.smooth_scroll_tick = None;
+        }
+    }
+
+    /// Ease a scroll offset by `delta` over the next few frames.
+    pub(crate) fn smooth_scroll(
+        &mut self,
+        offset: &Rc<RefCell<Point<Pixels>>>,
+        delta: Point<Pixels>,
+        view: EntityId,
+        cx: &mut App,
+    ) {
+        let weak = Rc::downgrade(offset);
+        let current = *offset.borrow();
+        if let Some(scroll) = self
+            .smooth_scrolls
+            .iter_mut()
+            .find(|scroll| scroll.offset.ptr_eq(&weak))
+        {
+            scroll.remaining += delta;
+        } else {
+            self.smooth_scrolls.push(SmoothScroll {
+                offset: weak,
+                remaining: delta,
+                expected: current,
+                view,
+            });
+        }
+        if self.smooth_scroll_tick.is_none() {
+            self.smooth_scroll_tick = Some(Instant::now());
+            self.on_next_frame(|window, cx| window.advance_smooth_scrolls(cx));
+            cx.notify(view);
+        }
+    }
+
+    fn advance_smooth_scrolls(&mut self, cx: &mut App) {
+        let now = Instant::now();
+        let elapsed = now
+            .saturating_duration_since(self.smooth_scroll_tick.unwrap_or(now))
+            .as_secs_f32();
+        self.smooth_scroll_tick = Some(now);
+        let fraction = 1. - (-elapsed / SMOOTH_SCROLL_TIME_CONSTANT).exp();
+        self.smooth_scrolls.retain_mut(|scroll| {
+            let Some(offset) = scroll.offset.upgrade() else {
+                return false;
+            };
+            let mut offset = offset.borrow_mut();
+            // Stop on an axis once the container has clamped the offset at
+            // its edge, or when something else moved it.
+            if offset.x != scroll.expected.x {
+                scroll.remaining.x = Pixels::ZERO;
+            }
+            if offset.y != scroll.expected.y {
+                scroll.remaining.y = Pixels::ZERO;
+            }
+            let settle = |remaining: Pixels| {
+                if remaining.abs() < px(0.5) {
+                    remaining
+                } else {
+                    remaining * fraction
+                }
+            };
+            let step = point(settle(scroll.remaining.x), settle(scroll.remaining.y));
+            *offset += step;
+            scroll.remaining -= step;
+            scroll.expected = *offset;
+            cx.notify(scroll.view);
+            !scroll.remaining.x.is_zero() || !scroll.remaining.y.is_zero()
+        });
+        if self.smooth_scrolls.is_empty() {
+            self.smooth_scroll_tick = None;
+        } else {
+            self.on_next_frame(|window, cx| window.advance_smooth_scrolls(cx));
+        }
     }
 
     /// Schedule a frame to be drawn on the next animation frame.

@@ -107,6 +107,8 @@ Keeping ink and indexing the reviewed text makes handwriting searchable without 
 
 The vendored GPUI adds `Styled::backdrop_blur`. The Blade (Linux) and Direct3D 11 (Windows) renderers copy the region behind the element from the frame, reduce it by 2–8× depending on the radius, apply a separable Gaussian and composite it inside the element's rounded bounds; the swap chain is therefore created with copy usage. Box shadows are no longer drawn beneath the element that casts them, so translucent surfaces do not show their own shadow. Blur passes run only for frames containing blurred elements. The Windows HLSL is compiled by `fxc` during Windows builds only; the Linux host type-checks the Windows Rust code but not the shaders.
 
+Mouse-wheel scrolling eases over roughly 150 ms in scrollable panels (GPUI) and on the canvas, including Ctrl+wheel zoom; touchpad (pixel) deltas still follow the fingers directly. **Reduce motion** disables wheel easing.
+
 ## Rendering and persistence performance
 
 UI maintenance polls every 250 ms while idle. Native accessibility actions wake the UI through an asynchronous channel. Input, new animations and background requests made during rendering or virtual-row layout resume 16 ms polling, which continues during active interactions, animations, background work and update checks. Pending save receipts retain fast polling; failed saves and recognition awaiting a download choice do not keep an otherwise idle editor at frame rate. Dropping the view cancels its polling task.
