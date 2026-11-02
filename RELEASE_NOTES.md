@@ -1,11 +1,13 @@
-# Folio 0.1.9
+# Folio 0.2.0
 
-- Faster startup: library loading overlaps graphics initialization, and large databases use bounded read-ahead before the complete SQLite check. Validation and save durability stay unchanged. Starting Folio again activates the existing window for the same library.
-- Document actions, Export and Settings use compact groups with clearer outlines and section icons.
-- Pasted text and images stay selected, ready to move or resize. Without a pointer over the canvas, content lands in the visible view. Drawing outside a pasted selection returns to the previous ink tool.
-- Images retain their aspect ratio at corner handles and can stretch along one axis at side handles. Existing previews stay visible during moves, resizing and rotation, and the selection toolbar follows the dragged selection.
-- A stationary pen long press selects text or images. The pen cursor ring adapts to the background. Smart Ink gestures are enabled by default for new profiles, arrows accept irregular and multiple strokes, and erasers remove shapes they touch.
-- The math solver stays warm between requests, reducing repeated solve delays.
+- Frosted glass menus, dialogs, sidebars and bars, with adjustable opacity and blur in Settings → Appearance.
+- Smooth mouse-wheel scrolling across panels and the canvas, including Ctrl+wheel zoom. Menus, dialogs, sidebars and hover states animate; Reduce motion disables easing and transitions.
+- Consistent interface roundness, clearer settings cards and stronger blur behind Settings. New appearance defaults are 12 px corners, 70% glass opacity and 12 px blur; saved settings are preserved.
+- A redesigned math solver solves automatically as you type. Detected problems and the math recognition popup show rendered formulas by default, with an option to edit the LaTeX source.
+- Tabs follow the pointer along the bar while neighboring tabs move aside. The Home button stays pinned when the tab list scrolls.
+- The Documents page has a responsive grid, larger covers, whole-card and whole-row highlights, a compact Grid/List switch and clearer empty states. Clicking a sort option now applies it correctly.
+- Large infinite canvases keep readable, page-shaped thumbnails in the page sidebar and Documents page. Exports still include the full canvas content.
+- Ctrl++ zooms in, including the numeric keypad; Ctrl+= remains available.
 
 Windows x64 setup EXE and portable ZIP, Linux x86_64 Flatpak and desktop archive, checksums and complete corresponding source are published together. Updates remain signed and user-initiated.
 
