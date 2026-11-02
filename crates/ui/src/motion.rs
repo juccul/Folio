@@ -105,6 +105,28 @@ impl Motion {
         self.frame += 1;
         self.hovers.retain(|_, h| h.drawn == previous);
     }
+    /// Set a value immediately, without animating.
+    pub fn jump(&mut self, key: &str, value: f32) {
+        self.values.insert(
+            key.into(),
+            Tween {
+                from: value,
+                to: value,
+                started: Instant::now(),
+            },
+        );
+    }
+    /// Animate a value from `from` to `to`, starting now.
+    pub fn slide(&mut self, key: &str, from: f32, to: f32, reduced: bool) {
+        self.values.insert(
+            key.into(),
+            Tween {
+                from: if reduced { to } else { from },
+                to,
+                started: Instant::now(),
+            },
+        );
+    }
     pub fn panel(&mut self, key: &'static str, signature: Option<String>, reduced: bool) -> f32 {
         let now = Instant::now();
         let Some(signature) = signature else {

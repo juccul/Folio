@@ -232,6 +232,10 @@ pub struct NotesView {
     poll_task: Option<Task<()>>,
     poll_idle: bool,
     canvas_ease: CanvasEase,
+    /// A document tab being pressed or dragged along the tab bar.
+    tab_drag: Option<navigation::TabDrag>,
+    /// Each tab's left edge (without drag offsets) and width, as last laid out.
+    tab_bounds: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<Id, (f32, f32)>>>,
     /// Vector paths of typeset formulas, by formula.
     formula_cache: std::cell::RefCell<math_panel::FormulaCache>,
     /// The typeset recognized math in the review dialog.
@@ -397,6 +401,8 @@ impl NotesView {
             poll_task: None,
             poll_idle: false,
             canvas_ease: CanvasEase::default(),
+            tab_drag: None,
+            tab_bounds: Default::default(),
             formula_cache: Default::default(),
             review_typeset: Default::default(),
             review_editing: false,

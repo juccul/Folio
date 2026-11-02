@@ -1541,8 +1541,9 @@ impl NotesView {
             .items_center()
             .h_full()
             .gap_1();
-        tabs = tabs.child(
-            div()
+        // Home stays pinned at the start of the bar while the tabs scroll.
+        let home = div()
+                .flex_shrink_0()
                 .relative()
                 .h_full()
                 .flex()
@@ -1565,28 +1566,43 @@ impl NotesView {
                     .h(rems(1.75))
                     .min_h_0()
                     .border_0()
-                    .rounded(rems(0.5))
-                    .bg(rgb(if self.library_open {
-                        theme.chrome_active
-                    } else {
-                        theme.chrome
-                    }))
-                    .focus(move |s| s.bg(rgb(theme.selected)))
-                    .hover(move |s| s.bg(rgb(theme.chrome_active))),
-                ),
-        );
+                    .rounded(rems(theme.radius / 16.))
+                    .bg(theme.tint(if self.library_open { 1. } else { 0. }))
+                    .focus(move |s| s.bg(theme.tint(1.)))
+                    .hover(move |s| s.bg(theme.tint(1.))),
+                );
+        // While a tab is dragged it follows the pointer and the others slide
+        // out of its way.
+        let dragging = self.tab_drag.as_ref().filter(|drag| drag.moving);
+        let dragged = dragging.map(|drag| drag.id);
+        let targets: std::collections::HashMap<Id, f32> = dragging
+            .map(|drag| drag.offsets().into_iter().collect())
+            .unwrap_or_default();
+        let reduced = self.controller.settings.reduce_motion;
+        let now = Instant::now();
         for id in self.open_tabs.clone() {
             let Some(n) = self.controller.notes.iter().find(|n| n.id == id) else {
                 continue;
             };
             let selected = !self.library_open && id == active;
             let unsaved = self.controller.has_unsaved_changes(id);
-            let drag = super::navigation::TabDrag {
-                id,
-                title: n.title.clone(),
-                theme,
-                position: Point::default(),
+            let offset_key = format!("tab-offset-{id}");
+            let offset = {
+                let mut motion = self.motion.borrow_mut();
+                if dragged == Some(id) {
+                    let offset = targets.get(&id).copied().unwrap_or(0.);
+                    motion.jump(&offset_key, offset);
+                    offset
+                } else {
+                    motion.value(
+                        &offset_key,
+                        targets.get(&id).copied().unwrap_or(0.),
+                        reduced,
+                        now,
+                    )
+                }
             };
+            let bounds = self.tab_bounds.clone();
             let content = div()
                 .flex()
                 .items_center()
@@ -1614,21 +1630,33 @@ impl NotesView {
             } else {
                 format!("Open {}", n.title)
             };
-            tabs = tabs.child(
-                div()
+            let surface = div()
                     .id(SharedString::from(format!("tab-surface-{id}")))
                     .relative()
+                    .left(px(offset))
                     .h(rems(1.75))
-                    .rounded(rems(0.5))
-                    .hover(move |s| s.bg(rgb(theme.chrome_active)))
+                    .rounded(rems(theme.radius / 16.))
+                    .hover(move |s| s.bg(theme.tint(1.)))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .bg(rgb(if selected {
-                        theme.chrome_active
-                    } else {
-                        theme.chrome
-                    }))
+                    .bg(theme.tint(if selected { 1. } else { 0. }))
+                    .child(
+                        canvas(
+                            move |layout, _, _| {
+                                bounds.borrow_mut().insert(
+                                    id,
+                                    (
+                                        f32::from(layout.origin.x) - offset,
+                                        f32::from(layout.size.width),
+                                    ),
+                                );
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
                     // The outer tab consumes presses after its child controls
                     // have registered clicks and tab drags.
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1659,13 +1687,15 @@ impl NotesView {
                         )
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(move |_, event: &MouseDownEvent, w, cx| {
+                            cx.listener(move |this, event: &MouseDownEvent, w, cx| {
                                 if event.click_count == 2 {
                                     // Open after this press has focused the tab,
                                     // so the dialog's field keeps the focus.
                                     cx.on_next_frame(w, move |this, w, cx| {
                                         this.modal(Modal::RenameDocument(id), w, cx)
                                     });
+                                } else {
+                                    this.press_tab(id, f32::from(event.position.x), cx);
                                 }
                             }),
                         )
@@ -1675,27 +1705,11 @@ impl NotesView {
                         .pr_1()
                         .py_0()
                         .border_0()
-                        .rounded(rems(0.5))
+                        .rounded(rems(theme.radius / 16.))
                         .bg(transparent_black())
                         .text_color(rgb(theme.ink))
-                        .focus(move |s| s.bg(rgb(theme.selected)))
-                        .hover(|s| s.bg(transparent_black()))
-                        .on_drag(drag, |drag, position, _, cx| {
-                            cx.new(|_| {
-                                let mut drag = drag.clone();
-                                drag.position = position;
-                                drag
-                            })
-                        })
-                        .drag_over::<super::navigation::TabDrag>(move |s, _, _, _| {
-                            s.bg(rgb(theme.selected))
-                        })
-                        .on_drop(cx.listener(
-                            move |this, drag: &super::navigation::TabDrag, _, cx| {
-                                super::navigation::reorder_tabs(&mut this.open_tabs, drag.id, id);
-                                cx.notify();
-                            },
-                        )),
+                        .focus(move |s| s.bg(theme.tint(1.)))
+                        .hover(|s| s.bg(transparent_black())),
                     )
                     .child(
                         self.control(
@@ -1711,13 +1725,42 @@ impl NotesView {
                         .p_0()
                         .mr_1()
                         .border_0()
-                        .rounded(rems(0.5))
+                        .rounded(rems(theme.radius / 16.))
                         .bg(transparent_black())
-                        .focus(move |s| s.bg(rgb(theme.selected)))
+                        .focus(move |s| s.bg(theme.tint(1.)))
                         .hover(|s| s.bg(transparent_black())),
-                    ),
-            );
+                    );
+            tabs = if dragged == Some(id) {
+                // Lifted above its neighbors while it moves.
+                tabs.child(deferred(surface.glass(theme, theme.popover)).with_priority(1))
+            } else {
+                tabs.child(surface)
+            };
         }
+        let drag_events = self.tab_drag.is_some().then(|| {
+            let entity = cx.entity();
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    let moved = entity.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                        if phase.capture() {
+                            moved.update(cx, |this, cx| {
+                                this.drag_tab(f32::from(event.position.x), event.pressed_button, cx)
+                            });
+                        }
+                    });
+                    let released = entity.clone();
+                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                        if phase.capture() {
+                            released.update(cx, |this, cx| this.drop_tab(cx));
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_0()
+        });
         div()
             .h(rems(2.5))
             .flex_shrink_0()
@@ -1725,9 +1768,10 @@ impl NotesView {
             .items_center()
             .gap_1()
             .px_2()
-            .bg(rgb(theme.chrome))
             .border_b_1()
             .border_color(theme.border)
+            .children(drag_events)
+            .child(home)
             .child(tabs)
             .child(
                 div()
@@ -1749,10 +1793,10 @@ impl NotesView {
                         .p_0()
                         .min_h_0()
                         .border_0()
-                        .rounded(rems(0.5))
-                        .bg(rgb(theme.chrome))
-                        .focus(move |s| s.bg(rgb(theme.selected)))
-                        .hover(move |s| s.bg(rgb(theme.chrome_active))),
+                        .rounded(rems(theme.radius / 16.))
+                        .bg(transparent_black())
+                        .focus(move |s| s.bg(theme.tint(1.)))
+                        .hover(move |s| s.bg(theme.tint(1.))),
                     ),
             )
             .child(super::titlebar::drag_region())

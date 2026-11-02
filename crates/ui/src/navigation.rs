@@ -1,40 +1,90 @@
 //! Library context menus and tab presentation; mutations are ID-addressed controller commands.
 use super::*;
-#[derive(Clone)]
+/// A tab being dragged along the tab bar, as in web browsers: the tab
+/// follows the pointer and its neighbors make room for it.
+#[derive(Clone, Debug)]
 pub(super) struct TabDrag {
     pub id: Id,
-    pub title: String,
-    pub theme: Theme,
-    pub position: Point<Pixels>,
+    /// Pointer x when the tab was pressed, and now.
+    pub start: f32,
+    pub pointer: f32,
+    /// Set once the pointer has moved far enough to be a drag, not a click.
+    pub moving: bool,
+    /// Every tab's left edge and width when the drag started, in order.
+    pub slots: Vec<(Id, f32, f32)>,
 }
-impl Render for TabDrag {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().pl(self.position.x).pt(self.position.y).child(
-            div()
-                .px_4()
-                .py_2()
-                .rounded_md()
-                .border_1()
-                .border_color(self.theme.border)
-                .shadow_sm()
-                .bg(rgb(self.theme.popover))
-                .text_color(rgb(self.theme.ink))
-                .text_sm()
-                .child(self.title.clone()),
-        )
+impl TabDrag {
+    /// Movement before a press becomes a drag.
+    pub const THRESHOLD: f32 = 4.;
+    fn from(&self) -> Option<usize> {
+        self.slots.iter().position(|(id, _, _)| *id == self.id)
+    }
+    /// Where the dragged tab would drop, and its left edge, kept within the
+    /// tabs' extent.
+    pub fn target(&self) -> Option<(usize, f32)> {
+        let from = self.from()?;
+        let (_, left, width) = self.slots[from];
+        let first = self.slots[0].1;
+        let (_, last_left, last_width) = *self.slots.last()?;
+        let left = (left + self.pointer - self.start).clamp(first, (last_left + last_width - width).max(first));
+        // A neighbor moves aside once the dragged tab's leading edge passes
+        // its middle.
+        let center = |(_, l, w): &(Id, f32, f32)| l + w / 2.;
+        let passed_left = self.slots[..from].iter().filter(|s| center(s) > left).count();
+        let passed_right = self.slots[from + 1..]
+            .iter()
+            .filter(|s| center(s) < left + width)
+            .count();
+        Some((from - passed_left + passed_right, left))
+    }
+    /// Horizontal offset of each tab from its place: the dragged tab follows
+    /// the pointer, and tabs it has passed move over by its width.
+    pub fn offsets(&self) -> Vec<(Id, f32)> {
+        let (Some(from), Some((target, left))) = (self.from(), self.target()) else {
+            return Vec::new();
+        };
+        let (_, origin, width) = self.slots[from];
+        let gap = self
+            .slots
+            .windows(2)
+            .next()
+            .map_or(0., |pair| pair[1].1 - (pair[0].1 + pair[0].2));
+        let room = width + gap;
+        self.slots
+            .iter()
+            .enumerate()
+            .map(|(index, (id, _, _))| {
+                let offset = if index == from {
+                    left - origin
+                } else if from < target && index > from && index <= target {
+                    -room
+                } else if target < from && index >= target && index < from {
+                    room
+                } else {
+                    0.
+                };
+                (*id, offset)
+            })
+            .collect()
+    }
+    /// Where the dragged tab's left edge lands once it is dropped.
+    pub fn landing(&self) -> Option<f32> {
+        let from = self.from()?;
+        let (target, _) = self.target()?;
+        let width = self.slots[from].2;
+        Some(if target <= from {
+            self.slots[target].1
+        } else {
+            let (_, left, w) = self.slots[target];
+            left + w - width
+        })
     }
 }
-/// Moving across a neighbor swaps its position; repeated drops allow either direction.
-pub(super) fn reorder_tabs(tabs: &mut Vec<Id>, source: Id, target: Id) {
-    let (Some(from), Some(to)) = (
-        tabs.iter().position(|id| *id == source),
-        tabs.iter().position(|id| *id == target),
-    ) else {
-        return;
-    };
-    if from != to {
-        let id = tabs.remove(from);
-        tabs.insert(to, id);
+/// Move a tab to `index` among the open tabs.
+pub(super) fn move_tab(tabs: &mut Vec<Id>, id: Id, index: usize) {
+    if let Some(from) = tabs.iter().position(|tab| *tab == id) {
+        let tab = tabs.remove(from);
+        tabs.insert(index.min(tabs.len()), tab);
     }
 }
 pub(super) fn close_tab(tabs: &mut Vec<Id>, id: Id) -> Option<Id> {
@@ -43,6 +93,64 @@ pub(super) fn close_tab(tabs: &mut Vec<Id>, id: Id) -> Option<Id> {
     tabs.get(index).or_else(|| tabs.last()).copied()
 }
 impl NotesView {
+    /// Start a possible tab drag from a press on the tab.
+    pub(super) fn press_tab(&mut self, id: Id, x: f32, cx: &mut Context<Self>) {
+        let bounds = self.tab_bounds.borrow();
+        let slots = self
+            .open_tabs
+            .iter()
+            .filter_map(|tab| bounds.get(tab).map(|(left, width)| (*tab, *left, *width)))
+            .collect();
+        drop(bounds);
+        self.tab_drag = Some(TabDrag {
+            id,
+            start: x,
+            pointer: x,
+            moving: false,
+            slots,
+        });
+        cx.notify();
+    }
+    pub(super) fn drag_tab(&mut self, x: f32, button: Option<MouseButton>, cx: &mut Context<Self>) {
+        // A release outside the window ends the drag where it was.
+        if button != Some(MouseButton::Left) {
+            self.drop_tab(cx);
+            return;
+        }
+        let Some(drag) = &mut self.tab_drag else {
+            return;
+        };
+        drag.pointer = x;
+        if !drag.moving && (x - drag.start).abs() > TabDrag::THRESHOLD {
+            drag.moving = true;
+        }
+        if drag.moving {
+            cx.notify();
+        }
+    }
+    /// Drop a dragged tab into the place it was moved to; it settles into
+    /// its slot while its neighbors stay where they already are.
+    pub(super) fn drop_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(drag) = self.tab_drag.take() else {
+            return;
+        };
+        let complete = drag.slots.len() == self.open_tabs.len()
+            && drag.slots.iter().zip(&self.open_tabs).all(|((id, _, _), tab)| id == tab);
+        if drag.moving
+            && complete
+            && let (Some((target, left)), Some(landing)) = (drag.target(), drag.landing())
+        {
+            let reduced = self.controller.settings.reduce_motion;
+            let mut motion = self.motion.borrow_mut();
+            for (id, _) in drag.offsets() {
+                motion.jump(&format!("tab-offset-{id}"), 0.);
+            }
+            motion.slide(&format!("tab-offset-{}", drag.id), left - landing, 0., reduced);
+            drop(motion);
+            move_tab(&mut self.open_tabs, drag.id, target);
+        }
+        cx.notify();
+    }
     pub(super) fn close_document_tab(
         &mut self,
         id: Id,
@@ -351,7 +459,7 @@ impl NotesView {
 
 #[cfg(test)]
 mod tests {
-    use super::{close_tab, reorder_tabs};
+    use super::{TabDrag, close_tab, move_tab};
     use core::prelude::v1::test;
     use folio_document::Id;
     #[test]
@@ -364,16 +472,43 @@ mod tests {
         assert!(tabs.is_empty());
     }
     #[test]
-    fn tabs_reorder_in_both_directions_without_adding_or_losing_documents() {
+    fn dragged_tabs_follow_the_pointer_and_neighbors_make_room() {
         let [a, b, c] = [Id::new_v4(), Id::new_v4(), Id::new_v4()];
+        // Tabs 100, 60 and 80 wide, 4 apart.
+        let mut drag = TabDrag {
+            id: a,
+            start: 50.,
+            pointer: 50.,
+            moving: true,
+            slots: vec![(a, 0., 100.), (b, 104., 60.), (c, 168., 80.)],
+        };
+        assert_eq!(drag.target(), Some((0, 0.)));
+        assert_eq!(drag.offsets(), vec![(a, 0.), (b, 0.), (c, 0.)]);
+        // Past the middle of b: b moves left by a's width and the gap.
+        drag.pointer = 140.;
+        assert_eq!(drag.target(), Some((1, 90.)));
+        assert_eq!(drag.offsets(), vec![(a, 90.), (b, -104.), (c, 0.)]);
+        assert_eq!(drag.landing(), Some(64.));
+        // Far beyond the end, the tab stops at the last edge.
+        drag.pointer = 900.;
+        assert_eq!(drag.target(), Some((2, 148.)));
+        assert_eq!(drag.landing(), Some(148.));
         let mut tabs = vec![a, b, c];
-        reorder_tabs(&mut tabs, a, c);
+        move_tab(&mut tabs, a, 2);
         assert_eq!(tabs, vec![b, c, a]);
-        reorder_tabs(&mut tabs, a, b);
+        // Dragging the last tab left pushes the others right.
+        let drag = TabDrag {
+            id: a,
+            start: 200.,
+            pointer: 20.,
+            moving: true,
+            slots: vec![(b, 0., 60.), (c, 64., 80.), (a, 148., 100.)],
+        };
+        assert_eq!(drag.target(), Some((0, 0.)));
+        assert_eq!(drag.offsets(), vec![(b, 104.), (c, 104.), (a, -148.)]);
+        move_tab(&mut tabs, a, 0);
         assert_eq!(tabs, vec![a, b, c]);
-        reorder_tabs(&mut tabs, b, b);
-        assert_eq!(tabs, vec![a, b, c]);
-        reorder_tabs(&mut tabs, Id::new_v4(), a);
+        move_tab(&mut tabs, Id::new_v4(), 1);
         assert_eq!(tabs, vec![a, b, c]);
     }
 }
