@@ -75,10 +75,10 @@ impl NotesView {
         let mut card = div()
             .flex()
             .flex_col()
-            .rounded(px(theme.radius.max(6.)))
+            .rounded(px(theme.corner_md()))
             .border_1()
-            .border_color(theme.border)
-            .bg(rgb(theme.bg))
+            .border_color(theme.glass_edge())
+            .bg(theme.card())
             .overflow_hidden();
         for (index, row) in rows.into_iter().enumerate() {
             card = card.child(row.when(index > 0, |row| row.border_t_1().border_color(theme.border)));
@@ -131,10 +131,10 @@ impl NotesView {
             .items_center()
             .flex_shrink_0()
             .p(px(2.))
-            .rounded(px(theme.radius.max(6.)))
+            .rounded(px(theme.corner_md()))
             .border_1()
-            .border_color(theme.border)
-            .bg(rgb(theme.popover));
+            .border_color(theme.glass_edge())
+            .bg(theme.raised());
         for (id, label, sign) in [(less, less_label, -1.), (more, more_label, 1.)] {
             if sign > 0. {
                 stepper = stepper.child(
@@ -449,8 +449,7 @@ impl NotesView {
                 nav.flex_col().w(rems(10.)).p_3().border_r_1()
             })
             .when(compact, |nav| nav.flex_wrap().px_4().py_2().border_b_1())
-            .border_color(theme.border)
-            .bg(rgb(theme.sidebar))
+            .border_color(theme.glass_edge())
             .flex_shrink_0();
         for (key, target, kind) in [
             ("appearance", Section::Appearance, Icon::Palette),
@@ -480,11 +479,7 @@ impl NotesView {
                 )
                 .justify_start()
                 .py_1p5()
-                .bg(rgb(if section == target {
-                    theme.selected
-                } else {
-                    theme.sidebar
-                }))
+                .bg(theme.tint(if section == target { 1. } else { 0. }))
                 .when(!compact, |button| button.w_full())
                 .when(compact, |button| button.py_1()),
             );
@@ -529,7 +524,7 @@ impl NotesView {
             .occlude()
             .absolute()
             .inset_0()
-            .bg(rgba(0x00000070))
+            .scrim(theme)
             .flex()
             .items_center()
             .justify_center()
@@ -540,12 +535,11 @@ impl NotesView {
                     .h(px(
                         (f32::from(window.viewport_size().height) - 64.).min(720.)
                     ))
-                    .bg(rgb(theme.popover))
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded(px(12.))
+                    .relative()
+                    .top(px(12. * self.dialog_rise))
+                    .glass_dense(theme, theme.popover)
+                    .rounded(px(theme.corner_lg()))
                     .overflow_hidden()
-                    .shadow_lg()
                     .flex()
                     .flex_col()
                     .child(

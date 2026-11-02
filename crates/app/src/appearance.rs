@@ -181,16 +181,22 @@ pub struct Appearance {
     pub canvas_follows_theme: bool,
     pub canvas_color: Option<Color>,
     pub adapt_ink: bool,
+    /// Opacity of glass surfaces (menus, dialogs, sidebars and bars), 0–1.
+    pub glass_opacity: f32,
+    /// Blur radius behind glass surfaces, in logical pixels.
+    pub glass_blur: f32,
 }
 impl Default for Appearance {
     fn default() -> Self {
         Self {
             light: BTreeMap::new(),
             dark: BTreeMap::new(),
-            radius: 10.,
+            radius: 12.,
             canvas_follows_theme: true,
             canvas_color: None,
             adapt_ink: false,
+            glass_opacity: 0.7,
+            glass_blur: 12.,
         }
     }
 }
@@ -222,7 +228,24 @@ impl Appearance {
         if self.radius.is_finite() {
             self.radius.clamp(0., 20.)
         } else {
-            10.
+            12.
+        }
+    }
+    /// Opacity of glass surfaces. Fully transparent surfaces would make text
+    /// unreadable, so this stays at or above 30%.
+    pub fn glass_opacity(&self) -> f32 {
+        if self.glass_opacity.is_finite() {
+            self.glass_opacity.clamp(0.3, 1.)
+        } else {
+            0.7
+        }
+    }
+    /// Blur radius behind glass surfaces, in logical pixels.
+    pub fn glass_blur(&self) -> f32 {
+        if self.glass_blur.is_finite() {
+            self.glass_blur.clamp(0., 40.)
+        } else {
+            12.
         }
     }
 }
@@ -512,7 +535,13 @@ mod tests {
             settings.dark && settings.scratch_erase && settings.appearance.canvas_follows_theme
         );
         assert_eq!(settings.ui_scale, 1.2);
-        assert_eq!(settings.appearance.radius(), 10.);
+        assert_eq!(settings.appearance.radius(), 12.);
+        assert_eq!(settings.appearance.glass_opacity(), 0.7);
+        assert_eq!(settings.appearance.glass_blur(), 12.);
+        // Hand-edited values cannot make glass invisible or unbounded.
+        let edited: Appearance =
+            serde_json::from_str(r#"{"glass_opacity":0.0,"glass_blur":500.0}"#).unwrap();
+        assert_eq!((edited.glass_opacity(), edited.glass_blur()), (0.3, 40.));
     }
     #[test]
     fn appearance_changes_persist_without_restyling_document_objects() {

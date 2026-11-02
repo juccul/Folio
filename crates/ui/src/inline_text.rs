@@ -226,7 +226,6 @@ impl NotesView {
             .gap_1()
             .px_4()
             .py_1()
-            .bg(rgb(theme.surface))
             .border_b_1()
             .border_color(theme.border)
             .child(
@@ -321,7 +320,7 @@ impl NotesView {
         }
         let swatch = div()
             .size(px(14.))
-            .rounded(px(3.))
+            .rounded(px(theme.corner_sm()))
             .bg(rgb(text.color.rgb()));
         row = row.child(
             self.control(

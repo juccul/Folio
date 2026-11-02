@@ -1,4 +1,5 @@
 //! Reusable GPUI text input with UTF-16 IME ranges and grapheme-safe editing.
+use crate::theme::Glass;
 use gpui::{prelude::*, *};
 use std::{
     ops::Range,
@@ -932,7 +933,7 @@ impl Render for Field {
             .key_context("FolioField")
             .track_focus(&self.focus)
             .w_full()
-            .bg(rgb(theme.surface))
+            .bg(theme.raised())
             .text_color(rgb(theme.ink))
             .border_1()
             .border_color(theme.input)
@@ -1237,11 +1238,11 @@ impl Field {
                 .gap_6()
                 .px_3()
                 .py_1()
-                .rounded(px(6.))
+                .rounded(px(theme.radius))
                 .text_sm()
                 .when(!enabled, |s| s.opacity(0.4))
                 .when(enabled, |s| {
-                    s.cursor_pointer().hover(move |s| s.bg(rgb(theme.selected)))
+                    s.cursor_pointer().hover(move |s| s.bg(theme.tint(1.)))
                 })
                 .child(label)
                 .child(div().text_xs().text_color(rgb(theme.muted)).child(keys))
@@ -1253,11 +1254,8 @@ impl Field {
             .flex()
             .flex_col()
             .rounded(px(theme.radius))
-            .border_1()
-            .border_color(theme.border)
-            .bg(rgb(theme.popover))
+            .glass(theme, theme.popover)
             .text_color(rgb(theme.ink))
-            .shadow_md()
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.context_menu = None;
                 cx.notify();

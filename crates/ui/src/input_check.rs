@@ -5,7 +5,7 @@ impl NotesView {
         let running = check.running;
         let theme = Theme::new(&self.controller.settings);
         div().id("input-check-panel").px_4().py_2().flex().flex_col().gap_1()
-            .bg(rgb(theme.surface)).border_b_1().border_color(theme.border)
+            .border_b_1().border_color(theme.border)
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(div().text_sm().child(check.label()))
                 .child(self.button("reset-input-check", "Reset check", false, cx, |this, _, _| {

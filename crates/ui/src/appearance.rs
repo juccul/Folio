@@ -11,10 +11,10 @@ impl NotesView {
             .flex()
             .gap(px(2.))
             .p(px(2.))
-            .rounded(px(theme.radius.max(6.)))
+            .rounded(px(theme.corner_md()))
             .border_1()
-            .border_color(theme.border)
-            .bg(rgb(theme.popover))
+            .border_color(theme.glass_edge())
+            .bg(theme.raised())
             .flex_shrink_0();
         for (id, label, value) in [
             ("system-theme", "System", None),
@@ -53,7 +53,7 @@ impl NotesView {
                 .px_3()
                 .py_1()
                 .min_h(rems(1.875))
-                .bg(rgb(if selected { theme.selected } else { theme.popover })),
+                .bg(theme.tint(if selected { 1. } else { 0. })),
             );
         }
         let mut theme_rows = vec![
@@ -73,6 +73,40 @@ impl NotesView {
                         appearance.radius = (appearance.radius() + sign * 2.).clamp(0., 20.);
                     },
                 )),
+            self.settings_row(
+                "Glass opacity",
+                "How solid menus, dialogs, sidebars and bars appear.",
+            )
+            .child(self.settings_stepper(
+                ("glass-opacity-less", "Decrease glass opacity"),
+                ("glass-opacity-more", "Increase glass opacity"),
+                format!("{}%", (theme.glass_opacity * 100.).round() as u32),
+                cx,
+                |this, sign| {
+                    let appearance = &mut this.controller.settings.appearance;
+                    // Round to whole steps so repeated changes stay exact.
+                    let next = ((appearance.glass_opacity() * 20.).round() + sign) / 20.;
+                    appearance.glass_opacity = next.clamp(0.3, 1.);
+                },
+            )),
+            self.settings_row(
+                "Glass blur",
+                "How strongly content behind glass is blurred.",
+            )
+            .child(self.settings_stepper(
+                ("glass-blur-less", "Decrease glass blur"),
+                ("glass-blur-more", "Increase glass blur"),
+                if theme.glass_blur == 0. {
+                    "Off".into()
+                } else {
+                    format!("{} px", theme.glass_blur as u32)
+                },
+                cx,
+                |this, sign| {
+                    let appearance = &mut this.controller.settings.appearance;
+                    appearance.glass_blur = (appearance.glass_blur() + sign * 4.).clamp(0., 40.);
+                },
+            )),
             self.settings_row("Custom palette", "Fine-tune the colors of this theme.")
                 .child(self.settings_action(
                     "customize-theme",
@@ -102,7 +136,7 @@ impl NotesView {
                             .child(
                                 div()
                                     .size(rems(1.))
-                                    .rounded(px(3.))
+                                    .rounded(px(theme.corner_sm()))
                                     .bg(rgba(color.0))
                                     .border_1()
                                     .border_color(theme.border),
@@ -164,7 +198,7 @@ impl NotesView {
                             .child(
                                 div()
                                     .size(rems(1.))
-                                    .rounded(px(3.))
+                                    .rounded(px(theme.corner_sm()))
                                     .border_1()
                                     .border_color(theme.border)
                                     .bg(rgb(theme.canvas.paper)),

@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const DURATION: Duration = Duration::from_millis(160);
+const DURATION: Duration = Duration::from_millis(180);
 
 #[derive(Clone, Copy)]
 struct Tween {
@@ -116,8 +116,10 @@ impl Motion {
             self.panels.insert(key, signature);
             self.values.insert(
                 key.into(),
+                // Panels fade in from transparent as they slide into place.
+                // Switching library views only dips, so the grid never blinks out.
                 Tween {
-                    from: 0.35,
+                    from: if key == "library-motion" { 0.35 } else { 0. },
                     to: 1.,
                     started: now,
                 },

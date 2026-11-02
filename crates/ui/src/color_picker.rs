@@ -383,7 +383,7 @@ impl NotesView {
                 .min_w_0()
                 .p_0()
                 .overflow_hidden()
-                .rounded(px(4.))
+                .rounded(px(theme.corner_sm()))
                 // Color tracks must retain their exact pixels while pressed.
                 .active(|style| style.opacity(1.))
                 .on_mouse_down(
@@ -476,7 +476,7 @@ impl NotesView {
                     format!("Choose #{value:06X}"),
                     div()
                         .size(px(24.))
-                        .rounded(px(3.))
+                        .rounded(px(theme.corner_sm()))
                         .bg(rgb(value))
                         .when(selected, |swatch| swatch.border_2().border_color(rgb(theme.ring)))
                         .when(!selected, |swatch| swatch.border_1().border_color(theme.border))
@@ -506,7 +506,7 @@ impl NotesView {
                 .child(
                     div()
                         .size(px(28.))
-                        .rounded(px(3.))
+                        .rounded(px(theme.corner_sm()))
                         .border_1()
                         .border_color(theme.border)
                         .bg(rgb(theme.surface))

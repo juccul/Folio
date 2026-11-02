@@ -80,12 +80,8 @@ impl NotesView {
         let enabled = self.control_enabled(id.as_ref(), cx);
         let hover_id = id.clone();
         let hover = self.motion.borrow_mut().hover_value(id.as_ref());
-        let resting = if active {
-            theme.selected
-        } else {
-            theme.surface
-        };
-        let background = theme::mix(resting, theme.selected, hover);
+        // Controls sit on glass: clear at rest, tinted when hovered or active.
+        let background = theme.tint(if active { 1. } else { hover });
         let destructive = [
             "Delete",
             "Move to trash",
@@ -194,7 +190,7 @@ impl NotesView {
             } else {
                 theme.ink
             }))
-            .bg(rgb(background))
+            .bg(background)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if enabled {
                     if *hovered
@@ -221,7 +217,7 @@ impl NotesView {
             }))
             .active(move |s| {
                 if enabled {
-                    s.bg(rgb(theme.selected))
+                    s.bg(theme.tint(1.))
                         .border_color(theme.border)
                         .opacity(0.8)
                 } else {

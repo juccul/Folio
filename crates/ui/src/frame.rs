@@ -11,6 +11,12 @@ struct PanelOpacity {
     popover: f32,
     tool_menu: f32,
     pages: f32,
+    math: f32,
+}
+
+/// Vertical offset of a menu that drops into place as it fades in.
+fn rise(alpha: f32) -> f32 {
+    -6. * (1. - alpha)
 }
 
 impl Render for NotesView {
@@ -32,7 +38,18 @@ impl Render for NotesView {
         // Build order matters: controls register for accessibility as they are built.
         let center = self.canvas_area(cx);
         let mut root = self.root_element(cx);
+        if !self.library_open {
+            // Painted first, beneath the translucent bars and sidebars.
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgb(theme.selected))
+                    .child(self.canvas_layer(cx)),
+            );
+        }
         let mut body = div().relative().flex().flex_1().min_h_0().min_w_0();
+        let mut editor_top = None;
         if self.library_open {
             self.canvas_bounds = None;
             body = body.child(self.library_sidebar(cx)).child(
@@ -48,28 +65,36 @@ impl Render for NotesView {
                     })),
             );
         } else {
-            body = body.child(self.editor_column(center, alpha.pages, window, cx));
+            let (top, main) = self.editor_column(center, &alpha, window, cx);
+            editor_top = Some(top);
+            body = body.child(main);
         }
         let canvas_overlay = self.canvas_menu_overlay(window, cx);
         body = self.add_overlays(body, &alpha, window, cx);
         self.building_overlay = false;
-        root = root.child(self.document_tabs(window, cx));
+        // One glass bar for the title bar, editor toolbar and notices, so the
+        // blurred backdrop is continuous across its rows.
+        let mut top = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .glass_fill_from_edge(theme, theme.chrome, true)
+            .child(self.document_tabs(window, cx));
         self.store_workspace();
         if self.controller.recognition_pending && !self.controller.recognition_setup_needed() {
-            root = root.child(self.recognition_notice(cx));
+            top = top.child(self.recognition_notice(cx));
         }
         if let Some(error) = self.controller.save_error.clone() {
-            root = root.child(
-                notice_row(format!("Changes are not saved. {error}"))
-                    .bg(rgb(theme.surface))
-                    .child(
-                        self.button("retry-save", "Retry saving", false, cx, |this, _, _| {
-                            this.controller.retry_save()
-                        }),
-                    ),
-            );
+            top = top.child(notice_row(format!("Changes are not saved. {error}")).child(
+                self.button("retry-save", "Retry saving", false, cx, |this, _, _| {
+                    this.controller.retry_save()
+                }),
+            ));
         }
-        root = root.child(body).children(canvas_overlay);
+        root = root
+            .child(top.children(editor_top))
+            .child(body)
+            .children(canvas_overlay);
         if !self.library_open
             && !self.blocking_overlay()
             && (self.more_open || self.pen_settings || self.export_open)
@@ -78,6 +103,7 @@ impl Render for NotesView {
                 div()
                     .absolute()
                     .inset_0()
+                    .top(px(rise(alpha.popover)))
                     .child(self.popover(window, cx))
                     .opacity(alpha.popover),
             );
@@ -87,6 +113,7 @@ impl Render for NotesView {
                 div()
                     .absolute()
                     .inset_0()
+                    .top(px(rise(alpha.tool_menu)))
                     .child(self.tool_menu_panel(window, cx))
                     .opacity(alpha.tool_menu),
             );
@@ -97,7 +124,7 @@ impl Render for NotesView {
                     .absolute()
                     .inset_0()
                     .occlude()
-                    .bg(rgba(0x00000070))
+                    .scrim(theme)
                     .flex()
                     .items_center()
                     .justify_center()
@@ -106,8 +133,8 @@ impl Render for NotesView {
                     .child(
                         div()
                             .p_6()
-                            .rounded(px(theme.radius))
-                            .bg(rgb(theme.surface))
+                            .rounded(px(theme.corner_lg()))
+                            .glass(theme, theme.popover)
                             .text_sm()
                             .child("Saving, backing up and preparing the update…"),
                     ),
@@ -212,6 +239,11 @@ impl NotesView {
                 open(!self.library_open && self.pages_open),
                 reduced,
             ),
+            math: motion.panel(
+                "math-motion",
+                open(!self.library_open && self.controller.math_session.is_some()),
+                reduced,
+            ),
         }
     }
     /// Release GPU and decoded resources for views that are not shown.
@@ -307,7 +339,35 @@ impl NotesView {
             });
         }
     }
-    /// The document canvas: paints the page and routes pointer input.
+    /// The page, painted across the whole editor so that it continues beneath
+    /// the glass bars and sidebars. Input, layout and the viewport stay
+    /// relative to the visible canvas area, measured by `canvas_element`.
+    fn canvas_layer(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let entity = cx.entity();
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, cx| {
+                entity.update(cx, |view, cx| {
+                    // The visible area is measured during prepaint, which
+                    // completes for the whole window before painting starts.
+                    let Some(area) = view.canvas_bounds else {
+                        return;
+                    };
+                    let editing = view.inline_text.as_ref().map(|e| e.id);
+                    let viewport = &mut view.controller.session_mut().viewport;
+                    let pan = viewport.pan;
+                    viewport.pan.x += f32::from(area.origin.x - bounds.origin.x);
+                    viewport.pan.y += f32::from(area.origin.y - bounds.origin.y);
+                    view.painter
+                        .paint(&mut view.controller, bounds, editing, window, cx);
+                    view.controller.session_mut().viewport.pan = pan;
+                    view.paint_region(area, window);
+                });
+            },
+        )
+        .size_full()
+    }
+    /// The visible document canvas area: measures it and routes pointer input.
     fn canvas_element(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let entity = cx.entity();
         let paint_entity = entity.clone();
@@ -316,12 +376,8 @@ impl NotesView {
                 entity.update(cx, |view, cx| view.sync_canvas_bounds(bounds, cx));
                 window.insert_hitbox(bounds, HitboxBehavior::Normal)
             },
-            move |bounds, hitbox, window, cx| {
+            move |_, hitbox, window, cx| {
                 paint_entity.update(cx, |view, cx| {
-                    let editing = view.inline_text.as_ref().map(|e| e.id);
-                    view.painter
-                        .paint(&mut view.controller, bounds, editing, window, cx);
-                    view.paint_region(bounds, window);
                     view.diagnostics.painted();
                     view.resume_poll(cx);
                     // The canvas paints its own pen cursor; elsewhere the pen
@@ -481,7 +537,6 @@ impl NotesView {
             .flex_1()
             .min_h_0()
             .overflow_hidden()
-            .bg(rgb(theme.selected))
             .child(canvas)
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 let target = this.controller.requested_note();
@@ -742,13 +797,16 @@ impl NotesView {
         cx.notify();
     }
     /// The editor: header, notices, the page canvas with its side panels, and footer.
+    /// The editor: the header and notices for the top glass bar, and the page
+    /// canvas with its side panels and footer.
     fn editor_column(
         &mut self,
         center: Div,
-        pages_alpha: f32,
+        alpha: &PanelOpacity,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> (Div, Div) {
+        let theme = Theme::new(&self.controller.settings);
         let header = self.editor_header(window, cx);
         let formatting = if self.controller.read_only() {
             None
@@ -762,21 +820,39 @@ impl NotesView {
         let preview_notice = self.preview_notice(cx);
         let mut workspace = div().relative().flex().flex_1().min_h_0().min_w_0();
         if self.pages_open {
+            // Slides in from the left edge without moving the page.
             workspace = workspace.child(
                 div()
+                    .relative()
+                    .left(px(-24. * (1. - alpha.pages)))
                     .flex()
                     .h_full()
                     .child(self.pages_panel(cx))
-                    .opacity(pages_alpha),
+                    .opacity(alpha.pages),
             );
         }
         workspace = workspace.child(center);
         if self.controller.math_session.is_some() {
             let floating =
                 f32::from(window.viewport_size().width) / self.controller.settings.ui_scale < 1100.;
-            workspace = workspace.child(self.math_panel(window, cx).when(floating, |panel| {
-                panel.absolute().right_0().top_0().bottom_0().shadow_lg()
-            }));
+            let panel = self
+                .math_panel(window, cx)
+                .opacity(alpha.math)
+                .when(floating, |panel| {
+                    panel
+                        .absolute()
+                        .right_0()
+                        .top_0()
+                        .bottom_0()
+                        .border_l_1()
+                        .border_color(theme.glass_edge())
+                });
+            // Slides in from the right edge.
+            workspace = workspace.child(if floating {
+                panel.mr(px(-32. * (1. - alpha.math)))
+            } else {
+                panel.relative().left(px(32. * (1. - alpha.math)))
+            });
         }
         let region_notice = self.region_selection.is_some().then(|| {
             notice_bar()
@@ -793,10 +869,7 @@ impl NotesView {
             .check
             .is_some()
             .then(|| self.input_check_panel(cx));
-        div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
+        let top = div()
             .flex()
             .flex_col()
             .child(header)
@@ -806,9 +879,16 @@ impl NotesView {
             .children(region_notice)
             .children(input_check)
             .children(formatting)
-            .children(preview_notice)
+            .children(preview_notice);
+        let main = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .flex_col()
             .child(workspace)
-            .child(footer)
+            .child(footer);
+        (top, main)
     }
     fn trash_notice(&self, cx: &mut Context<Self>) -> Option<Div> {
         self.controller.read_only().then(|| {
@@ -975,6 +1055,7 @@ impl NotesView {
                 div()
                     .absolute()
                     .inset_0()
+                    .top(px(rise(alpha.menu)))
                     .child(self.document_menu_panel(window, cx))
                     .opacity(alpha.menu),
             );
@@ -991,6 +1072,7 @@ impl NotesView {
                 div()
                     .absolute()
                     .inset_0()
+                    .top(px(rise(alpha.menu)))
                     .child(self.folder_menu_panel(window, cx))
                     .opacity(alpha.menu),
             );
@@ -1001,6 +1083,7 @@ impl NotesView {
             if self.building_overlay {
                 self.accessibility.begin();
             }
+            self.dialog_rise = 1. - alpha.settings;
             body = body.child(
                 div()
                     .absolute()
@@ -1014,6 +1097,7 @@ impl NotesView {
             if self.building_overlay {
                 self.accessibility.begin();
             }
+            self.dialog_rise = 1. - alpha.modal;
             body = body.child(
                 div()
                     .absolute()
@@ -1027,6 +1111,7 @@ impl NotesView {
             if self.building_overlay {
                 self.accessibility.begin();
             }
+            self.dialog_rise = 1. - alpha.help;
             body = body.child(
                 div()
                     .absolute()
@@ -1054,7 +1139,7 @@ impl NotesView {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x00000070))
+                    .scrim(theme)
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1062,8 +1147,8 @@ impl NotesView {
                         div()
                             .w(px(530.))
                             .p_6()
-                            .bg(rgb(theme.surface))
-                            .rounded(px(theme.radius + 4.))
+                            .glass(theme, theme.popover)
+                            .rounded(px(theme.corner_lg()))
                             .flex()
                             .flex_col()
                             .gap_4()

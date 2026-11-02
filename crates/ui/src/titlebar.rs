@@ -93,8 +93,7 @@ impl NotesView {
                 .h(px(30.))
                 .min_h(px(30.))
                 .p_0()
-                .flex_shrink_0()
-                .bg(rgb(theme.chrome)),
+                .flex_shrink_0(),
             );
         }
         if capabilities.maximize {
@@ -126,8 +125,7 @@ impl NotesView {
                 .h(px(30.))
                 .min_h(px(30.))
                 .p_0()
-                .flex_shrink_0()
-                .bg(rgb(theme.chrome)),
+                .flex_shrink_0(),
             );
         }
         controls.child(
@@ -151,8 +149,7 @@ impl NotesView {
             .h(px(30.))
             .min_h(px(30.))
             .p_0()
-            .flex_shrink_0()
-            .bg(rgb(theme.chrome)),
+            .flex_shrink_0(),
         )
     }
 }

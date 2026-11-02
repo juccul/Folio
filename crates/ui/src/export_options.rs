@@ -207,7 +207,7 @@ impl NotesView {
             .justify_center()
             .overflow_hidden()
             .rounded(px(theme.radius))
-            .bg(rgb(theme.surface))
+            .bg(theme.raised())
             .border_1()
             .border_color(theme.border);
         if let Some(image) = &self.export_options.image {

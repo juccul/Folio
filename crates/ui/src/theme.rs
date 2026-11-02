@@ -3,7 +3,9 @@ use folio_app::{
     Settings,
     appearance::{ThemeColor, ThemeToken},
 };
-use gpui::{Hsla, Rgba, rgb, rgba};
+use gpui::{
+    BoxShadow, Hsla, Rgba, Styled, linear_color_stop, linear_gradient, point, px, rgb, rgba,
+};
 use std::borrow::Cow;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CanvasTheme {
@@ -122,6 +124,11 @@ pub struct Theme {
     pub input: Rgba,
     pub radius: f32,
     pub canvas: CanvasTheme,
+    pub dark: bool,
+    /// Opacity of glass surfaces, 0.3–1.
+    pub glass_opacity: f32,
+    /// Blur radius behind glass surfaces, in logical pixels; 0 disables it.
+    pub glass_blur: f32,
 }
 fn native(color: ThemeColor) -> Rgba {
     rgba(color.0)
@@ -229,9 +236,138 @@ impl Theme {
                 foreground,
                 adapt_ink: settings.appearance.adapt_ink,
             },
+            dark: settings.dark,
+            glass_opacity: settings.appearance.glass_opacity(),
+            glass_blur: settings.appearance.glass_blur(),
+        }
+    }
+    /// Corner radius of cards and floating menus that contain controls, so
+    /// the controls' corners stay concentric with theirs.
+    pub fn corner_md(self) -> f32 {
+        if self.radius > 0. { self.radius + 2. } else { 0. }
+    }
+    /// Corner radius of dialogs.
+    pub fn corner_lg(self) -> f32 {
+        if self.radius > 0. { self.radius + 4. } else { 0. }
+    }
+    /// Corner radius of small marks: swatches, hints and previews.
+    pub fn corner_sm(self) -> f32 {
+        self.radius * 0.5
+    }
+    /// The highlight of a hovered or active control on glass, `amount` from
+    /// clear (0) to fully highlighted (1). A translucent wash of the text
+    /// color, so highlights never read as solid blocks over glass.
+    pub fn tint(self, amount: f32) -> Rgba {
+        let strength = if self.dark { 0x24 } else { 0x16 };
+        rgba((self.ink << 8) | (amount.clamp(0., 1.) * strength as f32).round() as u32)
+    }
+    /// A raised area within a glass surface, such as a card or input.
+    pub fn raised(self) -> Rgba {
+        if self.dark {
+            rgba(0xffffff0d)
+        } else {
+            rgba(0xffffff8c)
+        }
+    }
+    /// `color` at the glass opacity.
+    pub fn translucent(self, color: u32) -> Rgba {
+        self.at_opacity(color, self.glass_opacity)
+    }
+    fn at_opacity(self, color: u32, opacity: f32) -> Rgba {
+        rgba((color << 8) | (opacity.clamp(0., 1.) * 255.).round() as u32)
+    }
+    /// A card within a glass dialog: nearly solid and slightly lifted, so
+    /// grouped settings stay easy to read over the blurred backdrop.
+    pub fn card(self) -> Rgba {
+        let lift = if self.dark { 0.05 } else { 0. };
+        self.at_opacity(mix(self.surface, self.ink, lift), 0.94)
+    }
+    /// The hairline edge of glass: a faint light rim in dark mode and a faint
+    /// shade in light mode, so glass stays distinct over similar content.
+    pub fn glass_edge(self) -> Rgba {
+        if self.dark {
+            rgba(0xffffff1f)
+        } else {
+            rgba(0x0000001a)
         }
     }
 }
+
+/// Frosted-glass surfaces: a translucent fill over a blurred backdrop.
+pub trait Glass: Styled + Sized {
+    /// A docked glass surface, such as a bar or sidebar.
+    fn glass_fill(self, theme: Theme, base: u32) -> Self {
+        self.glass_fill_at(theme, base, theme.glass_opacity, theme.glass_blur)
+    }
+    /// A glass fill at an explicit opacity and blur radius.
+    fn glass_fill_at(self, theme: Theme, base: u32, opacity: f32, blur: f32) -> Self {
+        let surface = self.bg(theme.at_opacity(base, opacity));
+        if blur > 0. {
+            surface.backdrop_blur(px(blur))
+        } else {
+            surface
+        }
+    }
+    /// A large floating glass surface holding a lot of text, such as the
+    /// settings dialog: denser and more strongly blurred than menus, while
+    /// still following the glass settings.
+    fn glass_dense(self, theme: Theme, base: u32) -> Self {
+        let opacity = theme.glass_opacity + (1. - theme.glass_opacity) * 0.35;
+        self.glass_fill_at(theme, base, opacity, theme.glass_blur * 1.75)
+            .glass_frame(theme)
+    }
+    /// A glass bar docked to a window edge: most opaque along that edge,
+    /// fading to the glass opacity away from it. `from_top` selects the edge.
+    fn glass_fill_from_edge(self, theme: Theme, base: u32, from_top: bool) -> Self {
+        let edge = theme.glass_opacity + (1. - theme.glass_opacity) * 0.75;
+        let surface = self.bg(linear_gradient(
+            if from_top { 180. } else { 0. },
+            linear_color_stop(theme.at_opacity(base, edge), 0.),
+            linear_color_stop(theme.translucent(base), 1.),
+        ));
+        if theme.glass_blur > 0. {
+            surface.backdrop_blur(px(theme.glass_blur))
+        } else {
+            surface
+        }
+    }
+    /// The dimmed, softly blurred backdrop behind a dialog.
+    fn scrim(self, theme: Theme) -> Self {
+        let dim = self.bg(rgba(if theme.dark { 0x00000066 } else { 0x0000003d }));
+        if theme.glass_blur > 0. {
+            dim.backdrop_blur(px(theme.glass_blur * 0.4))
+        } else {
+            dim
+        }
+    }
+    /// A floating glass surface, such as a menu or dialog, with a hairline
+    /// edge and a soft shadow.
+    fn glass(self, theme: Theme, base: u32) -> Self {
+        self.glass_fill(theme, base).glass_frame(theme)
+    }
+    /// The hairline edge and soft shadow of floating glass.
+    fn glass_frame(self, theme: Theme) -> Self {
+        // Black at this alpha.
+        let shadow: u32 = if theme.dark { 0x66 } else { 0x2e };
+        self.border_1()
+            .border_color(theme.glass_edge())
+            .shadow(vec![
+                BoxShadow {
+                    color: rgba(shadow).into(),
+                    offset: point(px(0.), px(12.)),
+                    blur_radius: px(32.),
+                    spread_radius: px(-4.),
+                },
+                BoxShadow {
+                    color: rgba(shadow / 2).into(),
+                    offset: point(px(0.), px(2.)),
+                    blur_radius: px(6.),
+                    spread_radius: px(0.),
+                },
+            ])
+    }
+}
+impl<T: Styled> Glass for T {}
 pub fn mix(a: u32, b: u32, amount: f32) -> u32 {
     let channel = |shift: u32| {
         let a = ((a >> shift) & 255) as f32;

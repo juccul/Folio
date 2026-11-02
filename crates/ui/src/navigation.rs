@@ -134,11 +134,8 @@ impl NotesView {
             .flex()
             .flex_col()
             .gap_1()
-            .rounded(px(theme.radius + 2.))
-            .bg(rgb(theme.popover))
-            .border_1()
-            .border_color(theme.border)
-            .shadow_md()
+            .rounded(px(theme.corner_md()))
+            .glass(theme, theme.popover)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.document_menu = None;
                 cx.notify();

@@ -54,7 +54,7 @@ use gpui::{prelude::*, *};
 use icons::{Icon, icon};
 pub use painting::CanvasFrame;
 use std::time::{Duration, Instant};
-use theme::Theme;
+use theme::{Glass, Theme};
 
 /// A mouse-wheel scroll or zoom of the canvas still easing toward its target.
 #[derive(Default)]
@@ -251,6 +251,8 @@ pub struct NotesView {
     _appearance_subscription: Subscription,
     motion: std::cell::RefCell<motion::Motion>,
     building_overlay: bool,
+    /// How far the dialog being built still has to rise into place, 0–1.
+    dialog_rise: f32,
     /// The window is closing after an explicit save or discard choice.
     closing: bool,
     settings_open: bool,
@@ -408,6 +410,7 @@ impl NotesView {
             _appearance_subscription: appearance_subscription,
             motion: Default::default(),
             building_overlay: false,
+            dialog_rise: 0.,
             closing: false,
             settings_open: false,
             settings_section: settings::Section::default(),
@@ -1820,11 +1823,8 @@ impl NotesView {
             .top(px(y))
             .w(px(width))
             .p_3()
-            .rounded(px(theme.radius))
-            .border_1()
-            .border_color(theme.border)
-            .bg(rgb(theme.popover))
-            .shadow_sm()
+            .rounded(px(theme.corner_md()))
+            .glass(theme, theme.popover)
             .id("editor-popover")
             .max_h(px((f32::from(viewport.height) - y - 40.).max(1.)))
             .overflow_y_scroll()
@@ -2390,7 +2390,7 @@ impl NotesView {
             .occlude()
             .absolute()
             .inset_0()
-            .bg(rgba(0x00000070))
+            .scrim(theme)
             .flex()
             .justify_center()
             // Pickers stay anchored while results load so the query field does
@@ -2402,16 +2402,15 @@ impl NotesView {
                     .flex_shrink_0()
                     .w(px(if wide { 660. } else { 520. }))
                     .max_w_full()
+                    .relative()
+                    .top(px(12. * self.dialog_rise))
                     .max_h(px(max_height))
                     .p_6()
                     .flex()
                     .flex_col()
                     .gap_4()
-                    .bg(rgb(theme.popover))
-                    .rounded(px(theme.radius + 4.))
-                    .border_1()
-                    .border_color(theme.border)
-                    .shadow_sm()
+                    .glass(theme, theme.popover)
+                    .rounded(px(theme.corner_lg()))
                     .child(
                         // A block scroll container leaves the text field's
                         // percentage width unresolved when wrapped text

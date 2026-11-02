@@ -46,7 +46,7 @@ impl Render for Hint {
         div()
             .px_3()
             .py_2()
-            .rounded_md()
+            .rounded(px(self.1.radius))
             .shadow_md()
             .text_xs()
             .bg(rgb(self.1.ink))
@@ -344,7 +344,7 @@ impl NotesView {
             && !self.more_open
             && !self.export_open
     }
-    fn icon_button(
+    pub(super) fn icon_button(
         &self,
         id: impl Into<SharedString>,
         label: impl Into<SharedString>,
@@ -381,11 +381,6 @@ impl NotesView {
         action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
-        let resting = if active {
-            super::theme::mix(theme.selected, theme.ink, 0.06)
-        } else {
-            theme.chrome
-        };
         let hint = if id == "eraser" {
             "Eraser · E · Click again for modes and size"
         } else {
@@ -404,12 +399,12 @@ impl NotesView {
         .min_h_0()
         .flex_shrink_0()
         .p_0()
-        .rounded(rems(theme.radius.min(7.) / 16.))
-        .bg(rgb(super::theme::mix(
-            resting,
-            theme.selected,
-            self.motion.borrow_mut().hover_value(id),
-        )))
+        .rounded(rems(theme.radius / 16.))
+        .bg(theme.tint(if active {
+            1.
+        } else {
+            self.motion.borrow_mut().hover_value(id)
+        }))
         .when(self.toolbar_hints_enabled(), |button| {
             button.tooltip(move |_, cx| cx.new(|_| Hint(hint.into(), theme)).into())
         })
@@ -421,7 +416,7 @@ impl NotesView {
             .h(rems(1.125))
             .mx(rems(0.3125))
             .flex_shrink_0()
-            .bg(rgb(super::theme::mix(theme.chrome, theme.ink, 0.16)))
+            .bg(rgba((theme.ink << 8) | 0x29))
     }
     fn page_controls_group(&self) -> Div {
         let theme = Theme::new(&self.controller.settings);
@@ -432,10 +427,10 @@ impl NotesView {
             .flex_shrink_0()
             .items_center()
             .gap(rems(0.1875))
-            .rounded(rems(theme.radius.min(9.) / 16.))
-            .bg(rgb(super::theme::mix(theme.chrome, theme.ink, 0.045)))
+            .rounded(rems(theme.corner_md() / 16.))
+            .bg(theme.raised())
             .border_1()
-            .border_color(rgb(super::theme::mix(theme.chrome, theme.ink, 0.125)))
+            .border_color(theme.glass_edge())
     }
     fn page_control_button(
         &self,
@@ -448,15 +443,12 @@ impl NotesView {
     ) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
         self.editor_button(id, label, kind, active, cx, action)
-            .bg(rgb(super::theme::mix(
-                if active {
-                    theme.selected
-                } else {
-                    super::theme::mix(theme.chrome, theme.ink, 0.045)
-                },
-                theme.selected,
-                self.motion.borrow_mut().hover_value(id),
-            )))
+            // The group supplies the surface; buttons only highlight.
+            .bg(theme.tint(if active {
+                1.
+            } else {
+                self.motion.borrow_mut().hover_value(id)
+            }))
     }
     fn folder_row(
         &self,
@@ -515,12 +507,8 @@ impl NotesView {
             .items_center()
             .ml(px(depth as f32 * 12.))
             .rounded(px(theme.radius))
-            .bg(rgb(if active {
-                theme.selected
-            } else {
-                theme.sidebar
-            }))
-            .hover(move |s| s.bg(rgb(theme.selected)))
+            .bg(theme.tint(if active { 1. } else { 0. }))
+            .hover(move |s| s.bg(theme.tint(1.)))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, w, cx| {
@@ -577,7 +565,7 @@ impl NotesView {
                 .p_0()
                 .mr_1()
                 .bg(transparent_black())
-                .hover(move |s| s.bg(rgb(theme.surface))),
+                .hover(move |s| s.bg(theme.tint(1.))),
             );
         self.folder_drop_target(row, Some(id), cx)
     }
@@ -619,12 +607,8 @@ impl NotesView {
                 .h(px(44.))
                 .justify_start()
                 .px_3()
-                .bg(rgb(if active {
-                    theme.selected
-                } else {
-                    theme.sidebar
-                }))
-                .hover(move |s| s.bg(rgb(theme.selected)))
+                .bg(theme.tint(if active { 1. } else { 0. }))
+                .hover(move |s| s.bg(theme.tint(1.)))
                 .when(filter == NoteFilter::All, |s| {
                     self.folder_drop_target(s, None, cx).tooltip(move |_, cx| {
                         cx.new(|_| Hint("Drop here to remove from its folder".into(), theme))
@@ -714,7 +698,7 @@ impl NotesView {
             .flex()
             .flex_col()
             .gap_5()
-            .bg(rgb(theme.sidebar))
+            .glass_fill(theme, theme.sidebar)
             .border_r_1()
             .border_color(theme.border)
             .pt_5()
@@ -742,8 +726,7 @@ impl NotesView {
                             cx,
                             |this, w, cx| this.modal(Modal::Notebook(None), w, cx),
                         )
-                        .size(rems(1.875))
-                        .bg(rgb(theme.sidebar)),
+                        .size(rems(1.875)),
                     ),
             )
             .child(folders)
@@ -772,20 +755,16 @@ impl NotesView {
                             |this, w, _| this.open_settings(w),
                         )
                         .flex_1()
-                        .justify_start()
-                        .bg(rgb(theme.sidebar)),
+                        .justify_start(),
                     )
-                    .child(
-                        self.icon_button(
-                            "help",
-                            "Keyboard shortcuts",
-                            Icon::Help,
-                            false,
-                            cx,
-                            |this, w, _| this.open_help(w),
-                        )
-                        .bg(rgb(theme.sidebar)),
-                    ),
+                    .child(self.icon_button(
+                        "help",
+                        "Keyboard shortcuts",
+                        Icon::Help,
+                        false,
+                        cx,
+                        |this, w, _| this.open_help(w),
+                    )),
             )
     }
     fn library_items(
@@ -1812,11 +1791,11 @@ impl NotesView {
             .flex_shrink_0()
             .px_2()
             .py_0()
-            .rounded(rems(theme.radius.min(7.) / 16.))
+            .rounded(rems(theme.radius / 16.))
             .border_1()
             .border_color(theme.border)
-            .bg(rgb(if active { theme.selected } else { theme.chrome }))
-            .hover(move |s| s.bg(rgb(theme.selected)))
+            .bg(theme.tint(if active { 1. } else { 0. }))
+            .hover(move |s| s.bg(theme.tint(1.)))
             .when(self.toolbar_hints_enabled(), |button| {
                 button.tooltip(move |_, cx| cx.new(|_| Hint(hint.clone(), theme)).into())
             })
@@ -1845,13 +1824,9 @@ impl NotesView {
                 .id("pen-tool-group")
                 .flex()
                 .items_center()
-                .rounded(rems(theme.radius.min(7.) / 16.))
-                .bg(rgb(if selected_pen {
-                    theme.chrome_active
-                } else {
-                    theme.chrome
-                }))
-                .hover(move |s| s.bg(rgb(theme.selected)))
+                .rounded(rems(theme.radius / 16.))
+                .bg(theme.tint(if selected_pen { 1. } else { 0. }))
+                .hover(move |s| s.bg(theme.tint(1.)))
                 .child(
                     self.editor_button(
                         "pen",
@@ -1897,13 +1872,9 @@ impl NotesView {
                 .id("selection-tool-group")
                 .flex()
                 .items_center()
-                .rounded(rems(theme.radius.min(7.) / 16.))
-                .bg(rgb(if selected_selection {
-                    theme.chrome_active
-                } else {
-                    theme.chrome
-                }))
-                .hover(move |s| s.bg(rgb(theme.selected)))
+                .rounded(rems(theme.radius / 16.))
+                .bg(theme.tint(if selected_selection { 1. } else { 0. }))
+                .hover(move |s| s.bg(theme.tint(1.)))
                 .child(
                     self.editor_button(
                         "select-tool",
@@ -2079,7 +2050,6 @@ impl NotesView {
             .flex()
             .items_center()
             .gap(rems(0.625))
-            .bg(rgb(theme.chrome))
             .border_b_1()
             .border_color(theme.border)
             .child(navigation)
@@ -2153,7 +2123,7 @@ impl NotesView {
                             )
                             .on_drag(PageDrag(page_id), |drag, _, _, cx| cx.new(|_| drag.clone()))
                             .drag_over::<PageDrag>(move |s, _, _, _| {
-                                s.border_color(rgb(theme.accent)).bg(rgb(theme.selected))
+                                s.border_color(rgb(theme.accent)).bg(theme.tint(1.))
                             })
                             .on_drop(cx.listener(move |this, drag: &PageDrag, _, _| {
                                 this.controller.reorder_page(drag.0, page_id)
@@ -2161,12 +2131,12 @@ impl NotesView {
                             .p_3()
                             .w_full()
                             .border_2()
-                            .border_color(rgb(if active { theme.accent } else { theme.sidebar }))
-                            .bg(rgb(if active {
-                                theme.selected
+                            .border_color(if active {
+                                rgb(theme.accent)
                             } else {
-                                theme.sidebar
-                            })),
+                                transparent_black().into()
+                            })
+                            .bg(theme.tint(if active { 1. } else { 0. })),
                         ),
                     );
                 }
@@ -2182,7 +2152,7 @@ impl NotesView {
             .w(rems(11.5))
             .h_full()
             .flex_shrink_0()
-            .bg(rgb(theme.sidebar))
+            .glass_fill(theme, theme.sidebar)
             .border_r_1()
             .border_color(theme.border)
             .flex()
@@ -2227,8 +2197,7 @@ impl NotesView {
                             cx,
                             |this, _, _| this.pages_open = false,
                         )
-                        .size(rems(1.75))
-                        .bg(rgb(theme.sidebar)),
+                        .size(rems(1.75)),
                     ),
             )
             .child(rows)
@@ -2263,7 +2232,7 @@ impl NotesView {
             .flex()
             .items_center()
             .gap_2()
-            .bg(rgb(theme.surface))
+            .glass_fill_from_edge(theme, theme.surface, false)
             .border_t_1()
             .border_color(theme.border)
             .child(

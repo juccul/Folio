@@ -79,10 +79,8 @@ impl NotesView {
             .p_1()
             .flex()
             .flex_col()
-            .rounded(px(10.))
-            .bg(rgb(theme.popover))
-            .border_1()
-            .border_color(theme.border)
+            .rounded(px(theme.corner_md()))
+            .glass(theme, theme.popover)
             .shadow_md();
         let item = |this: &Self,
                     id: &'static str,
@@ -117,9 +115,9 @@ impl NotesView {
             .px_3()
             .py_2()
             .min_h(rems(2.5))
-            .rounded(px(6.))
+            .rounded(px(theme.radius))
             .bg(transparent_black())
-            .hover(move |s| s.bg(rgb(theme.selected)))
+            .hover(move |s| s.bg(theme.tint(1.)))
         };
         panel = panel
             .child(item(

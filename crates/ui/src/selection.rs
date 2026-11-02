@@ -31,10 +31,8 @@ impl Render for SelectionHint {
         div()
             .px_3()
             .py_2()
-            .rounded(px(6.))
-            .bg(rgb(self.theme.popover))
-            .border_1()
-            .border_color(self.theme.border)
+            .rounded(px(self.theme.corner_sm()))
+            .glass(self.theme, self.theme.popover)
             .text_xs()
             .text_color(rgb(self.theme.ink))
             .child(self.text.clone())
@@ -75,9 +73,9 @@ impl NotesView {
         .py_1()
         .min_h(rems(2.25))
         .min_w(rems(2.25))
-        .rounded(px(8.))
+        .rounded(px(theme.radius))
         .bg(transparent_black())
-        .hover(move |s| s.bg(rgb(theme.selected)))
+        .hover(move |s| s.bg(theme.tint(1.)))
         .tooltip(move |_, cx| {
             cx.new(|_| SelectionHint {
                 text: label.clone(),
@@ -162,10 +160,8 @@ impl NotesView {
             .items_center()
             .gap_1()
             .p_1()
-            .rounded(px(12.))
-            .bg(rgb(theme.popover))
-            .border_1()
-            .border_color(theme.border)
+            .rounded(px(theme.corner_md()))
+            .glass(theme, theme.popover)
             .shadow_md();
         let mut editing = div().flex().items_center().gap_1();
         for (id, label, kind, shortcut, action) in [
@@ -199,9 +195,9 @@ impl NotesView {
                 .py_1()
                 .min_h(rems(2.25))
                 .min_w(rems(2.25))
-                .rounded(px(8.))
+                .rounded(px(theme.radius))
                 .bg(transparent_black())
-                .hover(move |s| s.bg(rgb(theme.selected)))
+                .hover(move |s| s.bg(theme.tint(1.)))
                 .tooltip(move |_, cx| {
                     cx.new(|_| SelectionHint {
                         text: format!("{label} · {shortcut}").into(),

@@ -52,7 +52,7 @@ impl NotesView {
                 .px_3()
                 .py_0()
                 .flex_shrink_0()
-                .bg(rgb(theme.selected))
+                .bg(theme.tint(1.))
                 .text_color(rgb(theme.accent))
                 .tooltip(move |_, cx| cx.new(|_| Hint(detail.clone().into(), theme)).into()),
             )

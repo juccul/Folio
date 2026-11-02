@@ -105,9 +105,11 @@ Keeping ink and indexing the reviewed text makes handwriting searchable without 
 
 ## Glass surfaces and motion
 
+Menus, dialogs, sidebars, the top bar and the footer are translucent over a blurred backdrop. **Settings → Appearance → Glass opacity** (30–100%) and **Glass blur** (0–40 px; Off disables blurring) control them. In the editor the page is painted across the whole window, beneath the bars and sidebars, while input, layout and the viewport stay relative to the visible canvas area. The top bar and the editor footer are most opaque along the window edge and fade to the glass opacity. Hover and selection highlights on glass are a translucent wash of the text color. Settings cards stay nearly solid for readability. Dialog backdrops are dimmed and lightly blurred.
+
 The vendored GPUI adds `Styled::backdrop_blur`. The Blade (Linux) and Direct3D 11 (Windows) renderers copy the region behind the element from the frame, reduce it by 2–8× depending on the radius, apply a separable Gaussian and composite it inside the element's rounded bounds; the swap chain is therefore created with copy usage. Box shadows are no longer drawn beneath the element that casts them, so translucent surfaces do not show their own shadow. Blur passes run only for frames containing blurred elements. The Windows HLSL is compiled by `fxc` during Windows builds only; the Linux host type-checks the Windows Rust code but not the shaders.
 
-Mouse-wheel scrolling eases over roughly 150 ms in scrollable panels (GPUI) and on the canvas, including Ctrl+wheel zoom; touchpad (pixel) deltas still follow the fingers directly. **Reduce motion** disables wheel easing.
+Mouse-wheel scrolling eases over roughly 150 ms in scrollable panels (GPUI) and on the canvas, including Ctrl+wheel zoom; touchpad (pixel) deltas still follow the fingers directly. Menus drop into place, dialogs rise as they fade in, and the page and solver sidebars slide in. **Reduce motion** disables wheel easing and these animations.
 
 ## Rendering and persistence performance
 

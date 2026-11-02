@@ -24,10 +24,7 @@ impl Render for LibraryDrag {
                 .items_center()
                 .gap_2()
                 .rounded(px(self.theme.radius))
-                .border_1()
-                .border_color(self.theme.border)
-                .shadow_sm()
-                .bg(rgb(self.theme.popover))
+                .glass(self.theme, self.theme.popover)
                 .text_color(rgb(self.theme.ink))
                 .text_sm()
                 .child(icon(
@@ -80,7 +77,7 @@ impl NotesView {
                 })
             })
             .drag_over::<LibraryDrag>(move |s, _, _, _| {
-                s.bg(rgb(theme.selected))
+                s.bg(theme.tint(1.))
                     .border_1()
                     .border_color(rgb(theme.sidebar_accent))
             })
@@ -167,11 +164,8 @@ impl NotesView {
             .flex()
             .flex_col()
             .gap_1()
-            .rounded(px(theme.radius + 2.))
-            .bg(rgb(theme.popover))
-            .border_1()
-            .border_color(theme.border)
-            .shadow_md()
+            .rounded(px(theme.corner_md()))
+            .glass(theme, theme.popover)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.folder_menu = None;
                 cx.notify();

@@ -78,11 +78,8 @@ impl NotesView {
                 .w(rems(17.))
                 .occlude()
                 .p_2()
-                .rounded_md()
-                .border_1()
-                .border_color(theme.border)
-                .bg(rgb(theme.popover))
-                .shadow_md()
+                .rounded(px(theme.corner_md()))
+                .glass(theme, theme.popover)
                 .flex()
                 .flex_col()
                 .gap_1();
