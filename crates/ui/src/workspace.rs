@@ -127,6 +127,38 @@ enum ThumbnailSource {
     Cover(Arc<Page>),
     Current(usize),
 }
+/// Library grid geometry, in logical pixels: cards stretch so each row
+/// fills the shelf, between a minimum and maximum width.
+#[derive(Clone, Copy)]
+struct LibraryGrid {
+    columns: usize,
+    card: f32,
+}
+impl LibraryGrid {
+    const GAP: f32 = 20.;
+    const MIN: f32 = 172.;
+    const MAX: f32 = 236.;
+    /// Inner padding of a card around its cover.
+    const INSET: f32 = 8.;
+    fn new(window_width: f32, compact: bool) -> Self {
+        // The folder sidebar is 13.5rem, at most 27% of the window, and the
+        // shelf is padded by 1.75rem on each side.
+        let sidebar = (13.5 * 16_f32).min(window_width * 0.27);
+        let shelf = (window_width - sidebar - if compact { 32. } else { 56. }).max(Self::MIN);
+        let fit = |width: f32| ((shelf + Self::GAP) / (width + Self::GAP)).floor().max(1.);
+        let columns = fit(Self::MAX).max(fit(Self::MIN).min(fit(Self::MAX) + 1.)) as usize;
+        let card = ((shelf - Self::GAP * (columns as f32 - 1.)) / columns as f32).min(Self::MAX);
+        Self { columns, card }
+    }
+    /// Covers keep the proportions of a portrait page.
+    fn cover_height(self) -> f32 {
+        ((self.card - Self::INSET * 2.) * 1.35).round()
+    }
+    fn row_height(self) -> f32 {
+        // Cover, title, details row and spacing.
+        self.cover_height() + 108.
+    }
+}
 impl NotesView {
     pub(super) fn navigate_folder_control(
         &mut self,
@@ -162,6 +194,7 @@ impl NotesView {
         &mut self,
         source: ThumbnailSource,
         width: f32,
+        max_height: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -239,7 +272,7 @@ impl NotesView {
         } else {
             (None, None, default_aspect)
         };
-        let height = (width / aspect.max(0.01)).min(200. * self.controller.settings.ui_scale);
+        let height = (width / aspect.max(0.01)).min(max_height);
         let mut element = div()
             .w(px((height * aspect).min(width)))
             .h(px(height))
@@ -771,6 +804,7 @@ impl NotesView {
         &mut self,
         notes: Vec<folio_document::NoteMetadata>,
         list_view: bool,
+        grid: LibraryGrid,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -779,7 +813,7 @@ impl NotesView {
             .w_full()
             .flex()
             .when(list_view, |s| s.flex_col())
-            .when(!list_view, |s| s.flex_wrap().gap_6());
+            .when(!list_view, |s| s.gap(rems(LibraryGrid::GAP / 16.)));
         for n in notes {
             let id = n.id;
             let drag = super::folder_menu::LibraryDrag {
@@ -849,7 +883,7 @@ impl NotesView {
                 .min_h(rems(2.))
                 .flex_shrink_0()
                 .bg(transparent_black())
-                .hover(move |s| s.bg(rgb(theme.selected)))
+                .hover(move |s| s.bg(theme.tint(1.)))
                 .tooltip({
                     let label: SharedString = if n.favorite {
                         "Remove from favorites"
@@ -876,7 +910,7 @@ impl NotesView {
                 .min_h(rems(2.))
                 .flex_shrink_0()
                 .bg(transparent_black())
-                .hover(move |s| s.bg(rgb(theme.selected)));
+                .hover(move |s| s.bg(theme.tint(1.)));
             let open =
                 move |this: &mut Self, _: &mut Window, _: &mut Context<Self>| this.open_note(id);
             let context_menu = cx.listener(move |this, event: &MouseDownEvent, w, cx| {
@@ -914,14 +948,15 @@ impl NotesView {
                     );
                 items = items.child(
                     div()
+                        .id(SharedString::from(format!("note-row-{id}")))
                         .w_full()
                         .h(rems(4.5))
                         .flex_shrink_0()
                         .flex()
                         .items_center()
                         .gap_1()
-                        .border_b_1()
-                        .border_color(theme.border)
+                        .rounded(px(theme.corner_md()))
+                        .hover(move |s| s.bg(theme.tint(0.7)))
                         .pr_2()
                         .child(
                             self.control(
@@ -938,9 +973,9 @@ impl NotesView {
                             .px_3()
                             .py_0()
                             .justify_start()
-                            .rounded_none()
+                            .rounded(px(theme.corner_md()))
                             .bg(transparent_black())
-                            .hover(move |s| s.bg(rgb(theme.sidebar)))
+                            .hover(|s| s.bg(transparent_black()))
                             .on_mouse_down(MouseButton::Right, context_menu)
                             .when(!n.trashed, |s| {
                                 s.on_drag(drag, |drag, position, _, cx| {
@@ -962,7 +997,8 @@ impl NotesView {
                     }
                     self.thumbnail(
                         ThumbnailSource::Cover(page.clone()),
-                        144. * self.controller.settings.ui_scale,
+                        (grid.card - LibraryGrid::INSET * 2.) * self.controller.settings.ui_scale,
+                        grid.cover_height() * self.controller.settings.ui_scale,
                         window,
                         cx,
                     )
@@ -976,13 +1012,14 @@ impl NotesView {
                     )
                 };
                 let cover = div()
-                    .w(rems(9.25))
-                    .h(rems(12.375))
+                    .w_full()
+                    .h(rems(grid.cover_height() / 16.))
                     .overflow_hidden()
                     .rounded(px(theme.radius))
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(theme.glass_edge())
                     .bg(rgb(theme.sidebar))
+                    .shadow_sm()
                     .flex()
                     .items_center()
                     .justify_center()
@@ -993,15 +1030,23 @@ impl NotesView {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .items_center()
                     .child(cover)
                     .child(title.w_full());
+                let edited = edited_label(n.updated_at)
+                    .trim_start_matches("Edited ")
+                    .to_owned();
+                // The whole card highlights together: cover, title, details
+                // and actions.
                 items = items.child(
                     div()
-                        .w(rems(11.5))
+                        .id(SharedString::from(format!("note-card-{id}")))
+                        .w(rems(grid.card / 16.))
                         .flex_shrink_0()
                         .flex()
                         .flex_col()
+                        .pb_2()
+                        .rounded(px(theme.corner_md()))
+                        .hover(move |s| s.bg(theme.tint(0.7)))
                         .child(
                             self.control(
                                 format!("note-{id}"),
@@ -1013,9 +1058,11 @@ impl NotesView {
                             )
                             .w_full()
                             .min_w_0()
-                            .p_3()
+                            .p_2()
+                            .pb_1()
+                            .rounded(px(theme.corner_md()))
                             .bg(transparent_black())
-                            .hover(move |s| s.bg(rgb(theme.sidebar)))
+                            .hover(|s| s.bg(transparent_black()))
                             .on_mouse_down(MouseButton::Right, context_menu)
                             .when(!n.trashed, |s| {
                                 s.on_drag(drag, |drag, position, _, cx| {
@@ -1032,27 +1079,19 @@ impl NotesView {
                                 .flex()
                                 .items_center()
                                 .gap_1()
-                                .px_3()
+                                .pl_2()
+                                .pr_1()
                                 .child(
                                     div()
                                         .flex_1()
                                         .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_1()
                                         .text_xs()
                                         .text_color(rgb(theme.muted))
-                                        .child(div().truncate().child(details))
-                                        .child(
-                                            div().truncate().child(
-                                                edited_label(n.updated_at)
-                                                    .trim_start_matches("Edited ")
-                                                    .to_owned(),
-                                            ),
-                                        ),
+                                        .truncate()
+                                        .child(format!("{details} · {edited}")),
                                 )
-                                .child(favorite)
-                                .child(menu),
+                                .child(favorite.size(rems(1.75)).min_h(rems(1.75)))
+                                .child(menu.size(rems(1.75)).min_h(rems(1.75))),
                         ),
                 );
             }
@@ -1115,14 +1154,11 @@ impl NotesView {
             .p_7()
             .when(count == 0 && compact, |shelf| shelf.p_4())
             .when(count == 0, |shelf| shelf.overflow_y_scroll());
-        let columns = if list_view {
-            1
-        } else {
-            ((f32::from(window.viewport_size().width) / self.controller.settings.ui_scale - 272.)
-                / 208.)
-                .floor()
-                .max(1.) as usize
-        };
+        let grid = LibraryGrid::new(
+            f32::from(window.viewport_size().width) / self.controller.settings.ui_scale,
+            compact,
+        );
+        let columns = if list_view { 1 } else { grid.columns };
         let total = notes.len();
         let list = uniform_list(
             "library-rows",
@@ -1135,8 +1171,8 @@ impl NotesView {
                     let start = row * columns;
                     let end = (start + columns).min(total);
                     rows.push(
-                        this.library_items(notes[start..end].to_vec(), list_view, window, cx)
-                            .h(rems(if list_view { 4.5 } else { 20. }))
+                        this.library_items(notes[start..end].to_vec(), list_view, grid, window, cx)
+                            .h(rems(if list_view { 4.5 } else { grid.row_height() / 16. }))
                             .items_start(),
                     );
                 }
@@ -1150,22 +1186,79 @@ impl NotesView {
         .flex_1()
         .min_h_0();
         if count == 0 {
+            let (heading, hint, kind) = match self.controller.filter {
+                NoteFilter::Trash | NoteFilter::NotebookTrash(_) => (
+                    "Trash is empty",
+                    "Documents you move to Trash appear here.",
+                    Icon::Trash,
+                ),
+                NoteFilter::Favorites => (
+                    "No favorites yet",
+                    "Star a document to keep it here.",
+                    Icon::Star,
+                ),
+                NoteFilter::Recent => (
+                    "No recent documents",
+                    "Documents you open appear here.",
+                    Icon::Clock,
+                ),
+                NoteFilter::Notebook(_) => (
+                    "This folder is empty",
+                    "Create a document here, or drag documents into the folder.",
+                    Icon::Folder,
+                ),
+                NoteFilter::All => (
+                    "No documents yet",
+                    "Create a document, or import a PDF or image.",
+                    Icon::Book,
+                ),
+            };
+            let creates = matches!(
+                self.controller.filter,
+                NoteFilter::All | NoteFilter::Notebook(_)
+            );
             shelf = shelf.child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .flex()
+                    .flex_col()
                     .items_center()
                     .justify_center()
-                    .text_3xl()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(theme.muted))
-                    .child(match self.controller.filter {
-                        NoteFilter::Trash | NoteFilter::NotebookTrash(_) => "Trash is empty",
-                        NoteFilter::Favorites => "No favorites yet",
-                        NoteFilter::Recent => "No recent documents",
-                        NoteFilter::Notebook(_) => "This folder is empty",
-                        NoteFilter::All => "No documents yet",
+                    .gap_3()
+                    .child(
+                        div()
+                            .size(rems(4.))
+                            .rounded(px(theme.corner_lg()))
+                            .bg(theme.raised())
+                            .border_1()
+                            .border_color(theme.glass_edge())
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(kind, theme.muted).size(rems(1.75))),
+                    )
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(heading),
+                    )
+                    .child(div().text_sm().text_color(rgb(theme.muted)).child(hint))
+                    .when(creates, |empty| {
+                        empty.child(
+                            self.button(
+                                "empty-new-document",
+                                "New document",
+                                false,
+                                cx,
+                                |this, w, cx| this.modal(Modal::NewDocument, w, cx),
+                            )
+                            .mt_2()
+                            .px_4()
+                            .border_1()
+                            .border_color(theme.glass_edge()),
+                        )
                     }),
             );
         } else {
@@ -1235,7 +1328,6 @@ impl NotesView {
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(theme.bg))
             .child(
                 div()
                     // Room for the folder breadcrumb in every view, so the
@@ -1350,22 +1442,38 @@ impl NotesView {
                         if count == 1 { "" } else { "s" }
                     )))
                     .child(div().flex_1())
-                    .child(self.icon_button(
-                        "grid-view",
-                        "Grid view",
-                        Icon::Grid,
-                        !list_view,
-                        cx,
-                        |this, _, _| this.list_view = false,
-                    ))
-                    .child(self.icon_button(
-                        "list-view",
-                        "List view",
-                        Icon::List,
-                        list_view,
-                        cx,
-                        |this, _, _| this.list_view = true,
-                    )),
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(2.))
+                            .p(px(2.))
+                            .rounded(px(theme.corner_md()))
+                            .bg(theme.raised())
+                            .border_1()
+                            .border_color(theme.glass_edge())
+                            .child(
+                                self.icon_button(
+                                    "grid-view",
+                                    "Grid view",
+                                    Icon::Grid,
+                                    !list_view,
+                                    cx,
+                                    |this, _, _| this.list_view = false,
+                                )
+                                .size(rems(2.)),
+                            )
+                            .child(
+                                self.icon_button(
+                                    "list-view",
+                                    "List view",
+                                    Icon::List,
+                                    list_view,
+                                    cx,
+                                    |this, _, _| this.list_view = true,
+                                )
+                                .size(rems(2.)),
+                            ),
+                    ),
             )
             .child(shelf)
             .child(
@@ -2074,7 +2182,13 @@ impl NotesView {
                         this.controller.request_pdf_background(background);
                     }
                     let thumbnail =
-                        this.thumbnail(ThumbnailSource::Current(index), 122., window, cx);
+                        this.thumbnail(
+                            ThumbnailSource::Current(index),
+                            122.,
+                            200. * this.controller.settings.ui_scale,
+                            window,
+                            cx,
+                        );
                     let page = &this.controller.session().document.pages[index];
                     let page_id = page.id;
                     let label = page.properties.bookmark.as_ref().map_or_else(
