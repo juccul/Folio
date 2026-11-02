@@ -103,6 +103,10 @@ Digit-only handwriting lines use the captured stroke layout to remove false spac
 
 Keeping ink and indexing the reviewed text makes handwriting searchable without replacing its strokes. Editing or deleting a source invalidates its reviewed index; undo restores it. There is no automatic text detector.
 
+## Glass surfaces and motion
+
+The vendored GPUI adds `Styled::backdrop_blur`. The Blade (Linux) and Direct3D 11 (Windows) renderers copy the region behind the element from the frame, reduce it by 2–8× depending on the radius, apply a separable Gaussian and composite it inside the element's rounded bounds; the swap chain is therefore created with copy usage. Box shadows are no longer drawn beneath the element that casts them, so translucent surfaces do not show their own shadow. Blur passes run only for frames containing blurred elements. The Windows HLSL is compiled by `fxc` during Windows builds only; the Linux host type-checks the Windows Rust code but not the shaders.
+
 ## Rendering and persistence performance
 
 UI maintenance polls every 250 ms while idle. Native accessibility actions wake the UI through an asynchronous channel. Input, new animations and background requests made during rendering or virtual-row layout resume 16 ms polling, which continues during active interactions, animations, background work and update checks. Pending save receipts retain fast polling; failed saves and recognition awaiting a download choice do not keep an otherwise idle editor at frame rate. Dropping the view cancels its polling task.

@@ -914,6 +914,7 @@ struct Shadow {
     corner_radii: Corners,
     content_mask: Bounds,
     color: Hsla,
+    cutout: Bounds,
 }
 var<storage, read> b_shadows: array<Shadow>;
 
@@ -975,7 +976,139 @@ fn fs_shadow(input: ShadowVarying) -> @location(0) vec4<f32> {
         y += step;
     }
 
+    // Like CSS, the shadow is not drawn beneath the element casting it.
+    if (shadow.cutout.size.x > 0.0 && shadow.cutout.size.y > 0.0) {
+        let distance = quad_sdf(input.position.xy, shadow.cutout, shadow.corner_radii);
+        alpha *= saturate(distance + 0.5);
+    }
+
     return blend_color(input.color, alpha);
+}
+
+// --- Backdrop blur ---
+// The backdrop is copied into a scratch texture, reduced, blurred
+// horizontally and vertically, then composited inside the element.
+
+struct BlurParams {
+    // Region read from the source texture: origin xy, extent zw (texels).
+    source: vec4<f32>,
+    // Source texture size xy, target texture size zw.
+    textures: vec4<f32>,
+    // Target extent xy; blur direction zw, or zero to reduce the source.
+    target_and_direction: vec4<f32>,
+    // Standard deviation (source texels), source texels per target texel.
+    settings: vec4<f32>,
+}
+var<uniform> blur_params: BlurParams;
+
+struct BlurComposite {
+    // Element bounds and content mask: origin xy, size zw (device pixels).
+    bounds: vec4<f32>,
+    content_mask: vec4<f32>,
+    corner_radii: vec4<f32>,
+    // Captured region origin xy (device pixels); blurred extent zw (texels).
+    source: vec4<f32>,
+    // Blur texture size xy, device pixels per blur texel, opacity.
+    settings: vec4<f32>,
+}
+var<uniform> blur_composite: BlurComposite;
+var t_blur: texture_2d<f32>;
+var s_blur: sampler;
+
+struct BlurVarying {
+    @builtin(position) position: vec4<f32>,
+}
+
+fn sample_blur_source(texel: vec2<f32>) -> vec4<f32> {
+    let low = blur_params.source.xy + vec2<f32>(0.5);
+    let high = blur_params.source.xy + blur_params.source.zw - vec2<f32>(0.5);
+    let uv = clamp(texel, low, max(low, high)) / blur_params.textures.xy;
+    return textureSampleLevel(t_blur, s_blur, uv, 0.0);
+}
+
+@vertex
+fn vs_blur(@builtin(vertex_index) vertex_id: u32) -> BlurVarying {
+    let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
+    let position = unit_vertex * blur_params.target_and_direction.xy;
+    let device = position / blur_params.textures.zw * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+    var out = BlurVarying();
+    out.position = vec4<f32>(device, 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_blur(input: BlurVarying) -> @location(0) vec4<f32> {
+    let direction = blur_params.target_and_direction.zw;
+    let scale = blur_params.settings.y;
+    if (direction.x == 0.0 && direction.y == 0.0) {
+        // Reduce by box-filtering scale x scale texels. Each bilinear tap
+        // at a texel corner averages four texels.
+        let center = blur_params.source.xy + input.position.xy * scale;
+        let taps = max(i32(scale * 0.5), 1);
+        var sum = vec4<f32>(0.0);
+        for (var i = 0; i < taps; i += 1) {
+            for (var j = 0; j < taps; j += 1) {
+                let offset = vec2<f32>(f32(2 * i - taps + 1), f32(2 * j - taps + 1));
+                sum += sample_blur_source(center + offset);
+            }
+        }
+        return sum / f32(taps * taps);
+    }
+    let center = blur_params.source.xy + input.position.xy;
+    let sigma = max(blur_params.settings.x, 0.5);
+    let radius = min(i32(ceil(sigma * 3.0)), 48);
+    var sum = sample_blur_source(center);
+    var total = 1.0;
+    for (var i = 1; i <= radius; i += 1) {
+        let distance = f32(i);
+        let weight = exp(-0.5 * distance * distance / (sigma * sigma));
+        sum += weight * (sample_blur_source(center + direction * distance)
+            + sample_blur_source(center - direction * distance));
+        total += 2.0 * weight;
+    }
+    return sum / total;
+}
+
+struct BlurCompositeVarying {
+    @builtin(position) position: vec4<f32>,
+    @location(0) clip_distances: vec4<f32>,
+}
+
+@vertex
+fn vs_blur_composite(@builtin(vertex_index) vertex_id: u32) -> BlurCompositeVarying {
+    let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
+    let bounds = Bounds(blur_composite.bounds.xy, blur_composite.bounds.zw);
+    let mask = Bounds(blur_composite.content_mask.xy, blur_composite.content_mask.zw);
+    var out = BlurCompositeVarying();
+    out.position = to_device_position(unit_vertex, bounds);
+    out.clip_distances = distance_from_clip_rect(unit_vertex, bounds, mask);
+    return out;
+}
+
+@fragment
+fn fs_blur_composite(input: BlurCompositeVarying) -> @location(0) vec4<f32> {
+    if (any(input.clip_distances < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
+    let bounds = Bounds(blur_composite.bounds.xy, blur_composite.bounds.zw);
+    let radii = Corners(
+        blur_composite.corner_radii.x,
+        blur_composite.corner_radii.y,
+        blur_composite.corner_radii.z,
+        blur_composite.corner_radii.w,
+    );
+    let coverage = saturate(0.5 - quad_sdf(input.position.xy, bounds, radii));
+    let scale = blur_composite.settings.z;
+    let texel = (input.position.xy - blur_composite.source.xy) / scale;
+    let low = vec2<f32>(0.5);
+    let high = max(low, blur_composite.source.zw - vec2<f32>(0.5));
+    let uv = clamp(texel, low, high) / blur_composite.settings.xy;
+    let color = textureSampleLevel(t_blur, s_blur, uv, 0.0);
+    let alpha = coverage * blur_composite.settings.w;
+    if (globals.premultiplied_alpha != 0u) {
+        return color * alpha;
+    }
+    return vec4<f32>(color.rgb, alpha);
 }
 
 // --- path rasterization --- //

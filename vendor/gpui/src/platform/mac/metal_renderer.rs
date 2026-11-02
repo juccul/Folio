@@ -440,6 +440,8 @@ impl MetalRenderer {
 
         for batch in scene.batches() {
             let ok = match batch {
+                // Backdrop blur is implemented by the Blade and DirectX renderers.
+                PrimitiveBatch::BackdropBlurs(_) => true,
                 PrimitiveBatch::Shadows(shadows) => self.draw_shadows(
                     shadows,
                     instance_buffer,

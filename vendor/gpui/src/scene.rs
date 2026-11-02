@@ -25,6 +25,7 @@ pub(crate) struct Scene {
     pub(crate) paint_operations: Vec<PaintOperation>,
     primitive_bounds: BoundsTree<ScaledPixels>,
     layer_stack: Vec<DrawOrder>,
+    pub(crate) backdrop_blurs: Vec<BackdropBlur>,
     pub(crate) shadows: Vec<Shadow>,
     pub(crate) quads: Vec<Quad>,
     pub(crate) paths: Vec<Path<ScaledPixels>>,
@@ -40,6 +41,7 @@ impl Scene {
         self.primitive_bounds.clear();
         self.layer_stack.clear();
         self.paths.clear();
+        self.backdrop_blurs.clear();
         self.shadows.clear();
         self.quads.clear();
         self.underlines.clear();
@@ -68,6 +70,9 @@ impl Scene {
         let mut primitive = primitive.into();
         let paint_bounds = match &primitive {
             Primitive::MonochromeSprite(sprite) => transformed_bounds(sprite.bounds, sprite.transformation),
+            // A blur samples everything painted within its kernel, so it must
+            // be ordered above content near its edges, not only beneath it.
+            Primitive::BackdropBlur(blur) => blur.bounds.dilate(blur.sample_margin()),
             _ => *primitive.bounds(),
         };
         let clipped_bounds = paint_bounds.intersect(&primitive.content_mask().bounds);
@@ -82,6 +87,10 @@ impl Scene {
             .copied()
             .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
         match &mut primitive {
+            Primitive::BackdropBlur(blur) => {
+                blur.order = order;
+                self.backdrop_blurs.push(blur.clone());
+            }
             Primitive::Shadow(shadow) => {
                 shadow.order = order;
                 self.shadows.push(shadow.clone());
@@ -127,6 +136,7 @@ impl Scene {
     }
 
     pub fn finish(&mut self) {
+        self.backdrop_blurs.sort_by_key(|blur| blur.order);
         self.shadows.sort_by_key(|shadow| shadow.order);
         self.quads.sort_by_key(|quad| quad.order);
         self.paths.sort_by_key(|path| path.order);
@@ -147,6 +157,9 @@ impl Scene {
     )]
     pub(crate) fn batches(&self) -> impl Iterator<Item = PrimitiveBatch<'_>> {
         BatchIterator {
+            backdrop_blurs: &self.backdrop_blurs,
+            backdrop_blurs_start: 0,
+            backdrop_blurs_iter: self.backdrop_blurs.iter().peekable(),
             shadows: &self.shadows,
             shadows_start: 0,
             shadows_iter: self.shadows.iter().peekable(),
@@ -181,6 +194,9 @@ impl Scene {
     allow(dead_code)
 )]
 pub(crate) enum PrimitiveKind {
+    // Within one draw order (a layer), a blur samples what was painted
+    // before it, so it is drawn first.
+    BackdropBlur,
     Shadow,
     #[default]
     Quad,
@@ -199,6 +215,7 @@ pub(crate) enum PaintOperation {
 
 #[derive(Clone)]
 pub(crate) enum Primitive {
+    BackdropBlur(BackdropBlur),
     Shadow(Shadow),
     Quad(Quad),
     Path(Path<ScaledPixels>),
@@ -211,6 +228,7 @@ pub(crate) enum Primitive {
 impl Primitive {
     pub fn bounds(&self) -> &Bounds<ScaledPixels> {
         match self {
+            Primitive::BackdropBlur(blur) => &blur.bounds,
             Primitive::Shadow(shadow) => &shadow.bounds,
             Primitive::Quad(quad) => &quad.bounds,
             Primitive::Path(path) => &path.bounds,
@@ -223,6 +241,7 @@ impl Primitive {
 
     pub fn content_mask(&self) -> &ContentMask<ScaledPixels> {
         match self {
+            Primitive::BackdropBlur(blur) => &blur.content_mask,
             Primitive::Shadow(shadow) => &shadow.content_mask,
             Primitive::Quad(quad) => &quad.content_mask,
             Primitive::Path(path) => &path.content_mask,
@@ -242,6 +261,9 @@ impl Primitive {
     allow(dead_code)
 )]
 struct BatchIterator<'a> {
+    backdrop_blurs: &'a [BackdropBlur],
+    backdrop_blurs_start: usize,
+    backdrop_blurs_iter: Peekable<slice::Iter<'a, BackdropBlur>>,
     shadows: &'a [Shadow],
     shadows_start: usize,
     shadows_iter: Peekable<slice::Iter<'a, Shadow>>,
@@ -270,6 +292,10 @@ impl<'a> Iterator for BatchIterator<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut orders_and_kinds = [
+            (
+                self.backdrop_blurs_iter.peek().map(|b| b.order),
+                PrimitiveKind::BackdropBlur,
+            ),
             (
                 self.shadows_iter.peek().map(|s| s.order),
                 PrimitiveKind::Shadow,
@@ -304,6 +330,22 @@ impl<'a> Iterator for BatchIterator<'a> {
         };
 
         match batch_kind {
+            PrimitiveKind::BackdropBlur => {
+                let start = self.backdrop_blurs_start;
+                let mut end = start + 1;
+                self.backdrop_blurs_iter.next();
+                while self
+                    .backdrop_blurs_iter
+                    .next_if(|blur| (blur.order, batch_kind) < max_order_and_kind)
+                    .is_some()
+                {
+                    end += 1;
+                }
+                self.backdrop_blurs_start = end;
+                Some(PrimitiveBatch::BackdropBlurs(
+                    &self.backdrop_blurs[start..end],
+                ))
+            }
             PrimitiveKind::Shadow => {
                 let shadows_start = self.shadows_start;
                 let mut shadows_end = shadows_start + 1;
@@ -435,6 +477,7 @@ impl<'a> Iterator for BatchIterator<'a> {
     allow(dead_code)
 )]
 pub(crate) enum PrimitiveBatch<'a> {
+    BackdropBlurs(&'a [BackdropBlur]),
     Shadows(&'a [Shadow]),
     Quads(&'a [Quad]),
     Paths(&'a [Path<ScaledPixels>]),
@@ -496,11 +539,100 @@ pub(crate) struct Shadow {
     pub corner_radii: Corners<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
+    /// The element casting the shadow. Like CSS box shadows, shadows are not
+    /// drawn beneath it, so translucent elements do not show their own
+    /// shadow. An empty cutout draws the whole shadow.
+    pub cutout: Bounds<ScaledPixels>,
 }
 
 impl From<Shadow> for Primitive {
     fn from(shadow: Shadow) -> Self {
         Primitive::Shadow(shadow)
+    }
+}
+
+/// Blurs what has been drawn beneath an element's rounded bounds, like CSS
+/// `backdrop-filter: blur()`. `blur_radius` is the Gaussian standard deviation.
+#[derive(Debug, Clone, Default)]
+#[repr(C)]
+pub(crate) struct BackdropBlur {
+    pub order: DrawOrder,
+    pub blur_radius: ScaledPixels,
+    pub bounds: Bounds<ScaledPixels>,
+    pub corner_radii: Corners<ScaledPixels>,
+    pub content_mask: ContentMask<ScaledPixels>,
+    /// How strongly the blurred backdrop replaces the sharp one, following
+    /// the element's opacity while it fades.
+    pub opacity: f32,
+}
+
+/// The device-pixel region a backdrop blur reads, and the reduction applied
+/// to it before blurring.
+#[derive(Debug, PartialEq)]
+#[cfg_attr(
+    all(
+        any(target_os = "linux", target_os = "freebsd"),
+        not(any(feature = "x11", feature = "wayland"))
+    ),
+    allow(dead_code)
+)]
+pub(crate) struct BlurRegion {
+    pub origin: [u32; 2],
+    pub size: [u32; 2],
+    pub scale: u32,
+    pub reduced: [u32; 2],
+}
+
+impl BackdropBlur {
+    /// How far outside its bounds the blur reads the backdrop.
+    pub fn sample_margin(&self) -> ScaledPixels {
+        self.blur_radius * 3.
+    }
+
+    /// The part of a `viewport`-sized frame this blur reads, or `None` when
+    /// nothing visible would change.
+    #[cfg_attr(
+        all(
+            any(target_os = "linux", target_os = "freebsd"),
+            not(any(feature = "x11", feature = "wayland"))
+        ),
+        allow(dead_code)
+    )]
+    pub(crate) fn region(&self, viewport: [u32; 2]) -> Option<BlurRegion> {
+        let visible = self.bounds.intersect(&self.content_mask.bounds);
+        if visible.is_empty() || self.opacity <= 0. || self.blur_radius.0 < 0.5 {
+            return None;
+        }
+        let margin = self.sample_margin().0;
+        let x0 = (visible.origin.x.0 - margin).floor().max(0.) as u32;
+        let y0 = (visible.origin.y.0 - margin).floor().max(0.) as u32;
+        let x1 = ((visible.origin.x.0 + visible.size.width.0 + margin).ceil().max(0.) as u32)
+            .min(viewport[0]);
+        let y1 = ((visible.origin.y.0 + visible.size.height.0 + margin).ceil().max(0.) as u32)
+            .min(viewport[1]);
+        if x1 <= x0 || y1 <= y0 {
+            return None;
+        }
+        // Reduce large blurs more: a reduced texel stays well under the
+        // deviation, so the result looks the same and costs far less.
+        let scale = match self.blur_radius.0 {
+            r if r >= 24. => 8,
+            r if r >= 10. => 4,
+            _ => 2,
+        };
+        let size = [x1 - x0, y1 - y0];
+        Some(BlurRegion {
+            origin: [x0, y0],
+            size,
+            scale,
+            reduced: [size[0].div_ceil(scale), size[1].div_ceil(scale)],
+        })
+    }
+}
+
+impl From<BackdropBlur> for Primitive {
+    fn from(blur: BackdropBlur) -> Self {
+        Primitive::BackdropBlur(blur)
     }
 }
 

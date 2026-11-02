@@ -820,6 +820,7 @@ struct Shadow {
     Corners corner_radii;
     Bounds content_mask;
     Hsla color;
+    Bounds cutout;
 };
 
 struct ShadowVertexOutput {
@@ -884,7 +885,123 @@ float4 shadow_fragment(ShadowFragmentInput input): SV_TARGET {
         y += step;
     }
 
+    // Like CSS, the shadow is not drawn beneath the element casting it.
+    if (shadow.cutout.size.x > 0. && shadow.cutout.size.y > 0.) {
+        float cutout_distance = quad_sdf(input.position.xy, shadow.cutout, shadow.corner_radii);
+        alpha *= saturate(cutout_distance + 0.5);
+    }
+
     return input.color * float4(1., 1., 1., alpha);
+}
+
+/*
+**
+**              Backdrop blur
+**
+*/
+
+// The backdrop is copied into a scratch texture, reduced, blurred
+// horizontally and vertically, then composited inside the element.
+struct BlurParams {
+    // Region read from the source texture: origin xy, extent zw (texels).
+    float4 source;
+    // Source texture size xy, target texture size zw.
+    float4 textures;
+    // Target extent xy; blur direction zw, or zero to reduce the source.
+    float4 target_and_direction;
+    // Standard deviation (source texels), source texels per target texel.
+    float4 settings;
+};
+
+StructuredBuffer<BlurParams> blur_params: register(t1);
+
+float4 sample_blur_source(BlurParams params, float2 texel) {
+    float2 low = params.source.xy + 0.5;
+    float2 high = max(low, params.source.xy + params.source.zw - 0.5);
+    float2 uv = clamp(texel, low, high) / params.textures.xy;
+    return t_sprite.SampleLevel(s_sprite, uv, 0.);
+}
+
+float4 backdrop_blur_vertex(uint vertex_id: SV_VertexID): SV_Position {
+    BlurParams params = blur_params[0];
+    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+    float2 position = unit_vertex * params.target_and_direction.xy;
+    float2 device = position / params.textures.zw * float2(2.0, -2.0) + float2(-1.0, 1.0);
+    return float4(device, 0., 1.);
+}
+
+float4 backdrop_blur_fragment(float4 position: SV_Position): SV_Target {
+    BlurParams params = blur_params[0];
+    float2 direction = params.target_and_direction.zw;
+    float scale = params.settings.y;
+    if (direction.x == 0. && direction.y == 0.) {
+        // Reduce by box-filtering scale x scale texels. Each bilinear tap
+        // at a texel corner averages four texels.
+        float2 center = params.source.xy + position.xy * scale;
+        int taps = max(int(scale * 0.5), 1);
+        float4 sum = float4(0., 0., 0., 0.);
+        for (int i = 0; i < taps; i++) {
+            for (int j = 0; j < taps; j++) {
+                float2 offset = float2(float(2 * i - taps + 1), float(2 * j - taps + 1));
+                sum += sample_blur_source(params, center + offset);
+            }
+        }
+        return sum / float(taps * taps);
+    }
+    float2 center = params.source.xy + position.xy;
+    float sigma = max(params.settings.x, 0.5);
+    int radius = min(int(ceil(sigma * 3.0)), 48);
+    float4 sum = sample_blur_source(params, center);
+    float total = 1.;
+    for (int k = 1; k <= radius; k++) {
+        float offset = float(k);
+        float weight = exp(-0.5 * offset * offset / (sigma * sigma));
+        sum += weight * (sample_blur_source(params, center + direction * offset)
+            + sample_blur_source(params, center - direction * offset));
+        total += 2. * weight;
+    }
+    return sum / total;
+}
+
+struct BlurComposite {
+    // Element bounds: origin xy, size zw (device pixels).
+    Bounds bounds;
+    Bounds content_mask;
+    Corners corner_radii;
+    // Captured region origin xy (device pixels); blurred extent zw (texels).
+    float4 source;
+    // Blur texture size xy, device pixels per blur texel, opacity.
+    float4 settings;
+};
+
+struct BlurCompositeVertexOutput {
+    float4 position: SV_Position;
+    float4 clip_distance: SV_ClipDistance;
+};
+
+struct BlurCompositeFragmentInput {
+    float4 position: SV_Position;
+};
+
+StructuredBuffer<BlurComposite> blur_composites: register(t1);
+
+BlurCompositeVertexOutput backdrop_composite_vertex(uint vertex_id: SV_VertexID) {
+    BlurComposite blur = blur_composites[0];
+    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+    BlurCompositeVertexOutput output;
+    output.position = to_device_position(unit_vertex, blur.bounds);
+    output.clip_distance = distance_from_clip_rect(unit_vertex, blur.bounds, blur.content_mask);
+    return output;
+}
+
+float4 backdrop_composite_fragment(BlurCompositeFragmentInput input): SV_Target {
+    BlurComposite blur = blur_composites[0];
+    float coverage = saturate(0.5 - quad_sdf(input.position.xy, blur.bounds, blur.corner_radii));
+    float2 texel = (input.position.xy - blur.source.xy) / blur.settings.z;
+    float2 high = max(float2(0.5, 0.5), blur.source.zw - 0.5);
+    float2 uv = clamp(texel, float2(0.5, 0.5), high) / blur.settings.xy;
+    float4 color = t_sprite.SampleLevel(s_sprite, uv, 0.);
+    return float4(color.rgb, coverage * blur.settings.w);
 }
 
 /*
