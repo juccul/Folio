@@ -1,9 +1,7 @@
 //! A radial tool picker: press W, the pen's lower barrel button or a
-//! tablet-pad button set to `wheel`, then move the pointer or hovering pen
-//! onto a tool. Releasing W or the barrel button, or lifting the pen, while
-//! aiming at a tool also chooses it, as do clicking or tapping a tool and
-//! Enter on a focused tool. Escape, W, the barrel button or a press
-//! elsewhere closes the wheel.
+//! tablet-pad button set to `wheel`. Pointing at a tool highlights it;
+//! clicking or tapping it, or Enter on a focused tool, chooses it. Escape,
+//! W, the barrel button or a press elsewhere closes the wheel.
 use super::*;
 use std::f32::consts::{PI, TAU};
 
@@ -30,10 +28,6 @@ pub(super) struct ToolWheel {
     aimed: Option<usize>,
     /// The pointer's clockwise angle from the top while it aims.
     pointing: Option<f32>,
-    /// Pointer movement may choose a tool. A wheel moved away from the
-    /// pointer, as at a window edge, waits until the pointer reaches its
-    /// center so the opening position does not choose a tool.
-    armed: bool,
     /// Arrow keys or Tab moved focus, so the focused tool is highlighted.
     keyboard: bool,
 }
@@ -212,7 +206,6 @@ impl NotesView {
             center,
             aimed: None,
             pointing: None,
-            armed: inside && center == pointer,
             keyboard: false,
         });
         let current = WheelTool::ALL
@@ -235,8 +228,9 @@ impl NotesView {
         self.focus.focus(window);
         cx.notify();
     }
-    /// Track the pointer or hovering pen: reaching a tool chooses it.
-    fn aim_tool_wheel(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Track the pointer or hovering pen to highlight the tool it points
+    /// at; only a press chooses.
+    fn aim_tool_wheel(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
         let scale = self.controller.settings.ui_scale;
         let Some(wheel) = &mut self.tool_wheel else {
             return;
@@ -246,38 +240,18 @@ impl NotesView {
             f32::from(at.y - wheel.center.y),
         );
         let aimed = aim(offset, scale);
-        if !wheel.armed {
-            wheel.armed = aimed.is_none();
-            return;
-        }
         let previous = (wheel.aimed, wheel.pointing);
         wheel.aimed = aimed.map(|(slot, _)| slot);
         wheel.pointing = aimed.map(|_| pointing(offset));
         if wheel.aimed.is_some() {
             wheel.keyboard = false;
         }
-        let changed = previous != (wheel.aimed, wheel.pointing);
-        if let Some((slot, distance)) = aimed
-            && reached(distance)
-            && self.wheel_slot_enabled(WheelTool::ALL[slot])
-        {
-            self.choose_wheel_tool(WheelTool::ALL[slot], window, cx);
-        } else if changed {
+        if previous != (wheel.aimed, wheel.pointing) {
             cx.notify();
         }
     }
-    /// Releasing W or the barrel button chooses the tool it was aimed at;
-    /// otherwise the wheel stays open for a click.
-    pub(super) fn release_tool_wheel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(slot) = self.tool_wheel.and_then(|wheel| wheel.aimed)
-            && self.wheel_slot_enabled(WheelTool::ALL[slot])
-        {
-            self.choose_wheel_tool(WheelTool::ALL[slot], window, cx);
-        }
-    }
-    /// The pen's barrel button opens the wheel at the pen and, like W,
-    /// chooses the aimed tool on release; lifting the pen tip while aiming
-    /// also chooses. Returns whether the wheel used this tablet frame.
+    /// The pen's lower barrel button opens and closes the wheel at the pen.
+    /// Returns whether the wheel used this tablet frame.
     pub(super) fn pen_tool_wheel(
         &mut self,
         event: &TabletEvent,
@@ -292,16 +266,14 @@ impl NotesView {
         }
         match barrel(previous, event.buttons) {
             Some(Barrel::Pressed) => self.toggle_tool_wheel(event.position, window, cx),
-            Some(Barrel::Released) => self.release_tool_wheel(window, cx),
-            None if event.phase == TabletPhase::Up && self.tool_wheel.is_some() => {
-                self.release_tool_wheel(window, cx)
-            }
+            Some(Barrel::Released) => {}
             None => return false,
         }
         true
     }
     /// Smoke-test input through window dispatch: the hovering pen presses
-    /// its lower barrel button; then (`aim`) points at Pan and releases it.
+    /// its lower barrel button; then (`aim`) hovers over Eraser, which must
+    /// not choose it, and taps Pan.
     pub fn wheel_smoke_events(&self, aim: bool) -> Result<Vec<PlatformInput>, String> {
         let at = if aim {
             self.tool_wheel
@@ -333,10 +305,35 @@ impl NotesView {
                 }),
             ]
         };
-        // Inside the ring, so only releasing the button chooses.
-        let pan = point(at.x, at.y + px(32. * self.controller.settings.ui_scale));
+        let ring = px((RING_INNER + RING_OUTER) / 2. * self.controller.settings.ui_scale);
+        let pan = point(at.x, at.y + ring);
+        let eraser = polar(at, f32::from(ring), TAU / 6.);
+        let mouse = |down: bool| {
+            if down {
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: pan,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                })
+            } else {
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: pan,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                })
+            }
+        };
         Ok(if aim {
-            let mut events = [hover(at, 1), hover(pan, 1), hover(pan, 0)].concat();
+            let mut events = [hover(at, 1), hover(at, 0), hover(eraser, 0), hover(pan, 0)].concat();
+            events.extend([
+                tablet(pan, 0, TabletPhase::Down),
+                mouse(true),
+                tablet(pan, 0, TabletPhase::Up),
+                mouse(false),
+            ]);
             // Leaving proximity lets the mouse drive the canvas again.
             events.push(tablet(pan, 0, TabletPhase::Leave));
             events
@@ -352,7 +349,7 @@ impl NotesView {
         if chosen {
             Ok(())
         } else {
-            Err("Releasing the barrel button while aiming did not choose Pan".into())
+            Err("Tapping Pan on the tool wheel did not choose it alone".into())
         }
     }
     fn wheel_slot_enabled(&self, slot: WheelTool) -> bool {
@@ -602,8 +599,8 @@ impl NotesView {
                     cx.notify();
                 }
             }))
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                this.aim_tool_wheel(event.position, window, cx);
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                this.aim_tool_wheel(event.position, cx);
             }))
             // A press on a tool chooses it; a press elsewhere closes the
             // wheel. Neither reaches the canvas, so no ink is drawn.

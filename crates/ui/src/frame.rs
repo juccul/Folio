@@ -691,10 +691,9 @@ impl NotesView {
                     this.toggle_tool_wheel(window.mouse_position(), window, cx);
                 }
             }))
-            .on_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
-                if event.keystroke.key == "w" && this.wheel_key_held {
+            .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
+                if event.keystroke.key == "w" {
                     this.wheel_key_held = false;
-                    this.release_tool_wheel(window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &EditText, window, cx| {
