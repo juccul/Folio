@@ -7,6 +7,10 @@ impl NotesView {
         for (label, keys) in [
             ("Pen · Eraser · Lasso · Pan", "P · E · L · H"),
             ("Text · Shapes", "T · S"),
+            (
+                "Edit selected text / Bold · Italic · Underline",
+                "Enter / Ctrl B · I · U",
+            ),
             ("Undo / Redo", "Ctrl Z / Ctrl Shift Z or Ctrl Y"),
             ("Copy / Cut / Paste", "Ctrl C / X / V"),
             (

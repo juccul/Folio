@@ -988,9 +988,8 @@ impl Render for Field {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    if this.inline.is_some() {
-                        return;
-                    }
+                    // Text being edited on the canvas also offers character
+                    // clipboard actions; object actions remain outside it.
                     this.focus.focus(window);
                     let i = this.index_at(event.position);
                     if !(this.selection.start..=this.selection.end).contains(&i) {

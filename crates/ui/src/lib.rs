@@ -107,7 +107,11 @@ actions!(
         FocusNext,
         FocusPrevious,
         ResetTitlebarSmoke,
-        ApplyCrop
+        ApplyCrop,
+        EditText,
+        ToggleBold,
+        ToggleItalic,
+        ToggleUnderline
     ]
 );
 #[derive(Clone)]
@@ -689,6 +693,14 @@ impl NotesView {
                 ApplyCrop,
                 Some("FolioCrop && !FolioField && !FolioControl"),
             ),
+            KeyBinding::new(
+                "enter",
+                EditText,
+                Some("Folio && !FolioCrop && !FolioField && !FolioControl"),
+            ),
+            KeyBinding::new("ctrl-b", ToggleBold, Some("Folio")),
+            KeyBinding::new("ctrl-i", ToggleItalic, Some("Folio")),
+            KeyBinding::new("ctrl-u", ToggleUnderline, Some("Folio")),
         ]);
     }
     pub fn titlebar_smoke_bindings(cx: &mut App) {

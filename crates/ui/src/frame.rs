@@ -667,6 +667,20 @@ impl NotesView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ApplyCrop, _, cx| this.apply_crop(cx)))
+            .on_action(cx.listener(|this, _: &EditText, window, cx| {
+                if !this.controller.read_only() {
+                    this.edit_selected_text(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleBold, window, cx| {
+                this.format_text_shortcut(inline_text::TextFormat::Bold, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleItalic, window, cx| {
+                this.format_text_shortcut(inline_text::TextFormat::Italic, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleUnderline, window, cx| {
+                this.format_text_shortcut(inline_text::TextFormat::Underline, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &Lasso, _, cx| {
                 // L returns to the selection tool last chosen, as the toolbar does.
                 this.select_tool(this.selection_tool);
@@ -734,6 +748,27 @@ impl NotesView {
     }
     /// Switch tools from a keyboard shortcut or the toolbar. Leaving the
     /// selection tools clears the selection and its toolbars.
+    /// Ctrl+B, I and U style the text box being edited or selected text boxes.
+    fn format_text_shortcut(
+        &mut self,
+        format: inline_text::TextFormat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected_text = self.controller.session().selection.iter().any(|id| {
+            matches!(
+                self.controller.page().objects.get(id).map(|o| o.as_ref()),
+                Some(folio_document::Object::Text(_))
+            )
+        });
+        if selected_text
+            && !self.blocking_overlay()
+            && !self.library_open
+            && !self.controller.read_only()
+        {
+            self.format_text(format, window, cx);
+        }
+    }
     pub(super) fn select_tool(&mut self, tool: Tool) {
         self.dismiss_popovers();
         self.region_selection = None;

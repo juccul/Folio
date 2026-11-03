@@ -12,7 +12,19 @@ pub struct Editor {
     pub page: Id,
     pub id: Id,
     pub field: Entity<Field>,
+    /// The box was created with the Text tool, which returns afterwards so
+    /// further boxes can be placed.
+    return_to_text: bool,
     _subscriptions: Vec<Subscription>,
+}
+/// A whole-box text style the formatting bar and shortcuts change.
+#[derive(Clone, Copy)]
+pub(super) enum TextFormat {
+    Bold,
+    Italic,
+    Underline,
+    Align(folio_document::Alignment),
+    List(folio_document::ListStyle),
 }
 impl NotesView {
     pub(super) fn begin_inline_text(
@@ -58,6 +70,7 @@ impl NotesView {
                 cx.notify()
             });
         field.read(cx).focus.focus(window);
+        let return_to_text = self.controller.tool == Tool::Text;
         // Editing selects the box; rectangular selection stays chosen.
         if self.controller.tool != Tool::Rectangle {
             self.controller.set_tool(Tool::Lasso);
@@ -68,6 +81,7 @@ impl NotesView {
             page,
             id,
             field,
+            return_to_text,
             _subscriptions: vec![change, submit, bounds_changed],
         });
         cx.notify();
@@ -86,6 +100,57 @@ impl NotesView {
             let content = editor.field.read(cx).content.clone();
             self.controller
                 .finish_text_edit(editor.note, editor.page, editor.id, content);
+            // Return to the Text tool unless another tool was chosen meanwhile.
+            if editor.return_to_text
+                && self.controller.tool == Tool::Lasso
+                && !self.controller.read_only()
+            {
+                self.controller.session_mut().selection.clear();
+                self.controller.set_tool(Tool::Text);
+            }
+        }
+    }
+    /// Change the style of the selected text boxes, keeping the caret in the
+    /// box being edited.
+    pub(super) fn format_text(
+        &mut self,
+        format: TextFormat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use folio_document::ListStyle;
+        for id in self.controller.session().selection.clone() {
+            self.controller.edit_text(id, |t| match format {
+                TextFormat::Bold => t.bold = !t.bold,
+                TextFormat::Italic => t.italic = !t.italic,
+                TextFormat::Underline => t.underline = !t.underline,
+                TextFormat::Align(alignment) => t.alignment = alignment,
+                TextFormat::List(list) => {
+                    t.list = if t.list == list {
+                        ListStyle::None
+                    } else {
+                        list
+                    }
+                }
+            });
+        }
+        if let Some(editor) = &self.inline_text {
+            editor.field.read(cx).focus.focus(window);
+        }
+        cx.notify();
+    }
+    /// Start editing the only selected text box, as Enter does.
+    pub(super) fn edit_selected_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = &self.controller.session().selection;
+        let id = selection.iter().next().copied().filter(|id| {
+            selection.len() == 1
+                && matches!(
+                    self.controller.page().objects.get(id).map(|o| o.as_ref()),
+                    Some(Object::Text(_))
+                )
+        });
+        if let Some(id) = id {
+            self.begin_inline_text(id, window, cx);
         }
     }
     pub(super) fn inline_element(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -251,70 +316,45 @@ impl NotesView {
                 )
                 .text_xs(),
             );
-        for (id, label, active, kind) in [
-            ("bold", "B", text.bold, 0),
-            ("italic", "I", text.italic, 1),
-            ("underline", "U", text.underline, 2),
+        use folio_document::{Alignment, ListStyle};
+        for (id, label, active, format) in [
+            ("bold", "B", text.bold, TextFormat::Bold),
+            ("italic", "I", text.italic, TextFormat::Italic),
+            ("underline", "U", text.underline, TextFormat::Underline),
             (
                 "align-left",
                 "Left",
-                text.alignment == folio_document::Alignment::Left,
-                3,
+                text.alignment == Alignment::Left,
+                TextFormat::Align(Alignment::Left),
             ),
             (
                 "align-center",
                 "Center",
-                text.alignment == folio_document::Alignment::Center,
-                4,
+                text.alignment == Alignment::Center,
+                TextFormat::Align(Alignment::Center),
             ),
             (
                 "align-right",
                 "Right",
-                text.alignment == folio_document::Alignment::Right,
-                5,
+                text.alignment == Alignment::Right,
+                TextFormat::Align(Alignment::Right),
             ),
             (
                 "bullet",
                 "• List",
-                text.list == folio_document::ListStyle::Bullet,
-                6,
+                text.list == ListStyle::Bullet,
+                TextFormat::List(ListStyle::Bullet),
             ),
             (
                 "numbered",
                 "1. List",
-                text.list == folio_document::ListStyle::Numbered,
-                7,
+                text.list == ListStyle::Numbered,
+                TextFormat::List(ListStyle::Numbered),
             ),
         ] {
             row = row.child(
                 self.button(id, label, active, cx, move |this, window, cx| {
-                    for id in this.controller.session().selection.clone() {
-                        this.controller.edit_text(id, |t| match kind {
-                            0 => t.bold = !t.bold,
-                            1 => t.italic = !t.italic,
-                            2 => t.underline = !t.underline,
-                            3 => t.alignment = folio_document::Alignment::Left,
-                            4 => t.alignment = folio_document::Alignment::Center,
-                            5 => t.alignment = folio_document::Alignment::Right,
-                            6 => {
-                                t.list = if t.list == folio_document::ListStyle::Bullet {
-                                    folio_document::ListStyle::None
-                                } else {
-                                    folio_document::ListStyle::Bullet
-                                }
-                            }
-                            _ => {
-                                t.list = if t.list == folio_document::ListStyle::Numbered {
-                                    folio_document::ListStyle::None
-                                } else {
-                                    folio_document::ListStyle::Numbered
-                                }
-                            }
-                        });
-                    }
-                    if let Some(editor) = &this.inline_text {
-                        editor.field.read(cx).focus.focus(window);
-                    }
+                    this.format_text(format, window, cx)
                 })
                 .text_xs()
                 .px_2()
@@ -356,7 +396,7 @@ impl NotesView {
                 div()
                     .text_xs()
                     .text_color(rgb(theme.muted))
-                    .child("Click inside to edit"),
+                    .child("Click inside or press Enter to edit"),
             )
             .child(
                 self.button("edit-text", "Edit text", false, cx, move |this, w, cx| {
