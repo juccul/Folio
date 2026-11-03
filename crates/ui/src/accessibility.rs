@@ -159,6 +159,9 @@ fn semantics(key: &str) -> Semantics {
             toggle: false,
         };
     }
+    if key.starts_with("pad-action-") {
+        return radio(51, "Pad button action");
+    }
     if matches!(key, "all" | "favorite" | "recent" | "trash") {
         return radio(45, "Library filter");
     }

@@ -332,7 +332,7 @@ def capture_session(args):
                         client.key('Escape')
                         click('Appearance')
                         click('Paper follows appearance: Off')
-                        capture('settings-pad-buttons', lambda: sequence(library, 'Settings', 'Writing', 'Configure…'))
+                        capture('settings-pad-buttons', lambda: sequence(library, 'Settings', 'Writing', 'Button 1 action: Undo'))
                         capture('editor', editor)
                         capture('editor-pages', lambda: sequence(editor, lambda: click('Page thumbnails', True) if not any(n.get_name() == 'Hide pages' for n in nodes()) else None))
                         capture('editor-page-two', lambda: sequence(editor, 'Go to page 2'))

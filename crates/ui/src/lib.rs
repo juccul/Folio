@@ -152,7 +152,6 @@ enum Modal {
     Equation,
     EditEquation(Id),
     MathPdfRegion,
-    PadButtons,
     /// Closing the window with edits that autosave-off has not saved.
     UnsavedChanges,
     Confirm(Confirm),
@@ -224,7 +223,6 @@ impl Modal {
             Self::FontSize => "Font size",
             Self::EditEquation(_) => "Edit LaTeX equation",
             Self::MathPdfRegion => "PDF region: left, top, width, height",
-            Self::PadButtons => "Pad buttons: comma-separated actions",
             Self::Equation => "Insert LaTeX equation",
             Self::UnsavedChanges => "Save changes before closing?",
             Self::Confirm(Confirm::DeletePermanently(_)) => "Delete permanently?",
@@ -275,6 +273,8 @@ pub struct NotesView {
     settings_open: bool,
     settings_section: settings::Section,
     theme_colors_open: bool,
+    /// The tablet-pad button whose action chooser is open in Settings.
+    pad_button: Option<usize>,
     modal_error: Option<String>,
     /// Highlighted row of the search or open-document picker.
     modal_cursor: usize,
@@ -447,6 +447,7 @@ impl NotesView {
             settings_open: false,
             settings_section: settings::Section::default(),
             theme_colors_open: false,
+            pad_button: None,
             modal_error: None,
             modal_cursor: 0,
             move_page_destination: None,
@@ -857,7 +858,6 @@ impl NotesView {
                 .as_ref()
                 .map(|r| r.text.clone())
                 .unwrap_or_default(),
-            Modal::PadButtons => self.controller.settings.pad_buttons.join(", "),
             Modal::EditEquation(id) => self
                 .controller
                 .page()
@@ -1115,10 +1115,6 @@ impl NotesView {
                     cx.notify();
                     return;
                 }
-            }
-            Modal::PadButtons => {
-                self.controller.settings.pad_buttons =
-                    content.split(',').map(|s| s.trim().to_string()).collect()
             }
             Modal::EditEquation(id) => {
                 self.equation_draft = Some(content.clone());
@@ -1686,6 +1682,10 @@ impl NotesView {
         if let Some(check) = &mut self.diagnostics.check {
             check.pad(event);
             cx.notify();
+        }
+        if self.settings_open {
+            self.pad_button_pressed(event, cx);
+            return;
         }
         if self.library_open
             || self.blocking_overlay()

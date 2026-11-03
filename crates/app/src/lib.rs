@@ -65,7 +65,10 @@ pub use math_solver::{MathReport, MathRequest, MathSession, MathStep, typeset};
 pub use previews::{RasterPreview, relative_transform};
 pub use recognition::{RecognitionKind, RecognitionReview, RecognitionTiming};
 pub use session::Session;
-pub use settings::{EraserMode, PageTemplate, PenPreset, Settings, WorkspacePreferences};
+pub use settings::{
+    EraserMode, MAX_PAD_BUTTONS, PAD_ACTIONS, PageTemplate, PenPreset, Settings,
+    WorkspacePreferences, pad_action_label,
+};
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet, VecDeque},

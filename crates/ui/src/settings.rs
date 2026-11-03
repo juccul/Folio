@@ -207,19 +207,165 @@ impl NotesView {
                 },
             )));
         }
-        let pad = self
-            .settings_row(
-                "Tablet pad",
-                "Customize the buttons on your drawing tablet.",
-            )
-            .child(self.settings_action("pad-buttons", "Configure…", cx, |this, w, cx| {
-                this.modal(Modal::PadButtons, w, cx)
-            }));
+        let pad = self.pad_button_rows(cx);
         div()
             .flex()
             .flex_col()
             .child(self.settings_group(Some("Smart Ink gestures"), gestures))
-            .child(self.settings_group(Some("Tablet"), [pad]))
+            .child(self.settings_group(Some("Tablet pad buttons"), pad))
+    }
+    /// Selects the row of a pressed pad button while the Writing settings
+    /// are shown, adding rows up to it.
+    pub(super) fn pad_button_pressed(&mut self, event: &TabletPadEvent, cx: &mut Context<Self>) {
+        let Some(button) = event.button.map(|b| b as usize) else {
+            return;
+        };
+        if !event.pressed
+            || self.settings_section != Section::Writing
+            || button >= folio_app::MAX_PAD_BUTTONS
+        {
+            return;
+        }
+        let buttons = &mut self.controller.settings.pad_buttons;
+        if buttons.len() <= button {
+            buttons.resize(button + 1, String::new());
+            self.controller.store_settings();
+        }
+        self.pad_button = Some(button);
+        cx.notify();
+    }
+    /// One row per pad button, each opening an inline action chooser.
+    fn pad_button_rows(&mut self, cx: &mut Context<Self>) -> Vec<Div> {
+        let theme = Theme::new(&self.controller.settings);
+        let buttons = self.controller.settings.pad_buttons.clone();
+        let changed = buttons != folio_app::Settings::default().pad_buttons;
+        let mut rows = vec![
+            self.settings_row(
+                "Pad buttons",
+                "Press a button on your tablet to find its row.",
+            )
+            .children(changed.then(|| {
+                self.settings_action("pad-reset", "Reset", cx, |this, _, _| {
+                    this.controller.settings.pad_buttons =
+                        folio_app::Settings::default().pad_buttons;
+                    this.pad_button = None;
+                    this.controller.store_settings();
+                })
+                .text_xs()
+            }))
+            .when(buttons.len() < folio_app::MAX_PAD_BUTTONS, |row| {
+                row.child(
+                    self.settings_action("pad-add", "Add button", cx, |this, _, _| {
+                        let buttons = &mut this.controller.settings.pad_buttons;
+                        buttons.push(String::new());
+                        this.pad_button = Some(buttons.len() - 1);
+                        this.controller.store_settings();
+                    }),
+                )
+            }),
+        ];
+        for (index, slug) in buttons.iter().enumerate() {
+            let open = self.pad_button == Some(index);
+            let name = format!("Button {}", index + 1);
+            let chooser = self
+                .control(
+                    format!("pad-button-{index}"),
+                    format!("{name} action: {}", folio_app::pad_action_label(slug)),
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(folio_app::pad_action_label(slug))
+                        .child(icon(Icon::Down, theme.muted).size(rems(0.875)))
+                        .into_any_element(),
+                    open,
+                    cx,
+                    move |this, _, _| {
+                        this.pad_button = (this.pad_button != Some(index)).then_some(index);
+                    },
+                )
+                .flex_shrink_0()
+                .w(rems(10.))
+                .px_3()
+                .py_1()
+                .border_color(theme.border);
+            // Removing a middle row would shift every later button's action.
+            let remove = (index + 1 == buttons.len()).then(|| {
+                self.control(
+                    "pad-remove",
+                    format!("Remove {name}"),
+                    icon(Icon::Close, theme.muted).into_any_element(),
+                    false,
+                    cx,
+                    |this, _, _| {
+                        let buttons = &mut this.controller.settings.pad_buttons;
+                        buttons.pop();
+                        if this.pad_button.is_some_and(|b| b >= buttons.len()) {
+                            this.pad_button = None;
+                        }
+                        this.controller.store_settings();
+                    },
+                )
+                .size(rems(1.875))
+                .p_0()
+                .bg(transparent_black())
+            });
+            let row = self.settings_row(&name, "").py_1p5().child(chooser).child(
+                // Keeps choosers aligned whether or not a row can be removed.
+                div().w(rems(1.875)).flex_shrink_0().children(remove),
+            );
+            if !open {
+                rows.push(row);
+                continue;
+            }
+            let mut actions = div()
+                .flex()
+                .flex_wrap()
+                .gap(px(2.))
+                .p(px(2.))
+                .rounded(px(theme.corner_md()))
+                .border_1()
+                .border_color(theme.glass_edge())
+                .bg(theme.raised());
+            for (action, label) in folio_app::PAD_ACTIONS {
+                let selected = folio_app::pad_action_label(slug) == label;
+                actions = actions.child(
+                    self.control(
+                        format!(
+                            "pad-action-{}",
+                            if action.is_empty() { "none" } else { action }
+                        ),
+                        format!("{name}: {label}"),
+                        div().child(label).into_any_element(),
+                        selected,
+                        cx,
+                        move |this, _, _| {
+                            if let Some(slot) = this.controller.settings.pad_buttons.get_mut(index)
+                            {
+                                *slot = action.to_owned();
+                                this.controller.store_settings();
+                            }
+                        },
+                    )
+                    .px_3()
+                    .py_1()
+                    .min_h(rems(1.875))
+                    .bg(theme.tint(if selected { 1. } else { 0. })),
+                );
+            }
+            // Part of the button's row, without a divider between them.
+            rows.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .bg(theme.tint(0.5))
+                    .child(row)
+                    .child(div().px_4().pb_3().child(actions)),
+            );
+        }
+        rows
     }
     fn library_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);

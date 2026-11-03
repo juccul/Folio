@@ -23,6 +23,28 @@ pub struct PenPreset {
     pub style: PenStyle,
 }
 
+/// Tablet-pad button actions as (saved slug, label). An empty or unknown slug
+/// does nothing.
+pub const PAD_ACTIONS: [(&str, &str); 8] = [
+    ("", "None"),
+    ("undo", "Undo"),
+    ("redo", "Redo"),
+    ("pen", "Pen"),
+    ("eraser", "Eraser"),
+    ("wheel", "Tool wheel"),
+    ("previous-page", "Previous page"),
+    ("next-page", "Next page"),
+];
+/// Pad buttons beyond this are not configurable.
+pub const MAX_PAD_BUTTONS: usize = 32;
+/// The label of a saved pad-button action.
+pub fn pad_action_label(slug: &str) -> &'static str {
+    PAD_ACTIONS
+        .iter()
+        .find(|(known, _)| *known == slug)
+        .map_or("None", |(_, label)| label)
+}
+
 const INK_TOOLS: [InkTool; 5] = [
     InkTool::Ballpoint,
     InkTool::Fountain,
@@ -373,6 +395,23 @@ mod tests {
                 serde_json::from_str(&serde_json::to_string(&reopened).unwrap()).unwrap();
             assert_eq!(smart_ink(&resaved), expected);
         }
+    }
+
+    #[test]
+    fn saved_pad_buttons_load_unchanged_and_defaults_have_labels() {
+        assert!(
+            Settings::default()
+                .pad_buttons
+                .iter()
+                .all(|slug| PAD_ACTIONS.iter().any(|(known, _)| known == slug))
+        );
+        let saved = ["wheel", "", "previous-page", "typo"];
+        let mut settings: Settings =
+            serde_json::from_value(serde_json::json!({ "pad_buttons": saved })).unwrap();
+        settings.normalize();
+        assert_eq!(settings.pad_buttons, saved);
+        let labels: Vec<_> = saved.iter().map(|slug| pad_action_label(slug)).collect();
+        assert_eq!(labels, ["Tool wheel", "None", "Previous page", "None"]);
     }
 
     #[test]
