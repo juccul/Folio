@@ -1,15 +1,26 @@
-//! A radial tool picker: press W (or a tablet-pad button set to `wheel`),
-//! then move the pointer or hovering pen onto a tool. Holding W and
-//! releasing it over a tool, clicking a tool, or Enter on a focused tool
-//! also chooses it; Escape, W or a press elsewhere closes the wheel.
+//! A radial tool picker: press W, the pen's lower barrel button or a
+//! tablet-pad button set to `wheel`, then move the pointer or hovering pen
+//! onto a tool. Releasing W or the barrel button, or lifting the pen, while
+//! aiming at a tool also chooses it, as do clicking or tapping a tool and
+//! Enter on a focused tool. Escape, W, the barrel button or a press
+//! elsewhere closes the wheel.
 use super::*;
+use std::f32::consts::{PI, TAU};
 
-/// Outer radius of the ring of tools, at 1× interface scale.
-const RADIUS: f32 = 92.;
-/// Diameter of one tool button.
-const SLOT: f32 = 52.;
+/// Outer radius of the wheel, at 1× interface scale.
+const RADIUS: f32 = 100.;
+/// The ring of tool segments lies between these radii.
+const RING_OUTER: f32 = 94.;
+const RING_INNER: f32 = 40.;
+/// Radius of the hub that names the aimed tool.
+const HUB: f32 = 33.;
+/// Width of the clear gap between neighboring segments.
+const GAP: f32 = 4.;
 /// Movement within this radius of the center chooses nothing.
 const DEAD_ZONE: f32 = 26.;
+/// The `TabletEvent::buttons` bit of the pen's lower barrel button
+/// (BTN_STYLUS on Wayland, button 2 on X11). The upper button erases.
+const WHEEL_PEN_BUTTON: u32 = 1;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ToolWheel {
@@ -17,10 +28,14 @@ pub(super) struct ToolWheel {
     center: Point<Pixels>,
     /// The tool slot the pointer points at, before it reaches the ring.
     aimed: Option<usize>,
+    /// The pointer's clockwise angle from the top while it aims.
+    pointing: Option<f32>,
     /// Pointer movement may choose a tool. A wheel moved away from the
     /// pointer, as at a window edge, waits until the pointer reaches its
     /// center so the opening position does not choose a tool.
     armed: bool,
+    /// Arrow keys or Tab moved focus, so the focused tool is highlighted.
+    keyboard: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,14 +98,34 @@ pub(super) fn aim(offset: (f32, f32), scale: f32) -> Option<(usize, f32)> {
         return None;
     }
     let count = WheelTool::ALL.len() as f32;
-    // Clockwise angle from the top; each slot owns the sector around it.
-    let angle = x.atan2(-y).rem_euclid(std::f32::consts::TAU);
-    let slot = (angle / std::f32::consts::TAU * count).round() as usize % WheelTool::ALL.len();
+    let slot = (pointing(offset) / TAU * count).round() as usize % WheelTool::ALL.len();
     Some((slot, distance / scale))
 }
-/// The pointer has reached the ring of tool buttons.
+/// Clockwise angle of `offset` from the top; each slot owns the sector
+/// around its angle.
+fn pointing((x, y): (f32, f32)) -> f32 {
+    x.atan2(-y).rem_euclid(TAU)
+}
+/// The pointer has reached the ring of tool segments.
 fn reached(distance: f32) -> bool {
-    distance >= RADIUS - SLOT
+    distance >= RING_INNER
+}
+
+/// A change of the wheel's barrel button between two tablet frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Barrel {
+    Pressed,
+    Released,
+}
+pub(super) fn barrel(previous: u32, buttons: u32) -> Option<Barrel> {
+    match (
+        previous & WHEEL_PEN_BUTTON != 0,
+        buttons & WHEEL_PEN_BUTTON != 0,
+    ) {
+        (false, true) => Some(Barrel::Pressed),
+        (true, false) => Some(Barrel::Released),
+        _ => None,
+    }
 }
 
 /// Where the wheel is drawn for a pointer at `at`: there, unless that would
@@ -105,8 +140,56 @@ fn placement(at: Point<Pixels>, window: Size<Pixels>, scale: f32) -> Point<Pixel
     point(clamp(at.x, window.width), clamp(at.y, window.height))
 }
 
+/// The point `radius` from `center` at clockwise `angle` from the top.
+fn polar(center: Point<Pixels>, radius: f32, angle: f32) -> Point<Pixels> {
+    point(
+        center.x + px(radius * angle.sin()),
+        center.y - px(radius * angle.cos()),
+    )
+}
+/// The ring segment around `angle` between two radii, separated from its
+/// neighbors by an even `gap`.
+fn segment_path(
+    center: Point<Pixels>,
+    (inner, outer): (f32, f32),
+    angle: f32,
+    gap: f32,
+) -> Option<Path<Pixels>> {
+    const STEPS: usize = 12;
+    let half = PI / WheelTool::ALL.len() as f32;
+    let span = |radius: f32| half - (gap / 2. / radius).min(1.).asin();
+    let mut b = PathBuilder::fill();
+    let outer_span = span(outer);
+    b.move_to(polar(center, outer, angle - outer_span));
+    for step in 1..=STEPS {
+        let t = step as f32 / STEPS as f32;
+        b.line_to(polar(center, outer, angle + outer_span * (2. * t - 1.)));
+    }
+    let inner_span = span(inner);
+    for step in 0..=STEPS {
+        let t = step as f32 / STEPS as f32;
+        b.line_to(polar(center, inner, angle + inner_span * (1. - 2. * t)));
+    }
+    b.close();
+    b.build().ok()
+}
+
+/// How one segment is painted.
+struct Segment {
+    base: Rgba,
+    /// The aim or hover highlight drawn over the base.
+    highlight: Rgba,
+    /// The active tool's mark along the outer edge.
+    mark: Option<Rgba>,
+}
+
 impl NotesView {
-    pub(super) fn toggle_tool_wheel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn toggle_tool_wheel(
+        &mut self,
+        pointer: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.tool_wheel.take().is_some() {
             cx.notify();
             return;
@@ -118,7 +201,6 @@ impl NotesView {
         self.controller.finish();
         self.dismiss_popovers();
         let scale = self.controller.settings.ui_scale;
-        let pointer = window.mouse_position();
         let inside = self.canvas_bounds.is_some_and(|b| b.contains(&pointer));
         let at = if inside {
             pointer
@@ -129,7 +211,9 @@ impl NotesView {
         self.tool_wheel = Some(ToolWheel {
             center,
             aimed: None,
+            pointing: None,
             armed: inside && center == pointer,
+            keyboard: false,
         });
         let current = WheelTool::ALL
             .into_iter()
@@ -166,9 +250,13 @@ impl NotesView {
             wheel.armed = aimed.is_none();
             return;
         }
-        let previous = wheel.aimed;
+        let previous = (wheel.aimed, wheel.pointing);
         wheel.aimed = aimed.map(|(slot, _)| slot);
-        let changed = previous != wheel.aimed;
+        wheel.pointing = aimed.map(|_| pointing(offset));
+        if wheel.aimed.is_some() {
+            wheel.keyboard = false;
+        }
+        let changed = previous != (wheel.aimed, wheel.pointing);
         if let Some((slot, distance)) = aimed
             && reached(distance)
             && self.wheel_slot_enabled(WheelTool::ALL[slot])
@@ -178,8 +266,8 @@ impl NotesView {
             cx.notify();
         }
     }
-    /// Releasing W chooses the tool it was aimed at; otherwise the wheel
-    /// stays open for a click.
+    /// Releasing W or the barrel button chooses the tool it was aimed at;
+    /// otherwise the wheel stays open for a click.
     pub(super) fn release_tool_wheel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(slot) = self.tool_wheel.and_then(|wheel| wheel.aimed)
             && self.wheel_slot_enabled(WheelTool::ALL[slot])
@@ -187,11 +275,93 @@ impl NotesView {
             self.choose_wheel_tool(WheelTool::ALL[slot], window, cx);
         }
     }
+    /// The pen's barrel button opens the wheel at the pen and, like W,
+    /// chooses the aimed tool on release; lifting the pen tip while aiming
+    /// also chooses. Returns whether the wheel used this tablet frame.
+    pub(super) fn pen_tool_wheel(
+        &mut self,
+        event: &TabletEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let gone = matches!(event.phase, TabletPhase::Leave | TabletPhase::Cancel);
+        let previous =
+            std::mem::replace(&mut self.pen_buttons, if gone { 0 } else { event.buttons });
+        if gone {
+            return false;
+        }
+        match barrel(previous, event.buttons) {
+            Some(Barrel::Pressed) => self.toggle_tool_wheel(event.position, window, cx),
+            Some(Barrel::Released) => self.release_tool_wheel(window, cx),
+            None if event.phase == TabletPhase::Up && self.tool_wheel.is_some() => {
+                self.release_tool_wheel(window, cx)
+            }
+            None => return false,
+        }
+        true
+    }
+    /// Smoke-test input through window dispatch: the hovering pen presses
+    /// its lower barrel button; then (`aim`) points at Pan and releases it.
+    pub fn wheel_smoke_events(&self, aim: bool) -> Result<Vec<PlatformInput>, String> {
+        let at = if aim {
+            self.tool_wheel
+                .ok_or("The pen's barrel button did not open the tool wheel")?
+                .center
+        } else {
+            self.canvas_bounds.ok_or("Canvas not laid out")?.center()
+        };
+        let tablet = |position, buttons, phase| {
+            PlatformInput::Tablet(TabletEvent {
+                position,
+                pressure: 0.,
+                tilt_x: 0.,
+                tilt_y: 0.,
+                timestamp: 2000,
+                buttons,
+                eraser: false,
+                phase,
+                modifiers: Default::default(),
+            })
+        };
+        let hover = |position, buttons| {
+            [
+                tablet(position, buttons, TabletPhase::Hover),
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position,
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }),
+            ]
+        };
+        // Inside the ring, so only releasing the button chooses.
+        let pan = point(at.x, at.y + px(32. * self.controller.settings.ui_scale));
+        Ok(if aim {
+            let mut events = [hover(at, 1), hover(pan, 1), hover(pan, 0)].concat();
+            // Leaving proximity lets the mouse drive the canvas again.
+            events.push(tablet(pan, 0, TabletPhase::Leave));
+            events
+        } else {
+            [hover(at, 0), hover(at, 1)].concat()
+        })
+    }
+    pub fn wheel_smoke_verify(&mut self, tool: Tool, cx: &mut Context<Self>) -> Result<(), String> {
+        let chosen = self.tool_wheel.is_none() && self.controller.tool == Tool::Hand;
+        self.tool_wheel = None;
+        self.controller.set_tool(tool);
+        cx.notify();
+        if chosen {
+            Ok(())
+        } else {
+            Err("Releasing the barrel button while aiming did not choose Pan".into())
+        }
+    }
     fn wheel_slot_enabled(&self, slot: WheelTool) -> bool {
         !self.controller.read_only() || matches!(slot, WheelTool::Select | WheelTool::Pan)
     }
+    /// The wheel, faded and grown into place by `appear` from 0 to 1.
     pub(super) fn tool_wheel_overlay(
         &mut self,
+        appear: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -200,8 +370,12 @@ impl NotesView {
         };
         let theme = Theme::new(&self.controller.settings);
         let scale = self.controller.settings.ui_scale;
-        let (radius, slot_size) = (RADIUS * scale, SLOT * scale);
-        let ring = radius - slot_size / 2.;
+        let size = scale * (0.92 + 0.08 * appear);
+        let radius = RADIUS * size;
+        let (inner, outer) = (RING_INNER * size, RING_OUTER * size);
+        let ring = (inner + outer) / 2.;
+        let slot_size = outer - inner - 2. * GAP * size;
+        let hub = HUB * size;
         let pen_icon = match self.controller.style.tool {
             InkTool::Pencil => Icon::Pencil,
             InkTool::Marker => Icon::Marker,
@@ -213,17 +387,58 @@ impl NotesView {
         } else {
             Icon::Lasso
         };
-        let mut disc = div()
-            .absolute()
-            .left(wheel.center.x - px(radius))
-            .top(wheel.center.y - px(radius))
-            .size(px(2. * radius))
-            .rounded_full()
-            .glass(theme, theme.popover);
-        let aimed = wheel.aimed.map(|slot| WheelTool::ALL[slot]);
+        let current = WheelTool::ALL
+            .into_iter()
+            .find(|slot| slot.tool(self.selection_tool) == self.controller.tool);
+        let hovers = WheelTool::ALL.map(|slot| self.motion.borrow_mut().hover_value(slot.key()));
+        // The pointer's aim, else the keyboard focus, else a hovered tool.
+        let highlighted = wheel
+            .aimed
+            .map(|slot| WheelTool::ALL[slot])
+            .or_else(|| {
+                wheel.keyboard.then(|| {
+                    WheelTool::ALL
+                        .into_iter()
+                        .find(|slot| self.accessibility.is_focused(slot.key(), window))
+                })?
+            })
+            .or_else(|| {
+                (0..WheelTool::ALL.len())
+                    .filter(|&i| hovers[i] > 0.5)
+                    .max_by(|&a, &b| hovers[a].total_cmp(&hovers[b]))
+                    .map(|i| WheelTool::ALL[i])
+            });
+        let accent = |alpha: f32| rgba((theme.accent << 8) | (alpha.clamp(0., 1.) * 255.) as u32);
+        let mut segments = Vec::new();
+        let mut buttons = Vec::new();
         for (index, slot) in WheelTool::ALL.into_iter().enumerate() {
-            let angle = index as f32 / WheelTool::ALL.len() as f32 * std::f32::consts::TAU;
-            let (x, y) = (radius + ring * angle.sin(), radius - ring * angle.cos());
+            let angle = index as f32 / WheelTool::ALL.len() as f32 * TAU;
+            let enabled = self.wheel_slot_enabled(slot);
+            let active = current == Some(slot);
+            let lit = if highlighted == Some(slot) {
+                1.
+            } else {
+                hovers[index]
+            };
+            segments.push(Segment {
+                base: match (enabled, active) {
+                    (true, true) => accent(0.2),
+                    (true, false) => theme.tint(0.75),
+                    (false, _) => theme.tint(0.25),
+                },
+                highlight: if enabled {
+                    accent(lit)
+                } else {
+                    theme.tint(lit)
+                },
+                mark: active.then(|| {
+                    if enabled && lit > 0.5 {
+                        rgb(theme.primary_foreground)
+                    } else {
+                        rgb(theme.accent)
+                    }
+                }),
+            });
             let kind = match slot {
                 WheelTool::Pen => pen_icon,
                 WheelTool::Eraser => Icon::Eraser,
@@ -232,16 +447,25 @@ impl NotesView {
                 WheelTool::Text => Icon::Text,
                 WheelTool::Pan => Icon::Hand,
             };
-            let current = slot.tool(self.selection_tool) == self.controller.tool;
-            let enabled = self.wheel_slot_enabled(slot);
-            let button = self
-                .control(
+            let color = if !enabled {
+                theme.muted
+            } else if lit > 0.5 {
+                theme.primary_foreground
+            } else if active {
+                theme.accent
+            } else {
+                theme.ink
+            };
+            let center = (radius + ring * angle.sin(), radius - ring * angle.cos());
+            buttons.push(
+                self.control(
                     slot.key(),
                     slot.label(),
-                    icon(kind, theme.ink)
-                        .size(px(22. * scale))
+                    icon(kind, color)
+                        .size(px(22. * size))
+                        .when(!enabled, |icon| icon.opacity(0.5))
                         .into_any_element(),
-                    current,
+                    active,
                     cx,
                     move |this, window, cx| {
                         if this.wheel_slot_enabled(slot) {
@@ -250,37 +474,134 @@ impl NotesView {
                     },
                 )
                 .absolute()
-                .left(px(x - slot_size / 2.))
-                .top(px(y - slot_size / 2.))
+                .left(px(center.0 - slot_size / 2.))
+                .top(px(center.1 - slot_size / 2.))
                 .size(px(slot_size))
                 .p_0()
                 .rounded_full()
-                .when(!enabled, |button| button.opacity(0.4))
-                .when(aimed == Some(slot), |button| button.bg(theme.tint(2.)))
-                .hover(move |s| s.bg(theme.tint(2.)));
-            disc = disc.child(button);
+                // The painted segment shows hover, aim, focus and the
+                // active tool.
+                .bg(transparent_black())
+                .border_0()
+                .hover(|s| s)
+                .focus(|s| s)
+                .active(|s| s.opacity(0.85)),
+            );
         }
-        let caption = aimed.map_or("Choose a tool", |slot| slot.label());
-        disc = disc.child(
-            div()
-                .absolute()
-                .left(px(radius - 40. * scale))
-                .top(px(radius - 12. * scale))
-                .w(px(80. * scale))
-                .h(px(24. * scale))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_xs()
-                .text_color(rgb(theme.muted))
-                .child(caption),
-        );
-        let _ = window;
+        let read_only = self.controller.read_only();
+        let (name, note) = match highlighted.or(current) {
+            Some(slot) if !self.wheel_slot_enabled(slot) => (slot.label(), Some("Read only")),
+            Some(slot) if highlighted.is_some() => (slot.label(), None),
+            Some(slot) => (
+                slot.label(),
+                Some(if read_only { "Read only" } else { "Current" }),
+            ),
+            None => ("Tools", read_only.then_some("Read only")),
+        };
+        let pointer = wheel.pointing.zip(wheel.aimed).map(|(angle, slot)| {
+            let enabled = self.wheel_slot_enabled(WheelTool::ALL[slot]);
+            (
+                angle,
+                if enabled {
+                    rgb(theme.accent)
+                } else {
+                    rgb(theme.muted)
+                },
+            )
+        });
+        let gap = GAP * size;
+        let painted = canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                let center = bounds.center();
+                for (index, segment) in segments.iter().enumerate() {
+                    let angle = index as f32 / WheelTool::ALL.len() as f32 * TAU;
+                    for color in [segment.base, segment.highlight] {
+                        if color.a > 0.
+                            && let Some(path) = segment_path(center, (inner, outer), angle, gap)
+                        {
+                            window.paint_path(path, color);
+                        }
+                    }
+                    if let Some(color) = segment.mark
+                        && let Some(path) =
+                            segment_path(center, (outer - 4. * size, outer), angle, gap)
+                    {
+                        window.paint_path(path, color);
+                    }
+                }
+                // A notch on the hub points from the center toward the aim.
+                if let Some((angle, color)) = pointer {
+                    let mut b = PathBuilder::fill();
+                    let spread = 0.2;
+                    b.move_to(polar(center, hub + 7. * size, angle));
+                    b.line_to(polar(center, hub + 1. * size, angle - spread));
+                    b.line_to(polar(center, hub + 1. * size, angle + spread));
+                    b.close();
+                    if let Ok(path) = b.build() {
+                        window.paint_path(path, color);
+                    }
+                }
+            },
+        )
+        .absolute()
+        .inset_0();
+        let label = div()
+            .absolute()
+            .left(px(radius - hub))
+            .top(px(radius - hub))
+            .size(px(2. * hub))
+            .rounded_full()
+            .bg(theme.card())
+            .border_1()
+            .border_color(theme.glass_edge())
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(theme.ink))
+                    .child(name),
+            )
+            .children(note.map(|note| {
+                div()
+                    .text_xs()
+                    .line_height(rems(0.875))
+                    .text_color(rgb(theme.muted))
+                    .child(note)
+            }));
+        let disc = div()
+            .absolute()
+            .left(wheel.center.x - px(radius))
+            .top(wheel.center.y - px(radius))
+            .size(px(2. * radius))
+            .rounded_full()
+            .glass_dialog(theme, theme.popover)
+            .opacity(appear)
+            .child(painted)
+            .children(buttons)
+            .child(label);
         div()
             .id("tool-wheel")
             .absolute()
             .inset_0()
             .occlude()
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if let Some(wheel) = &mut this.tool_wheel
+                    && matches!(
+                        event.keystroke.key.as_str(),
+                        "left" | "right" | "up" | "down" | "tab"
+                    )
+                {
+                    wheel.keyboard = true;
+                    wheel.aimed = None;
+                    wheel.pointing = None;
+                    cx.notify();
+                }
+            }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 this.aim_tool_wheel(event.position, window, cx);
             }))
@@ -342,10 +663,20 @@ mod tests {
         assert_eq!(WheelTool::ALL[3], WheelTool::Pan);
     }
     #[test]
+    fn lower_barrel_button_opens_and_releases_the_wheel() {
+        // Bit 1 is the lower barrel button; bit 2, the upper one, erases.
+        assert_eq!(barrel(0, 1), Some(Barrel::Pressed));
+        assert_eq!(barrel(2, 3), Some(Barrel::Pressed));
+        assert_eq!(barrel(1, 1), None);
+        assert_eq!(barrel(3, 2), Some(Barrel::Released));
+        assert_eq!(barrel(0, 2), None);
+        assert_eq!(barrel(2, 0), None);
+    }
+    #[test]
     fn wheel_stays_inside_the_window() {
         let window = size(px(800.), px(600.));
         let center = placement(point(px(5.), px(590.)), window, 1.);
-        assert_eq!(center, point(px(100.), px(500.)));
+        assert_eq!(center, point(px(108.), px(492.)));
         assert_eq!(
             placement(point(px(400.), px(300.)), window, 1.),
             point(px(400.), px(300.))

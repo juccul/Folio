@@ -9,7 +9,7 @@ impl NotesView {
             ("Text · Shapes", "T · S"),
             (
                 "Tool wheel: point at a tool to choose it",
-                "W or a pad button set to wheel",
+                "W, the pen's lower button or a pad button set to wheel",
             ),
             (
                 "Edit selected text / Bold · Italic · Underline",

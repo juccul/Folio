@@ -10,6 +10,7 @@ struct PanelOpacity {
     help: f32,
     popover: f32,
     tool_menu: f32,
+    tool_wheel: f32,
     pages: f32,
     math: f32,
 }
@@ -111,7 +112,7 @@ impl Render for NotesView {
             );
         }
         if self.tool_wheel.is_some() && !self.library_open && !self.blocking_overlay() {
-            root = root.child(self.tool_wheel_overlay(window, cx));
+            root = root.child(self.tool_wheel_overlay(alpha.tool_wheel, window, cx));
         }
         if self.tool_menu.is_some() && !self.library_open && !self.blocking_overlay() {
             root = root.child(
@@ -237,6 +238,11 @@ impl NotesView {
             tool_menu: motion.panel(
                 "tool-menu-motion",
                 self.tool_menu.map(|(kind, _)| format!("{kind:?}")),
+                reduced,
+            ),
+            tool_wheel: motion.panel(
+                "tool-wheel-motion",
+                open(self.tool_wheel.is_some()),
                 reduced,
             ),
             pages: motion.panel(
@@ -682,7 +688,7 @@ impl NotesView {
                 // Holding W repeats the key; only a new press toggles.
                 if !this.wheel_key_held {
                     this.wheel_key_held = true;
-                    this.toggle_tool_wheel(window, cx);
+                    this.toggle_tool_wheel(window.mouse_position(), window, cx);
                 }
             }))
             .on_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {

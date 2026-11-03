@@ -258,6 +258,13 @@ fn main() -> anyhow::Result<()> {
                         cx.background_executor().timer(Duration::from_millis(12)).await;
                     }
                     window.update(cx,|view,_,cx|view.smoke_verify(cx))?.map_err(anyhow::Error::msg)?;
+                    let tool=window.update(cx,|view,_,_|view.controller.tool)?;
+                    for aim in [false,true] {
+                        let events=window.update(cx,|view,_,_|view.wheel_smoke_events(aim))?.map_err(anyhow::Error::msg)?;
+                        for event in events {cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;cx.background_executor().timer(Duration::from_millis(20)).await;}
+                        cx.background_executor().timer(Duration::from_millis(150)).await;
+                    }
+                    window.update(cx,|view,_,cx|view.wheel_smoke_verify(tool,cx))?.map_err(anyhow::Error::msg)?;
                     let (a,b)=window.update(cx,|view,_,cx| {let ids=view.navigation_smoke_setup();cx.notify();ids})?;
                     cx.background_executor().timer(Duration::from_millis(150)).await;
                     for (label,right) in [("Open Smoke A",true),("Duplicate",false)] {

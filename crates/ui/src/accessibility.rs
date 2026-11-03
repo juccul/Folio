@@ -347,6 +347,13 @@ impl Accessibility {
         key.hash(&mut hash);
         NodeId(hash.finish() | 256)
     }
+    /// Whether the control `key` has keyboard focus.
+    pub(super) fn is_focused(&self, key: &str, window: &Window) -> bool {
+        self.focus_handles
+            .borrow()
+            .get(&Self::control_id(key))
+            .is_some_and(|focus| focus.is_focused(window))
+    }
     pub(super) fn focus_virtual_control(
         &self,
         key: &str,

@@ -328,6 +328,8 @@ pub struct NotesView {
     timestamps: TimestampExtender,
     last_tablet: Option<Instant>,
     pen_in_range: bool,
+    /// The pen's barrel buttons in the last tablet frame.
+    pen_buttons: u32,
     gesture_start: Option<folio_canvas::Viewport>,
     mouse_pan: bool,
     start: Instant,
@@ -492,6 +494,7 @@ impl NotesView {
             timestamps: TimestampExtender::default(),
             last_tablet: None,
             pen_in_range: false,
+            pen_buttons: 0,
             gesture_start: None,
             mouse_pan: false,
             start: Instant::now(),
@@ -1537,6 +1540,9 @@ impl NotesView {
         self.diagnostics.pen(event);
         self.last_tablet = Some(Instant::now());
         self.pen_in_range = !matches!(event.phase, TabletPhase::Leave | TabletPhase::Cancel);
+        if self.pen_tool_wheel(event, window, cx) {
+            return;
+        }
         if self.canvas_input_blocked() {
             return;
         }
@@ -1709,7 +1715,7 @@ impl NotesView {
             match action.as_str() {
                 "undo" => self.controller.undo(),
                 "redo" => self.controller.redo(),
-                "wheel" => self.toggle_tool_wheel(window, cx),
+                "wheel" => self.toggle_tool_wheel(window.mouse_position(), window, cx),
                 "eraser" => self.controller.set_tool(Tool::Eraser),
                 "pen" => self.controller.set_tool(Tool::Pen),
                 "previous-page" => self
