@@ -70,6 +70,7 @@ impl Render for NotesView {
             body = body.child(main);
         }
         let canvas_overlay = self.canvas_menu_overlay(window, cx);
+        let document_menu = self.document_menu_overlay(&alpha, window, cx);
         body = self.add_overlays(body, &alpha, window, cx);
         self.building_overlay = false;
         // One glass bar for the title bar, editor toolbar and notices, so the
@@ -94,6 +95,7 @@ impl Render for NotesView {
         root = root
             .child(top.children(editor_top))
             .child(body)
+            .children(document_menu)
             .children(canvas_overlay);
         if !self.library_open
             && !self.blocking_overlay()
@@ -623,8 +625,14 @@ impl NotesView {
                     cx.notify();
                 }
             }))
-            .on_action(cx.listener(|_, _: &FocusNext, w, _| w.focus_next()))
-            .on_action(cx.listener(|_, _: &FocusPrevious, w, _| w.focus_prev()))
+            .on_action(cx.listener(|this, _: &FocusNext, w, cx| {
+                this.keyboard_in_document_menu(cx);
+                w.focus_next()
+            }))
+            .on_action(cx.listener(|this, _: &FocusPrevious, w, cx| {
+                this.keyboard_in_document_menu(cx);
+                w.focus_prev()
+            }))
             .on_action(cx.listener(|this, _: &NewNote, window, cx| {
                 // Same dialog as the New document button; Enter accepts the
                 // defaults.
@@ -1105,6 +1113,31 @@ impl NotesView {
             None
         }
     }
+    /// The document menu, laid over the whole window because it opens at a
+    /// pointer or anchor position in window coordinates.
+    fn document_menu_overlay(
+        &mut self,
+        alpha: &PanelOpacity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        self.document_menu?;
+        self.building_overlay = self.modal.is_none()
+            && !self.settings_open
+            && !self.help_open
+            && self.controller.error.is_none();
+        if self.building_overlay {
+            self.accessibility.begin();
+        }
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .top(px(rise(alpha.menu)))
+                .child(self.document_menu_panel(window, cx))
+                .opacity(alpha.menu),
+        )
+    }
     /// Menus, panels and dialogs layered over the body. Each layer that is
     /// built while no later layer covers it starts a new accessibility group,
     /// so only the topmost layer is reachable.
@@ -1116,23 +1149,6 @@ impl NotesView {
         cx: &mut Context<Self>,
     ) -> Div {
         let theme = Theme::new(&self.controller.settings);
-        if self.document_menu.is_some() {
-            self.building_overlay = self.modal.is_none()
-                && !self.settings_open
-                && !self.help_open
-                && self.controller.error.is_none();
-            if self.building_overlay {
-                self.accessibility.begin();
-            }
-            body = body.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .top(px(rise(alpha.menu)))
-                    .child(self.document_menu_panel(window, cx))
-                    .opacity(alpha.menu),
-            );
-        }
         if self.folder_menu.is_some() {
             self.building_overlay = self.modal.is_none()
                 && !self.settings_open

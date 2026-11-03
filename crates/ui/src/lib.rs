@@ -311,6 +311,11 @@ pub struct NotesView {
     document_menu: Option<(Id, Point<Pixels>)>,
     /// The document menu was opened from a tab, so it offers tab actions.
     document_menu_tab: bool,
+    /// The document menu was opened or navigated by keyboard, so its focused
+    /// item shows the focus ring.
+    document_menu_keyboard: bool,
+    /// A control is being activated by a pointer click rather than a key.
+    pointer_activation: bool,
     folder_menu: Option<(Id, Point<Pixels>)>,
     folder_rows: Vec<Id>,
     folder_scroll: UniformListScrollHandle,
@@ -473,6 +478,8 @@ impl NotesView {
             tab_target: None,
             document_menu: None,
             document_menu_tab: false,
+            document_menu_keyboard: false,
+            pointer_activation: false,
             folder_menu: None,
             folder_rows: Vec::new(),
             folder_scroll: UniformListScrollHandle::new(),

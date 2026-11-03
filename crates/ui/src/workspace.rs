@@ -902,7 +902,8 @@ impl NotesView {
                     cx,
                     move |this, w, cx| {
                         let at = this.menu_anchor(&format!("manage-note-{id}"), w);
-                        this.open_document_menu(id, at, false, w, cx);
+                        let keyboard = !this.pointer_activation;
+                        this.open_document_menu(id, at, false, keyboard, w, cx);
                         cx.stop_propagation();
                     },
                 )
@@ -914,7 +915,7 @@ impl NotesView {
             let open =
                 move |this: &mut Self, _: &mut Window, _: &mut Context<Self>| this.open_note(id);
             let context_menu = cx.listener(move |this, event: &MouseDownEvent, w, cx| {
-                this.open_document_menu(id, event.position, false, w, cx);
+                this.open_document_menu(id, event.position, false, false, w, cx);
                 cx.stop_propagation();
             });
             let title = div()
@@ -1663,7 +1664,7 @@ impl NotesView {
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, w, cx| {
-                            this.open_document_menu(id, event.position, true, w, cx);
+                            this.open_document_menu(id, event.position, true, false, w, cx);
                             cx.stop_propagation();
                         }),
                     )

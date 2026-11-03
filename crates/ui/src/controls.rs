@@ -77,6 +77,7 @@ impl NotesView {
         let id = id.into();
         let label = label.into();
         let window_control = id.as_ref().starts_with("window-");
+        let id_is_doc_menu = id.as_ref().starts_with("doc-menu-");
         let enabled = self.control_enabled(id.as_ref(), cx);
         let hover_id = id.clone();
         let hover = self.motion.borrow_mut().hover_value(id.as_ref());
@@ -135,6 +136,9 @@ impl NotesView {
                         .into_iter()
                         .find(|prefix| control_key.starts_with(prefix));
                     if let Some(prefix) = menu {
+                        if prefix == "doc-menu-" {
+                            this.document_menu_keyboard = true;
+                        }
                         let along = prefix == "wheel-"
                             || matches!(event.keystroke.key.as_str(), "up" | "down");
                         if along
@@ -203,7 +207,11 @@ impl NotesView {
             .py_2()
             .border_1()
             .border_color(transparent_black())
-            .focus(move |s| s.border_color(rgb(theme.ring)))
+            // Document menu items opened by pointer show the ring only once
+            // the keyboard is used in the menu.
+            .when(!id_is_doc_menu || self.document_menu_keyboard, move |s| {
+                s.focus(move |s| s.border_color(rgb(theme.ring)))
+            })
             .rounded(px(theme.radius))
             .text_sm()
             .text_color(rgb(if destructive {
@@ -249,9 +257,11 @@ impl NotesView {
             .when(enabled, |s| s.cursor_pointer())
             .child(content)
             .child(decoration)
-            .on_click(cx.listener(move |this, _, window, cx| {
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if enabled {
+                    this.pointer_activation = !event.is_keyboard();
                     action(this, window, cx);
+                    this.pointer_activation = false;
                     cx.notify();
                 }
             }))

@@ -110,6 +110,28 @@ pub(super) fn tabs_to_close(tabs: &[Id], id: Id, which: CloseTabs) -> Vec<Id> {
         CloseTabs::ToTheRight => tabs[index + 1..].to_vec(),
     }
 }
+/// Where a context menu of `size` opens for a press at `at`: below and right
+/// of the pointer, flipped above or left of it where it would leave the
+/// viewport, and kept inside a small margin.
+pub(super) fn context_menu_origin(
+    at: (f32, f32),
+    size: (f32, f32),
+    viewport: (f32, f32),
+) -> (f32, f32) {
+    const MARGIN: f32 = 8.;
+    let place = |at: f32, len: f32, room: f32| {
+        let start = if at + len > room - MARGIN && at - len >= MARGIN {
+            at - len
+        } else {
+            at
+        };
+        start.clamp(MARGIN, (room - len - MARGIN).max(MARGIN))
+    };
+    (
+        place(at.0, size.0, viewport.0),
+        place(at.1, size.1, viewport.1),
+    )
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DocumentMenuAction {
     Close(CloseTabs),
@@ -235,12 +257,14 @@ impl NotesView {
         id: Id,
         at: Point<Pixels>,
         from_tab: bool,
+        keyboard: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.folder_menu = None;
         self.document_menu = Some((id, at));
         self.document_menu_tab = from_tab;
+        self.document_menu_keyboard = keyboard;
         self.focus.focus(window);
         self.menu_focus = Some(
             if from_tab {
@@ -251,6 +275,13 @@ impl NotesView {
             .into(),
         );
         cx.notify();
+    }
+    /// Keyboard focus moved while the document menu is open: show its ring.
+    pub(super) fn keyboard_in_document_menu(&mut self, cx: &mut Context<Self>) {
+        if self.document_menu.is_some() && !self.document_menu_keyboard {
+            self.document_menu_keyboard = true;
+            cx.notify();
+        }
     }
     /// Close the tabs a tab-menu action names. When the active document is
     /// among them, the clicked tab becomes active first, so closing does not
@@ -284,18 +315,20 @@ impl NotesView {
             return div().into_any_element();
         };
         let from_tab = self.document_menu_tab && self.open_tabs.contains(&id);
-        let mut entries: Vec<(&str, &str, DocumentMenuAction)> = Vec::new();
+        let mut entries: Vec<(&str, &str, Option<Icon>, DocumentMenuAction)> = Vec::new();
         if from_tab {
             // Selecting the tab already opens it; offer the tab's own actions.
             entries.push((
                 "close",
                 "Close tab",
+                Some(Icon::Close),
                 DocumentMenuAction::Close(CloseTabs::This),
             ));
             if self.open_tabs.len() > 1 {
                 entries.push((
                     "close-others",
                     "Close other tabs",
+                    None,
                     DocumentMenuAction::Close(CloseTabs::Others),
                 ));
             }
@@ -303,34 +336,82 @@ impl NotesView {
                 entries.push((
                     "close-right",
                     "Close tabs to the right",
+                    None,
                     DocumentMenuAction::Close(CloseTabs::ToTheRight),
                 ));
             }
         } else {
-            entries.push(("open", "Open document", DocumentMenuAction::Open));
+            entries.push((
+                "open",
+                "Open document",
+                Some(Icon::Book),
+                DocumentMenuAction::Open,
+            ));
         }
+        let duplicate = (
+            "duplicate",
+            "Duplicate",
+            Some(Icon::Copy),
+            DocumentMenuAction::Duplicate,
+        );
         if note.trashed {
             entries.extend([
-                ("duplicate", "Duplicate", DocumentMenuAction::Duplicate),
-                ("trash", "Restore document", DocumentMenuAction::Trash),
-                ("delete", "Delete permanently…", DocumentMenuAction::Delete),
+                duplicate,
+                (
+                    "trash",
+                    "Restore document",
+                    Some(Icon::Undo),
+                    DocumentMenuAction::Trash,
+                ),
+                (
+                    "delete",
+                    "Delete permanently…",
+                    Some(Icon::Trash),
+                    DocumentMenuAction::Delete,
+                ),
             ]);
         } else {
             entries.extend([
-                ("rename", "Rename…", DocumentMenuAction::Rename),
-                ("duplicate", "Duplicate", DocumentMenuAction::Duplicate),
                 (
-                    "favorite",
-                    if note.favorite {
-                        "Remove from favorites"
-                    } else {
-                        "Add to favorites"
-                    },
-                    DocumentMenuAction::Favorite,
+                    "rename",
+                    "Rename…",
+                    Some(Icon::Pencil),
+                    DocumentMenuAction::Rename,
                 ),
-                ("move", "Move to folder…", DocumentMenuAction::Move),
-                ("tags", "Edit tags…", DocumentMenuAction::Tags),
-                ("trash", "Move to trash", DocumentMenuAction::Trash),
+                duplicate,
+                if note.favorite {
+                    (
+                        "favorite",
+                        "Remove from favorites",
+                        Some(Icon::StarFilled),
+                        DocumentMenuAction::Favorite,
+                    )
+                } else {
+                    (
+                        "favorite",
+                        "Add to favorites",
+                        Some(Icon::Star),
+                        DocumentMenuAction::Favorite,
+                    )
+                },
+                (
+                    "move",
+                    "Move to folder…",
+                    Some(Icon::Folder),
+                    DocumentMenuAction::Move,
+                ),
+                (
+                    "tags",
+                    "Edit tags…",
+                    Some(Icon::Tag),
+                    DocumentMenuAction::Tags,
+                ),
+                (
+                    "trash",
+                    "Move to trash",
+                    Some(Icon::Trash),
+                    DocumentMenuAction::Trash,
+                ),
             ]);
         }
         // Separate tab actions from document actions, and the destructive
@@ -344,20 +425,21 @@ impl NotesView {
         let separators = entries
             .iter()
             .enumerate()
-            .filter(|(i, (_, _, action))| {
-                separated(*action, i.checked_sub(1).map(|i| entries[i].2))
-            })
+            .filter(|(i, entry)| separated(entry.3, i.checked_sub(1).map(|i| entries[i].3)))
             .count();
-        // Measured rows with their gaps: title, actions and separators. Sizes
-        // follow the interface scale.
+        // Panel padding and edge, 2rem rows and separators with their margins,
+        // following the interface scale.
         let scale = self.controller.settings.ui_scale;
         let size = window.viewport_size();
         let (width, height) = (f32::from(size.width), f32::from(size.height));
-        let menu_width = (260. * scale).min((width - 24.).max(1.));
-        let natural = (16. + 46. + entries.len() as f32 * 45. + separators as f32 * 9.) * scale;
-        let menu_height = natural.min((height - 24.).max(1.));
-        let x = f32::from(at.x).clamp(12., (width - menu_width - 12.).max(12.));
-        let y = f32::from(at.y).clamp(12., (height - menu_height - 12.).max(12.));
+        let menu_width = (224. * scale).min((width - 16.).max(1.));
+        let natural = (10. + entries.len() as f32 * 32. + separators as f32 * 9.) * scale;
+        let menu_height = natural.min((height - 16.).max(1.));
+        let (x, y) = context_menu_origin(
+            (f32::from(at.x), f32::from(at.y)),
+            (menu_width, menu_height),
+            (width, height),
+        );
         let mut menu = div()
             .id("document-context-menu")
             .occlude()
@@ -367,39 +449,68 @@ impl NotesView {
             .w(px(menu_width))
             .max_h(px(menu_height))
             .overflow_y_scroll()
-            .p_2()
+            .p_1()
             .flex()
             .flex_col()
-            .gap_1()
             .rounded(px(theme.corner_md()))
             .glass(theme, theme.popover)
+            .shadow_md()
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 // Dismissing the menu must not also activate the tab, card or
                 // canvas under the pointer.
                 this.document_menu = None;
                 cx.stop_propagation();
                 cx.notify();
-            }))
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .px_3()
-                    .py_2()
-                    .text_xs()
-                    .truncate()
-                    .text_color(rgb(theme.muted))
-                    .child(note.title),
-            );
+            }));
         let mut previous = None;
-        for (key, label, action) in entries {
+        for (key, label, kind, action) in entries {
             if separated(action, previous) {
-                menu = menu.child(div().flex_shrink_0().h(px(1.)).mx_2().bg(theme.border));
+                menu = menu.child(
+                    div()
+                        .flex_shrink_0()
+                        .h(px(1.))
+                        .mx_2()
+                        .my_1()
+                        .bg(theme.border),
+                );
             }
             previous = Some(action);
+            // Destructive actions are marked by a red icon; their text keeps
+            // the menu's ink.
+            let destructive = matches!(action, DocumentMenuAction::Delete)
+                || (action == DocumentMenuAction::Trash && !note.trashed);
+            let glyph = match kind {
+                Some(kind) => icon(
+                    kind,
+                    if destructive {
+                        theme.destructive
+                    } else {
+                        theme.muted
+                    },
+                )
+                .size(rems(1.125))
+                .into_any_element(),
+                None => div().size(rems(1.125)).flex_shrink_0().into_any_element(),
+            };
             menu = menu.child(
-                self.button(
+                self.control(
                     format!("doc-menu-{key}"),
                     label,
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(glyph)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(rgb(theme.ink))
+                                .child(label),
+                        )
+                        .into_any_element(),
                     false,
                     cx,
                     move |this, w, cx| {
@@ -434,8 +545,11 @@ impl NotesView {
                     },
                 )
                 .flex_shrink_0()
+                .w_full()
                 .justify_start()
-                .w_full(),
+                .min_h(rems(2.))
+                .px_2()
+                .py_1(),
             );
         }
         menu.into_any_element()
@@ -571,7 +685,7 @@ impl NotesView {
 
 #[cfg(test)]
 mod tests {
-    use super::{CloseTabs, TabDrag, close_tab, move_tab, tabs_to_close};
+    use super::{CloseTabs, TabDrag, close_tab, context_menu_origin, move_tab, tabs_to_close};
     use core::prelude::v1::test;
     use folio_document::Id;
     #[test]
@@ -588,6 +702,25 @@ mod tests {
         assert_eq!(tabs_to_close(&tabs, a, CloseTabs::ToTheRight), vec![b, c]);
         assert!(tabs_to_close(&tabs, c, CloseTabs::ToTheRight).is_empty());
         assert!(tabs_to_close(&tabs, Id::new_v4(), CloseTabs::Others).is_empty());
+        // The tab menu opens at the pointer, flips above or left of it near
+        // the viewport's edges and stays inside a tiny window.
+        let (menu, viewport) = ((224., 300.), (1000., 800.));
+        assert_eq!(
+            context_menu_origin((100., 40.), menu, viewport),
+            (100., 40.)
+        );
+        assert_eq!(
+            context_menu_origin((900., 700.), menu, viewport),
+            (676., 400.)
+        );
+        assert_eq!(
+            context_menu_origin((150., 600.), menu, viewport),
+            (150., 300.)
+        );
+        assert_eq!(
+            context_menu_origin((100., 200.), menu, (400., 350.)),
+            (100., 42.)
+        );
     }
     #[test]
     fn dragged_tabs_follow_the_pointer_and_neighbors_make_room() {
