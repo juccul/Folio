@@ -108,6 +108,9 @@ impl Render for NotesView {
                     .opacity(alpha.popover),
             );
         }
+        if self.tool_wheel.is_some() && !self.library_open && !self.blocking_overlay() {
+            root = root.child(self.tool_wheel_overlay(window, cx));
+        }
         if self.tool_menu.is_some() && !self.library_open && !self.blocking_overlay() {
             root = root.child(
                 div()
@@ -450,9 +453,9 @@ impl NotesView {
                     }
                 });
                 let pad_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &TabletPadEvent, phase, _, cx| {
+                window.on_mouse_event(move |event: &TabletPadEvent, phase, window, cx| {
                     if phase.bubble() {
-                        pad_entity.update(cx, |v, cx| v.pad(event, cx));
+                        pad_entity.update(cx, |v, cx| v.pad(event, window, cx));
                     }
                 });
                 let scroll_entity = paint_entity.clone();
@@ -667,6 +670,19 @@ impl NotesView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ApplyCrop, _, cx| this.apply_crop(cx)))
+            .on_action(cx.listener(|this, _: &OpenToolWheel, window, cx| {
+                // Holding W repeats the key; only a new press toggles.
+                if !this.wheel_key_held {
+                    this.wheel_key_held = true;
+                    this.toggle_tool_wheel(window, cx);
+                }
+            }))
+            .on_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
+                if event.keystroke.key == "w" && this.wheel_key_held {
+                    this.wheel_key_held = false;
+                    this.release_tool_wheel(window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &EditText, window, cx| {
                 if !this.controller.read_only() {
                     this.edit_selected_text(window, cx);
@@ -794,6 +810,8 @@ impl NotesView {
             self.document_menu = None;
         } else if self.canvas_menu.is_some() {
             self.canvas_menu = None;
+        } else if self.tool_wheel.is_some() {
+            self.tool_wheel = None;
         } else if self.tool_menu.is_some() || self.sort_open {
             self.tool_menu = None;
             self.sort_open = false;

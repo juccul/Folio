@@ -39,6 +39,7 @@ mod templates;
 mod text_render;
 mod theme;
 mod titlebar;
+mod tool_wheel;
 mod toolbar_menu;
 use toolbar_menu::ToolMenu;
 mod updates;
@@ -111,7 +112,8 @@ actions!(
         EditText,
         ToggleBold,
         ToggleItalic,
-        ToggleUnderline
+        ToggleUnderline,
+        OpenToolWheel
     ]
 );
 #[derive(Clone)]
@@ -313,6 +315,9 @@ pub struct NotesView {
     folder_rows: Vec<Id>,
     folder_scroll: UniformListScrollHandle,
     canvas_menu: Option<canvas_menu::CanvasMenu>,
+    tool_wheel: Option<tool_wheel::ToolWheel>,
+    /// W is held down; its key repeats must not toggle the wheel.
+    wheel_key_held: bool,
     thumbnails: workspace::Thumbnails,
     writing_style: Option<folio_document::PenStyle>,
     timestamps: TimestampExtender,
@@ -471,6 +476,8 @@ impl NotesView {
             folder_menu: None,
             folder_rows: Vec::new(),
             folder_scroll: UniformListScrollHandle::new(),
+            tool_wheel: None,
+            wheel_key_held: false,
             canvas_menu: None,
             thumbnails: workspace::Thumbnails::default(),
             writing_style: None,
@@ -698,6 +705,7 @@ impl NotesView {
                 EditText,
                 Some("Folio && !FolioCrop && !FolioField && !FolioControl"),
             ),
+            KeyBinding::new("w", OpenToolWheel, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-b", ToggleBold, Some("Folio")),
             KeyBinding::new("ctrl-i", ToggleItalic, Some("Folio")),
             KeyBinding::new("ctrl-u", ToggleUnderline, Some("Folio")),
@@ -719,7 +727,10 @@ impl NotesView {
     }
     /// Whether an overlay keeps pointer and pen input away from the canvas.
     fn canvas_input_blocked(&self) -> bool {
-        self.library_open || self.blocking_overlay() || self.tool_menu.is_some()
+        self.library_open
+            || self.blocking_overlay()
+            || self.tool_menu.is_some()
+            || self.tool_wheel.is_some()
     }
     fn open_settings(&mut self, window: &mut Window) {
         self.controller.finish();
@@ -738,6 +749,7 @@ impl NotesView {
     fn dismiss_popovers(&mut self) {
         self.pen_menu_section = pen_menu::Section::Pen;
         self.tool_menu = None;
+        self.tool_wheel = None;
         self.folder_menu = None;
         self.canvas_menu = None;
         self.sort_open = false;
@@ -1663,7 +1675,7 @@ impl NotesView {
             self.begin_inline_text(id, window, cx);
         }
     }
-    fn pad(&mut self, event: &TabletPadEvent, cx: &mut Context<Self>) {
+    fn pad(&mut self, event: &TabletPadEvent, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(check) = &mut self.diagnostics.check {
             check.pad(event);
             cx.notify();
@@ -1690,6 +1702,7 @@ impl NotesView {
             match action.as_str() {
                 "undo" => self.controller.undo(),
                 "redo" => self.controller.redo(),
+                "wheel" => self.toggle_tool_wheel(window, cx),
                 "eraser" => self.controller.set_tool(Tool::Eraser),
                 "pen" => self.controller.set_tool(Tool::Pen),
                 "previous-page" => self

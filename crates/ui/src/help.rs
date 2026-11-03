@@ -8,6 +8,10 @@ impl NotesView {
             ("Pen · Eraser · Lasso · Pan", "P · E · L · H"),
             ("Text · Shapes", "T · S"),
             (
+                "Tool wheel: point at a tool to choose it",
+                "W or a pad button set to wheel",
+            ),
+            (
                 "Edit selected text / Bold · Italic · Underline",
                 "Enter / Ctrl B · I · U",
             ),

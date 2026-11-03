@@ -129,12 +129,18 @@ impl NotesView {
                     )
                 {
                     let forward = matches!(event.keystroke.key.as_str(), "right" | "down");
-                    // Document menu items only move focus; Enter activates.
-                    if control_key.starts_with("doc-menu-") {
-                        if matches!(event.keystroke.key.as_str(), "up" | "down")
+                    // Document menu items and wheel tools only move focus;
+                    // Enter activates.
+                    let menu = ["doc-menu-", "wheel-"]
+                        .into_iter()
+                        .find(|prefix| control_key.starts_with(prefix));
+                    if let Some(prefix) = menu {
+                        let along = prefix == "wheel-"
+                            || matches!(event.keystroke.key.as_str(), "up" | "down");
+                        if along
                             && let Some(focus) = this.accessibility.menu_neighbor(
                                 control_key.as_ref(),
-                                "doc-menu-",
+                                prefix,
                                 forward,
                             )
                         {
