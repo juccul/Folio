@@ -186,6 +186,8 @@ pub struct Appearance {
     /// Blur radius behind glass surfaces, in logical pixels.
     pub glass_blur: f32,
 }
+/// Base opacity of glass surfaces for new and reset appearance settings.
+const DEFAULT_GLASS_OPACITY: f32 = 0.8;
 impl Default for Appearance {
     fn default() -> Self {
         Self {
@@ -195,7 +197,7 @@ impl Default for Appearance {
             canvas_follows_theme: true,
             canvas_color: None,
             adapt_ink: false,
-            glass_opacity: 0.7,
+            glass_opacity: DEFAULT_GLASS_OPACITY,
             glass_blur: 12.,
         }
     }
@@ -237,7 +239,7 @@ impl Appearance {
         if self.glass_opacity.is_finite() {
             self.glass_opacity.clamp(0.3, 1.)
         } else {
-            0.7
+            DEFAULT_GLASS_OPACITY
         }
     }
     /// Blur radius behind glass surfaces, in logical pixels.
@@ -536,12 +538,18 @@ mod tests {
         );
         assert_eq!(settings.ui_scale, 1.2);
         assert_eq!(settings.appearance.radius(), 12.);
-        assert_eq!(settings.appearance.glass_opacity(), 0.7);
+        assert_eq!(settings.appearance.glass_opacity(), 0.8);
+        assert_eq!(Appearance::default().glass_opacity, 0.8);
         assert_eq!(settings.appearance.glass_blur(), 12.);
         // Hand-edited values cannot make glass invisible or unbounded.
         let edited: Appearance =
             serde_json::from_str(r#"{"glass_opacity":0.0,"glass_blur":500.0}"#).unwrap();
         assert_eq!((edited.glass_opacity(), edited.glass_blur()), (0.3, 40.));
+        let invalid = Appearance {
+            glass_opacity: f32::NAN,
+            ..Appearance::default()
+        };
+        assert_eq!(invalid.glass_opacity(), 0.8);
     }
     #[test]
     fn appearance_changes_persist_without_restyling_document_objects() {
@@ -559,6 +567,7 @@ mod tests {
             ThemeToken::Primary,
             ThemeColor::parse("#fafafa").unwrap(),
         );
+        app.settings.appearance.glass_opacity = 0.55;
         app.store_settings();
         app.flush().unwrap();
         drop(app);
@@ -567,6 +576,7 @@ mod tests {
         assert_eq!(reopened.page().objects, original);
         assert!(reopened.settings.dark);
         assert!(!reopened.settings.appearance.canvas_follows_theme);
+        assert_eq!(reopened.settings.appearance.glass_opacity(), 0.55);
         assert_eq!(
             reopened.settings.appearance.canvas_color.unwrap().rgb(),
             0xfdf5e6
