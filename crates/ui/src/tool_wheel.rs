@@ -570,14 +570,21 @@ impl NotesView {
                     .text_color(rgb(theme.muted))
                     .child(note)
             }));
+        // The glass disc's border would offset absolutely placed children,
+        // so the disc is a sibling layer and everything shares one center.
         let disc = div()
             .absolute()
             .left(wheel.center.x - px(radius))
             .top(wheel.center.y - px(radius))
             .size(px(2. * radius))
-            .rounded_full()
-            .glass_dialog(theme, theme.popover)
             .opacity(appear)
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded_full()
+                    .glass_dialog(theme, theme.popover),
+            )
             .child(painted)
             .children(buttons)
             .child(label);
