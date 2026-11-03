@@ -295,6 +295,21 @@ impl Controller {
         }
         self.text_or_image_at(p, false)
     }
+    /// Target the text box or image under a context-menu press, so the
+    /// menu's actions apply to it. A press on an already selected object
+    /// keeps the whole selection; a press on another object selects only it,
+    /// borrowing the lasso like a paste. Elsewhere the selection is kept.
+    /// Returns whether an object is under `p`.
+    pub fn select_for_context_menu(&mut self, p: Point) -> bool {
+        let Some(id) = self.text_or_image_at(p, true) else {
+            return false;
+        };
+        if !self.session().selection.contains(&id) {
+            self.session_mut().selection = HashSet::from([id]);
+            self.borrow_lasso();
+        }
+        true
+    }
     /// The topmost text box (or image, when `images` is set) under `p`.
     fn text_or_image_at(&self, p: Point, images: bool) -> Option<Id> {
         let session = self.session();

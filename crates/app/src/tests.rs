@@ -92,6 +92,29 @@ fn context_paste_places_mixed_objects_at_anchor_and_undoes_once() {
         "Move originals",
     );
     let originals = a.page().objects.clone();
+    // A context-menu press targets the transformed text box under it, keeps
+    // a selection that already contains it, and keeps the selection when it
+    // misses every text box and image.
+    let (text, center) = originals
+        .values()
+        .find_map(|o| match o.as_ref() {
+            Object::Text(t) => Some((t.id, t.transform.apply(t.rect.center()))),
+            _ => None,
+        })
+        .unwrap();
+    a.set_tool(Tool::Pen);
+    a.clear_selection();
+    assert!(a.select_for_context_menu(center));
+    assert_eq!(a.session().selection, HashSet::from([text]));
+    assert_eq!(a.tool, Tool::Lasso);
+    a.select_all();
+    assert!(a.select_for_context_menu(center));
+    assert_eq!(a.session().selection.len(), 2);
+    assert!(!a.select_for_context_menu(Point::new(2000., 2000.)));
+    assert_eq!(a.session().selection.len(), 2);
+    a.clear_selection();
+    assert_eq!(a.tool, Tool::Pen);
+    a.select_all();
     let clipboard = a.encode_clipboard().unwrap();
     let target = Point::new(450., 300.);
     a.paste_text_or_objects_at(clipboard.clone(), target);

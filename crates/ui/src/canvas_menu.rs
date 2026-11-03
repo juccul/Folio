@@ -30,6 +30,7 @@ impl NotesView {
                 f32::from(at.x - bounds.origin.x),
                 f32::from(at.y - bounds.origin.y),
             ));
+        self.controller.select_for_context_menu(position);
         let can_paste = !self.controller.read_only() && cx.read_from_clipboard().is_some_and(|item| {
             item.text().is_some_and(|text| !text.is_empty()) || item.entries().iter().any(|entry| {
                 matches!(entry, ClipboardEntry::Image(image) if matches!(image.format(), ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Webp))
