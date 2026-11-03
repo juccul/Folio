@@ -159,8 +159,8 @@ impl Controller {
             self.status = label;
         }
         self.refresh_metadata(id);
-        if id == self.active && self.read_only() {
-            self.tool = Tool::Hand;
+        if id == self.active {
+            self.follow_read_only();
         }
         self.persist(delta);
     }

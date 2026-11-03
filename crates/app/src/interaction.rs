@@ -172,8 +172,9 @@ impl Controller {
                 self.text_click = Some((id, p));
             }
             self.session_mut().selection = HashSet::from([id]);
-            // Selecting text within a borrowed lasso keeps its return tool.
-            if self.tool != Tool::Lasso {
+            // Selecting text within a borrowed lasso keeps its return tool,
+            // and a chosen selection tool stays active.
+            if !matches!(self.tool, Tool::Lasso | Tool::Rectangle) {
                 self.tool = Tool::Lasso;
                 self.temporary_selection = false;
             }

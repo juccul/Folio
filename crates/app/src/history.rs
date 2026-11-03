@@ -128,8 +128,8 @@ impl Controller {
             delta
         });
         self.refresh_metadata(note);
-        if note == self.active && self.read_only() {
-            self.tool = Tool::Hand;
+        if note == self.active {
+            self.follow_read_only();
         }
         if let Some(delta) = delta {
             self.persist(delta);

@@ -159,9 +159,7 @@ impl Controller {
     fn show_note(&mut self, id: Id) {
         self.activate_note(id);
         self.mark_note_opened(id);
-        if self.read_only() {
-            self.tool = Tool::Hand;
-        }
+        self.follow_read_only();
     }
     /// Install a document loaded by a worker, restoring its last view, and
     /// show it if it is the tab the user is waiting for.

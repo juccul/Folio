@@ -663,7 +663,8 @@ impl NotesView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Lasso, _, cx| {
-                this.select_tool(Tool::Lasso);
+                // L returns to the selection tool last chosen, as the toolbar does.
+                this.select_tool(this.selection_tool);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Hand, _, cx| {

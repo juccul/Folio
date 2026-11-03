@@ -39,9 +39,12 @@ impl Controller {
     }
     /// Switch to the lasso for a selection made without it, as by Select All
     /// or a paste. Clearing the selection, or pressing away from it, returns
-    /// to the tool that was in use.
+    /// to the tool that was in use. A chosen selection tool stays active.
     pub(crate) fn borrow_lasso(&mut self) {
-        if !matches!(self.tool, Tool::Lasso | Tool::Rectangle) && !self.temporary_selection {
+        if matches!(self.tool, Tool::Lasso | Tool::Rectangle) {
+            return;
+        }
+        if !self.temporary_selection {
             self.selection_return_tool = self.tool;
             self.temporary_selection = true;
         }

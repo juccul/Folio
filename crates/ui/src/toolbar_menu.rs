@@ -130,7 +130,7 @@ impl NotesView {
         match kind {
             ToolMenu::Selection => {
                 for (id, label, tool) in [
-                    ("lasso", "Lasso · L", Tool::Lasso),
+                    ("lasso", "Lasso", Tool::Lasso),
                     ("select-rect", "Rectangular selection", Tool::Rectangle),
                 ] {
                     panel = panel.child(

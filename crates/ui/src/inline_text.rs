@@ -58,7 +58,10 @@ impl NotesView {
                 cx.notify()
             });
         field.read(cx).focus.focus(window);
-        self.controller.set_tool(Tool::Lasso);
+        // Editing selects the box; rectangular selection stays chosen.
+        if self.controller.tool != Tool::Rectangle {
+            self.controller.set_tool(Tool::Lasso);
+        }
         self.controller.session_mut().selection = std::collections::HashSet::from([id]);
         self.inline_text = Some(Editor {
             note,
@@ -97,7 +100,7 @@ impl NotesView {
             && self.controller.page().id == editor.page
             && selected
             && !self.library_open
-            && self.controller.tool == Tool::Lasso;
+            && matches!(self.controller.tool, Tool::Lasso | Tool::Rectangle);
         let source = self.controller.page().objects.get(&editor.id).cloned();
         let text = source.as_ref().and_then(|source| {
             let Object::Text(text) = source.as_ref() else {

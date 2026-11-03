@@ -173,6 +173,9 @@ pub struct Controller {
     /// `selection_return_tool` afterwards.
     temporary_selection: bool,
     selection_return_tool: Tool,
+    /// The tool in use before a read-only document switched to the hand,
+    /// restored once an editable document is shown again.
+    read_only_return_tool: Option<Tool>,
     /// Second click on a selected text box, which opens its editor on release.
     text_click: Option<(Id, Point)>,
     /// Text tool press waiting for the UI to open an editor at this point.
@@ -369,6 +372,7 @@ impl Controller {
             tool: initial_tool,
             temporary_selection: false,
             selection_return_tool: Tool::Pen,
+            read_only_return_tool: None,
             style,
             settings,
             filter: NoteFilter::All,
@@ -461,7 +465,21 @@ impl Controller {
         self.finish();
         self.tool = tool;
         self.temporary_selection = false;
+        self.read_only_return_tool = None;
         self.pending_text = None;
+    }
+    /// Read-only documents can only be viewed, so they use the hand. The
+    /// previous tool comes back with the next editable document.
+    pub(crate) fn follow_read_only(&mut self) {
+        if self.read_only() {
+            if self.tool != Tool::Hand {
+                self.end_temporary_selection();
+                self.read_only_return_tool.get_or_insert(self.tool);
+                self.tool = Tool::Hand;
+            }
+        } else if let Some(tool) = self.read_only_return_tool.take() {
+            self.tool = tool;
+        }
     }
     pub fn set_color(&mut self, color: Color) {
         self.settings

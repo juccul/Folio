@@ -37,6 +37,13 @@ fn draw_edit_undo_save_reload() {
     assert_eq!(a.tool, Tool::Lasso);
     a.clear_selection();
     assert_eq!(a.tool, Tool::Eraser); // Select All borrowed the lasso.
+    // A chosen selection tool stays chosen through Select All and clearing.
+    a.set_tool(Tool::Rectangle);
+    a.select_all();
+    assert_eq!(a.tool, Tool::Rectangle);
+    a.clear_selection();
+    assert_eq!(a.tool, Tool::Rectangle);
+    a.set_tool(Tool::Eraser);
     a.select_all();
     a.transform_selection(Transform::translate(10., 40.), "move");
     assert_eq!(a.page().objects[&s.id].transform().tx, 10.);
@@ -78,8 +85,16 @@ fn page_operations_and_note_ids() {
     assert_eq!(a.session().document.pages.len(), 2);
     a.create_note();
     assert_ne!(first, a.active);
+    let trashed = a.active;
     a.switch_note(first);
     assert_eq!(a.session().document.pages.len(), 2);
+    // Viewing a read-only document uses the hand only while it is shown.
+    a.manage_note(trashed, NoteAction::Trash);
+    a.set_tool(Tool::Rectangle);
+    a.switch_note(trashed);
+    assert_eq!((a.active, a.tool), (trashed, Tool::Hand));
+    a.switch_note(first);
+    assert_eq!(a.tool, Tool::Rectangle);
 }
 #[test]
 fn context_paste_places_mixed_objects_at_anchor_and_undoes_once() {
