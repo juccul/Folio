@@ -358,6 +358,7 @@ impl NotesView {
                     let pan = viewport.pan;
                     viewport.pan.x += f32::from(area.origin.x - bounds.origin.x);
                     viewport.pan.y += f32::from(area.origin.y - bounds.origin.y);
+                    view.painter.hide_selection = view.cropping();
                     view.painter
                         .paint(&mut view.controller, bounds, editing, window, cx);
                     view.controller.session_mut().viewport.pan = pan;
@@ -574,6 +575,7 @@ impl NotesView {
             && !self.controller.read_only()
             && !self.controller.session().selection.is_empty()
             && self.inline_text.is_none()
+            && !self.cropping()
         {
             center = center.child(self.selection_toolbar(cx));
         }
@@ -592,6 +594,8 @@ impl NotesView {
                 "FolioDialog"
             } else if self.library_open {
                 "FolioLibrary"
+            } else if self.cropping() {
+                "Folio FolioCrop"
             } else {
                 "Folio"
             })
@@ -662,6 +666,7 @@ impl NotesView {
                 this.select_tool(Tool::Eraser);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ApplyCrop, _, cx| this.apply_crop(cx)))
             .on_action(cx.listener(|this, _: &Lasso, _, cx| {
                 // L returns to the selection tool last chosen, as the toolbar does.
                 this.select_tool(this.selection_tool);
@@ -855,9 +860,23 @@ impl NotesView {
                 panel.relative().left(px(32. * (1. - alpha.math)))
             });
         }
+        let cropping = self.cropping();
         let region_notice = self.region_selection.is_some().then(|| {
             notice_bar()
-                .child("Drag a rectangle on the page")
+                .child(if cropping {
+                    "Drag the handles, move the box or draw a new one"
+                } else {
+                    "Drag a rectangle on the page"
+                })
+                .when(cropping, |bar| {
+                    bar.child(self.button(
+                        "apply-crop",
+                        "Apply crop · Enter",
+                        false,
+                        cx,
+                        |this, _, cx| this.apply_crop(cx),
+                    ))
+                })
                 .child(
                     self.button("cancel-region", "Cancel · Esc", false, cx, |this, _, _| {
                         this.region_selection = None;

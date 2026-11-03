@@ -106,7 +106,8 @@ actions!(
         Export,
         FocusNext,
         FocusPrevious,
-        ResetTitlebarSmoke
+        ResetTitlebarSmoke,
+        ApplyCrop
     ]
 );
 #[derive(Clone)]
@@ -683,6 +684,11 @@ impl NotesView {
             KeyBinding::new("ctrl-tab", NextTab, Some("Folio && !FolioDialog")),
             KeyBinding::new("ctrl-shift-tab", PreviousTab, Some("Folio && !FolioDialog")),
             KeyBinding::new("ctrl-shift-e", Export, Some("Folio && !FolioField")),
+            KeyBinding::new(
+                "enter",
+                ApplyCrop,
+                Some("FolioCrop && !FolioField && !FolioControl"),
+            ),
         ]);
     }
     pub fn titlebar_smoke_bindings(cx: &mut App) {
@@ -882,6 +888,30 @@ impl NotesView {
                     }
                 })
                 .unwrap_or_default(),
+            // The current crop of the selected image, or the whole image.
+            Modal::Crop => {
+                let crop = self
+                    .controller
+                    .session()
+                    .selection
+                    .iter()
+                    .find_map(
+                        |id| match self.controller.page().objects.get(id)?.as_ref() {
+                            folio_document::Object::Image(image) => Some(image.crop),
+                            _ => None,
+                        },
+                    )
+                    .flatten()
+                    .unwrap_or(folio_document::Rect::new(0., 0., 1., 1.));
+                let round = |v: f32| (v * 1000.).round() / 1000.;
+                format!(
+                    "{}, {}, {}, {}",
+                    round(crop.min.x),
+                    round(crop.min.y),
+                    round(crop.width()),
+                    round(crop.height())
+                )
+            }
             _ => String::new(),
         };
         let multiline = matches!(modal, Modal::Recognition);
@@ -1915,7 +1945,7 @@ impl NotesView {
                     Modal::FontSize => "Font size: 6–180 canvas pixels at 96 dpi. A 24px font exports as 18pt in PDF.",
                     Modal::Color => "Choose a color below, or enter a hex value.",
                     Modal::MoveNotebook(_) | Modal::MoveDocument(_) => "Filter folders by path, choose a destination below, then press Move.",
-                    _ => "Left, top, width and height as fractions from 0 to 1.",
+                    _ => "Left, top, width and height of the original image, as fractions from 0 to 1.",
                 }))
             })
             .when(matches!(modal, Modal::NewDocument), |panel| panel.child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Name (optional)")))

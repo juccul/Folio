@@ -227,14 +227,40 @@ impl Controller {
         });
         self.commit("Refine handwriting", changes);
     }
+    /// Crop the selected images to `crop`, a rectangle of the original
+    /// image in 0–1 fractions, or restore the whole image with `None`. The
+    /// kept part stays where it is on the page at the same scale; the frame
+    /// shrinks or grows around it.
     pub fn crop_selection(&mut self, crop: Option<Rect>) {
+        let crop = crop.filter(|c| *c != Rect::new(0., 0., 1., 1.));
         let changes = self.object_changes(&self.session().selection, |object| {
             let mut object = object.clone();
             if let Object::Image(image) = &mut object {
+                let full = uncropped_frame(image.rect, image.crop);
+                image.rect = crop.map_or(full, |c| {
+                    Rect::new(
+                        full.min.x + c.min.x * full.width(),
+                        full.min.y + c.min.y * full.height(),
+                        c.width() * full.width(),
+                        c.height() * full.height(),
+                    )
+                });
                 image.crop = crop;
             }
             Some(object)
         });
         self.commit("Crop image", changes);
+    }
+}
+/// Where the whole image would be drawn, given the frame of its `crop`.
+fn uncropped_frame(rect: Rect, crop: Option<Rect>) -> Rect {
+    match crop {
+        Some(c) if c.width() > 0. && c.height() > 0. => Rect::new(
+            rect.min.x - c.min.x * rect.width() / c.width(),
+            rect.min.y - c.min.y * rect.height() / c.height(),
+            rect.width() / c.width(),
+            rect.height() / c.height(),
+        ),
+        _ => rect,
     }
 }

@@ -212,6 +212,30 @@ fn paste_image_anchors_at_target_and_selects_it_on_its_page() {
     assert_eq!(a.session().selection.len(), 1);
     assert_eq!(a.page().objects[&id].bounds().min, Point::new(120., 90.));
     assert_eq!(a.tool, Tool::Lasso);
+    // Cropping keeps the kept part where it was at the same scale, crop
+    // fractions refer to the whole image, and Reset crop restores it.
+    let image_frame = |a: &Controller| match a.page().objects[&id].as_ref() {
+        Object::Image(image) => (image.rect, image.crop),
+        _ => panic!("the pasted object is an image"),
+    };
+    let (full, _) = image_frame(&a);
+    let (w, h) = (full.width(), full.height());
+    a.crop_selection(Some(Rect::new(0.25, 0.5, 0.5, 0.5)));
+    assert_eq!(
+        image_frame(&a),
+        (
+            Rect::new(120. + w / 4., 90. + h / 2., w / 2., h / 2.),
+            Some(Rect::new(0.25, 0.5, 0.5, 0.5))
+        )
+    );
+    a.crop_selection(Some(Rect::new(0., 0., 1., 0.5)));
+    assert_eq!(image_frame(&a).0, Rect::new(120., 90., w, h / 2.));
+    a.crop_selection(None);
+    assert_eq!(image_frame(&a), (full, None));
+    for _ in 0..3 {
+        a.undo();
+    }
+    assert_eq!(image_frame(&a), (full, None));
     // Dragging inside the selection moves it and keeps the borrowed lasso; a
     // stroke started outside returns to the pen and inks from pen-down.
     a.session_mut().viewport.zoom = 2.;

@@ -293,7 +293,7 @@ fn main() -> anyhow::Result<()> {
                         cx.background_executor().timer(Duration::from_millis(20)).await;
                         if index==1 {window.update(cx,|view,_,_|view.region_smoke_outline())?.map_err(anyhow::Error::msg)?;}
                     }
-                    window.update(cx,|view,_,_|view.region_smoke_verify())?.map_err(anyhow::Error::msg)?;
+                    window.update(cx,|view,_,cx|view.region_smoke_verify(cx))?.map_err(anyhow::Error::msg)?;
                     for phase in 0..2 {
                         window.update(cx, |view, _, cx| { view.update_smoke_phase(phase); cx.notify(); })?;
                         let mut rendered=Err("Update notice did not settle".to_owned());

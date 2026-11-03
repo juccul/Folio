@@ -181,6 +181,8 @@ struct CachedRaster {
 #[derive(Default)]
 pub struct Painter {
     pub(super) ink_layer_override: Option<bool>,
+    /// Leave out the selection outline and handles, as while cropping.
+    pub(super) hide_selection: bool,
     ink_planner: super::ink_layers::Planner,
     ink_plan: Option<InkPlan>,
     ink_layers: HashMap<Id, CachedInkLayer>,
@@ -532,6 +534,7 @@ impl Painter {
             let id = controller.session().document.pages[index].id;
             let painter = self.pages.entry(id).or_default();
             painter.ink_layer_override = self.ink_layer_override;
+            painter.hide_selection = self.hide_selection;
             painter.paint_page(controller, index, viewport, bounds, editing, window, cx);
         }
     }
@@ -1040,7 +1043,10 @@ impl Painter {
                     _ => {}
                 }
             }
-            if let Some(rect) = controller.selection_bounds() {
+            if let Some(rect) = controller
+                .selection_bounds()
+                .filter(|_| !self.hide_selection)
+            {
                 let transform = world.compose(preview_move);
                 let (points, rotation) = selection_overlay(rect, viewport.zoom, transform);
                 if let Some(path) = line_path(&points, 1.2, true) {
