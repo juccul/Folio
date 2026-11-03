@@ -134,7 +134,7 @@ impl Render for NotesView {
                         div()
                             .p_6()
                             .rounded(px(theme.corner_lg()))
-                            .glass(theme, theme.popover)
+                            .glass_dialog(theme, theme.popover)
                             .text_sm()
                             .child("Saving, backing up and preparing the update…"),
                     ),
@@ -1147,7 +1147,7 @@ impl NotesView {
                         div()
                             .w(px(530.))
                             .p_6()
-                            .glass(theme, theme.popover)
+                            .glass_dialog(theme, theme.popover)
                             .rounded(px(theme.corner_lg()))
                             .flex()
                             .flex_col()

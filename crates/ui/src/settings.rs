@@ -537,7 +537,7 @@ impl NotesView {
                     ))
                     .relative()
                     .top(px(12. * self.dialog_rise))
-                    .glass_dense(theme, theme.popover)
+                    .glass_dialog(theme, theme.popover)
                     .rounded(px(theme.corner_lg()))
                     .overflow_hidden()
                     .flex()

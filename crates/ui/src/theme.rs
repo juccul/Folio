@@ -306,10 +306,10 @@ pub trait Glass: Styled + Sized {
             surface
         }
     }
-    /// A large floating glass surface holding a lot of text, such as the
-    /// settings dialog: denser and more strongly blurred than menus, while
-    /// still following the glass settings.
-    fn glass_dense(self, theme: Theme, base: u32) -> Self {
+    /// A modal dialog over a scrim, such as Settings or Open a document:
+    /// denser and more strongly blurred than menus, while still following the
+    /// glass settings. Every dialog shares this so their surfaces match.
+    fn glass_dialog(self, theme: Theme, base: u32) -> Self {
         let opacity = theme.glass_opacity + (1. - theme.glass_opacity) * 0.35;
         self.glass_fill_at(theme, base, opacity, theme.glass_blur * 1.75)
             .glass_frame(theme)

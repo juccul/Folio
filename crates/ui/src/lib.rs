@@ -2440,7 +2440,7 @@ impl NotesView {
                     .flex()
                     .flex_col()
                     .gap_4()
-                    .glass(theme, theme.popover)
+                    .glass_dialog(theme, theme.popover)
                     .rounded(px(theme.corner_lg()))
                     .child(
                         // A block scroll container leaves the text field's

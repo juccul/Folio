@@ -4,7 +4,7 @@ impl NotesView {
         let theme = Theme::new(&self.controller.settings);
         let paused = self.controller.recognition_status.contains("paused");
         div().absolute().inset_0().occlude().scrim(theme).flex().items_center().justify_center()
-            .child(div().w(rems(33.)).max_w_full().p_5().rounded(px(theme.corner_lg())).glass(theme, theme.popover).flex().flex_col().gap_4()
+            .child(div().w(rems(33.)).max_w_full().p_5().rounded(px(theme.corner_lg())).glass_dialog(theme, theme.popover).flex().flex_col().gap_4()
                 .child(div().text_lg().child(if paused {"Resume handwriting recognition setup"} else {"Set up handwriting recognition"}))
                 .child(div().text_sm().child("Folio needs to download about 1.47 GB of OCR models and a local runtime. This first setup needs an internet connection and enough disk space. Recognition then runs on your computer."))
                 .child(div().text_sm().child("Your selected writing stays intact. Downloaded parts are retained if you pause or cancel, so a later attempt can resume."))

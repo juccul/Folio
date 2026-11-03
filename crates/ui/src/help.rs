@@ -43,7 +43,7 @@ impl NotesView {
             .flex().items_center().justify_center()
             .child(div().id("help-panel").relative().top(px(12. * self.dialog_rise)).w(px(560.)).max_w_full()
                 .max_h(px((f32::from(window.viewport_size().height) / self.controller.settings.ui_scale - 48.).max(240.)))
-                .overflow_y_scroll().p_6().glass(theme, theme.popover)
+                .overflow_y_scroll().p_6().glass_dialog(theme, theme.popover)
                 .rounded(px(theme.corner_lg()))
                 .flex().flex_col().gap_4()
                 .child(div().flex().items_center().justify_between()
