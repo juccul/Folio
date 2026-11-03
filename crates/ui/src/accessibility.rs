@@ -468,6 +468,23 @@ impl Accessibility {
         };
         Some((members[next].callback.clone(), members[next].focus.clone()))
     }
+    /// The focus of the neighboring enabled item in a context menu, whose
+    /// controls share `prefix`. Arrow keys move through menu items without
+    /// invoking them, unlike radio groups.
+    pub fn menu_neighbor(&self, key: &str, prefix: &str, forward: bool) -> Option<FocusHandle> {
+        let controls = self.controls.borrow();
+        let members: Vec<_> = controls
+            .iter()
+            .filter(|c| c.enabled && c.key.starts_with(prefix))
+            .collect();
+        let index = members.iter().position(|c| c.key == key)?;
+        let next = if forward {
+            (index + 1) % members.len()
+        } else {
+            (index + members.len() - 1) % members.len()
+        };
+        Some(members[next].focus.clone())
+    }
     /// Uniform-list measurement registers a probe row before the visible rows.
     /// Keep only the rendered documents so stale, offscreen bounds cannot remain
     /// clickable in the native accessibility tree after scrolling.

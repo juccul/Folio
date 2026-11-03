@@ -92,6 +92,36 @@ pub(super) fn close_tab(tabs: &mut Vec<Id>, id: Id) -> Option<Id> {
     tabs.remove(index);
     tabs.get(index).or_else(|| tabs.last()).copied()
 }
+/// Which open tabs a tab context-menu action closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CloseTabs {
+    This,
+    Others,
+    ToTheRight,
+}
+/// The tabs closed by `which`, relative to the tab with `id`.
+pub(super) fn tabs_to_close(tabs: &[Id], id: Id, which: CloseTabs) -> Vec<Id> {
+    let Some(index) = tabs.iter().position(|t| *t == id) else {
+        return Vec::new();
+    };
+    match which {
+        CloseTabs::This => vec![id],
+        CloseTabs::Others => tabs.iter().copied().filter(|t| *t != id).collect(),
+        CloseTabs::ToTheRight => tabs[index + 1..].to_vec(),
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DocumentMenuAction {
+    Close(CloseTabs),
+    Open,
+    Rename,
+    Duplicate,
+    Favorite,
+    Move,
+    Tags,
+    Trash,
+    Delete,
+}
 impl NotesView {
     /// Start a possible tab drag from a press on the tab.
     pub(super) fn press_tab(&mut self, id: Id, x: f32, cx: &mut Context<Self>) {
@@ -204,14 +234,41 @@ impl NotesView {
         &mut self,
         id: Id,
         at: Point<Pixels>,
+        from_tab: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.folder_menu = None;
         self.document_menu = Some((id, at));
+        self.document_menu_tab = from_tab;
         self.focus.focus(window);
-        self.menu_focus = Some("doc-menu-open".into());
+        self.menu_focus = Some(
+            if from_tab {
+                "doc-menu-close"
+            } else {
+                "doc-menu-open"
+            }
+            .into(),
+        );
         cx.notify();
+    }
+    /// Close the tabs a tab-menu action names. When the active document is
+    /// among them, the clicked tab becomes active first, so closing does not
+    /// load neighbors that are about to close too.
+    fn close_tabs(
+        &mut self,
+        id: Id,
+        which: CloseTabs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let closing = tabs_to_close(&self.open_tabs, id, which);
+        if which != CloseTabs::This && closing.contains(&self.controller.requested_note()) {
+            self.open_note(id);
+        }
+        for tab in closing {
+            self.close_document_tab(tab, window, cx);
+        }
     }
     pub(super) fn document_menu_panel(
         &mut self,
@@ -226,49 +283,42 @@ impl NotesView {
             self.document_menu = None;
             return div().into_any_element();
         };
-        let size = window.viewport_size();
-        let width = 260.;
-        let height = 350.;
-        let x = f32::from(at.x).clamp(12., (f32::from(size.width) - width - 12.).max(12.));
-        let y = f32::from(at.y).clamp(12., (f32::from(size.height) - height - 12.).max(12.));
-        let mut menu = div()
-            .id("document-context-menu")
-            .occlude()
-            .absolute()
-            .left(px(x))
-            .top(px(y))
-            .w(px(width))
-            .p_2()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .rounded(px(theme.corner_md()))
-            .glass(theme, theme.popover)
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.document_menu = None;
-                cx.notify();
-            }))
-            .child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .text_xs()
-                    .truncate()
-                    .text_color(rgb(theme.muted))
-                    .child(note.title),
-            );
-        let entries: Vec<(&str, &str, u8)> = if note.trashed {
-            vec![
-                ("open", "Open document", 0),
-                ("duplicate", "Duplicate", 2),
-                ("trash", "Restore document", 6),
-                ("delete", "Delete permanently…", 7),
-            ]
+        let from_tab = self.document_menu_tab && self.open_tabs.contains(&id);
+        let mut entries: Vec<(&str, &str, DocumentMenuAction)> = Vec::new();
+        if from_tab {
+            // Selecting the tab already opens it; offer the tab's own actions.
+            entries.push((
+                "close",
+                "Close tab",
+                DocumentMenuAction::Close(CloseTabs::This),
+            ));
+            if self.open_tabs.len() > 1 {
+                entries.push((
+                    "close-others",
+                    "Close other tabs",
+                    DocumentMenuAction::Close(CloseTabs::Others),
+                ));
+            }
+            if self.open_tabs.last() != Some(&id) {
+                entries.push((
+                    "close-right",
+                    "Close tabs to the right",
+                    DocumentMenuAction::Close(CloseTabs::ToTheRight),
+                ));
+            }
         } else {
-            vec![
-                ("open", "Open document", 0),
-                ("rename", "Rename…", 1),
-                ("duplicate", "Duplicate", 2),
+            entries.push(("open", "Open document", DocumentMenuAction::Open));
+        }
+        if note.trashed {
+            entries.extend([
+                ("duplicate", "Duplicate", DocumentMenuAction::Duplicate),
+                ("trash", "Restore document", DocumentMenuAction::Trash),
+                ("delete", "Delete permanently…", DocumentMenuAction::Delete),
+            ]);
+        } else {
+            entries.extend([
+                ("rename", "Rename…", DocumentMenuAction::Rename),
+                ("duplicate", "Duplicate", DocumentMenuAction::Duplicate),
                 (
                     "favorite",
                     if note.favorite {
@@ -276,18 +326,76 @@ impl NotesView {
                     } else {
                         "Add to favorites"
                     },
-                    3,
+                    DocumentMenuAction::Favorite,
                 ),
-                ("move", "Move to folder…", 4),
-                ("tags", "Edit tags…", 5),
-                ("trash", "Move to trash", 6),
-            ]
+                ("move", "Move to folder…", DocumentMenuAction::Move),
+                ("tags", "Edit tags…", DocumentMenuAction::Tags),
+                ("trash", "Move to trash", DocumentMenuAction::Trash),
+            ]);
+        }
+        // Separate tab actions from document actions, and the destructive
+        // action from everyday ones.
+        let separated = |action: DocumentMenuAction, previous: Option<DocumentMenuAction>| {
+            matches!(previous, Some(DocumentMenuAction::Close(_)))
+                && !matches!(action, DocumentMenuAction::Close(_))
+                || (action == DocumentMenuAction::Trash && !note.trashed)
+                || action == DocumentMenuAction::Delete
         };
+        let separators = entries
+            .iter()
+            .enumerate()
+            .filter(|(i, (_, _, action))| {
+                separated(*action, i.checked_sub(1).map(|i| entries[i].2))
+            })
+            .count();
+        // Measured rows with their gaps: title, actions and separators. Sizes
+        // follow the interface scale.
+        let scale = self.controller.settings.ui_scale;
+        let size = window.viewport_size();
+        let (width, height) = (f32::from(size.width), f32::from(size.height));
+        let menu_width = (260. * scale).min((width - 24.).max(1.));
+        let natural = (16. + 46. + entries.len() as f32 * 45. + separators as f32 * 9.) * scale;
+        let menu_height = natural.min((height - 24.).max(1.));
+        let x = f32::from(at.x).clamp(12., (width - menu_width - 12.).max(12.));
+        let y = f32::from(at.y).clamp(12., (height - menu_height - 12.).max(12.));
+        let mut menu = div()
+            .id("document-context-menu")
+            .occlude()
+            .absolute()
+            .left(px(x))
+            .top(px(y))
+            .w(px(menu_width))
+            .max_h(px(menu_height))
+            .overflow_y_scroll()
+            .p_2()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .rounded(px(theme.corner_md()))
+            .glass(theme, theme.popover)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                // Dismissing the menu must not also activate the tab, card or
+                // canvas under the pointer.
+                this.document_menu = None;
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .px_3()
+                    .py_2()
+                    .text_xs()
+                    .truncate()
+                    .text_color(rgb(theme.muted))
+                    .child(note.title),
+            );
+        let mut previous = None;
         for (key, label, action) in entries {
-            // Separate the destructive action from everyday ones.
-            if (action == 6 && !note.trashed) || action == 7 {
-                menu = menu.child(div().h(px(1.)).mx_2().bg(theme.border));
+            if separated(action, previous) {
+                menu = menu.child(div().flex_shrink_0().h(px(1.)).mx_2().bg(theme.border));
             }
+            previous = Some(action);
             menu = menu.child(
                 self.button(
                     format!("doc-menu-{key}"),
@@ -297,22 +405,25 @@ impl NotesView {
                     move |this, w, cx| {
                         this.document_menu = None;
                         match action {
-                            0 => this.open_note(id),
-                            1 => this.modal(Modal::RenameDocument(id), w, cx),
-                            2 => this
+                            DocumentMenuAction::Close(which) => this.close_tabs(id, which, w, cx),
+                            DocumentMenuAction::Open => this.open_note(id),
+                            DocumentMenuAction::Rename => {
+                                this.modal(Modal::RenameDocument(id), w, cx)
+                            }
+                            DocumentMenuAction::Duplicate => this
                                 .controller
                                 .manage_note(id, folio_app::NoteAction::Duplicate),
-                            3 => this
+                            DocumentMenuAction::Favorite => this
                                 .controller
                                 .manage_note(id, folio_app::NoteAction::Favorite),
-                            4 => this.modal(Modal::MoveDocument(id), w, cx),
-                            5 => this.modal(Modal::DocumentTags(id), w, cx),
-                            7 => this.modal(
+                            DocumentMenuAction::Move => this.modal(Modal::MoveDocument(id), w, cx),
+                            DocumentMenuAction::Tags => this.modal(Modal::DocumentTags(id), w, cx),
+                            DocumentMenuAction::Delete => this.modal(
                                 Modal::Confirm(super::Confirm::DeletePermanently(id)),
                                 w,
                                 cx,
                             ),
-                            _ => {
+                            DocumentMenuAction::Trash => {
                                 this.controller
                                     .manage_note(id, folio_app::NoteAction::Trash);
                                 if !note.trashed {
@@ -322,6 +433,7 @@ impl NotesView {
                         }
                     },
                 )
+                .flex_shrink_0()
                 .justify_start()
                 .w_full(),
             );
@@ -459,7 +571,7 @@ impl NotesView {
 
 #[cfg(test)]
 mod tests {
-    use super::{TabDrag, close_tab, move_tab};
+    use super::{CloseTabs, TabDrag, close_tab, move_tab, tabs_to_close};
     use core::prelude::v1::test;
     use folio_document::Id;
     #[test]
@@ -470,6 +582,12 @@ mod tests {
         assert_eq!(close_tab(&mut tabs, c), Some(a));
         assert_eq!(close_tab(&mut tabs, a), None);
         assert!(tabs.is_empty());
+        let tabs = [a, b, c];
+        assert_eq!(tabs_to_close(&tabs, b, CloseTabs::This), vec![b]);
+        assert_eq!(tabs_to_close(&tabs, b, CloseTabs::Others), vec![a, c]);
+        assert_eq!(tabs_to_close(&tabs, a, CloseTabs::ToTheRight), vec![b, c]);
+        assert!(tabs_to_close(&tabs, c, CloseTabs::ToTheRight).is_empty());
+        assert!(tabs_to_close(&tabs, Id::new_v4(), CloseTabs::Others).is_empty());
     }
     #[test]
     fn dragged_tabs_follow_the_pointer_and_neighbors_make_room() {

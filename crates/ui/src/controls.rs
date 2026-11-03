@@ -129,6 +129,21 @@ impl NotesView {
                     )
                 {
                     let forward = matches!(event.keystroke.key.as_str(), "right" | "down");
+                    // Document menu items only move focus; Enter activates.
+                    if control_key.starts_with("doc-menu-") {
+                        if matches!(event.keystroke.key.as_str(), "up" | "down")
+                            && let Some(focus) = this.accessibility.menu_neighbor(
+                                control_key.as_ref(),
+                                "doc-menu-",
+                                forward,
+                            )
+                        {
+                            focus.focus(window);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                        return;
+                    }
                     if matches!(event.keystroke.key.as_str(), "left" | "right")
                         && let Some(id) = control_key
                             .as_ref()

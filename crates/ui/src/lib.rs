@@ -302,6 +302,8 @@ pub struct NotesView {
     tab_scroll: ScrollHandle,
     tab_target: Option<(Id, usize, Pixels, f32)>,
     document_menu: Option<(Id, Point<Pixels>)>,
+    /// The document menu was opened from a tab, so it offers tab actions.
+    document_menu_tab: bool,
     folder_menu: Option<(Id, Point<Pixels>)>,
     folder_rows: Vec<Id>,
     folder_scroll: UniformListScrollHandle,
@@ -460,6 +462,7 @@ impl NotesView {
             tab_scroll: ScrollHandle::new(),
             tab_target: None,
             document_menu: None,
+            document_menu_tab: false,
             folder_menu: None,
             folder_rows: Vec::new(),
             folder_scroll: UniformListScrollHandle::new(),
