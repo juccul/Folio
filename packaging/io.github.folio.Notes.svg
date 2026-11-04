@@ -1,34 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
   <defs>
-    <linearGradient id="base" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2b2b31"/>
-      <stop offset="1" stop-color="#0d0d10"/>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#27272c"/>
+      <stop offset="1" stop-color="#141417"/>
     </linearGradient>
-    <radialGradient id="glow" cx="56" cy="88" r="54" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#3d63ff" stop-opacity=".24"/>
-      <stop offset="1" stop-color="#3d63ff" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fff" stop-opacity=".09"/>
-      <stop offset=".5" stop-color="#fff" stop-opacity="0"/>
-    </linearGradient>
-    <linearGradient id="ink" gradientUnits="userSpaceOnUse" x1="38" y1="96" x2="100" y2="84">
-      <stop offset="0" stop-color="#2f55f0"/>
-      <stop offset="1" stop-color="#8197ff"/>
-    </linearGradient>
-    <linearGradient id="nib" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fff"/>
-      <stop offset="1" stop-color="#d9dbe3"/>
-    </linearGradient>
+    <mask id="nib">
+      <g transform="translate(61.7 66.2) rotate(40) scale(1.1)">
+        <path d="M0-40C19-27 23-4 12 15C8.5 22 3.5 30 0 37C-3.5 30-8.5 22-12 15C-23-4-19-27 0-40Z" fill="#fff"/>
+        <path d="M0 37V0" stroke="#000" stroke-width="3.5"/>
+        <circle r="5.5" fill="#000"/>
+      </g>
+    </mask>
   </defs>
-  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#base)"/>
-  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#glow)"/>
-  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#sheen)"/>
-  <rect x="8.5" y="8.5" width="111" height="111" rx="25.5" fill="none" stroke="#fff" stroke-opacity=".14"/>
-  <path d="M38 90C56 101 78 100 98 86" fill="none" stroke="url(#ink)" stroke-width="9" stroke-linecap="round"/>
-  <g transform="translate(70 54) rotate(45)">
-    <path d="M0-46C22-30 26-4 14 18C10 26 4 34 0 42C-4 34-10 26-14 18C-26-4-22-30 0-46Z" fill="url(#nib)"/>
-    <path d="M0 42V2" stroke="#111114" stroke-width="4.5" stroke-linecap="round"/>
-    <circle cy="-3" r="6.5" fill="#111114"/>
-  </g>
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#tile)"/>
+  <rect x="8.5" y="8.5" width="111" height="111" rx="25.5" fill="none" stroke="#fff" stroke-opacity=".08"/>
+  <rect width="128" height="128" fill="#f4f4f6" mask="url(#nib)"/>
 </svg>
