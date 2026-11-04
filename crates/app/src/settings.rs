@@ -35,6 +35,10 @@ pub const PAD_ACTIONS: [(&str, &str); 8] = [
     ("previous-page", "Previous page"),
     ("next-page", "Next page"),
 ];
+/// Tools the tool wheel can show, as saved slugs, in their default order.
+pub const WHEEL_TOOLS: [&str; 6] = ["pen", "eraser", "select", "pan", "text", "shapes"];
+/// The wheel shows at least this many tools.
+pub const MIN_WHEEL_TOOLS: usize = 2;
 /// Pad buttons beyond this are not configurable.
 pub const MAX_PAD_BUTTONS: usize = 32;
 /// The label of a saved pad-button action.
@@ -131,6 +135,11 @@ pub struct Settings {
     pub paper: Paper,
     pub default_page: Option<PageProperties>,
     pub pad_buttons: Vec<String>,
+    /// The tool wheel's tools, clockwise from the top, as [`WHEEL_TOOLS`]
+    /// slugs. Unknown slugs are dropped when loading.
+    pub wheel_tools: Vec<String>,
+    /// The pen's lower barrel button opens the tool wheel.
+    pub barrel_opens_wheel: bool,
     #[serde(skip_serializing)]
     pub segment_eraser: bool,
     pub eraser_mode: EraserMode,
@@ -198,6 +207,12 @@ impl Settings {
             .retain(|(id, _)| pages.insert(*id));
         self.workspace.current_pages.truncate(128);
         let defaults = Self::default();
+        let mut seen_tools = std::collections::HashSet::new();
+        self.wheel_tools
+            .retain(|tool| WHEEL_TOOLS.contains(&tool.as_str()) && seen_tools.insert(tool.clone()));
+        if self.wheel_tools.len() < MIN_WHEEL_TOOLS {
+            self.wheel_tools = defaults.wheel_tools.clone();
+        }
         let bound = |value: f32, fallback: f32, min: f32, max: f32| {
             if value.is_finite() {
                 value.clamp(min, max)
@@ -336,6 +351,8 @@ impl Default for Settings {
                 "previous-page".into(),
                 "next-page".into(),
             ],
+            wheel_tools: WHEEL_TOOLS[..4].iter().map(|&tool| tool.into()).collect(),
+            barrel_opens_wheel: true,
             segment_eraser: false,
             eraser_mode: EraserMode::Stroke,
             eraser_radius: 10.,
@@ -412,6 +429,35 @@ mod tests {
         assert_eq!(settings.pad_buttons, saved);
         let labels: Vec<_> = saved.iter().map(|slug| pad_action_label(slug)).collect();
         assert_eq!(labels, ["Tool wheel", "None", "Previous page", "None"]);
+    }
+
+    #[test]
+    fn wheel_settings_default_and_drop_unknown_tools() {
+        let fresh = Settings::default();
+        assert_eq!(fresh.wheel_tools, ["pen", "eraser", "select", "pan"]);
+        assert!(fresh.barrel_opens_wheel);
+        // Older profiles predate the wheel settings.
+        let mut legacy: Settings =
+            serde_json::from_value(serde_json::json!({"dark": true})).unwrap();
+        legacy.normalize();
+        assert_eq!(legacy.wheel_tools, fresh.wheel_tools);
+        assert!(legacy.barrel_opens_wheel);
+        let saved = serde_json::json!({
+            "wheel_tools": ["shapes", "brush", "pen", "shapes", "text"],
+            "barrel_opens_wheel": false,
+        });
+        let mut settings: Settings = serde_json::from_value(saved).unwrap();
+        settings.normalize();
+        assert_eq!(settings.wheel_tools, ["shapes", "pen", "text"]);
+        let reopened: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(reopened.wheel_tools, settings.wheel_tools);
+        assert!(!reopened.barrel_opens_wheel);
+        // Too few known tools leaves a usable wheel.
+        let mut sparse: Settings =
+            serde_json::from_value(serde_json::json!({"wheel_tools": ["pan", "typo"]})).unwrap();
+        sparse.normalize();
+        assert_eq!(sparse.wheel_tools, fresh.wheel_tools);
     }
 
     #[test]

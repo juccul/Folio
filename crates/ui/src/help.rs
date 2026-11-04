@@ -8,7 +8,7 @@ impl NotesView {
             ("Pen · Eraser · Lasso · Pan", "P · E · L · H"),
             ("Text · Shapes", "T · S"),
             (
-                "Tool wheel: click or tap a tool to choose it",
+                "Tool wheel: click or tap a tool; choose its tools in Settings › Writing",
                 "W, the pen's lower button or a pad button set to wheel",
             ),
             (

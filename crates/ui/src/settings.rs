@@ -208,11 +208,123 @@ impl NotesView {
             )));
         }
         let pad = self.pad_button_rows(cx);
+        let wheel = self.tool_wheel_rows(cx);
         div()
             .flex()
             .flex_col()
             .child(self.settings_group(Some("Smart Ink gestures"), gestures))
             .child(self.settings_group(Some("Tablet pad buttons"), pad))
+            .child(self.settings_group(Some("Tool wheel"), wheel))
+    }
+    /// The wheel's tools, picked in clockwise order, and whether the pen's
+    /// barrel button opens it.
+    fn tool_wheel_rows(&mut self, cx: &mut Context<Self>) -> Vec<Div> {
+        let theme = Theme::new(&self.controller.settings);
+        let settings = &self.controller.settings;
+        let default = folio_app::Settings::default();
+        let changed = settings.wheel_tools != default.wheel_tools
+            || settings.barrel_opens_wheel != default.barrel_opens_wheel;
+        let chosen = self.wheel_tools();
+        let mut picker = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(2.))
+            .p(px(2.))
+            .rounded(px(theme.corner_md()))
+            .border_1()
+            .border_color(theme.glass_edge())
+            .bg(theme.raised());
+        for tool in tool_wheel::WheelTool::ALL {
+            let position = chosen.iter().position(|&slot| slot == tool);
+            let order = position.map(|index| {
+                div()
+                    .size(rems(1.125))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(rgb(theme.accent))
+                    .text_color(rgb(theme.primary_foreground))
+                    .text_xs()
+                    .line_height(rems(0.75))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child((index + 1).to_string())
+            });
+            let status = match position {
+                Some(index) => format!("On, position {}", index + 1),
+                None => "Off".into(),
+            };
+            picker = picker.child(
+                self.control(
+                    format!("tool-wheel-{}", tool.slug()),
+                    format!("{} on the tool wheel: {status}", tool.label()),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .children(order)
+                        .child(tool.label())
+                        .into_any_element(),
+                    position.is_some(),
+                    cx,
+                    move |this, _, _| {
+                        let mut tools = this.wheel_tools();
+                        if let Some(index) = tools.iter().position(|&slot| slot == tool) {
+                            if tools.len() <= folio_app::MIN_WHEEL_TOOLS {
+                                return;
+                            }
+                            tools.remove(index);
+                        } else {
+                            tools.push(tool);
+                        }
+                        this.controller.settings.wheel_tools =
+                            tools.iter().map(|slot| slot.slug().to_owned()).collect();
+                        this.controller.store_settings();
+                    },
+                )
+                .px_3()
+                .py_1()
+                .min_h(rems(1.875))
+                .when(position.is_none(), |pill| pill.text_color(rgb(theme.muted)))
+                .bg(theme.tint(if position.is_some() { 1. } else { 0. })),
+            );
+        }
+        let tools = div()
+            .flex()
+            .flex_col()
+            .child(
+                self.settings_row(
+                    "Tools",
+                    "Clockwise from the top, in the order you turn them on. At least two.",
+                )
+                .children(changed.then(|| {
+                    self.settings_action("tool-wheel-reset", "Reset", cx, |this, _, _| {
+                        let default = folio_app::Settings::default();
+                        this.controller.settings.wheel_tools = default.wheel_tools;
+                        this.controller.settings.barrel_opens_wheel = default.barrel_opens_wheel;
+                        this.controller.store_settings();
+                    })
+                    .text_xs()
+                })),
+            )
+            .child(div().px_4().pb_3().child(picker));
+        let barrel = self
+            .settings_row(
+                "Open with the pen button",
+                "Press the pen's lower barrel button to open the wheel at the pen.",
+            )
+            .child(self.appearance_switch(
+                "tool-wheel-barrel",
+                "Open with the pen button",
+                self.controller.settings.barrel_opens_wheel,
+                cx,
+                |this| {
+                    this.controller.settings.barrel_opens_wheel =
+                        !this.controller.settings.barrel_opens_wheel
+                },
+            ));
+        vec![tools, barrel]
     }
     /// Selects the row of a pressed pad button while the Writing settings
     /// are shown, adding rows up to it.

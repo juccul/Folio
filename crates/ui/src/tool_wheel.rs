@@ -42,7 +42,7 @@ pub(super) enum WheelTool {
     Pan,
 }
 impl WheelTool {
-    /// Clockwise from the top.
+    /// Every tool the wheel can show, in the default order.
     pub(super) const ALL: [Self; 6] = [
         Self::Pen,
         Self::Eraser,
@@ -51,6 +51,33 @@ impl WheelTool {
         Self::Text,
         Self::Shapes,
     ];
+    /// The name saved in [`folio_app::Settings::wheel_tools`].
+    pub(super) fn slug(self) -> &'static str {
+        match self {
+            Self::Pen => "pen",
+            Self::Eraser => "eraser",
+            Self::Select => "select",
+            Self::Shapes => "shapes",
+            Self::Text => "text",
+            Self::Pan => "pan",
+        }
+    }
+    /// The saved tools, falling back to the defaults if fewer than two are
+    /// known.
+    pub(super) fn from_slugs(slugs: &[String]) -> Vec<Self> {
+        let mut tools: Vec<Self> = Vec::new();
+        for slug in slugs {
+            if let Some(tool) = Self::ALL.into_iter().find(|tool| tool.slug() == slug)
+                && !tools.contains(&tool)
+            {
+                tools.push(tool);
+            }
+        }
+        if tools.len() < folio_app::MIN_WHEEL_TOOLS {
+            return Self::from_slugs(&folio_app::Settings::default().wheel_tools);
+        }
+        tools
+    }
     fn key(self) -> &'static str {
         match self {
             Self::Pen => "wheel-pen",
@@ -61,7 +88,7 @@ impl WheelTool {
             Self::Pan => "wheel-pan",
         }
     }
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::Pen => "Pen",
             Self::Eraser => "Eraser",
@@ -83,17 +110,20 @@ impl WheelTool {
     }
 }
 
-/// The slot at `offset` from the wheel's center, outside the dead zone, and
-/// the distance in unscaled pixels.
-pub(super) fn aim(offset: (f32, f32), scale: f32) -> Option<(usize, f32)> {
+/// The slot of `count` at `offset` from the wheel's center, outside the dead
+/// zone, and the distance in unscaled pixels.
+pub(super) fn aim(offset: (f32, f32), scale: f32, count: usize) -> Option<(usize, f32)> {
     let (x, y) = offset;
     let distance = x.hypot(y);
-    if distance < DEAD_ZONE * scale {
+    if distance < DEAD_ZONE * scale || count == 0 {
         return None;
     }
-    let count = WheelTool::ALL.len() as f32;
-    let slot = (pointing(offset) / TAU * count).round() as usize % WheelTool::ALL.len();
+    let slot = (pointing(offset) / TAU * count as f32).round() as usize % count;
     Some((slot, distance / scale))
+}
+/// Clockwise angle from the top of slot `index` of `count`.
+fn slot_angle(index: usize, count: usize) -> f32 {
+    index as f32 / count as f32 * TAU
 }
 /// Clockwise angle of `offset` from the top; each slot owns the sector
 /// around its angle.
@@ -141,27 +171,29 @@ fn polar(center: Point<Pixels>, radius: f32, angle: f32) -> Point<Pixels> {
         center.y - px(radius * angle.cos()),
     )
 }
-/// The ring segment around `angle` between two radii, separated from its
-/// neighbors by an even `gap`.
+/// The ring segment around `angle`, one of `count`, between two radii and
+/// separated from its neighbors by an even `gap`.
 fn segment_path(
     center: Point<Pixels>,
     (inner, outer): (f32, f32),
     angle: f32,
     gap: f32,
+    count: usize,
 ) -> Option<Path<Pixels>> {
-    const STEPS: usize = 12;
-    let half = PI / WheelTool::ALL.len() as f32;
+    let half = PI / count as f32;
+    // Wider segments need more steps to stay round.
+    let steps = (24 / count).max(12);
     let span = |radius: f32| half - (gap / 2. / radius).min(1.).asin();
     let mut b = PathBuilder::fill();
     let outer_span = span(outer);
     b.move_to(polar(center, outer, angle - outer_span));
-    for step in 1..=STEPS {
-        let t = step as f32 / STEPS as f32;
+    for step in 1..=steps {
+        let t = step as f32 / steps as f32;
         b.line_to(polar(center, outer, angle + outer_span * (2. * t - 1.)));
     }
     let inner_span = span(inner);
-    for step in 0..=STEPS {
-        let t = step as f32 / STEPS as f32;
+    for step in 0..=steps {
+        let t = step as f32 / steps as f32;
         b.line_to(polar(center, inner, angle + inner_span * (1. - 2. * t)));
     }
     b.close();
@@ -178,6 +210,10 @@ struct Segment {
 }
 
 impl NotesView {
+    /// The wheel's tools, clockwise from the top.
+    pub(super) fn wheel_tools(&self) -> Vec<WheelTool> {
+        WheelTool::from_slugs(&self.controller.settings.wheel_tools)
+    }
     pub(super) fn toggle_tool_wheel(
         &mut self,
         pointer: Point<Pixels>,
@@ -208,10 +244,12 @@ impl NotesView {
             pointing: None,
             keyboard: false,
         });
-        let current = WheelTool::ALL
-            .into_iter()
+        let tools = self.wheel_tools();
+        let current = tools
+            .iter()
+            .copied()
             .find(|slot| slot.tool(self.selection_tool) == self.controller.tool)
-            .unwrap_or(WheelTool::Pen);
+            .unwrap_or(tools[0]);
         self.focus.focus(window);
         self.menu_focus = Some(current.key().into());
         cx.notify();
@@ -232,6 +270,7 @@ impl NotesView {
     /// at; only a press chooses.
     fn aim_tool_wheel(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
         let scale = self.controller.settings.ui_scale;
+        let count = self.wheel_tools().len();
         let Some(wheel) = &mut self.tool_wheel else {
             return;
         };
@@ -239,7 +278,7 @@ impl NotesView {
             f32::from(at.x - wheel.center.x),
             f32::from(at.y - wheel.center.y),
         );
-        let aimed = aim(offset, scale);
+        let aimed = aim(offset, scale, count);
         let previous = (wheel.aimed, wheel.pointing);
         wheel.aimed = aimed.map(|(slot, _)| slot);
         wheel.pointing = aimed.map(|_| pointing(offset));
@@ -250,8 +289,9 @@ impl NotesView {
             cx.notify();
         }
     }
-    /// The pen's lower barrel button opens and closes the wheel at the pen.
-    /// Returns whether the wheel used this tablet frame.
+    /// The pen's lower barrel button opens and closes the wheel at the pen,
+    /// unless that is turned off in Settings. Returns whether the wheel used
+    /// this tablet frame.
     pub(super) fn pen_tool_wheel(
         &mut self,
         event: &TabletEvent,
@@ -261,7 +301,7 @@ impl NotesView {
         let gone = matches!(event.phase, TabletPhase::Leave | TabletPhase::Cancel);
         let previous =
             std::mem::replace(&mut self.pen_buttons, if gone { 0 } else { event.buttons });
-        if gone {
+        if gone || !self.controller.settings.barrel_opens_wheel {
             return false;
         }
         match barrel(previous, event.buttons) {
@@ -305,9 +345,17 @@ impl NotesView {
                 }),
             ]
         };
-        let ring = px((RING_INNER + RING_OUTER) / 2. * self.controller.settings.ui_scale);
-        let pan = point(at.x, at.y + ring);
-        let eraser = polar(at, f32::from(ring), TAU / 6.);
+        let tools = self.wheel_tools();
+        let ring = (RING_INNER + RING_OUTER) / 2. * self.controller.settings.ui_scale;
+        let on_ring = |tool: WheelTool| {
+            tools
+                .iter()
+                .position(|&slot| slot == tool)
+                .map(|index| polar(at, ring, slot_angle(index, tools.len())))
+                .ok_or(format!("{} is not on the tool wheel", tool.label()))
+        };
+        let pan = on_ring(WheelTool::Pan)?;
+        let eraser = on_ring(WheelTool::Eraser)?;
         let mouse = |down: bool| {
             if down {
                 PlatformInput::MouseDown(MouseDownEvent {
@@ -384,32 +432,39 @@ impl NotesView {
         } else {
             Icon::Lasso
         };
-        let current = WheelTool::ALL
-            .into_iter()
+        let tools = self.wheel_tools();
+        let count = tools.len();
+        let current = tools
+            .iter()
+            .copied()
             .find(|slot| slot.tool(self.selection_tool) == self.controller.tool);
-        let hovers = WheelTool::ALL.map(|slot| self.motion.borrow_mut().hover_value(slot.key()));
+        let hovers: Vec<f32> = tools
+            .iter()
+            .map(|slot| self.motion.borrow_mut().hover_value(slot.key()))
+            .collect();
         // The pointer's aim, else the keyboard focus, else a hovered tool.
         let highlighted = wheel
             .aimed
-            .map(|slot| WheelTool::ALL[slot])
+            .and_then(|slot| tools.get(slot).copied())
             .or_else(|| {
                 wheel.keyboard.then(|| {
-                    WheelTool::ALL
-                        .into_iter()
+                    tools
+                        .iter()
+                        .copied()
                         .find(|slot| self.accessibility.is_focused(slot.key(), window))
                 })?
             })
             .or_else(|| {
-                (0..WheelTool::ALL.len())
+                (0..count)
                     .filter(|&i| hovers[i] > 0.5)
                     .max_by(|&a, &b| hovers[a].total_cmp(&hovers[b]))
-                    .map(|i| WheelTool::ALL[i])
+                    .map(|i| tools[i])
             });
         let accent = |alpha: f32| rgba((theme.accent << 8) | (alpha.clamp(0., 1.) * 255.) as u32);
         let mut segments = Vec::new();
         let mut buttons = Vec::new();
-        for (index, slot) in WheelTool::ALL.into_iter().enumerate() {
-            let angle = index as f32 / WheelTool::ALL.len() as f32 * TAU;
+        for (index, slot) in tools.iter().copied().enumerate() {
+            let angle = slot_angle(index, count);
             let enabled = self.wheel_slot_enabled(slot);
             let active = current == Some(slot);
             let lit = if highlighted == Some(slot) {
@@ -496,7 +551,9 @@ impl NotesView {
             None => ("Tools", read_only.then_some("Read only")),
         };
         let pointer = wheel.pointing.zip(wheel.aimed).map(|(angle, slot)| {
-            let enabled = self.wheel_slot_enabled(WheelTool::ALL[slot]);
+            let enabled = tools
+                .get(slot)
+                .is_some_and(|&slot| self.wheel_slot_enabled(slot));
             (
                 angle,
                 if enabled {
@@ -512,17 +569,18 @@ impl NotesView {
             move |bounds, _, window, _| {
                 let center = bounds.center();
                 for (index, segment) in segments.iter().enumerate() {
-                    let angle = index as f32 / WheelTool::ALL.len() as f32 * TAU;
+                    let angle = slot_angle(index, count);
                     for color in [segment.base, segment.highlight] {
                         if color.a > 0.
-                            && let Some(path) = segment_path(center, (inner, outer), angle, gap)
+                            && let Some(path) =
+                                segment_path(center, (inner, outer), angle, gap, count)
                         {
                             window.paint_path(path, color);
                         }
                     }
                     if let Some(color) = segment.mark
                         && let Some(path) =
-                            segment_path(center, (outer - 4. * size, outer), angle, gap)
+                            segment_path(center, (outer - 4. * size, outer), angle, gap, count)
                     {
                         window.paint_path(path, color);
                     }
@@ -619,13 +677,14 @@ impl NotesView {
                         f32::from(event.position.x - wheel.center.x),
                         f32::from(event.position.y - wheel.center.y),
                     );
-                    match aim(offset, scale) {
+                    let tools = this.wheel_tools();
+                    match aim(offset, scale, tools.len()) {
                         Some((slot, distance))
                             if reached(distance)
                                 && distance <= RADIUS
-                                && this.wheel_slot_enabled(WheelTool::ALL[slot]) =>
+                                && this.wheel_slot_enabled(tools[slot]) =>
                         {
-                            this.choose_wheel_tool(WheelTool::ALL[slot], window, cx)
+                            this.choose_wheel_tool(tools[slot], window, cx)
                         }
                         _ => {
                             this.tool_wheel = None;
@@ -654,17 +713,50 @@ mod tests {
     #[test]
     fn pointer_direction_aims_at_the_tool_in_that_direction() {
         // Within the dead zone nothing is aimed at.
-        assert_eq!(aim((10., -10.), 1.), None);
+        assert_eq!(aim((10., -10.), 1., 4), None);
         // Straight up is the first tool; the ring is reached further out.
-        assert_eq!(aim((0., -30.), 1.), Some((0, 30.)));
+        assert_eq!(aim((0., -30.), 1., 4), Some((0, 30.)));
         assert!(!reached(30.) && reached(60.));
-        // Clockwise: right of the top is the second tool, left the last.
-        assert_eq!(aim((60., -35.), 1.).unwrap().0, 1);
-        assert_eq!(aim((-60., -35.), 1.).unwrap().0, 5);
-        assert_eq!(aim((0., 60.), 1.).unwrap().0, 3);
+        // Clockwise sectors split evenly among however many tools there are.
+        let slot = |offset, count| aim(offset, 1., count).unwrap().0;
+        let right_up = (60., -35.);
+        let left_up = (-60., -35.);
+        assert_eq!([3, 4, 6].map(|count| slot(right_up, count)), [0, 1, 1]);
+        assert_eq!([3, 4, 6].map(|count| slot(left_up, count)), [0, 3, 5]);
+        assert_eq!([3, 4, 6].map(|count| slot((50., 30.), count)), [1, 1, 2]);
+        assert_eq!([3, 4, 6].map(|count| slot((-60., 20.), count)), [2, 3, 4]);
+        // Each tool's angle lies inside its own sector.
+        for count in 2..=6 {
+            for index in 0..count {
+                let point = polar(point(px(0.), px(0.)), 60., slot_angle(index, count));
+                let offset = (f32::from(point.x), f32::from(point.y));
+                assert_eq!(slot(offset, count), index);
+            }
+        }
         // Distances follow the interface scale.
-        assert_eq!(aim((0., -30.), 2.), None);
-        assert_eq!(WheelTool::ALL[3], WheelTool::Pan);
+        assert_eq!(aim((0., -30.), 2., 4), None);
+    }
+    #[test]
+    fn saved_wheel_tools_keep_their_order_and_default_to_four() {
+        let slugs = |names: &[&str]| names.iter().map(|&name| name.into()).collect::<Vec<_>>();
+        let defaults = WheelTool::from_slugs(&folio_app::Settings::default().wheel_tools);
+        assert_eq!(
+            defaults,
+            [
+                WheelTool::Pen,
+                WheelTool::Eraser,
+                WheelTool::Select,
+                WheelTool::Pan
+            ]
+        );
+        assert_eq!(
+            WheelTool::from_slugs(&slugs(&["text", "typo", "pan", "text"])),
+            [WheelTool::Text, WheelTool::Pan]
+        );
+        assert_eq!(WheelTool::from_slugs(&slugs(&["shapes"])), defaults);
+        // Every wheel tool has a saved name the app crate knows.
+        let names: Vec<_> = WheelTool::ALL.map(WheelTool::slug).into();
+        assert_eq!(names, folio_app::WHEEL_TOOLS);
     }
     #[test]
     fn lower_barrel_button_opens_and_releases_the_wheel() {

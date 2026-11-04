@@ -66,8 +66,8 @@ pub use previews::{RasterPreview, relative_transform};
 pub use recognition::{RecognitionKind, RecognitionReview, RecognitionTiming};
 pub use session::Session;
 pub use settings::{
-    EraserMode, MAX_PAD_BUTTONS, PAD_ACTIONS, PageTemplate, PenPreset, Settings,
-    WorkspacePreferences, pad_action_label,
+    EraserMode, MAX_PAD_BUTTONS, MIN_WHEEL_TOOLS, PAD_ACTIONS, PageTemplate, PenPreset, Settings,
+    WHEEL_TOOLS, WorkspacePreferences, pad_action_label,
 };
 use std::{
     cell::{Cell, RefCell},
