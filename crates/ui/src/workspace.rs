@@ -292,7 +292,9 @@ impl NotesView {
             (None, None, default_aspect)
         };
         let height = (width / aspect.max(0.01)).min(max_height);
+        let corner = (theme.radius - 1.).max(0.);
         let mut element = div()
+            .rounded(px(corner))
             .w(px((height * aspect).min(width)))
             .h(px(height))
             .overflow_hidden()
@@ -303,7 +305,12 @@ impl NotesView {
             .items_center()
             .justify_center();
         if valid && let Some(image) = image {
-            element = element.child(img(image).size_full().object_fit(ObjectFit::Contain));
+            element = element.child(
+                img(image)
+                    .size_full()
+                    .object_fit(ObjectFit::Contain)
+                    .rounded(px(corner)),
+            );
         } else {
             element = element.child(
                 div()
@@ -457,8 +464,8 @@ impl NotesView {
             cx,
             action,
         )
-        .w(rems(2.375))
-        .h(rems(2.125))
+        .w(rems(2.5))
+        .h(rems(2.25))
         .min_h_0()
         .flex_shrink_0()
         .p_0()
@@ -506,8 +513,8 @@ impl NotesView {
             cx,
             action,
         )
-        .w(rems(2.375))
-        .h(rems(2.125))
+        .w(rems(2.5))
+        .h(rems(2.25))
         .min_h_0()
         .flex_shrink_0()
         .p_0()
@@ -1032,6 +1039,14 @@ impl NotesView {
                                     .text_size(rems(0.8125))
                                     .text_color(rgb(theme.secondary()))
                                     .truncate()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .when(import_failed, |line| {
+                                        line.child(
+                                            icon(Icon::Alert, theme.error_text()).size(rems(0.875)),
+                                        )
+                                    })
                                     .child({
                                         let text =
                                             format!("{details} · {}", edited_label(n.updated_at));
@@ -1040,7 +1055,7 @@ impl NotesView {
                                             vec![(
                                                 0..details.len(),
                                                 HighlightStyle {
-                                                    color: Some(rgb(theme.destructive).into()),
+                                                    color: Some(rgb(theme.error_text()).into()),
                                                     font_weight: Some(FontWeight::MEDIUM),
                                                     ..Default::default()
                                                 },
@@ -1166,11 +1181,8 @@ impl NotesView {
                                     .flex_col()
                                     .items_center()
                                     .justify_center()
-                                    .gap_2()
-                                    .child(icon(Icon::Page, theme.muted).size(rems(1.75)))
-                                    .child(
-                                        div().text_xs().text_color(rgb(theme.muted)).child("Blank"),
-                                    ),
+                                    .opacity(0.6)
+                                    .child(icon(Icon::Page, theme.muted).size(rems(1.5))),
                             )
                         },
                     )
@@ -1201,7 +1213,7 @@ impl NotesView {
                                 .justify_center()
                                 .gap_1()
                                 .child(icon(Icon::Alert, theme.destructive).size(rems(0.875)))
-                                .child("Import failed"),
+                                .child("Import failed · Open to retry"),
                         )
                     });
                 let content = div()
@@ -1579,7 +1591,7 @@ impl NotesView {
                                 "search",
                                 "Search all documents · Ctrl+F",
                                 Icon::Search,
-                                false,
+                                self.find.is_some(),
                                 cx,
                                 |this, w, cx| this.open_find(w, cx),
                             ))
@@ -2522,7 +2534,15 @@ impl NotesView {
                         } else {
                             FontWeight::NORMAL
                         })
-                        .when(active, |n| n.text_color(rgb(theme.selection())))
+                        .when(active, |n| {
+                            n.bg(rgba((theme.selection() << 8) | 0x29)).text_color(rgb(
+                                if theme.dark {
+                                    theme.selection()
+                                } else {
+                                    0x1d4ed8
+                                },
+                            ))
+                        })
                         .when(!active, |n| n.text_color(rgb(theme.muted)))
                         .child(format!("{}", index + 1));
                     let caption = div()

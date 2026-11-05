@@ -395,6 +395,20 @@ impl NotesView {
             .overflow_hidden()
             .border_b_1()
             .border_color(theme.border)
+            // Names what the row applies to: the selected text box.
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .pr_1()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(theme.secondary()))
+                    .child(icon(Icon::Text, theme.secondary()).size(rems(1.)))
+                    .child("Text"),
+            )
             .child(font)
             .child(size)
             .child(divider());

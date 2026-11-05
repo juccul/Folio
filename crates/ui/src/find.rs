@@ -318,7 +318,7 @@ impl NotesView {
                         self.controller.search_focus.min(marks - 1) + 1
                     ));
                 }
-                Some((place, snippet(result.snippet_parts(), theme)))
+                Some((place, Some(snippet(result.snippet_parts(), theme))))
             }
             None if !pending && count > 0 => {
                 let first = &results[find.order[0]];
@@ -328,18 +328,17 @@ impl NotesView {
                     } else {
                         "Not in this document".into()
                     },
-                    plain(format!("Enter opens “{}”", first.title)),
+                    Some(plain(format!("Enter opens “{}”", first.title))),
                 ))
             }
-            _ if text.is_empty() && self.library_open => Some((
-                "Searches titles, tags, text and handwriting".into(),
-                plain(String::new()),
-            )),
+            _ if text.is_empty() && self.library_open => {
+                Some(("Searches titles, tags, text and handwriting".into(), None))
+            }
             _ if none => Some((
                 "No matches".into(),
-                plain(
+                Some(plain(
                     "Searches titles, tags, typed text, equations and indexed handwriting".into(),
-                ),
+                )),
             )),
             _ => None,
         };
@@ -486,12 +485,12 @@ impl NotesView {
                             .text_color(rgb(theme.ink))
                             .child(place),
                     )
-                    .child(
+                    .children(detail.map(|detail| {
                         div()
                             .truncate()
                             .text_color(rgb(theme.secondary()))
-                            .child(detail),
-                    )
+                            .child(detail)
+                    }))
             }));
         Some(bar)
     }

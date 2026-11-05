@@ -92,9 +92,9 @@ impl NotesView {
                 group.child(
                     div()
                         .px_1()
-                        .text_xs()
+                        .text_size(rems(0.8125))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(theme.muted))
+                        .text_color(rgb(theme.secondary()))
                         .child(heading.to_owned()),
                 )
             })
@@ -754,7 +754,8 @@ impl NotesView {
         let scrollbar = {
             let viewport = f32::from(self.settings_scroll.bounds().size.height);
             let range = f32::from(self.settings_scroll.max_offset().height);
-            (viewport > 0. && range > 1.).then(|| {
+            // Only when meaningfully more content is below.
+            (viewport > 0. && range > 48.).then(|| {
                 let thumb = (viewport * viewport / (viewport + range)).max(32.);
                 let progress = (-f32::from(self.settings_scroll.offset().y) / range).clamp(0., 1.);
                 div()

@@ -260,7 +260,7 @@ impl Theme {
             // Dark paper sits just above the workspace black, so pages and
             // previews keep a visible edge and ink keeps its depth.
             if settings.dark {
-                mix(color(Background), 0xffffff, 0.06)
+                mix(color(Background), 0xffffff, 0.08)
             } else {
                 color(Background)
             }
@@ -359,6 +359,15 @@ impl Theme {
     /// from ink and paper in both modes.
     pub fn selection(self) -> u32 {
         if self.dark { 0x60a5fa } else { 0x2563eb }
+    }
+    /// Error text: the destructive color, lifted on dark surfaces so small
+    /// red text stays readable.
+    pub fn error_text(self) -> u32 {
+        if self.dark {
+            mix(self.destructive, 0xffffff, 0.25)
+        } else {
+            self.destructive
+        }
     }
     /// Secondary text and idle icons in dense lists: between muted and ink.
     pub fn secondary(self) -> u32 {
@@ -569,7 +578,7 @@ mod tests {
         };
         settings.appearance.adapt_ink = true;
         let theme = Theme::new(&settings);
-        assert_eq!(theme.canvas.paper, 0x191919);
+        assert_eq!(theme.canvas.paper, 0x1e1e1e);
         assert!(contrast(theme.canvas.ink(0x2b3934), theme.canvas.paper) >= 3.);
         assert_eq!(theme.canvas.ink(0xffffff), 0xffffff);
         settings.appearance.canvas_follows_theme = false;
