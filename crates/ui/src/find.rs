@@ -344,7 +344,11 @@ impl NotesView {
         };
         // Below the toolbar, at the right edge of the page area.
         let search = self.accessibility.control_bounds_for_key("search");
-        let top = search.map_or(px(96.), |r| px(r.y1 as f32 + 10.));
+        // Below the header's divider in the library; under the toolbar
+        // in the editor.
+        let top = search.map_or(px(96.), |r| {
+            px(r.y1 as f32 + if self.library_open { 30. } else { 10. })
+        });
         // In the library, right-aligned under the search button, over the
         // empty middle of the sort row rather than the view switch.
         let right = if self.library_open {

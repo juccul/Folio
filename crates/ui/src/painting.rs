@@ -313,7 +313,8 @@ fn selection_overlay(
     zoom: f32,
     transform: Transform,
 ) -> ([DocPoint; 5], [DocPoint; 2]) {
-    let outline = rect_points(bounds.expand(4.)).map(|p| transform.apply(p));
+    // Clear of the content, yet within the handles' 10 px reach.
+    let outline = rect_points(bounds.expand(6.5 / zoom)).map(|p| transform.apply(p));
     let rotation = [
         DocPoint::new(bounds.center().x, bounds.min.y),
         DocPoint::new(bounds.center().x, bounds.min.y - 24. / zoom),
@@ -1488,9 +1489,9 @@ impl Painter {
                     window.scale_factor(),
                     &mut rectangles,
                 );
-                // On dark paper the shadow disappears; a light hairline keeps
-                // the page edge visible against the workspace.
-                if theme.dark {
+                // A hairline keeps the page edge visible against the
+                // workspace: light on dark paper, a faint shade on light.
+                {
                     pixel_rectangles(
                         Rect::new(
                             bounds.min.x - 1.,
@@ -1498,7 +1499,11 @@ impl Painter {
                             bounds.width() + 2.,
                             bounds.height() + 2.,
                         ),
-                        alpha(0xffffff, 0.2),
+                        if theme.dark {
+                            alpha(0xffffff, 0.2)
+                        } else {
+                            alpha(0x000000, 0.1)
+                        },
                         window.scale_factor(),
                         &mut rectangles,
                     );

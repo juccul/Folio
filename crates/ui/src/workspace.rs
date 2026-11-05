@@ -207,7 +207,12 @@ impl NotesView {
         };
         let theme = Theme::new(&self.controller.settings);
         let palette = theme.canvas_for_page(&page.properties);
-        let bright_raster = theme.dark && page.properties.pdf.is_some();
+        let bright_raster = theme.dark
+            && (page.properties.pdf.is_some()
+                || page
+                    .objects
+                    .values()
+                    .any(|o| matches!(o.as_ref(), folio_document::Object::Image(_))));
         let pdf_ready = page
             .properties
             .pdf
@@ -471,7 +476,17 @@ impl NotesView {
         self.control(
             id,
             label,
-            icon(kind, theme.ink).size(rems(1.375)).into_any_element(),
+            // A favorite on-state uses the accent, as in the library.
+            icon(
+                kind,
+                if id == "favorite-note" && active {
+                    theme.selection_strong()
+                } else {
+                    theme.ink
+                },
+            )
+            .size(rems(1.375))
+            .into_any_element(),
             active,
             cx,
             action,
@@ -977,7 +992,7 @@ impl NotesView {
                             Icon::Star
                         },
                         if n.favorite {
-                            theme.ink
+                            theme.selection_strong()
                         } else {
                             theme.secondary()
                         },
@@ -1068,8 +1083,7 @@ impl NotesView {
                                         )
                                     })
                                     .child({
-                                        let text =
-                                            format!("{details} · {}", edited_label(n.updated_at));
+                                        let text = details.clone();
                                         // Only the failure is red; the date stays neutral.
                                         let failure = if import_failed {
                                             vec![(
@@ -1086,6 +1100,16 @@ impl NotesView {
                                         StyledText::new(text).with_highlights(failure)
                                     }),
                             ),
+                    )
+                    // The edit date as its own column, so the row reads across.
+                    .child(
+                        div()
+                            .w(rems(11.))
+                            .flex_shrink_0()
+                            .text_sm()
+                            .text_color(rgb(theme.secondary()))
+                            .truncate()
+                            .child(edited_label(n.updated_at)),
                     );
                 items = items.child(
                     div()
@@ -1186,11 +1210,14 @@ impl NotesView {
                     .child(cover_content)
                     // Blank documents get a quiet mark, so the grid does not
                     // read as a wall of identical pages.
-                    .when(
-                        preview.as_ref().is_some_and(|(page, _)| {
-                            page.objects.is_empty() && page.properties.pdf.is_none()
-                        }) && !import_failed,
-                        |cover| {
+                    .when_some(
+                        preview
+                            .as_ref()
+                            .map(|(page, _)| page)
+                            .filter(|page| page.objects.is_empty() && page.properties.pdf.is_none())
+                            .filter(|_| !import_failed)
+                            .cloned(),
+                        |cover, page| {
                             cover.child(
                                 div()
                                     .absolute()
@@ -1200,17 +1227,15 @@ impl NotesView {
                                     .items_center()
                                     .justify_center()
                                     .child(
-                                        div()
-                                            .text_size(rems(2.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(rgb(theme.secondary()))
-                                            .child(
-                                                n.title
-                                                    .chars()
-                                                    .find(|c| c.is_alphanumeric())
-                                                    .map(|c| c.to_uppercase().to_string())
-                                                    .unwrap_or_default(),
-                                            ),
+                                        icon(
+                                            match page.properties.paper {
+                                                folio_document::Paper::Grid => Icon::PaperGrid,
+                                                folio_document::Paper::Dots => Icon::PaperDots,
+                                                _ => Icon::PaperRuled,
+                                            },
+                                            theme.muted,
+                                        )
+                                        .size(rems(1.25)),
                                     ),
                             )
                         },
@@ -1494,9 +1519,17 @@ impl NotesView {
                 })
                 .text_xs()
                 .py_0()
-                .px_1(),
+                .px_1()
+                // Short enough that the header keeps the height of other views.
+                .min_h_0()
+                .h(rems(1.25)),
             );
-            for folder in self.controller.folder_ancestors(id) {
+            for folder in self
+                .controller
+                .folder_ancestors(id)
+                .into_iter()
+                .filter(|folder| folder.id != id)
+            {
                 let target = folder.id;
                 row = row.child(div().text_xs().child("/")).child(
                     self.button(
@@ -1509,11 +1542,13 @@ impl NotesView {
                     .text_xs()
                     .py_0()
                     .px_1()
+                    .min_h_0()
+                    .h(rems(1.25))
                     .max_w(px(150.))
                     .truncate(),
                 );
             }
-            Some(row)
+            Some(row.child(div().text_xs().text_color(rgb(theme.muted)).child("/")))
         } else if let NoteFilter::NotebookTrash(id) = self.controller.filter {
             Some(
                 div()
@@ -1550,7 +1585,7 @@ impl NotesView {
                     // Room for the folder breadcrumb in every view, so the
                     // shelf does not shift when a folder opens.
                     .min_h(rems(5.25))
-                    .py_2()
+                    .py_1()
                     .flex_wrap()
                     .px_8()
                     .flex_shrink_0()
@@ -1567,14 +1602,15 @@ impl NotesView {
                             .flex()
                             .flex_col()
                             .gap_1()
+                            // Parent folders sit above the title.
+                            .children(breadcrumb)
                             .child(
                                 div()
                                     .text_size(rems(1.5625))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .truncate()
                                     .child(title),
-                            )
-                            .children(breadcrumb),
+                            ),
                     )
                     .child(
                         div()
@@ -2545,12 +2581,7 @@ impl NotesView {
                         } else {
                             FontWeight::NORMAL
                         })
-                        .when(active, |n| {
-                            n.bg(rgba(
-                                (theme.selection() << 8) | if theme.dark { 0x4d } else { 0x29 },
-                            ))
-                            .text_color(rgb(if theme.dark { 0xeff6ff } else { 0x1d4ed8 }))
-                        })
+                        .when(active, |n| n.text_color(rgb(theme.ink)))
                         .when(!active, |n| n.text_color(rgb(theme.muted)))
                         .child(format!("{}", index + 1));
                     let caption = div()

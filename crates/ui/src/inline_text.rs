@@ -561,7 +561,6 @@ impl NotesView {
             .rounded(px(theme.radius))
             .with_hint("Text color", theme, self.hints()),
         );
-        row = row.child(div().flex_1().min_w_2());
         row = if self.inline_text.is_some() {
             row.child(
                 self.control(

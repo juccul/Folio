@@ -394,17 +394,18 @@ impl NotesView {
                         DocumentMenuAction::Favorite,
                     )
                 },
-                (
-                    "move",
-                    "Move to folder…",
-                    Some(Icon::Folder),
-                    DocumentMenuAction::Move,
-                ),
+                // Same order as the editor's document menu.
                 (
                     "tags",
                     "Edit tags…",
                     Some(Icon::Tag),
                     DocumentMenuAction::Tags,
+                ),
+                (
+                    "move",
+                    "Move to folder…",
+                    Some(Icon::Folder),
+                    DocumentMenuAction::Move,
                 ),
                 (
                     "trash",
@@ -475,8 +476,7 @@ impl NotesView {
                 );
             }
             previous = Some(action);
-            // Destructive actions are marked by a red icon; their text keeps
-            // the menu's ink.
+            // Destructive actions are red, as in the editor's menu.
             let destructive = matches!(action, DocumentMenuAction::Delete)
                 || (action == DocumentMenuAction::Trash && !note.trashed);
             let glyph = match kind {
@@ -507,7 +507,11 @@ impl NotesView {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_color(rgb(theme.ink))
+                                .text_color(rgb(if destructive {
+                                    theme.destructive
+                                } else {
+                                    theme.ink
+                                }))
                                 .child(label),
                         )
                         .into_any_element(),

@@ -285,7 +285,7 @@ impl Theme {
             0x000000
         };
         let grid = mix(paper, foreground, 0.14);
-        let dots = mix(paper, foreground, 0.24);
+        let dots = mix(paper, foreground, if settings.dark { 0.3 } else { 0.24 });
         Self {
             bg: color(Background),
             surface: color(Card),
