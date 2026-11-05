@@ -699,7 +699,7 @@ impl NotesView {
                 .child(icon(
                     kind,
                     if active {
-                        theme.sidebar_accent
+                        theme.sidebar_icon()
                     } else {
                         theme.muted
                     },
@@ -1065,8 +1065,12 @@ impl NotesView {
                         .gap_1()
                         .relative()
                         .rounded(px(theme.corner_md()))
-                        .when(menu_owner, |row| row.bg(theme.tint(0.7)))
-                        .hover(move |s| s.bg(theme.tint(0.7)))
+                        .border_1()
+                        .border_color(transparent_black())
+                        .when(menu_owner, |row| {
+                            row.bg(theme.tint(0.7)).border_color(theme.cover_edge())
+                        })
+                        .hover(move |s| s.bg(theme.tint(0.45)))
                         .pr_2()
                         .child(
                             self.control(
@@ -1196,8 +1200,12 @@ impl NotesView {
                         .pb_2()
                         .rounded(px(theme.corner_md()))
                         .group("note-card")
-                        .when(menu_owner, |card| card.bg(theme.tint(0.7)))
-                        .hover(move |s| s.bg(theme.tint(0.7)))
+                        .border_1()
+                        .border_color(transparent_black())
+                        .when(menu_owner, |card| {
+                            card.bg(theme.tint(0.7)).border_color(theme.cover_edge())
+                        })
+                        .hover(move |s| s.bg(theme.tint(0.45)))
                         .child(
                             self.control(
                                 format!("note-{id}"),

@@ -64,9 +64,9 @@ impl NotesView {
         // Conversions are not recognizable from a glyph alone.
         let short = match id.as_ref() {
             "solve-selection" => Some("Solve"),
-            "index-handwriting" => Some("Index handwriting"),
-            "recognize-text" => Some("Convert to text"),
-            "recognize-math" => Some("Convert to math"),
+            "index-handwriting" => Some("Index"),
+            "recognize-text" => Some("To text"),
+            "recognize-math" => Some("To math"),
             _ => None,
         };
         let content = div()

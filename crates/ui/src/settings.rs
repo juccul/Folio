@@ -87,7 +87,7 @@ impl NotesView {
             .flex()
             .flex_col()
             .gap_2()
-            .mb_6()
+            .mb_5()
             .when_some(heading, |group, heading| {
                 group.child(
                     div()
