@@ -431,7 +431,6 @@ impl NotesView {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(icon(Icon::Search, theme.muted).size(rems(1.)).mx_1())
                     .child(
                         div()
                             .flex_1()
@@ -473,8 +472,9 @@ impl NotesView {
             )
             .children(context.map(|(place, detail)| {
                 div()
-                    .px_2()
-                    .pb_0p5()
+                    .px_3()
+                    .pt_0p5()
+                    .pb_1()
                     .flex()
                     .flex_col()
                     .text_size(rems(0.8125))
