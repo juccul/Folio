@@ -266,7 +266,7 @@ impl Theme {
             // Dark paper sits just above the workspace black, so pages and
             // previews keep a visible edge and ink keeps its depth.
             if settings.dark {
-                mix(color(Background), 0xffffff, 0.09)
+                mix(color(Background), 0xffffff, 0.08)
             } else {
                 color(Background)
             }
@@ -285,7 +285,7 @@ impl Theme {
             0x000000
         };
         let grid = mix(paper, foreground, 0.14);
-        let dots = mix(paper, foreground, if settings.dark { 0.3 } else { 0.24 });
+        let dots = mix(paper, foreground, 0.24);
         Self {
             bg: color(Background),
             surface: color(Card),
@@ -588,7 +588,7 @@ mod tests {
         };
         settings.appearance.adapt_ink = true;
         let theme = Theme::new(&settings);
-        assert_eq!(theme.canvas.paper, 0x202020);
+        assert_eq!(theme.canvas.paper, 0x1e1e1e);
         assert!(contrast(theme.canvas.ink(0x2b3934), theme.canvas.paper) >= 3.);
         assert_eq!(theme.canvas.ink(0xffffff), 0xffffff);
         settings.appearance.canvas_follows_theme = false;

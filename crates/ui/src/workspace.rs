@@ -559,6 +559,7 @@ impl NotesView {
             .bg(rgba((theme.ink << 8) | 0x29))
     }
     fn page_controls_group(&self) -> Div {
+        let theme = Theme::new(&self.controller.settings);
         div()
             .h(rems(2.625))
             .px(rems(0.25))
@@ -566,6 +567,10 @@ impl NotesView {
             .flex_shrink_0()
             .items_center()
             .gap(rems(0.1875))
+            .rounded(rems(theme.corner_md() / 16.))
+            .bg(theme.raised())
+            .border_1()
+            .border_color(theme.glass_edge())
     }
     fn page_control_button(
         &self,
@@ -1131,8 +1136,8 @@ impl NotesView {
                         )
                         .child(favorite)
                         .child(menu)
-                        // A hairline as wide as the row highlight.
-                        .child(div().absolute().bottom_0().left_0().right_0().h(px(1.)).bg(
+                        // An inset hairline ties each title to its actions.
+                        .child(div().absolute().bottom_0().left_3().right_3().h(px(1.)).bg(
                             if theme.dark {
                                 theme.cover_edge()
                             } else {
@@ -1187,14 +1192,26 @@ impl NotesView {
                         }) && !import_failed,
                         |cover| {
                             cover.child(
-                                // The title as a quiet page heading.
-                                div().absolute().inset_0().p_3().pt_4().child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(rgb(theme.secondary()))
-                                        .line_clamp(2)
-                                        .child(n.title.clone()),
-                                ),
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .text_size(rems(2.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(theme.secondary()))
+                                            .child(
+                                                n.title
+                                                    .chars()
+                                                    .find(|c| c.is_alphanumeric())
+                                                    .map(|c| c.to_uppercase().to_string())
+                                                    .unwrap_or_default(),
+                                            ),
+                                    ),
                             )
                         },
                     );

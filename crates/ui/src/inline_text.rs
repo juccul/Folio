@@ -411,13 +411,10 @@ impl NotesView {
                     .items_center()
                     .gap_1()
                     .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(theme.secondary()))
-                    // A caption, not a control.
-                    .child(if mixed {
-                        "Text in selection"
-                    } else {
-                        "Text style"
-                    }),
+                    .child(icon(Icon::Text, theme.secondary()).size(rems(1.)))
+                    .child(if mixed { "Text in selection" } else { "Text" }),
             )
             .child(font)
             .child(size)
