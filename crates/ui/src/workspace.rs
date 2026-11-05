@@ -1003,17 +1003,30 @@ impl NotesView {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(title)
+                            .child(title.text_size(rems(0.9375)))
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(rgb(if import_failed {
-                                        theme.destructive
-                                    } else {
-                                        theme.muted
-                                    }))
+                                    .text_color(rgb(theme.muted))
                                     .truncate()
-                                    .child(format!("{details} · {}", edited_label(n.updated_at))),
+                                    .child({
+                                        let text =
+                                            format!("{details} · {}", edited_label(n.updated_at));
+                                        // Only the failure is red; the date stays neutral.
+                                        let failure = if import_failed {
+                                            vec![(
+                                                0..details.len(),
+                                                HighlightStyle {
+                                                    color: Some(rgb(theme.destructive).into()),
+                                                    font_weight: Some(FontWeight::MEDIUM),
+                                                    ..Default::default()
+                                                },
+                                            )]
+                                        } else {
+                                            Vec::new()
+                                        };
+                                        StyledText::new(text).with_highlights(failure)
+                                    }),
                             ),
                     );
                 items = items.child(
@@ -1025,9 +1038,8 @@ impl NotesView {
                         .flex()
                         .items_center()
                         .gap_1()
-                        // Hairline separators tie each title to its actions.
-                        .border_b_1()
-                        .border_color(theme.border)
+                        .relative()
+                        .rounded(px(theme.corner_md()))
                         .hover(move |s| s.bg(theme.tint(0.7)))
                         .pr_2()
                         .child(
@@ -1060,7 +1072,17 @@ impl NotesView {
                             }),
                         )
                         .child(favorite)
-                        .child(menu),
+                        .child(menu)
+                        // An inset hairline ties each title to its actions.
+                        .child(
+                            div()
+                                .absolute()
+                                .bottom_0()
+                                .left_3()
+                                .right_3()
+                                .h(px(1.))
+                                .bg(theme.border),
+                        ),
                 );
             } else {
                 let cover_content = if let Some((page, _)) = &preview {
@@ -1111,12 +1133,16 @@ impl NotesView {
                                 .px_2()
                                 .py_1()
                                 .rounded(px(theme.corner_sm().max(4.)))
-                                .bg(rgb(theme.destructive))
+                                // Deep enough for white text in both modes.
+                                .bg(rgb(crate::theme::mix(theme.destructive, 0x000000, 0.3)))
                                 .text_color(rgb(0xffffff))
                                 .text_xs()
                                 .font_weight(FontWeight::MEDIUM)
                                 .flex()
+                                .items_center()
                                 .justify_center()
+                                .gap_1()
+                                .child(icon(Icon::Alert, 0xffffff).size(rems(0.875)))
                                 .child("Import failed"),
                         )
                     });

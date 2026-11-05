@@ -17,7 +17,16 @@ pub struct CanvasTheme {
 }
 impl CanvasTheme {
     pub fn ink(self, color: u32) -> u32 {
-        self.readable(color, 4.5)
+        self.readable(color, self.ink_contrast())
+    }
+    /// Dim ink on dark paper reads worse than the same ratio on light paper,
+    /// so dark pages ask for the stronger AAA ratio.
+    fn ink_contrast(self) -> f32 {
+        if luminance(self.paper) < 0.18 {
+            7.
+        } else {
+            4.5
+        }
     }
     fn readable(self, color: u32, minimum: f32) -> u32 {
         if !self.adapt_ink || contrast(color, self.paper) >= minimum {
@@ -38,7 +47,7 @@ impl CanvasTheme {
             let color = ((pixel[2] as u32) << 16) | ((pixel[1] as u32) << 8) | pixel[0] as u32;
             let adjusted = *colors
                 .entry(color)
-                .or_insert_with(|| self.readable(color, 4.5));
+                .or_insert_with(|| self.readable(color, self.ink_contrast()));
             if adjusted != color {
                 // Most light-paper previews already have readable colors.
                 // Allocate only when an actual color change is necessary.
@@ -193,7 +202,13 @@ impl Theme {
         let resolve = |token| settings.appearance.color(settings.dark, token);
         let color = |token| resolve(token).rgb();
         let paper = if settings.appearance.canvas_follows_theme {
-            color(Background)
+            // Dark paper sits just above the workspace black, so pages and
+            // previews keep a visible edge and ink keeps its depth.
+            if settings.dark {
+                mix(color(Background), 0xffffff, 0.06)
+            } else {
+                color(Background)
+            }
         } else {
             settings
                 .appearance
@@ -479,7 +494,7 @@ mod tests {
         };
         settings.appearance.adapt_ink = true;
         let theme = Theme::new(&settings);
-        assert_eq!(theme.canvas.paper, 0x0a0a0a);
+        assert_eq!(theme.canvas.paper, 0x191919);
         assert!(contrast(theme.canvas.ink(0x2b3934), theme.canvas.paper) >= 3.);
         assert_eq!(theme.canvas.ink(0xffffff), 0xffffff);
         settings.appearance.canvas_follows_theme = false;
@@ -550,10 +565,10 @@ mod tests {
             ] {
                 let adjusted = palette.ink(color);
                 assert!(
-                    contrast(adjusted, paper) >= 4.5,
+                    contrast(adjusted, paper) >= palette.ink_contrast(),
                     "{color:06x} on {paper:06x}"
                 );
-                if contrast(color, paper) >= 4.5 {
+                if contrast(color, paper) >= palette.ink_contrast() {
                     assert_eq!(adjusted, color);
                 }
                 let before: Hsla = rgb(color).into();

@@ -340,23 +340,19 @@ impl NotesView {
             _ => None,
         };
         // Below the toolbar, at the right edge of the page area.
-        // In the library, below the sort and view row so it covers no control.
-        let top = self
-            .accessibility
-            .control_bounds_for_key(if self.library_open {
-                "list-view"
-            } else {
-                "search"
+        let search = self.accessibility.control_bounds_for_key("search");
+        let top = search.map_or(px(96.), |r| px(r.y1 as f32 + 10.));
+        // In the library, right-aligned under the search button, over the
+        // empty middle of the sort row rather than the view switch.
+        let right = if self.library_open {
+            search.map_or(px(16.), |r| {
+                window.viewport_size().width - px(r.x1 as f32) - px(6.)
             })
-            .map_or(px(96.), |r| {
-                px(r.y1 as f32 + if self.library_open { 14. } else { 10. })
-            });
-        let right = self
-            .canvas_bounds
-            .filter(|_| !self.library_open)
-            .map_or(px(16.), |b| {
+        } else {
+            self.canvas_bounds.map_or(px(16.), |b| {
                 window.viewport_size().width - b.origin.x - b.size.width + px(16.)
-            });
+            })
+        };
         let nav = |this: &mut Self,
                    id: &'static str,
                    label: &'static str,

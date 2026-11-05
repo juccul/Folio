@@ -95,6 +95,7 @@ define_icons! {
     List => "List.svg",
     Sliders => "Sliders.svg",
     Help => "Help.svg",
+    Alert => "Alert.svg",
     Tag => "Tag.svg",
     Page => "Page.svg",
     NewPage => "NewPage.svg",
