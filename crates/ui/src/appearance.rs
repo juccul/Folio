@@ -232,11 +232,14 @@ impl NotesView {
                 },
             )),
         );
+        // Theme and paper come first; surface styling follows.
+        let styling = theme_rows.split_off(1);
         div()
             .flex()
             .flex_col()
             .child(self.settings_group(Some("Theme"), theme_rows))
             .child(self.settings_group(Some("Paper and ink"), paper_rows))
+            .child(self.settings_group(Some("Interface styling"), styling))
             .child(
                 div().flex().child(self.settings_action(
                     "reset-appearance",

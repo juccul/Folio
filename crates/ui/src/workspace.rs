@@ -1199,7 +1199,19 @@ impl NotesView {
                                     .flex_col()
                                     .items_center()
                                     .justify_center()
-                                    .child(icon(Icon::Page, theme.secondary()).size(rems(1.5))),
+                                    .child(
+                                        div()
+                                            .text_size(rems(2.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(theme.secondary()))
+                                            .child(
+                                                n.title
+                                                    .chars()
+                                                    .find(|c| c.is_alphanumeric())
+                                                    .map(|c| c.to_uppercase().to_string())
+                                                    .unwrap_or_default(),
+                                            ),
+                                    ),
                             )
                         },
                     );
@@ -2534,13 +2546,10 @@ impl NotesView {
                             FontWeight::NORMAL
                         })
                         .when(active, |n| {
-                            n.bg(rgba((theme.selection() << 8) | 0x29)).text_color(rgb(
-                                if theme.dark {
-                                    theme.selection()
-                                } else {
-                                    0x1d4ed8
-                                },
+                            n.bg(rgba(
+                                (theme.selection() << 8) | if theme.dark { 0x4d } else { 0x29 },
                             ))
+                            .text_color(rgb(if theme.dark { 0xeff6ff } else { 0x1d4ed8 }))
                         })
                         .when(!active, |n| n.text_color(rgb(theme.muted)))
                         .child(format!("{}", index + 1));
