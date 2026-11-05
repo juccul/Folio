@@ -369,6 +369,10 @@ impl Theme {
             self.destructive
         }
     }
+    /// The selection blue for icons and text on a light tint of itself.
+    pub fn selection_strong(self) -> u32 {
+        if self.dark { 0x93c5fd } else { 0x1d4ed8 }
+    }
     /// Secondary text and idle icons in dense lists: between muted and ink.
     pub fn secondary(self) -> u32 {
         mix(self.muted, self.ink, 0.25)

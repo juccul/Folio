@@ -503,7 +503,14 @@ impl NotesView {
         let (color, size) = if chevron {
             (theme.muted, 0.875)
         } else {
-            (theme.ink, 1.375)
+            (
+                if current {
+                    theme.selection_strong()
+                } else {
+                    theme.ink
+                },
+                1.375,
+            )
         };
         self.control(
             id,
@@ -520,8 +527,9 @@ impl NotesView {
         .p_0()
         .rounded(rems(theme.radius / 16.))
         // One active style: a firm neutral tint with a full-strength icon.
+        // The active tool shares the selection blue, as a soft tint.
         .bg(if current {
-            rgba((theme.ink << 8) | if theme.dark { 0x3d } else { 0x26 })
+            rgba((theme.selection() << 8) | if theme.dark { 0x38 } else { 0x24 })
         } else {
             theme.tint(self.motion.borrow_mut().hover_value(id))
         })
@@ -1036,7 +1044,7 @@ impl NotesView {
                             .child(title.text_size(rems(0.9375)))
                             .child(
                                 div()
-                                    .text_size(rems(0.8125))
+                                    .text_sm()
                                     .text_color(rgb(theme.secondary()))
                                     .truncate()
                                     .flex()
@@ -1205,14 +1213,14 @@ impl NotesView {
                                 )))
                                 .border_1()
                                 .border_color(rgba((theme.destructive << 8) | 0x59))
-                                .text_color(rgb(theme.destructive))
+                                .text_color(rgb(theme.error_text()))
                                 .text_xs()
                                 .font_weight(FontWeight::MEDIUM)
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .gap_1()
-                                .child(icon(Icon::Alert, theme.destructive).size(rems(0.875)))
+                                .child(icon(Icon::Alert, theme.error_text()).size(rems(0.875)))
                                 .child("Import failed · Open to retry"),
                         )
                     });
@@ -1695,7 +1703,7 @@ impl NotesView {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .text_size(rems(0.8125))
+                    .text_sm()
                     .text_color(rgb(theme.secondary()))
                     // The idle save state belongs to the editor; the library
                     // shows only activity.
@@ -2756,7 +2764,7 @@ impl NotesView {
                     cx,
                     |this, _, _| this.pages_open = !this.pages_open,
                 )
-                .text_size(rems(0.8125))
+                .text_sm()
                 .py_1(),
             )
             .child(
@@ -2797,7 +2805,7 @@ impl NotesView {
             })
             .child(
                 div()
-                    .text_size(rems(0.8125))
+                    .text_sm()
                     .text_color(rgb(theme.secondary()))
                     .child(self.controller.activity_status()),
             )
@@ -2821,7 +2829,7 @@ impl NotesView {
                     cx,
                     |this, _, _| this.fit(),
                 )
-                .text_size(rems(0.8125))
+                .text_sm()
                 .py_1()
                 .tooltip(move |_, cx| cx.new(|_| Hint("Fit page · Ctrl+0".into(), theme)).into()),
             )

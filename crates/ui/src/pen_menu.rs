@@ -169,6 +169,20 @@ impl NotesView {
                     ),
                 ] {
                     let active = self.controller.style.tool == tool;
+                    // A short sample stroke shows how each pen marks.
+                    let (thickness, color) = match tool {
+                        InkTool::Ballpoint => (1.5, rgb(theme.ink)),
+                        InkTool::Fountain => (2.5, rgb(theme.ink)),
+                        InkTool::Pencil => (2., rgba((theme.ink << 8) | 0x8c)),
+                        InkTool::Marker => (4.5, rgb(theme.ink)),
+                        _ => (9., rgba(0xfacc158c)),
+                    };
+                    let sample = div()
+                        .w(px(30.))
+                        .h(px(thickness))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(color);
                     panel = panel.child(
                         self.control(
                             format!("pen-type-{id}"),
@@ -180,10 +194,12 @@ impl NotesView {
                                 .gap_2()
                                 .child(icon(kind, theme.muted))
                                 .child(div().flex_1().child(label))
+                                .child(sample)
                                 .child(if active {
                                     icon(Icon::Check, theme.ink).into_any_element()
                                 } else {
-                                    div().size(rems(1.125)).into_any_element()
+                                    // Same width as the check, so samples align.
+                                    div().size(rems(1.375)).flex_shrink_0().into_any_element()
                                 })
                                 .into_any_element(),
                             active,

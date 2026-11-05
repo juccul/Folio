@@ -58,7 +58,7 @@ impl NotesView {
                     .when(!description.is_empty(), |row| {
                         row.child(
                             div()
-                                .text_size(rems(0.8125))
+                                .text_sm()
                                 .text_color(rgb(theme.secondary()))
                                 .child(description.to_owned()),
                         )
