@@ -67,6 +67,9 @@ struct ThumbnailKey {
     properties: folio_document::PageProperties,
     theme: super::theme::CanvasTheme,
     pdf_ready: bool,
+    /// Raster size in device pixels, so covers are drawn at the size shown
+    /// instead of being downsampled until thin ink fades.
+    edge: u32,
 }
 struct Thumbnail {
     key: ThumbnailKey,
@@ -210,11 +213,19 @@ impl NotesView {
             .as_ref()
             .and_then(|p| p.preview_asset.as_ref())
             .is_none_or(|a| self.controller.assets.join(a).is_file());
+        let edge = ((max_height * window.scale_factor()).ceil() as u32).clamp(128, 768);
+        // PDF previews are already rasters; resampling them small blurs text.
+        let edge = if page.properties.pdf.is_some() {
+            edge.max(384)
+        } else {
+            edge
+        };
         let key = ThumbnailKey {
             revision: page.revision,
             properties: page.properties.clone(),
             theme: palette,
             pdf_ready,
+            edge,
         };
         let id = page.id;
         let default_aspect = page.properties.width / page.properties.height.max(1.);
@@ -242,10 +253,10 @@ impl NotesView {
                 // handwriting stays legible instead of fading into the paper.
                 for object in page.objects.values_mut() {
                     if let folio_document::Object::Stroke(stroke) = Arc::make_mut(object) {
-                        stroke.style.width *= 1.6;
+                        stroke.style.width *= 1.4;
                     }
                 }
-                folio_export::raster_page_thumbnail(&page, &assets, 384)
+                folio_export::raster_page_thumbnail(&page, &assets, edge)
                     .map(|p| {
                         let aspect = p.width() as f32 / p.height() as f32;
                         (graph::image(p.width(), p.height(), p.take()), aspect)
@@ -937,7 +948,11 @@ impl NotesView {
                         } else {
                             Icon::Star
                         },
-                        if n.favorite { theme.ink } else { theme.muted },
+                        if n.favorite {
+                            theme.ink
+                        } else {
+                            theme.secondary()
+                        },
                     )
                     .size(rems(1.))
                     .into_any_element(),
@@ -992,7 +1007,7 @@ impl NotesView {
             });
             let title = div()
                 .text_sm()
-                .font_weight(FontWeight::MEDIUM)
+                .font_weight(FontWeight::SEMIBOLD)
                 .truncate()
                 .child(n.title.clone());
             if list_view {
@@ -1014,7 +1029,7 @@ impl NotesView {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(rgb(theme.muted))
+                                    .text_color(rgb(theme.secondary()))
                                     .truncate()
                                     .child({
                                         let text =
@@ -1214,7 +1229,7 @@ impl NotesView {
                                         .text_color(rgb(if import_failed {
                                             theme.ink
                                         } else {
-                                            theme.muted
+                                            theme.secondary()
                                         }))
                                         .truncate()
                                         // The cover badge names the failure.
@@ -2778,6 +2793,7 @@ mod thumbnail_tests {
             properties: page.properties.clone(),
             theme: Theme::new(&folio_app::Settings::default()).canvas,
             pdf_ready: true,
+            edge: 384,
         }
     }
     #[::core::prelude::v1::test]

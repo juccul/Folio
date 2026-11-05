@@ -286,6 +286,8 @@ pub struct NotesView {
     find: Option<find::Find>,
     /// Keeps the highlighted picker row in view during keyboard navigation.
     picker_scroll: ScrollHandle,
+    /// Scroll position of the Settings section, for its scrollbar.
+    settings_scroll: ScrollHandle,
     /// The open-document filter the highlighted row was chosen for.
     picker_query: String,
     move_page_destination: Option<Id>,
@@ -476,6 +478,7 @@ impl NotesView {
             modal_cursor: 0,
             find: None,
             picker_scroll: ScrollHandle::new(),
+            settings_scroll: ScrollHandle::new(),
             picker_query: String::new(),
             move_page_destination: None,
             menu_focus: None,

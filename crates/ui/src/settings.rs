@@ -749,13 +749,33 @@ impl NotesView {
             Section::Accessibility => self.accessibility_settings(cx),
             Section::Updates => self.update_settings(cx),
         };
+        // A thin scrollbar thumb, from the last layout, when the section
+        // is taller than the dialog.
+        let scrollbar = {
+            let viewport = f32::from(self.settings_scroll.bounds().size.height);
+            let range = f32::from(self.settings_scroll.max_offset().height);
+            (viewport > 0. && range > 1.).then(|| {
+                let thumb = (viewport * viewport / (viewport + range)).max(32.);
+                let progress = (-f32::from(self.settings_scroll.offset().y) / range).clamp(0., 1.);
+                div()
+                    .absolute()
+                    .right(px(3.))
+                    .top(px(4. + (viewport - thumb - 8.) * progress))
+                    .w(px(4.))
+                    .h(px(thumb))
+                    .rounded_full()
+                    .bg(rgba((theme.ink << 8) | 0x4d))
+            })
+        };
         let body = div()
             .id(("settings-content", section as usize))
             .flex_1()
             .min_h_0()
             .min_w_0()
             .overflow_y_scroll()
+            .track_scroll(&self.settings_scroll)
             .p_6()
+            .pb_10()
             .when(compact, |body| body.p_4())
             .child(
                 div()
@@ -856,16 +876,17 @@ impl NotesView {
                                             .left_0()
                                             .right_0()
                                             .bottom_0()
-                                            .h(rems(3.5))
+                                            .h(rems(1.5))
                                             .bg(linear_gradient(
                                                 180.,
                                                 linear_color_stop(rgba(theme.popover << 8), 0.),
                                                 linear_color_stop(
-                                                    rgba((theme.popover << 8) | 0xff),
+                                                    rgba((theme.popover << 8) | 0xb3),
                                                     1.,
                                                 ),
                                             )),
-                                    ),
+                                    )
+                                    .children(scrollbar),
                             ),
                     )
                     .child(

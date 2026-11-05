@@ -1150,7 +1150,7 @@ impl Painter {
                         if let Some(path) = line_path(points, 1.2 / viewport.zoom, true) {
                             window.paint_path(
                                 path.transformed(coefficients(world)),
-                                rgb(theme.accent),
+                                rgb(theme.selection()),
                             );
                         }
                     }
@@ -1159,7 +1159,7 @@ impl Painter {
                         if let Some(path) = line_path(&points, 1.2 / viewport.zoom, true) {
                             window.paint_path(
                                 path.transformed(coefficients(world)),
-                                rgb(theme.accent),
+                                rgb(theme.selection()),
                             );
                         }
                     }
@@ -1172,8 +1172,8 @@ impl Painter {
             {
                 let transform = world.compose(preview_move);
                 let (points, rotation) = selection_overlay(rect, viewport.zoom, transform);
-                if let Some(path) = line_path(&points, 1.2, true) {
-                    window.paint_path(path, rgb(theme.accent));
+                if let Some(path) = line_path(&points, 1.5, true) {
+                    window.paint_path(path, rgb(theme.selection()));
                 }
                 // Images also get side handles that stretch one axis.
                 let sides = controller
@@ -1191,21 +1191,21 @@ impl Painter {
                 for p in points.iter().take(4).copied().chain(sides) {
                     window.paint_quad(quad(
                         Bounds::new(
-                            point_px(DocPoint::new(p.x - 3., p.y - 3.)),
-                            size(px(6.), px(6.)),
+                            point_px(DocPoint::new(p.x - 4.5, p.y - 4.5)),
+                            size(px(9.), px(9.)),
                         ),
-                        px(1.),
-                        rgb(theme.surface),
-                        px(1.),
-                        rgb(theme.accent),
+                        px(2.),
+                        rgb(0xffffff),
+                        px(1.5),
+                        rgb(theme.selection()),
                         Default::default(),
                     ));
                 }
-                if let Some(path) = line_path(&rotation, 1., false) {
-                    window.paint_path(path, rgb(theme.accent));
+                if let Some(path) = line_path(&rotation, 1.5, false) {
+                    window.paint_path(path, rgb(theme.selection()));
                 }
-                if let Some(path) = fill_path(&folio_ink::circle(rotation[1], 4., 16)) {
-                    window.paint_path(path, rgb(theme.accent));
+                if let Some(path) = fill_path(&folio_ink::circle(rotation[1], 5., 16)) {
+                    window.paint_path(path, rgb(theme.selection()));
                 }
             }
             if let Some(cursor) = controller.cursor {

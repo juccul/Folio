@@ -295,6 +295,15 @@ impl Theme {
         let lift = if self.dark { 0.05 } else { 0. };
         self.at_opacity(mix(self.surface, self.ink, lift), 0.94)
     }
+    /// Selection outlines, handles and lasso: a blue that stays distinct
+    /// from ink and paper in both modes.
+    pub fn selection(self) -> u32 {
+        if self.dark { 0x60a5fa } else { 0x2563eb }
+    }
+    /// Secondary text and idle icons in dense lists: between muted and ink.
+    pub fn secondary(self) -> u32 {
+        mix(self.muted, self.ink, 0.25)
+    }
     /// The frame of a page preview: stronger than glass so a blank page
     /// stays visible against the surface in both modes.
     pub fn cover_edge(self) -> Rgba {
