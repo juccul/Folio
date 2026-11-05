@@ -58,7 +58,7 @@ impl NotesView {
                     .when(!description.is_empty(), |row| {
                         row.child(
                             div()
-                                .text_xs()
+                                .text_size(rems(0.8125))
                                 .text_color(rgb(theme.muted))
                                 .child(description.to_owned()),
                         )
@@ -856,12 +856,12 @@ impl NotesView {
                                             .left_0()
                                             .right_0()
                                             .bottom_0()
-                                            .h(rems(2.5))
+                                            .h(rems(3.5))
                                             .bg(linear_gradient(
                                                 180.,
                                                 linear_color_stop(rgba(theme.popover << 8), 0.),
                                                 linear_color_stop(
-                                                    rgba((theme.popover << 8) | 0xe6),
+                                                    rgba((theme.popover << 8) | 0xff),
                                                     1.,
                                                 ),
                                             )),

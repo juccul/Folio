@@ -154,8 +154,8 @@ impl Theme {
                 } else {
                     0x000000
                 };
-            canvas.grid = mix(canvas.paper, canvas.foreground, 0.12);
-            canvas.dots = mix(canvas.paper, canvas.foreground, 0.22);
+            canvas.grid = mix(canvas.paper, canvas.foreground, 0.14);
+            canvas.dots = mix(canvas.paper, canvas.foreground, 0.24);
         }
         canvas
     }
@@ -223,8 +223,8 @@ impl Theme {
         } else {
             0x000000
         };
-        let grid = mix(paper, foreground, 0.12);
-        let dots = mix(paper, foreground, 0.22);
+        let grid = mix(paper, foreground, 0.14);
+        let dots = mix(paper, foreground, 0.24);
         Self {
             bg: color(Background),
             surface: color(Card),
@@ -365,6 +365,12 @@ pub trait Glass: Styled + Sized {
     /// A floating glass surface, such as a menu or dialog, with a hairline
     /// edge and a soft shadow.
     fn glass(self, theme: Theme, base: u32) -> Self {
+        // In dark mode floating surfaces sit a step above the workspace.
+        let base = if theme.dark {
+            mix(base, 0xffffff, 0.05)
+        } else {
+            base
+        };
         self.glass_fill(theme, base).glass_frame(theme)
     }
     /// The hairline edge and soft shadow of floating glass.

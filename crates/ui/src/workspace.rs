@@ -238,6 +238,13 @@ impl NotesView {
             let task = cx.background_executor().spawn(async move {
                 let mut page = source.as_ref().clone();
                 export_options::apply(&mut page, theme, export_options::Appearance::Visible);
+                // Covers are drawn at a fraction of page size; thicken ink so
+                // handwriting stays legible instead of fading into the paper.
+                for object in page.objects.values_mut() {
+                    if let folio_document::Object::Stroke(stroke) = Arc::make_mut(object) {
+                        stroke.style.width *= 1.6;
+                    }
+                }
                 folio_export::raster_page_thumbnail(&page, &assets, 384)
                     .map(|p| {
                         let aspect = p.width() as f32 / p.height() as f32;
@@ -427,8 +434,8 @@ impl NotesView {
             cx,
             action,
         )
-        .w(rems(2.125))
-        .h(rems(1.875))
+        .w(rems(2.375))
+        .h(rems(2.125))
         .min_h_0()
         .flex_shrink_0()
         .p_0()
@@ -487,8 +494,8 @@ impl NotesView {
             cx,
             action,
         )
-        .w(rems(2.125))
-        .h(rems(1.875))
+        .w(rems(2.375))
+        .h(rems(2.125))
         .min_h_0()
         .flex_shrink_0()
         .p_0()
@@ -1112,11 +1119,7 @@ impl NotesView {
                     .overflow_hidden()
                     .rounded(px(theme.radius))
                     .border_1()
-                    .border_color(if import_failed {
-                        rgba((theme.destructive << 8) | 0x99)
-                    } else {
-                        theme.cover_edge()
-                    })
+                    .border_color(theme.cover_edge())
                     .bg(rgb(theme.sidebar))
                     .shadow_sm()
                     .flex()
@@ -1209,7 +1212,7 @@ impl NotesView {
                                         .min_w_0()
                                         .text_xs()
                                         .text_color(rgb(if import_failed {
-                                            theme.destructive
+                                            theme.ink
                                         } else {
                                             theme.muted
                                         }))
@@ -2110,7 +2113,7 @@ impl NotesView {
         } else {
             Icon::Lasso
         };
-        let mut tools = div().flex().flex_shrink_0().items_center().gap(rems(0.25));
+        let mut tools = div().flex().flex_shrink_0().items_center().gap(rems(0.375));
         let group = |id: &'static str, current: bool| {
             div()
                 .id(id)
@@ -2148,7 +2151,7 @@ impl NotesView {
                             this.pen_settings = open;
                         },
                     )
-                    .w(rems(1.25))
+                    .w(rems(1.375))
                     .bg(transparent_black()),
                 ),
         );
@@ -2194,7 +2197,7 @@ impl NotesView {
                         cx,
                         |this, window, cx| this.toggle_tool_menu(ToolMenu::Selection, window, cx),
                     )
-                    .w(rems(1.25))
+                    .w(rems(1.375))
                     .bg(transparent_black()),
                 ),
         );

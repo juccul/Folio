@@ -61,10 +61,26 @@ impl NotesView {
             "crop-image-coordinates" => Icon::Sliders,
             _ => Icon::Undo,
         };
+        // Conversions are not recognizable from a glyph alone.
+        let short = match id.as_ref() {
+            "solve-selection" => Some("Solve"),
+            "index-handwriting" => Some("Index"),
+            "recognize-text" => Some("To text"),
+            "recognize-math" => Some("To math"),
+            _ => None,
+        };
+        let content = div()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .child(icon(kind, theme.ink).size(rems(1.125)))
+            .when_some(short, |content, short| {
+                content.child(div().text_xs().font_weight(FontWeight::MEDIUM).child(short))
+            });
         self.control(
             id,
             label.clone(),
-            icon(kind, theme.ink).size(rems(1.125)).into_any_element(),
+            content.into_any_element(),
             active,
             cx,
             action,

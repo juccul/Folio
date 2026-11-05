@@ -331,6 +331,10 @@ impl NotesView {
                     plain(format!("Enter opens “{}”", first.title)),
                 ))
             }
+            _ if text.is_empty() && self.library_open => Some((
+                "Search every document".into(),
+                plain("Titles, tags, typed text, equations and indexed handwriting".into()),
+            )),
             _ if none => Some((
                 "No matches".into(),
                 plain(
@@ -345,9 +349,7 @@ impl NotesView {
         // In the library, right-aligned under the search button, over the
         // empty middle of the sort row rather than the view switch.
         let right = if self.library_open {
-            search.map_or(px(16.), |r| {
-                window.viewport_size().width - px(r.x1 as f32) - px(6.)
-            })
+            search.map_or(px(16.), |r| window.viewport_size().width - px(r.x1 as f32))
         } else {
             self.canvas_bounds.map_or(px(16.), |b| {
                 window.viewport_size().width - b.origin.x - b.size.width + px(16.)
@@ -452,7 +454,7 @@ impl NotesView {
                     )
                     .child(
                         div()
-                            .min_w(rems(2.75))
+                            .when(!text.is_empty(), |counter| counter.min_w(rems(2.75)))
                             .flex()
                             .justify_end()
                             .text_xs()
