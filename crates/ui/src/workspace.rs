@@ -440,7 +440,7 @@ impl NotesView {
         self.control(
             id,
             label,
-            icon(kind, theme.ink).size(rems(1.25)).into_any_element(),
+            icon(kind, theme.ink).size(rems(1.375)).into_any_element(),
             active,
             cx,
             action,
@@ -494,7 +494,7 @@ impl NotesView {
                 } else {
                     theme.ink
                 },
-                1.25,
+                1.375,
             )
         };
         self.control(
@@ -1028,7 +1028,7 @@ impl NotesView {
                             .child(title.text_size(rems(0.9375)))
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_size(rems(0.8125))
                                     .text_color(rgb(theme.secondary()))
                                     .truncate()
                                     .child({
@@ -1225,7 +1225,7 @@ impl NotesView {
                                     div()
                                         .flex_1()
                                         .min_w_0()
-                                        .text_xs()
+                                        .text_size(rems(0.8125))
                                         .text_color(rgb(if import_failed {
                                             theme.ink
                                         } else {
@@ -1587,10 +1587,15 @@ impl NotesView {
                     .items_center()
                     .gap_2()
                     .child(self.sort_control(cx))
-                    .child(div().text_xs().text_color(rgb(theme.muted)).child(format!(
-                        "{count} document{}",
-                        if count == 1 { "" } else { "s" }
-                    )))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(theme.secondary()))
+                            .child(format!(
+                                "{count} document{}",
+                                if count == 1 { "" } else { "s" }
+                            )),
+                    )
                     .child(div().flex_1())
                     .child(
                         div()
@@ -1634,8 +1639,8 @@ impl NotesView {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .text_xs()
-                    .text_color(rgb(theme.muted))
+                    .text_size(rems(0.8125))
+                    .text_color(rgb(theme.secondary()))
                     .child(self.controller.activity_status())
                     .children(self.library_undo_button(cx)),
             )

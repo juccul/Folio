@@ -20,10 +20,10 @@ impl CanvasTheme {
         self.readable(color, self.ink_contrast())
     }
     /// Dim ink on dark paper reads worse than the same ratio on light paper,
-    /// so dark pages ask for the stronger AAA ratio.
+    /// so dark pages ask for well above the AAA ratio.
     fn ink_contrast(self) -> f32 {
         if luminance(self.paper) < 0.18 {
-            7.
+            8.5
         } else {
             4.5
         }
@@ -194,7 +194,8 @@ impl Theme {
             grid: page.grid,
             axes: mix(page.paper, page.foreground, 0.5),
             labels: page.foreground,
-            curve: readable.ink(self.accent),
+            // Generated curves keep the accent wherever it is readable.
+            curve: readable.readable(self.accent, 4.5),
         }
     }
     pub fn new(settings: &Settings) -> Self {

@@ -333,7 +333,7 @@ impl NotesView {
             }
             _ if text.is_empty() && self.library_open => Some((
                 "Search every document".into(),
-                plain("Titles, tags, typed text, equations and indexed handwriting".into()),
+                plain("Titles, tags, text and handwriting".into()),
             )),
             _ if none => Some((
                 "No matches".into(),

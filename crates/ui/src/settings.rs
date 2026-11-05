@@ -812,7 +812,7 @@ impl NotesView {
                     .w(px(900.))
                     .max_w(px((f32::from(window.viewport_size().width) - 32.).max(300.)))
                     .h(px(
-                        (f32::from(window.viewport_size().height) - 64.).min(720.)
+                        (f32::from(window.viewport_size().height) - 64.).min(800.)
                     ))
                     .glass_dialog(theme, theme.popover)
                     .rounded(px(theme.corner_lg()))

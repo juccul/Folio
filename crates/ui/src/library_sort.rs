@@ -47,22 +47,22 @@ impl NotesView {
             .1
             .clone();
         let mut anchor = div().id("sort-anchor").relative().child(
-                self.control(
-                    "sort",
-                    format!("Sort: {current}"),
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .child(current)
-                        .child(icon(Icon::Down, theme.muted).size(rems(0.875)))
-                        .into_any_element(),
-                    self.sort_open,
-                    cx,
-                    |this, _, _| this.sort_open = !this.sort_open,
-                )
-                .text_xs(),
-            );
+            self.control(
+                "sort",
+                format!("Sort: {current}"),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(current)
+                    .child(icon(Icon::Down, theme.muted).size(rems(0.875)))
+                    .into_any_element(),
+                self.sort_open,
+                cx,
+                |this, _, _| this.sort_open = !this.sort_open,
+            )
+            .text_sm(),
+        );
         if self.sort_open {
             let mut menu = div()
                 .absolute()
