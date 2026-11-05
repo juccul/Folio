@@ -253,7 +253,7 @@ impl NotesView {
                 // handwriting stays legible instead of fading into the paper.
                 for object in page.objects.values_mut() {
                     if let folio_document::Object::Stroke(stroke) = Arc::make_mut(object) {
-                        stroke.style.width *= 1.4;
+                        stroke.style.width *= if theme.dark { 1.8 } else { 1.4 };
                     }
                 }
                 folio_export::raster_page_thumbnail(&page, &assets, edge)
@@ -907,6 +907,9 @@ impl NotesView {
                 .map(|s| s.document.pages.len());
             let preview = self.controller.library_preview(id);
             let pages = preview.as_ref().map(|(_, count)| *count).or(session_pages);
+            // The document whose menu is open keeps its highlight.
+            let menu_owner =
+                !self.document_menu_tab && self.document_menu.is_some_and(|(menu, _)| menu == id);
             let import_failed = self
                 .controller
                 .library_imports
@@ -1062,6 +1065,7 @@ impl NotesView {
                         .gap_1()
                         .relative()
                         .rounded(px(theme.corner_md()))
+                        .when(menu_owner, |row| row.bg(theme.tint(0.7)))
                         .hover(move |s| s.bg(theme.tint(0.7)))
                         .pr_2()
                         .child(
@@ -1134,7 +1138,12 @@ impl NotesView {
                     .overflow_hidden()
                     .rounded(px(theme.radius))
                     .border_1()
-                    .border_color(theme.cover_edge())
+                    .border_color(if menu_owner {
+                        rgb(theme.muted).into()
+                    } else {
+                        theme.cover_edge()
+                    })
+                    .group_hover("note-card", move |s| s.border_color(rgb(theme.muted)))
                     .bg(rgb(theme.sidebar))
                     .shadow_sm()
                     .flex()
@@ -1186,6 +1195,8 @@ impl NotesView {
                         .flex_col()
                         .pb_2()
                         .rounded(px(theme.corner_md()))
+                        .group("note-card")
+                        .when(menu_owner, |card| card.bg(theme.tint(0.7)))
                         .hover(move |s| s.bg(theme.tint(0.7)))
                         .child(
                             self.control(
@@ -2313,12 +2324,14 @@ impl NotesView {
                 .items_center()
                 .gap(rems(0.375))
                 .child(
+                    // The ink as the page shows it, ringed so dark ink stays
+                    // visible on a dark toolbar.
                     div()
                         .size(rems(1.125))
                         .rounded_full()
-                        .border_1()
-                        .border_color(rgb(theme.muted))
-                        .bg(rgb(color)),
+                        .border(px(1.5))
+                        .border_color(rgba((theme.ink << 8) | 0x80))
+                        .bg(rgb(theme.canvas.ink(color))),
                 )
                 .child(icon(Icon::Down, theme.muted).size(rems(0.875)));
             options = options.child(
