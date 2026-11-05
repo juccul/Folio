@@ -340,10 +340,17 @@ impl NotesView {
             _ => None,
         };
         // Below the toolbar, at the right edge of the page area.
+        // In the library, below the sort and view row so it covers no control.
         let top = self
             .accessibility
-            .control_bounds_for_key("search")
-            .map_or(px(96.), |r| px(r.y1 as f32 + 10.));
+            .control_bounds_for_key(if self.library_open {
+                "list-view"
+            } else {
+                "search"
+            })
+            .map_or(px(96.), |r| {
+                px(r.y1 as f32 + if self.library_open { 14. } else { 10. })
+            });
         let right = self
             .canvas_bounds
             .filter(|_| !self.library_open)
@@ -361,6 +368,8 @@ impl NotesView {
             })
             .size(rems(1.75))
             .p_0()
+            // Dimmed until there is a match to step to.
+            .when(count == 0, |button| button.opacity(0.35))
         };
         let previous = nav(
             self,

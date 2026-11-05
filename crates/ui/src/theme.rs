@@ -17,7 +17,7 @@ pub struct CanvasTheme {
 }
 impl CanvasTheme {
     pub fn ink(self, color: u32) -> u32 {
-        self.readable(color, 3.)
+        self.readable(color, 4.5)
     }
     fn readable(self, color: u32, minimum: f32) -> u32 {
         if !self.adapt_ink || contrast(color, self.paper) >= minimum {
@@ -280,6 +280,15 @@ impl Theme {
         let lift = if self.dark { 0.05 } else { 0. };
         self.at_opacity(mix(self.surface, self.ink, lift), 0.94)
     }
+    /// The frame of a page preview: stronger than glass so a blank page
+    /// stays visible against the surface in both modes.
+    pub fn cover_edge(self) -> Rgba {
+        if self.dark {
+            rgba(0xffffff33)
+        } else {
+            rgba(0x00000024)
+        }
+    }
     /// The hairline edge of glass: a faint light rim in dark mode and a faint
     /// shade in light mode, so glass stays distinct over similar content.
     pub fn glass_edge(self) -> Rgba {
@@ -541,10 +550,10 @@ mod tests {
             ] {
                 let adjusted = palette.ink(color);
                 assert!(
-                    contrast(adjusted, paper) >= 3.,
+                    contrast(adjusted, paper) >= 4.5,
                     "{color:06x} on {paper:06x}"
                 );
-                if contrast(color, paper) >= 3. {
+                if contrast(color, paper) >= 4.5 {
                     assert_eq!(adjusted, color);
                 }
                 let before: Hsla = rgb(color).into();

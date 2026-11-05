@@ -442,6 +442,66 @@ impl NotesView {
             button.tooltip(move |_, cx| cx.new(|_| Hint(hint.into(), theme)).into())
         })
     }
+    /// A drawing tool. The current tool is filled with the primary color so
+    /// it stands apart from neutral toggles such as Favorite.
+    fn tool_button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        kind: Icon,
+        current: bool,
+        active: bool,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> Stateful<Div> {
+        let theme = Theme::new(&self.controller.settings);
+        let hint = if id == "eraser" {
+            "Eraser · E · Click again for modes and size"
+        } else {
+            label
+        };
+        let (color, size) = if matches!(kind, Icon::Down) {
+            (
+                if current {
+                    theme.primary_foreground
+                } else {
+                    theme.muted
+                },
+                0.875,
+            )
+        } else {
+            (
+                if current {
+                    theme.primary_foreground
+                } else {
+                    theme.ink
+                },
+                1.25,
+            )
+        };
+        self.control(
+            id,
+            label,
+            icon(kind, color).size(rems(size)).into_any_element(),
+            active,
+            cx,
+            action,
+        )
+        .w(rems(2.125))
+        .h(rems(1.875))
+        .min_h_0()
+        .flex_shrink_0()
+        .p_0()
+        .rounded(rems(theme.radius / 16.))
+        .bg(if current {
+            rgb(theme.accent).into()
+        } else {
+            theme.tint(self.motion.borrow_mut().hover_value(id))
+        })
+        .when(self.toolbar_hints_enabled(), |button| {
+            button.tooltip(move |_, cx| cx.new(|_| Hint(hint.into(), theme)).into())
+        })
+    }
     fn editor_separator(&self) -> Div {
         let theme = Theme::new(&self.controller.settings);
         div()
@@ -829,6 +889,11 @@ impl NotesView {
                 .map(|s| s.document.pages.len());
             let preview = self.controller.library_preview(id);
             let pages = preview.as_ref().map(|(_, count)| *count).or(session_pages);
+            let import_failed = self
+                .controller
+                .library_imports
+                .get(&id)
+                .is_some_and(|import| !import.pending);
             let details = self
                 .controller
                 .library_imports
@@ -942,7 +1007,11 @@ impl NotesView {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(rgb(theme.muted))
+                                    .text_color(rgb(if import_failed {
+                                        theme.destructive
+                                    } else {
+                                        theme.muted
+                                    }))
                                     .truncate()
                                     .child(format!("{details} · {}", edited_label(n.updated_at))),
                             ),
@@ -956,7 +1025,9 @@ impl NotesView {
                         .flex()
                         .items_center()
                         .gap_1()
-                        .rounded(px(theme.corner_md()))
+                        // Hairline separators tie each title to its actions.
+                        .border_b_1()
+                        .border_color(theme.border)
                         .hover(move |s| s.bg(theme.tint(0.7)))
                         .pr_2()
                         .child(
@@ -1013,18 +1084,42 @@ impl NotesView {
                     )
                 };
                 let cover = div()
+                    .relative()
                     .w_full()
                     .h(rems(grid.cover_height() / 16.))
                     .overflow_hidden()
                     .rounded(px(theme.radius))
                     .border_1()
-                    .border_color(theme.glass_edge())
+                    .border_color(if import_failed {
+                        rgba((theme.destructive << 8) | 0x99)
+                    } else {
+                        theme.cover_edge()
+                    })
                     .bg(rgb(theme.sidebar))
                     .shadow_sm()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(cover_content);
+                    .child(cover_content)
+                    .when(import_failed, |cover| {
+                        cover.child(
+                            div()
+                                .absolute()
+                                .left_2()
+                                .right_2()
+                                .bottom_2()
+                                .px_2()
+                                .py_1()
+                                .rounded(px(theme.corner_sm().max(4.)))
+                                .bg(rgb(theme.destructive))
+                                .text_color(rgb(0xffffff))
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .flex()
+                                .justify_center()
+                                .child("Import failed"),
+                        )
+                    });
                 let content = div()
                     .w_full()
                     .min_w_0()
@@ -1087,9 +1182,18 @@ impl NotesView {
                                         .flex_1()
                                         .min_w_0()
                                         .text_xs()
-                                        .text_color(rgb(theme.muted))
+                                        .text_color(rgb(if import_failed {
+                                            theme.destructive
+                                        } else {
+                                            theme.muted
+                                        }))
                                         .truncate()
-                                        .child(format!("{details} · {edited}")),
+                                        // The cover badge names the failure.
+                                        .child(if import_failed {
+                                            "Open to retry".to_owned()
+                                        } else {
+                                            format!("{details} · {edited}")
+                                        }),
                                 )
                                 .child(favorite.size(rems(1.75)).min_h(rems(1.75)))
                                 .child(menu.size(rems(1.75)).min_h(rems(1.75))),
@@ -1153,6 +1257,7 @@ impl NotesView {
             .flex_1()
             .min_h_0()
             .p_7()
+            .pt_2()
             .when(count == 0 && compact, |shelf| shelf.p_4())
             .when(count == 0, |shelf| shelf.overflow_y_scroll());
         let grid = LibraryGrid::new(
@@ -1980,19 +2085,23 @@ impl NotesView {
             Icon::Lasso
         };
         let mut tools = div().flex().flex_shrink_0().items_center().gap(rems(0.25));
-        tools = tools.child(
+        let group = |id: &'static str, current: bool| {
             div()
-                .id("pen-tool-group")
+                .id(id)
                 .flex()
                 .items_center()
                 .rounded(rems(theme.radius / 16.))
-                .bg(theme.tint(if selected_pen { 1. } else { 0. }))
-                .hover(move |s| s.bg(theme.tint(1.)))
+                .when(current, |group| group.bg(rgb(theme.accent)))
+                .when(!current, |group| group.hover(move |s| s.bg(theme.tint(1.))))
+        };
+        tools = tools.child(
+            group("pen-tool-group", selected_pen)
                 .child(
-                    self.editor_button(
+                    self.tool_button(
                         "pen",
                         "Pen · P",
                         pen_icon,
+                        selected_pen,
                         selected_pen,
                         cx,
                         |this, _, _| this.select_tool(Tool::Pen),
@@ -2000,10 +2109,11 @@ impl NotesView {
                     .bg(transparent_black()),
                 )
                 .child(
-                    self.editor_button(
+                    self.tool_button(
                         "pen-options",
                         "Pen settings and presets",
                         Icon::Down,
+                        selected_pen,
                         self.pen_settings && selected_pen,
                         cx,
                         |this, _, _| {
@@ -2016,10 +2126,11 @@ impl NotesView {
                     .bg(transparent_black()),
                 ),
         );
-        tools = tools.child(self.editor_button(
+        tools = tools.child(self.tool_button(
             "eraser",
             "Eraser · E",
             Icon::Eraser,
+            self.controller.tool == Tool::Eraser,
             self.controller.tool == Tool::Eraser,
             cx,
             |this, _, _| {
@@ -2029,18 +2140,13 @@ impl NotesView {
             },
         ));
         tools = tools.child(
-            div()
-                .id("selection-tool-group")
-                .flex()
-                .items_center()
-                .rounded(rems(theme.radius / 16.))
-                .bg(theme.tint(if selected_selection { 1. } else { 0. }))
-                .hover(move |s| s.bg(theme.tint(1.)))
+            group("selection-tool-group", selected_selection)
                 .child(
-                    self.editor_button(
+                    self.tool_button(
                         "select-tool",
                         "Select · L",
                         selection_icon,
+                        selected_selection,
                         selected_selection,
                         cx,
                         |this, _, _| {
@@ -2052,10 +2158,11 @@ impl NotesView {
                     .bg(transparent_black()),
                 )
                 .child(
-                    self.editor_button(
+                    self.tool_button(
                         "select-options",
                         "Selection tools",
                         Icon::Down,
+                        selected_selection,
                         self.tool_menu
                             .is_some_and(|(menu, _)| menu == ToolMenu::Selection),
                         cx,
@@ -2069,10 +2176,11 @@ impl NotesView {
             ("text", "Text · T", Icon::Text, Tool::Text),
             ("hand", "Pan · H", Icon::Hand, Tool::Hand),
         ] {
-            tools = tools.child(self.editor_button(
+            tools = tools.child(self.tool_button(
                 id,
                 label,
                 kind,
+                self.controller.tool == tool,
                 self.controller.tool == tool,
                 cx,
                 move |this, _, _| this.select_tool(tool),
@@ -2127,7 +2235,8 @@ impl NotesView {
             .child(history)
             .child(self.editor_separator())
             .child(tools);
-        let mut options = div().flex().flex_shrink_0().items_center().gap(rems(0.5));
+        let has_options = matches!(self.controller.tool, Tool::Pen | Tool::Shape | Tool::Text);
+        let mut options = div().flex().flex_shrink_0().items_center().gap(rems(0.375));
         if matches!(self.controller.tool, Tool::Pen | Tool::Shape) {
             let width = self.controller.style.width;
             let width_content = div()
@@ -2186,8 +2295,9 @@ impl NotesView {
             .gap(rems(0.5))
             .overflow_x_scroll()
             .child(primary)
-            .child(div().flex_1())
+            .when(has_options, |row| row.child(self.editor_separator()))
             .child(options)
+            .child(div().flex_1())
     }
     pub(super) fn editor_header(
         &mut self,
