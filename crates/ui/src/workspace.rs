@@ -252,9 +252,21 @@ impl NotesView {
                 export_options::apply(&mut page, theme, export_options::Appearance::Visible);
                 // Covers are drawn at a fraction of page size; thicken ink so
                 // handwriting stays legible instead of fading into the paper.
+                let palette = theme.canvas_for_page(&page.properties);
                 for object in page.objects.values_mut() {
-                    if let folio_document::Object::Stroke(stroke) = Arc::make_mut(object) {
-                        stroke.style.width *= if theme.dark { 1.8 } else { 1.4 };
+                    match Arc::make_mut(object) {
+                        folio_document::Object::Stroke(stroke) => {
+                            stroke.style.width *= if theme.dark { 1.8 } else { 1.4 };
+                            stroke.style.color = folio_document::Color::from_rgb(
+                                palette.preview_ink(stroke.style.color.rgb()),
+                            );
+                        }
+                        folio_document::Object::Text(text) => {
+                            text.color = folio_document::Color::from_rgb(
+                                palette.preview_ink(text.color.rgb()),
+                            );
+                        }
+                        _ => {}
                     }
                 }
                 folio_export::raster_page_thumbnail(&page, &assets, edge)
@@ -1125,15 +1137,13 @@ impl NotesView {
                         .child(favorite)
                         .child(menu)
                         // An inset hairline ties each title to its actions.
-                        .child(
-                            div()
-                                .absolute()
-                                .bottom_0()
-                                .left_3()
-                                .right_3()
-                                .h(px(1.))
-                                .bg(theme.border),
-                        ),
+                        .child(div().absolute().bottom_0().left_3().right_3().h(px(1.)).bg(
+                            if theme.dark {
+                                theme.cover_edge()
+                            } else {
+                                theme.border
+                            },
+                        )),
                 );
             } else {
                 let cover_content = if let Some((page, _)) = &preview {
@@ -1189,8 +1199,7 @@ impl NotesView {
                                     .flex_col()
                                     .items_center()
                                     .justify_center()
-                                    .opacity(0.6)
-                                    .child(icon(Icon::Page, theme.muted).size(rems(1.5))),
+                                    .child(icon(Icon::Page, theme.secondary()).size(rems(1.5))),
                             )
                         },
                     );

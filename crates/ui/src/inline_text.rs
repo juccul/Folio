@@ -592,16 +592,13 @@ impl NotesView {
         } else {
             let id = text.id;
             row.child(
+                // The Enter shortcut lives in the button's hint.
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
+                    .w(px(1.))
+                    .h(rems(1.25))
+                    .mx_1p5()
                     .flex_shrink_0()
-                    .text_xs()
-                    .text_color(rgb(theme.muted))
-                    .child("Press")
-                    .child(super::keycap("Enter", theme))
-                    .child("to edit"),
+                    .bg(theme.border),
             )
             .child(
                 self.control(
@@ -625,7 +622,8 @@ impl NotesView {
                 .text_xs()
                 .rounded(px(theme.radius))
                 .border_1()
-                .border_color(theme.border),
+                .border_color(theme.border)
+                .with_hint("Edit text · Enter", theme, self.hints()),
             )
         };
         Some(row.into_any_element())

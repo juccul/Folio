@@ -17,6 +17,12 @@ impl CanvasTheme {
     pub fn ink(self, color: u32) -> u32 {
         self.readable(color, self.ink_contrast())
     }
+    /// Ink for a small preview: thin strokes lose contrast when scaled down,
+    /// so dark previews ask for more than the canvas does.
+    pub fn preview_ink(self, color: u32) -> u32 {
+        let minimum = self.ink_contrast();
+        self.readable(color, if minimum > 4.5 { 11. } else { minimum })
+    }
     /// Dim ink on dark paper reads worse than the same ratio on light paper,
     /// so dark pages ask for well above the AAA ratio.
     fn ink_contrast(self) -> f32 {
