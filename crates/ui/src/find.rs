@@ -432,6 +432,7 @@ impl NotesView {
                     .flex()
                     .items_center()
                     .gap_1()
+                    .child(icon(Icon::Search, theme.muted).size(rems(1.)).mx_1())
                     .child(
                         div()
                             .flex_1()

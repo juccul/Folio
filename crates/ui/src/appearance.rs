@@ -59,7 +59,7 @@ impl NotesView {
         let mut theme_rows = vec![
             self.settings_row(
                 "Color theme",
-                "System follows your device. Light and dark palettes are saved separately.",
+                "System follows your device. Each theme keeps its own colors.",
             )
             .child(modes),
             self.settings_row("Interface corners", "Choose how rounded controls appear.")

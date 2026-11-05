@@ -297,7 +297,7 @@ impl NotesView {
             .h(px(height))
             .overflow_hidden()
             // White PDF pages would otherwise glare beside dark notebooks.
-            .when(bright_raster, |cover| cover.opacity(0.8))
+            .when(bright_raster, |cover| cover.opacity(0.72))
             .bg(rgb(palette.paper))
             .flex()
             .items_center()
@@ -825,9 +825,9 @@ impl NotesView {
                     .pt_3()
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(rems(0.8125))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(theme.muted))
+                            .text_color(rgb(theme.secondary()))
                             .child("Folders"),
                     )
                     .child(
@@ -1061,8 +1061,6 @@ impl NotesView {
                     div()
                         .id(SharedString::from(format!("note-row-{id}")))
                         .w_full()
-                        // Keep titles and their actions within one glance.
-                        .max_w(rems(60.))
                         .h(rems(4.5))
                         .flex_shrink_0()
                         .flex()
@@ -1670,7 +1668,16 @@ impl NotesView {
                     .gap_2()
                     .text_size(rems(0.8125))
                     .text_color(rgb(theme.secondary()))
-                    .child(self.controller.activity_status())
+                    // The idle save state belongs to the editor; the library
+                    // shows only activity.
+                    .child({
+                        let status = self.controller.activity_status();
+                        if status == "All changes saved" {
+                            String::new()
+                        } else {
+                            status
+                        }
+                    })
                     .children(self.library_undo_button(cx)),
             )
     }
@@ -2021,26 +2028,32 @@ impl NotesView {
     }
     fn page_actions(&self, cx: &mut Context<Self>) -> Div {
         let favorite = self.controller.session().document.metadata.favorite;
+        let favorite_hover = Theme::new(&self.controller.settings)
+            .tint(self.motion.borrow_mut().hover_value("favorite-note"));
         self.page_controls_group()
-            .child(self.page_control_button(
-                "favorite-note",
-                if favorite {
-                    "Remove document from favorites"
-                } else {
-                    "Add document to favorites"
-                },
-                if favorite {
-                    Icon::StarFilled
-                } else {
-                    Icon::Star
-                },
-                favorite,
-                cx,
-                |this, _, _| {
-                    this.controller
-                        .manage_note(this.controller.active, folio_app::NoteAction::Favorite)
-                },
-            ))
+            .child(
+                self.page_control_button(
+                    "favorite-note",
+                    if favorite {
+                        "Remove document from favorites"
+                    } else {
+                        "Add document to favorites"
+                    },
+                    if favorite {
+                        Icon::StarFilled
+                    } else {
+                        Icon::Star
+                    },
+                    favorite,
+                    cx,
+                    |this, _, _| {
+                        this.controller
+                            .manage_note(this.controller.active, folio_app::NoteAction::Favorite)
+                    },
+                )
+                // A document state, shown by the filled star alone.
+                .bg(favorite_hover),
+            )
             .child(self.page_control_button(
                 "header-add-page",
                 "Add page",
@@ -2477,7 +2490,7 @@ impl NotesView {
                             thumbnail
                                 .rounded(px(theme.corner_sm()))
                                 .border_1()
-                                .border_color(theme.glass_edge())
+                                .border_color(theme.cover_edge())
                                 .shadow_sm(),
                         );
                     let number = div()
@@ -2492,7 +2505,7 @@ impl NotesView {
                         } else {
                             FontWeight::NORMAL
                         })
-                        .when(active, |n| n.text_color(rgb(theme.ink)))
+                        .when(active, |n| n.text_color(rgb(theme.selection())))
                         .when(!active, |n| n.text_color(rgb(theme.muted)))
                         .child(format!("{}", index + 1));
                     let caption = div()
