@@ -332,8 +332,8 @@ impl NotesView {
                 ))
             }
             _ if text.is_empty() && self.library_open => Some((
-                "Search every document".into(),
-                plain("Titles, tags, text and handwriting".into()),
+                "Searches titles, tags, text and handwriting".into(),
+                plain(String::new()),
             )),
             _ if none => Some((
                 "No matches".into(),
@@ -478,7 +478,7 @@ impl NotesView {
                     .pb_0p5()
                     .flex()
                     .flex_col()
-                    .text_xs()
+                    .text_size(rems(0.8125))
                     .child(
                         div()
                             .truncate()

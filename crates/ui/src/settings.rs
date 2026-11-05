@@ -759,7 +759,7 @@ impl NotesView {
                 let progress = (-f32::from(self.settings_scroll.offset().y) / range).clamp(0., 1.);
                 div()
                     .absolute()
-                    .right(px(3.))
+                    .right(px(5.))
                     .top(px(4. + (viewport - thumb - 8.) * progress))
                     .w(px(4.))
                     .h(px(thumb))
@@ -812,7 +812,7 @@ impl NotesView {
                     .w(px(900.))
                     .max_w(px((f32::from(window.viewport_size().width) - 32.).max(300.)))
                     .h(px(
-                        (f32::from(window.viewport_size().height) - 64.).min(800.)
+                        (f32::from(window.viewport_size().height) - 64.).min(880.)
                     ))
                     .glass_dialog(theme, theme.popover)
                     .rounded(px(theme.corner_lg()))

@@ -1498,7 +1498,7 @@ impl Painter {
                             bounds.width() + 2.,
                             bounds.height() + 2.,
                         ),
-                        alpha(0xffffff, 0.14),
+                        alpha(0xffffff, 0.2),
                         window.scale_factor(),
                         &mut rectangles,
                     );
@@ -1528,7 +1528,7 @@ impl Painter {
                 let mut edge = points.to_vec();
                 edge.push(points[0]);
                 if let Some(path) = line_path(&edge, 1., false) {
-                    window.paint_path(path, alpha(0xffffff, 0.14));
+                    window.paint_path(path, alpha(0xffffff, 0.2));
                 }
             }
         }

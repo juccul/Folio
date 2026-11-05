@@ -237,7 +237,7 @@ impl NotesView {
                         "pen-menu-presets",
                         "Manage presets",
                         Section::Presets,
-                        Icon::More,
+                        Icon::Bookmark,
                     ),
                 ] {
                     panel = panel.child(

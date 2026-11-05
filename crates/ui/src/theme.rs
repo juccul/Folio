@@ -360,15 +360,6 @@ impl Theme {
     pub fn selection(self) -> u32 {
         if self.dark { 0x60a5fa } else { 0x2563eb }
     }
-    /// The sidebar accent, lightened or darkened as needed to read as an
-    /// icon on the sidebar.
-    pub fn sidebar_icon(self) -> u32 {
-        if contrast(self.sidebar_accent, self.sidebar) >= 4.5 {
-            self.sidebar_accent
-        } else {
-            readable_ink(self.sidebar_accent, self.sidebar, 4.5)
-        }
-    }
     /// Secondary text and idle icons in dense lists: between muted and ink.
     pub fn secondary(self) -> u32 {
         mix(self.muted, self.ink, 0.25)

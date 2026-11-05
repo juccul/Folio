@@ -629,6 +629,9 @@ impl NotesView {
                     cx.stop_propagation();
                 }),
             )
+            .child(open)
+            // Disclosure sits after the name so folder icons align with the
+            // navigation icons above.
             .child(if branch {
                 self.control(
                     format!("toggle-folder-{id}"),
@@ -657,9 +660,8 @@ impl NotesView {
                 .bg(transparent_black())
                 .into_any_element()
             } else {
-                div().w(px(24.)).into_any_element()
+                div().into_any_element()
             })
-            .child(open)
             .child(
                 self.control(
                     format!("manage-folder-{id}"),
@@ -698,14 +700,7 @@ impl NotesView {
                 .flex()
                 .items_center()
                 .gap_3()
-                .child(icon(
-                    kind,
-                    if active {
-                        theme.sidebar_icon()
-                    } else {
-                        theme.muted
-                    },
-                ))
+                .child(icon(kind, if active { theme.ink } else { theme.muted }))
                 .child(label);
             filters = filters.child(
                 self.control(
@@ -826,7 +821,7 @@ impl NotesView {
                     .child(
                         div()
                             .text_size(rems(0.8125))
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(theme.secondary()))
                             .child("Folders"),
                     )
@@ -1150,13 +1145,35 @@ impl NotesView {
                     } else {
                         theme.cover_edge()
                     })
-                    .group_hover("note-card", move |s| s.border_color(rgb(theme.muted)))
                     .bg(rgb(theme.sidebar))
                     .shadow_sm()
                     .flex()
                     .items_center()
                     .justify_center()
                     .child(cover_content)
+                    // Blank documents get a quiet mark, so the grid does not
+                    // read as a wall of identical pages.
+                    .when(
+                        preview.as_ref().is_some_and(|(page, _)| {
+                            page.objects.is_empty() && page.properties.pdf.is_none()
+                        }) && !import_failed,
+                        |cover| {
+                            cover.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_2()
+                                    .child(icon(Icon::Page, theme.muted).size(rems(1.75)))
+                                    .child(
+                                        div().text_xs().text_color(rgb(theme.muted)).child("Blank"),
+                                    ),
+                            )
+                        },
+                    )
                     .when(import_failed, |cover| {
                         cover.child(
                             div()
