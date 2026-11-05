@@ -207,6 +207,7 @@ impl NotesView {
         };
         let theme = Theme::new(&self.controller.settings);
         let palette = theme.canvas_for_page(&page.properties);
+        let bright_raster = theme.dark && page.properties.pdf.is_some();
         let pdf_ready = page
             .properties
             .pdf
@@ -295,6 +296,8 @@ impl NotesView {
             .w(px((height * aspect).min(width)))
             .h(px(height))
             .overflow_hidden()
+            // White PDF pages would otherwise glare beside dark notebooks.
+            .when(bright_raster, |cover| cover.opacity(0.88))
             .bg(rgb(palette.paper))
             .flex()
             .items_center()
@@ -332,6 +335,15 @@ impl Render for PageDrag {
 impl NotesView {
     /// Where a menu opened from control `key` appears: below the control, or
     /// at the pointer when the control has not been laid out.
+    /// Below a control's right edge, so a menu that opens leftward covers
+    /// the trailing action column instead of leaving it peeking out.
+    pub(super) fn menu_anchor_end(&self, key: &str, window: &Window) -> Point<Pixels> {
+        self.accessibility
+            .control_bounds_for_key(key)
+            .map_or(window.mouse_position(), |r| {
+                point(px(r.x1 as f32), px(r.y1 as f32 + 4.))
+            })
+    }
     pub(super) fn menu_anchor(&self, key: &str, window: &Window) -> Point<Pixels> {
         self.accessibility
             .control_bounds_for_key(key)
@@ -478,15 +490,11 @@ impl NotesView {
         } else {
             label
         };
-        let (color, size) = if matches!(kind, Icon::Down) {
-            (
-                if current {
-                    theme.primary_foreground
-                } else {
-                    theme.muted
-                },
-                0.875,
-            )
+        // Chevrons stay neutral beside a filled tool.
+        let chevron = matches!(kind, Icon::Down);
+        let current = current && !chevron;
+        let (color, size) = if chevron {
+            (theme.muted, 0.875)
         } else {
             (
                 if current {
@@ -908,6 +916,7 @@ impl NotesView {
             let preview = self.controller.library_preview(id);
             let pages = preview.as_ref().map(|(_, count)| *count).or(session_pages);
             // The document whose menu is open keeps its highlight.
+            let menu_open = self.document_menu.is_some();
             let menu_owner =
                 !self.document_menu_tab && self.document_menu.is_some_and(|(menu, _)| menu == id);
             let import_failed = self
@@ -991,7 +1000,7 @@ impl NotesView {
                     false,
                     cx,
                     move |this, w, cx| {
-                        let at = this.menu_anchor(&format!("manage-note-{id}"), w);
+                        let at = this.menu_anchor_end(&format!("manage-note-{id}"), w);
                         let keyboard = !this.pointer_activation;
                         this.open_document_menu(id, at, false, keyboard, w, cx);
                         cx.stop_propagation();
@@ -1070,7 +1079,7 @@ impl NotesView {
                         .when(menu_owner, |row| {
                             row.bg(theme.tint(0.7)).border_color(theme.cover_edge())
                         })
-                        .hover(move |s| s.bg(theme.tint(0.45)))
+                        .when(!menu_open, |row| row.hover(move |s| s.bg(theme.tint(0.45))))
                         .pr_2()
                         .child(
                             self.control(
@@ -1164,16 +1173,23 @@ impl NotesView {
                                 .px_2()
                                 .py_1()
                                 .rounded(px(theme.corner_sm().max(4.)))
-                                // Deep enough for white text in both modes.
-                                .bg(rgb(crate::theme::mix(theme.destructive, 0x000000, 0.3)))
-                                .text_color(rgb(0xffffff))
+                                // A tinted badge: clear, but quieter than the
+                                // primary action.
+                                .bg(rgb(crate::theme::mix(
+                                    theme.canvas.paper,
+                                    theme.destructive,
+                                    0.16,
+                                )))
+                                .border_1()
+                                .border_color(rgba((theme.destructive << 8) | 0x59))
+                                .text_color(rgb(theme.destructive))
                                 .text_xs()
                                 .font_weight(FontWeight::MEDIUM)
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .gap_1()
-                                .child(icon(Icon::Alert, 0xffffff).size(rems(0.875)))
+                                .child(icon(Icon::Alert, theme.destructive).size(rems(0.875)))
                                 .child("Import failed"),
                         )
                     });
@@ -1205,7 +1221,9 @@ impl NotesView {
                         .when(menu_owner, |card| {
                             card.bg(theme.tint(0.7)).border_color(theme.cover_edge())
                         })
-                        .hover(move |s| s.bg(theme.tint(0.45)))
+                        .when(!menu_open, |card| {
+                            card.hover(move |s| s.bg(theme.tint(0.45)))
+                        })
                         .child(
                             self.control(
                                 format!("note-{id}"),
@@ -1246,7 +1264,7 @@ impl NotesView {
                                         .min_w_0()
                                         .text_size(rems(0.8125))
                                         .text_color(rgb(if import_failed {
-                                            theme.ink
+                                            theme.destructive
                                         } else {
                                             theme.secondary()
                                         }))
@@ -2153,29 +2171,25 @@ impl NotesView {
             Icon::Lasso
         };
         let mut tools = div().flex().flex_shrink_0().items_center().gap(rems(0.375));
-        let group = |id: &'static str, current: bool| {
+        let group = |id: &'static str, _current: bool| {
             div()
                 .id(id)
                 .flex()
                 .items_center()
                 .rounded(rems(theme.radius / 16.))
-                .when(current, |group| group.bg(rgb(theme.accent)))
-                .when(!current, |group| group.hover(move |s| s.bg(theme.tint(1.))))
+                .gap(rems(0.0625))
         };
         tools = tools.child(
             group("pen-tool-group", selected_pen)
-                .child(
-                    self.tool_button(
-                        "pen",
-                        "Pen · P",
-                        pen_icon,
-                        selected_pen,
-                        selected_pen,
-                        cx,
-                        |this, _, _| this.select_tool(Tool::Pen),
-                    )
-                    .bg(transparent_black()),
-                )
+                .child(self.tool_button(
+                    "pen",
+                    "Pen · P",
+                    pen_icon,
+                    selected_pen,
+                    selected_pen,
+                    cx,
+                    |this, _, _| this.select_tool(Tool::Pen),
+                ))
                 .child(
                     self.tool_button(
                         "pen-options",
@@ -2190,8 +2204,7 @@ impl NotesView {
                             this.pen_settings = open;
                         },
                     )
-                    .w(rems(1.375))
-                    .bg(transparent_black()),
+                    .w(rems(1.375)),
                 ),
         );
         tools = tools.child(self.tool_button(
@@ -2209,22 +2222,19 @@ impl NotesView {
         ));
         tools = tools.child(
             group("selection-tool-group", selected_selection)
-                .child(
-                    self.tool_button(
-                        "select-tool",
-                        "Select · L",
-                        selection_icon,
-                        selected_selection,
-                        selected_selection,
-                        cx,
-                        |this, _, _| {
-                            this.dismiss_popovers();
-                            this.region_selection = None;
-                            this.controller.set_tool(this.selection_tool);
-                        },
-                    )
-                    .bg(transparent_black()),
-                )
+                .child(self.tool_button(
+                    "select-tool",
+                    "Select · L",
+                    selection_icon,
+                    selected_selection,
+                    selected_selection,
+                    cx,
+                    |this, _, _| {
+                        this.dismiss_popovers();
+                        this.region_selection = None;
+                        this.controller.set_tool(this.selection_tool);
+                    },
+                ))
                 .child(
                     self.tool_button(
                         "select-options",
@@ -2236,8 +2246,7 @@ impl NotesView {
                         cx,
                         |this, window, cx| this.toggle_tool_menu(ToolMenu::Selection, window, cx),
                     )
-                    .w(rems(1.375))
-                    .bg(transparent_black()),
+                    .w(rems(1.375)),
                 ),
         );
         for (id, label, kind, tool) in [
@@ -2708,7 +2717,7 @@ impl NotesView {
                     cx,
                     |this, _, _| this.pages_open = !this.pages_open,
                 )
-                .text_xs()
+                .text_size(rems(0.8125))
                 .py_1(),
             )
             .child(
@@ -2749,8 +2758,8 @@ impl NotesView {
             })
             .child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(theme.muted))
+                    .text_size(rems(0.8125))
+                    .text_color(rgb(theme.secondary()))
                     .child(self.controller.activity_status()),
             )
             .children(
@@ -2773,7 +2782,7 @@ impl NotesView {
                     cx,
                     |this, _, _| this.fit(),
                 )
-                .text_xs()
+                .text_size(rems(0.8125))
                 .py_1()
                 .tooltip(move |_, cx| cx.new(|_| Hint("Fit page · Ctrl+0".into(), theme)).into()),
             )

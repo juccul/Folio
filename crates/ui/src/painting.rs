@@ -1488,6 +1488,21 @@ impl Painter {
                     window.scale_factor(),
                     &mut rectangles,
                 );
+                // On dark paper the shadow disappears; a light hairline keeps
+                // the page edge visible against the workspace.
+                if theme.dark {
+                    pixel_rectangles(
+                        Rect::new(
+                            bounds.min.x - 1.,
+                            bounds.min.y - 1.,
+                            bounds.width() + 2.,
+                            bounds.height() + 2.,
+                        ),
+                        alpha(0xffffff, 0.14),
+                        window.scale_factor(),
+                        &mut rectangles,
+                    );
+                }
             }
             pixel_rectangles(
                 bounds,
@@ -1508,6 +1523,13 @@ impl Painter {
             }
             if let Some(path) = fill_path(&points) {
                 window.paint_path(path, rgb(paper_color));
+            }
+            if theme.dark && !properties.infinite {
+                let mut edge = points.to_vec();
+                edge.push(points[0]);
+                if let Some(path) = line_path(&edge, 1., false) {
+                    window.paint_path(path, alpha(0xffffff, 0.14));
+                }
             }
         }
         if let Some(pdf) = &properties.pdf {

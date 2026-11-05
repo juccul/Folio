@@ -366,8 +366,6 @@ impl NotesView {
             })
             .size(rems(1.75))
             .p_0()
-            // Dimmed until there is a match to step to.
-            .when(count == 0, |button| button.opacity(0.35))
         };
         let previous = nav(
             self,
@@ -465,9 +463,12 @@ impl NotesView {
                             }))
                             .child(counter),
                     )
-                    .child(previous)
-                    .child(next)
-                    .child(div().w(px(1.)).h(rems(1.25)).mx_0p5().bg(theme.border))
+                    // Match navigation appears once there is a match.
+                    .when(count > 0, |row| {
+                        row.child(previous)
+                            .child(next)
+                            .child(div().w(px(1.)).h(rems(1.25)).mx_0p5().bg(theme.border))
+                    })
                     .child(close),
             )
             .children(context.map(|(place, detail)| {
