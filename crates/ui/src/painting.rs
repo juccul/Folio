@@ -23,6 +23,8 @@ struct VisibleFrame {
     generation: u64,
     coverage: Rect,
     objects: Vec<Arc<Object>>,
+    /// Page-order position of each of `objects`.
+    ranks: Vec<usize>,
     ids: HashSet<Id>,
     preview_ids: HashSet<Id>,
 }
@@ -51,23 +53,25 @@ fn prepare_visible_frame(
     }
     let coverage = visible.expand(margin);
     let ids = index.query(coverage);
-    let objects: Vec<Arc<Object>> = if ids.len() > page.order.len() / 2 {
+    let (objects, ranks): (Vec<Arc<Object>>, Vec<usize>) = if ids.len() > page.order.len() / 2 {
         // Dense views already have a cheap ordered traversal. Sorting their
         // hashed candidates repeats rank lookups on every content invalidation.
         page.order
             .iter()
-            .filter(|id| ids.contains(id))
-            .filter_map(|id| page.objects.get(id))
-            .cloned()
-            .collect()
+            .enumerate()
+            .filter(|(_, id)| ids.contains(id))
+            .filter_map(|(rank, id)| page.objects.get(id).map(|o| (o.clone(), rank)))
+            .unzip()
     } else {
-        let mut ordered = ids.iter().copied().collect::<Vec<_>>();
-        ordered.sort_unstable_by_key(|id| positions.get(id).copied().unwrap_or(usize::MAX));
+        let mut ordered = ids
+            .iter()
+            .map(|id| (positions.get(id).copied().unwrap_or(usize::MAX), *id))
+            .collect::<Vec<_>>();
+        ordered.sort_unstable_by_key(|(rank, _)| *rank);
         ordered
             .iter()
-            .filter_map(|id| page.objects.get(id))
-            .cloned()
-            .collect()
+            .filter_map(|(rank, id)| page.objects.get(id).map(|o| (o.clone(), *rank)))
+            .unzip()
     };
     let preview_ids = objects
         .iter()
@@ -80,6 +84,7 @@ fn prepare_visible_frame(
         generation: index.generation(),
         coverage,
         objects,
+        ranks,
         ids,
         preview_ids,
     }));
@@ -186,6 +191,9 @@ pub struct Painter {
     ink_planner: super::ink_layers::Planner,
     ink_plan: Option<InkPlan>,
     ink_layers: HashMap<Id, CachedInkLayer>,
+    /// Layers made for an earlier display density, painted (scaled) until
+    /// their replacement is ready, so zooming never drops back to vectors.
+    ink_stale: HashMap<Id, CachedInkLayer>,
     ink_pending: HashMap<Id, super::ink_layers::InkBatch>,
     ink_failed: HashMap<Id, super::ink_layers::InkBatch>,
     ink_desired: HashMap<Id, super::ink_layers::InkBatch>,
@@ -210,7 +218,23 @@ pub struct Painter {
     appearance: Option<CanvasTheme>,
     graph_palette: Option<graph::Palette>,
     colors: HashMap<u32, u32>,
+    /// The zoom ink layers are rasterized for. It follows the viewport once
+    /// zooming pauses, so a continuous zoom reuses its cached images.
+    layer_zoom: f32,
+    zoom_seen: f32,
+    zoom_moved: Option<std::time::Instant>,
+    zoom_repaint: bool,
+    /// Whether the view is moving, so uncached ink is tessellated within
+    /// [`TESSELLATION_BUDGET`].
+    limit_tessellation: bool,
+    /// Prepare the page's ink images near the viewport without painting it.
+    prefetch: bool,
 }
+/// How long the zoom must rest before ink is rasterized at the new scale.
+const ZOOM_SETTLE: std::time::Duration = std::time::Duration::from_millis(140);
+/// Uncached strokes tessellated per page and frame. The rest stay hidden for
+/// a frame or two instead of stalling the frame while their images render.
+const TESSELLATION_BUDGET: std::time::Duration = std::time::Duration::from_millis(6);
 fn alpha(color: u32, opacity: f32) -> Rgba {
     let mut color = rgb(color);
     color.a = opacity;
@@ -423,6 +447,25 @@ impl Painter {
             .iter()
             .map(|(i, _)| controller.session().document.pages[*i].id)
             .collect::<HashSet<_>>();
+        // Prepare ink images for the pages next to the visible ones, so
+        // scrolling into a busy page shows cached ink immediately.
+        let neighbors = stack
+            .as_ref()
+            .map(|stack| {
+                let first = frames.iter().map(|(i, _)| *i).min().unwrap_or(active);
+                let last = frames.iter().map(|(i, _)| *i).max().unwrap_or(active);
+                [first.checked_sub(1), last.checked_add(1)]
+                    .into_iter()
+                    .flatten()
+                    .filter(|index| stack.pages.iter().any(|(i, _)| i == index))
+                    .map(|index| (index, stack.viewport(viewport, active, index)))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let prefetched = neighbors
+            .iter()
+            .map(|(i, _)| controller.session().document.pages[*i].id)
+            .collect::<HashSet<_>>();
         let view = (
             controller.active,
             session.page().id,
@@ -436,6 +479,34 @@ impl Painter {
         let settled = self
             .pdf_moved
             .is_some_and(|last| last.elapsed() >= std::time::Duration::from_millis(180));
+        let now = std::time::Instant::now();
+        if viewport.zoom != self.zoom_seen {
+            self.zoom_seen = viewport.zoom;
+            self.zoom_moved = Some(now);
+        }
+        let resting = self
+            .zoom_moved
+            .is_none_or(|moved| now.duration_since(moved) >= ZOOM_SETTLE);
+        // During a zoom, cached ink is scaled on the GPU. It is rasterized
+        // again once the zoom rests, or when it would be scaled by more than
+        // two times.
+        let ratio = viewport.zoom / self.layer_zoom;
+        if self.layer_zoom <= 0. || resting || !(0.5..=2.).contains(&ratio) {
+            self.layer_zoom = viewport.zoom;
+        }
+        if !resting && !self.zoom_repaint {
+            self.zoom_repaint = true;
+            cx.spawn(async move |view, cx| {
+                cx.background_executor()
+                    .timer(ZOOM_SETTLE + std::time::Duration::from_millis(10))
+                    .await;
+                let _ = view.update(cx, |view, cx| {
+                    view.painter.zoom_repaint = false;
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
         if !settled
             && !self.pdf_idle_repaint
             && frames
@@ -523,7 +594,7 @@ impl Painter {
         // Retain only visible pages, so scrolling a long document cannot grow
         // native path/image caches without bound.
         self.pages.retain(|id, painter| {
-            if ids.contains(id) {
+            if ids.contains(id) || prefetched.contains(id) {
                 true
             } else {
                 painter.clear_page(window);
@@ -535,6 +606,17 @@ impl Painter {
             let painter = self.pages.entry(id).or_default();
             painter.ink_layer_override = self.ink_layer_override;
             painter.hide_selection = self.hide_selection;
+            painter.layer_zoom = self.layer_zoom;
+            painter.limit_tessellation = !settled;
+            painter.prefetch = false;
+            painter.paint_page(controller, index, viewport, bounds, editing, window, cx);
+        }
+        for (index, viewport) in neighbors {
+            let id = controller.session().document.pages[index].id;
+            let painter = self.pages.entry(id).or_default();
+            painter.ink_layer_override = self.ink_layer_override;
+            painter.layer_zoom = self.layer_zoom;
+            painter.prefetch = true;
             painter.paint_page(controller, index, viewport, bounds, editing, window, cx);
         }
     }
@@ -558,8 +640,13 @@ impl Painter {
         }
         let page_id = controller.session().document.pages[page_index].id;
         self.page = Some(page_id);
-        let visible = viewport.visible(f32::from(bounds.size.width), f32::from(bounds.size.height));
+        let mut visible =
+            viewport.visible(f32::from(bounds.size.width), f32::from(bounds.size.height));
         let page = &controller.session().document.pages[page_index];
+        if self.prefetch {
+            // The screen's worth of the page nearest the viewport.
+            visible = visible.expand(visible.height().max(visible.width()));
+        }
         if !active && self.index_revision != Some(page.revision) {
             self.index.rebuild(page);
             self.index_revision = Some(page.revision);
@@ -674,7 +761,7 @@ impl Painter {
         let ink_batches = if self.ink_layer_override.unwrap_or(true) {
             let mut excluded = selection.union(erasing).copied().collect::<HashSet<_>>();
             excluded.extend(editing);
-            let density = viewport.zoom * window.scale_factor();
+            let density = self.layer_zoom * window.scale_factor();
             if !self.ink_plan.as_ref().is_some_and(|plan| {
                 Arc::ptr_eq(&plan.frame, &frame)
                     && plan.excluded == excluded
@@ -682,7 +769,9 @@ impl Painter {
                     && plan.density == density
             }) {
                 let batches = Arc::new(self.ink_planner.batches(
+                    &controller.session().document.pages[page_index],
                     &frame.objects,
+                    &frame.ranks,
                     &excluded,
                     canvas_theme,
                     density,
@@ -702,8 +791,13 @@ impl Painter {
             Arc::new(Vec::new())
         };
         self.prepare_ink_layers(&ink_batches, ink_plan_changed, page_id, window, cx);
+        if self.prefetch {
+            return;
+        }
         let mut batch_iter = ink_batches.iter().peekable();
         let mut skip_until = 0;
+        let frame_start = std::time::Instant::now();
+        let mut deferred = false;
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             self.paper(&properties, visible, world, window, cx, controller);
             for (index, object) in frame.objects.iter().enumerate() {
@@ -715,17 +809,20 @@ impl Painter {
                     .is_some_and(|(range, _)| range.start == index)
                 {
                     let (range, batch) = batch_iter.next().unwrap();
-                    if let Some(layer) = self.ink_layers.get(&batch.id())
-                        && window
-                            .paint_image_transformed(
-                                gpui_bounds(batch.bounds),
-                                Default::default(),
-                                layer.image.clone(),
-                                0,
-                                false,
-                                gpu_transform(world),
-                            )
-                            .is_ok()
+                    if let Some(layer) = self.ink_layers.get(&batch.id()).or_else(|| {
+                        self.ink_stale
+                            .get(&batch.id())
+                            .filter(|layer| layer.batch.same_ink(batch))
+                    }) && window
+                        .paint_image_transformed(
+                            gpui_bounds(batch.bounds),
+                            Default::default(),
+                            layer.image.clone(),
+                            0,
+                            false,
+                            gpu_transform(world),
+                        )
+                        .is_ok()
                     {
                         skip_until = range.end;
                         continue;
@@ -763,6 +860,22 @@ impl Painter {
                             .paths
                             .get(&s.id)
                             .is_some_and(|cache| Arc::ptr_eq(&cache.object, object));
+                        if !valid
+                            && self.limit_tessellation
+                            && frame_start.elapsed() > TESSELLATION_BUDGET
+                        {
+                            deferred = true;
+                            continue;
+                        }
+                        // Ink in the margin around the view is loaded so its
+                        // image is ready when revealed (by a resize, say).
+                        // Until then, drawing it as a vector would be wasted.
+                        if !valid
+                            && !selection.contains(&s.id)
+                            && !visible.intersects(object.bounds())
+                        {
+                            continue;
+                        }
                         if !valid
                             && let Some(path) = ink_path(&folio_ink::outline(s.display_path()))
                         {
@@ -948,13 +1061,23 @@ impl Painter {
             if !active {
                 return;
             }
-            for r in &controller.search_highlights {
-                let points = rect_points(*r).map(|p| world.apply(p));
+            // As in a browser's find bar: every match is marked, and the
+            // current one stands out in orange.
+            for (index, r) in controller.search_highlights.iter().enumerate() {
+                let current = index == controller.search_focus;
+                let points = rect_points(r.expand(2.)).map(|p| world.apply(p));
                 if let Some(path) = fill_path(&points) {
-                    window.paint_path(path, alpha(0xe7c25d, 0.18));
+                    window.paint_path(
+                        path,
+                        if current {
+                            alpha(0xff9632, 0.34)
+                        } else {
+                            alpha(0xe7c25d, 0.18)
+                        },
+                    );
                 }
-                if let Some(path) = line_path(&points, 1.5, true) {
-                    window.paint_path(path, rgb(0xb79134));
+                if let Some(path) = line_path(&points, if current { 2. } else { 1.5 }, !current) {
+                    window.paint_path(path, rgb(if current { 0xe8740c } else { 0xb79134 }));
                 }
             }
             if let Some(active) = &controller.interaction {
@@ -1112,9 +1235,12 @@ impl Painter {
                 }
             }
         });
+        if deferred {
+            window.request_animation_frame();
+        }
     }
     fn clear_ink_layers(&mut self, window: &mut Window) {
-        for (_, layer) in self.ink_layers.drain() {
+        for (_, layer) in self.ink_layers.drain().chain(self.ink_stale.drain()) {
             let _ = window.drop_image(layer.image);
         }
         self.ink_desired.clear();
@@ -1138,17 +1264,35 @@ impl Painter {
                     self.ink_desired.insert(batch.id(), batch.clone());
                 }
             }
-            self.ink_layers.retain(|id, layer| {
-                if self
-                    .ink_desired
-                    .get(id)
+            // A layer made for another density keeps standing in for its
+            // batch until the new image is ready.
+            // Layers that scrolled out of view are kept too, within half the
+            // budget, so zooming back out shows them at once.
+            let desired = &self.ink_desired;
+            let stale = &mut self.ink_stale;
+            for (id, layer) in std::mem::take(&mut self.ink_layers) {
+                if desired
+                    .get(&id)
                     .is_some_and(|batch| batch.matches(&layer.batch))
                 {
-                    true
-                } else {
-                    let _ = window.drop_image(layer.image.clone());
-                    false
+                    self.ink_layers.insert(id, layer);
+                } else if let Some(previous) = stale.insert(id, layer) {
+                    let _ = window.drop_image(previous.image);
                 }
+            }
+            let mut offscreen = 0;
+            stale.retain(|id, layer| {
+                let keep = match desired.get(id) {
+                    Some(batch) => batch.same_ink(&layer.batch),
+                    None => {
+                        offscreen += layer.batch.pixels;
+                        offscreen <= super::ink_layers::PIXEL_BUDGET / 2
+                    }
+                };
+                if !keep {
+                    let _ = window.drop_image(layer.image.clone());
+                }
+                keep
             });
             self.ink_failed.retain(|id, failed| {
                 self.ink_desired
@@ -1156,9 +1300,14 @@ impl Painter {
                     .is_some_and(|batch| batch.matches(failed))
             });
         }
+        // Rasterize visible batches in parallel, leaving cores for input,
+        // recognition and other background work.
+        let parallel = std::thread::available_parallelism()
+            .map_or(2, |n| n.get() / 2)
+            .clamp(2, 6);
         for (_, batch) in batches {
             let id = batch.id();
-            if self.ink_pending.len() >= 2 {
+            if self.ink_pending.len() >= parallel {
                 break;
             }
             if !self.ink_desired.contains_key(&id)
@@ -1196,6 +1345,9 @@ impl Painter {
                         if let Some(image) = image {
                             for object in &request.objects {
                                 painter.paths.remove(&object.id());
+                            }
+                            if let Some(stale) = painter.ink_stale.remove(&id) {
+                                cx.drop_image(stale.image, None);
                             }
                             painter.ink_layers.insert(
                                 id,
@@ -1926,8 +2078,11 @@ mod tests {
                         1.,
                     ) {
                         rebuilds += 1;
+                        let frame = cached.as_ref().unwrap();
                         std::hint::black_box(planner.batches(
-                            &cached.as_ref().unwrap().objects,
+                            &page,
+                            &frame.objects,
+                            &frame.ranks,
                             &HashSet::new(),
                             theme,
                             1.,

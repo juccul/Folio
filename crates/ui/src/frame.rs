@@ -5,19 +5,21 @@ use super::*;
 struct PanelOpacity {
     library: f32,
     settings: f32,
+    /// The scrim behind dialogs, which stays while one dialog replaces
+    /// another.
+    modal_scrim: f32,
     modal: f32,
     menu: f32,
+    canvas_menu: f32,
     help: f32,
     popover: f32,
     tool_menu: f32,
     tool_wheel: f32,
     pages: f32,
     math: f32,
-}
-
-/// Vertical offset of a menu that drops into place as it fades in.
-fn rise(alpha: f32) -> f32 {
-    -6. * (1. - alpha)
+    selection: f32,
+    sort: f32,
+    font: f32,
 }
 
 impl Render for NotesView {
@@ -30,8 +32,12 @@ impl Render for NotesView {
         self.building_overlay = false;
         self.accessibility.begin();
         self.motion.borrow_mut().begin_frame();
+        self.transitions.borrow_mut().begin_frame();
         self.open_pending_dialogs(window, cx);
         let alpha = self.panel_opacity();
+        self.selection_appear = alpha.selection;
+        self.sort_appear = alpha.sort;
+        self.font_appear = alpha.font;
         self.track_recognition_frame(alpha.modal, window, cx);
         let theme = Theme::new(&self.controller.settings);
         window.set_rem_size(px(16. * self.controller.settings.ui_scale));
@@ -70,7 +76,7 @@ impl Render for NotesView {
             editor_top = Some(top);
             body = body.child(main);
         }
-        let canvas_overlay = self.canvas_menu_overlay(window, cx);
+        let canvas_overlay = self.canvas_menu_overlay(&alpha, window, cx);
         let document_menu = self.document_menu_overlay(&alpha, window, cx);
         body = self.add_overlays(body, &alpha, window, cx);
         self.building_overlay = false;
@@ -93,37 +99,47 @@ impl Render for NotesView {
                 }),
             ));
         }
+        let find = self.find_bar(window, cx);
         root = root
             .child(top.children(editor_top))
             .child(body)
+            .children(find)
             .children(document_menu)
             .children(canvas_overlay);
         if !self.library_open
             && !self.blocking_overlay()
             && (self.more_open || self.pen_settings || self.export_open)
         {
+            let popover = self.popover(window, cx);
             root = root.child(
                 div()
                     .absolute()
                     .inset_0()
-                    .top(px(rise(alpha.popover)))
-                    .child(self.popover(window, cx))
-                    .opacity(alpha.popover),
+                    .child(self.transitions.borrow_mut().overlay(
+                        "popover",
+                        alpha.popover,
+                        popover,
+                    )),
             );
         }
         if self.tool_wheel.is_some() && !self.library_open && !self.blocking_overlay() {
             root = root.child(self.tool_wheel_overlay(alpha.tool_wheel, window, cx));
         }
         if self.tool_menu.is_some() && !self.library_open && !self.blocking_overlay() {
+            let menu = self.tool_menu_panel(window, cx);
             root = root.child(
                 div()
                     .absolute()
                     .inset_0()
-                    .top(px(rise(alpha.tool_menu)))
-                    .child(self.tool_menu_panel(window, cx))
-                    .opacity(alpha.tool_menu),
+                    .child(self.transitions.borrow_mut().overlay(
+                        "tool-menu",
+                        alpha.tool_menu,
+                        menu,
+                    )),
             );
         }
+        // Overlays that just closed fade out above everything else.
+        root = root.children(self.transitions.borrow().exits());
         if self.update_preparing {
             root = root.child(
                 div()
@@ -190,70 +206,129 @@ impl NotesView {
         });
     }
     /// Advance panel animations. Each panel animates when its key changes,
-    /// so switching between two contents of one panel also fades it.
+    /// so switching between two contents of one panel also fades it, and
+    /// the content it replaced leaves (see [`transitions`]).
     fn panel_opacity(&self) -> PanelOpacity {
+        use transitions::Style;
         let reduced = self.controller.settings.reduce_motion;
         let mut motion = self.motion.borrow_mut();
+        let mut transitions = self.transitions.borrow_mut();
         motion.prune();
         if reduced {
             motion.settle();
         }
+        // Overlays hidden because the library opened or closed just
+        // disappear.
+        let animate = !transitions.switch_view(self.library_open) && !reduced;
+        let mut panel = |key: &'static str, style: Option<Style>, signature: Option<String>| {
+            if let Some(style) = style {
+                transitions.observe(
+                    key.trim_end_matches("-motion"),
+                    style,
+                    signature.clone(),
+                    animate,
+                );
+            }
+            motion.panel(key, signature, reduced)
+        };
         let open = |shown: bool| shown.then(|| "open".to_string());
+        let editor = !self.library_open;
         PanelOpacity {
-            library: motion.panel(
+            library: panel(
                 "library-motion",
+                None,
                 self.library_open.then(|| {
                     format!(
                         "{:?}-{}-{}",
                         self.controller.filter, self.list_view, self.sort_by_name
                     )
                 }),
-                reduced,
             ),
-            settings: motion.panel("settings-motion", open(self.settings_open), reduced),
-            modal: motion.panel(
+            settings: panel(
+                "settings-motion",
+                Some(Style::Dialog),
+                open(self.settings_open),
+            ),
+            modal_scrim: panel("modal-scrim-motion", None, open(self.modal.is_some())),
+            modal: panel(
                 "modal-motion",
+                Some(Style::Dialog),
                 self.modal.as_ref().map(|(m, _)| m.title().into()),
-                reduced,
             ),
-            menu: motion.panel(
-                "menu-motion",
-                self.document_menu
-                    .map(|(id, _)| id.to_string())
-                    .or_else(|| self.folder_menu.map(|(id, _)| format!("folder-{id}"))),
-                reduced,
+            menu: {
+                let document = panel(
+                    "document-menu-motion",
+                    Some(Style::Menu),
+                    self.document_menu.map(|(id, _)| id.to_string()),
+                );
+                let folder = panel(
+                    "folder-menu-motion",
+                    Some(Style::Menu),
+                    self.folder_menu.map(|(id, _)| id.to_string()),
+                );
+                if self.document_menu.is_some() {
+                    document
+                } else {
+                    folder
+                }
+            },
+            canvas_menu: panel(
+                "canvas-menu-motion",
+                Some(Style::Menu),
+                self.canvas_menu
+                    .as_ref()
+                    .map(|menu| format!("{:?}", menu.position)),
             ),
-            help: motion.panel("help-motion", open(self.help_open), reduced),
-            popover: motion.panel(
+            help: panel("help-motion", Some(Style::Dialog), open(self.help_open)),
+            popover: panel(
                 "popover-motion",
-                (!self.library_open && (self.more_open || self.pen_settings || self.export_open))
+                Some(Style::Menu),
+                (editor
+                    && !self.blocking_overlay()
+                    && (self.more_open || self.pen_settings || self.export_open))
                     .then(|| {
                         format!(
                             "{}-{}-{}",
                             self.more_open, self.pen_settings, self.export_open
                         )
                     }),
-                reduced,
             ),
-            tool_menu: motion.panel(
+            tool_menu: panel(
                 "tool-menu-motion",
-                self.tool_menu.map(|(kind, _)| format!("{kind:?}")),
-                reduced,
+                Some(Style::Menu),
+                (editor && !self.blocking_overlay())
+                    .then(|| self.tool_menu.map(|(kind, _)| format!("{kind:?}")))
+                    .flatten(),
             ),
-            tool_wheel: motion.panel(
+            tool_wheel: panel(
                 "tool-wheel-motion",
-                open(self.tool_wheel.is_some()),
-                reduced,
+                Some(Style::Wheel),
+                open(self.tool_wheel.is_some() && editor && !self.blocking_overlay()),
             ),
-            pages: motion.panel(
+            pages: panel(
                 "pages-motion",
-                open(!self.library_open && self.pages_open),
-                reduced,
+                Some(Style::SlideLeft),
+                open(editor && self.pages_open),
             ),
-            math: motion.panel(
+            math: panel(
                 "math-motion",
-                open(!self.library_open && self.controller.math_session.is_some()),
-                reduced,
+                Some(Style::SlideRight),
+                open(editor && self.controller.math_session.is_some()),
+            ),
+            selection: panel(
+                "selection-toolbar-motion",
+                Some(Style::Menu),
+                open(editor && self.selection_toolbar_shown()),
+            ),
+            sort: panel(
+                "library-sort-menu-motion",
+                Some(Style::Menu),
+                open(self.library_open && self.sort_open),
+            ),
+            font: panel(
+                "font-menu-motion",
+                Some(Style::Menu),
+                open(editor && self.font_menu.is_some()),
             ),
         }
     }
@@ -582,15 +657,22 @@ impl NotesView {
                     ),
             );
         }
-        if !self.library_open
-            && !self.controller.read_only()
+        if !self.library_open && self.selection_toolbar_shown() {
+            let toolbar = self.selection_toolbar(cx);
+            center = center.child(self.transitions.borrow_mut().overlay(
+                "selection-toolbar",
+                self.selection_appear,
+                toolbar,
+            ));
+        }
+        center
+    }
+    /// Whether the selected objects show their action toolbar.
+    fn selection_toolbar_shown(&self) -> bool {
+        !self.controller.read_only()
             && !self.controller.session().selection.is_empty()
             && self.inline_text.is_none()
             && !self.cropping()
-        {
-            center = center.child(self.selection_toolbar(cx));
-        }
-        center
     }
     /// The window root with its key context and keyboard actions.
     fn root_element(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -657,7 +739,9 @@ impl NotesView {
                 this.pages_open = !this.pages_open;
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &Search, w, cx| this.modal(Modal::Search, w, cx)))
+            .on_action(cx.listener(|this, _: &Search, w, cx| this.open_find(w, cx)))
+            .on_action(cx.listener(|this, _: &FindNext, _, cx| this.step_find(true, cx)))
+            .on_action(cx.listener(|this, _: &FindPrevious, _, cx| this.step_find(false, cx)))
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(false, cx)))
             .on_action(cx.listener(|this, _: &Cut, _, cx| this.copy(true, cx)))
             .on_action(cx.listener(|this, _: &Paste, window, cx| this.paste(window, cx)))
@@ -825,11 +909,17 @@ impl NotesView {
             self.canvas_menu = None;
         } else if self.tool_wheel.is_some() {
             self.tool_wheel = None;
+        } else if self.font_menu.is_some() {
+            self.close_font_menu(window, cx);
+            return;
         } else if self.tool_menu.is_some() || self.sort_open {
             self.tool_menu = None;
             self.sort_open = false;
         } else if self.more_open || self.pen_settings || self.export_open {
             self.dismiss_popovers();
+        } else if self.find.is_some() {
+            self.close_find(window, cx);
+            return;
         } else if self.region_selection.take().is_some() {
             self.controller.status = "Region selection cancelled".into();
         } else if self.inline_text.is_some() {
@@ -893,38 +983,32 @@ impl NotesView {
         let mut workspace = div().relative().flex().flex_1().min_h_0().min_w_0();
         if self.pages_open {
             // Slides in from the left edge without moving the page.
-            workspace = workspace.child(
-                div()
-                    .relative()
-                    .left(px(-24. * (1. - alpha.pages)))
-                    .flex()
-                    .h_full()
-                    .child(self.pages_panel(cx))
-                    .opacity(alpha.pages),
-            );
+            let panel = div().flex().h_full().child(self.pages_panel(cx));
+            workspace = workspace.child(self.transitions.borrow_mut().overlay(
+                "pages",
+                alpha.pages,
+                panel,
+            ));
         }
         workspace = workspace.child(center);
         if self.controller.math_session.is_some() {
             let floating =
                 f32::from(window.viewport_size().width) / self.controller.settings.ui_scale < 1100.;
-            let panel = self
-                .math_panel(window, cx)
-                .opacity(alpha.math)
-                .when(floating, |panel| {
-                    panel
-                        .absolute()
-                        .right_0()
-                        .top_0()
-                        .bottom_0()
-                        .border_l_1()
-                        .border_color(theme.glass_edge())
-                });
-            // Slides in from the right edge.
-            workspace = workspace.child(if floating {
-                panel.mr(px(-32. * (1. - alpha.math)))
-            } else {
-                panel.relative().left(px(32. * (1. - alpha.math)))
+            let panel = self.math_panel(window, cx).when(floating, |panel| {
+                panel
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .bottom_0()
+                    .border_l_1()
+                    .border_color(theme.glass_edge())
             });
+            // Slides in from the right edge.
+            workspace = workspace.child(
+                self.transitions
+                    .borrow_mut()
+                    .overlay("math", alpha.math, panel),
+            );
         }
         let cropping = self.cropping();
         let region_notice = self.region_selection.is_some().then(|| {
@@ -1085,7 +1169,12 @@ impl NotesView {
         )
     }
     /// The canvas context menu, drawn over everything with a click-away backdrop.
-    fn canvas_menu_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
+    fn canvas_menu_overlay(
+        &mut self,
+        alpha: &PanelOpacity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
         if self.canvas_menu.is_some() {
             self.building_overlay = true;
             self.accessibility.begin();
@@ -1112,7 +1201,14 @@ impl NotesView {
                             cx.notify();
                         }),
                     )
-                    .child(self.canvas_menu_panel(window, cx)),
+                    .child({
+                        let menu = self.canvas_menu_panel(window, cx);
+                        self.transitions.borrow_mut().overlay(
+                            "canvas-menu",
+                            alpha.canvas_menu,
+                            menu,
+                        )
+                    }),
             )
         } else {
             None
@@ -1134,13 +1230,16 @@ impl NotesView {
         if self.building_overlay {
             self.accessibility.begin();
         }
+        let menu = self.document_menu_panel(window, cx);
         Some(
             div()
                 .absolute()
                 .inset_0()
-                .top(px(rise(alpha.menu)))
-                .child(self.document_menu_panel(window, cx))
-                .opacity(alpha.menu),
+                .child(
+                    self.transitions
+                        .borrow_mut()
+                        .overlay("document-menu", alpha.menu, menu),
+                ),
         )
     }
     /// Menus, panels and dialogs layered over the body. Each layer that is
@@ -1162,13 +1261,16 @@ impl NotesView {
             if self.building_overlay {
                 self.accessibility.begin();
             }
+            let menu = self.folder_menu_panel(window, cx);
             body = body.child(
                 div()
                     .absolute()
                     .inset_0()
-                    .top(px(rise(alpha.menu)))
-                    .child(self.folder_menu_panel(window, cx))
-                    .opacity(alpha.menu),
+                    .child(
+                        self.transitions
+                            .borrow_mut()
+                            .overlay("folder-menu", alpha.menu, menu),
+                    ),
             );
         }
         if self.settings_open {
@@ -1178,13 +1280,15 @@ impl NotesView {
                 self.accessibility.begin();
             }
             self.dialog_rise = 1. - alpha.settings;
-            body = body.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(self.settings_panel(window, cx))
-                    .opacity(alpha.settings),
-            );
+            let panel = div()
+                .absolute()
+                .inset_0()
+                .child(self.settings_panel(window, cx));
+            body = body.child(self.transitions.borrow_mut().overlay(
+                "settings",
+                alpha.settings,
+                panel,
+            ));
         }
         if self.modal.is_some() {
             self.building_overlay = !self.help_open && self.controller.error.is_none();
@@ -1192,13 +1296,15 @@ impl NotesView {
                 self.accessibility.begin();
             }
             self.dialog_rise = 1. - alpha.modal;
-            body = body.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(self.modal_panel(window, cx))
-                    .opacity(alpha.modal),
-            );
+            let panel = div()
+                .absolute()
+                .inset_0()
+                .child(self.modal_panel(window, cx));
+            body = body.child(self.transitions.borrow_mut().overlay(
+                "modal",
+                alpha.modal_scrim,
+                panel,
+            ));
         }
         if self.help_open {
             self.building_overlay = self.controller.error.is_none();
@@ -1206,12 +1312,14 @@ impl NotesView {
                 self.accessibility.begin();
             }
             self.dialog_rise = 1. - alpha.help;
+            let panel = div()
+                .absolute()
+                .inset_0()
+                .child(self.help_panel(window, cx));
             body = body.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(self.help_panel(window, cx))
-                    .opacity(alpha.help),
+                self.transitions
+                    .borrow_mut()
+                    .overlay("help", alpha.help, panel),
             );
         }
         if self.controller.recognition_setup_needed() && self.controller.error.is_none() {

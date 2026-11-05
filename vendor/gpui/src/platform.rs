@@ -777,6 +777,10 @@ pub(crate) trait PlatformAtlas: Send + Sync {
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>>;
     fn remove(&self, key: &AtlasKey);
+    /// Whether the texture still exists, so a retained scene may sample it.
+    fn contains_texture(&self, _id: AtlasTextureId) -> bool {
+        true
+    }
 }
 
 struct AtlasTextureList<T> {

@@ -227,6 +227,8 @@ pub struct Controller {
     pub search_query: String,
     pub search_state: SearchState,
     pub search_highlights: Vec<Rect>,
+    /// The highlight shown as the current match, in reading order.
+    pub search_focus: usize,
 
     // Equation rendering. Results from older generations are discarded.
     equation_generation: u64,
@@ -403,6 +405,7 @@ impl Controller {
             search_query: String::new(),
             search_state: SearchState::Idle,
             search_highlights: vec![],
+            search_focus: 0,
             data_dir,
             assets,
             database,

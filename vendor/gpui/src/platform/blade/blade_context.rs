@@ -21,19 +21,62 @@ impl BladeContext {
                 None
             }
         };
-        let gpu = Arc::new(
-            unsafe {
-                gpu::Context::init(gpu::ContextDesc {
-                    presentation: true,
-                    validation: false,
-                    device_id: device_id_forced.unwrap_or(0),
-                    ..Default::default()
-                })
-            }
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?,
-        );
-        Ok(Self { gpu })
+        let init = |device_id| unsafe {
+            gpu::Context::init(gpu::ContextDesc {
+                presentation: true,
+                validation: false,
+                device_id,
+                ..Default::default()
+            })
+        };
+        let gpu = match device_id_forced.or_else(display_gpu) {
+            Some(device_id) => init(device_id).or_else(|err| {
+                if device_id_forced.is_some() {
+                    return Err(err);
+                }
+                log::info!("Display GPU {device_id:04x} unusable ({err:?}); using the default");
+                init(0)
+            }),
+            None => init(0),
+        }
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        log::info!("Rendering with {}", gpu.device_information().device_name);
+        Ok(Self { gpu: Arc::new(gpu) })
     }
+}
+
+/// On a machine with several GPUs, the PCI device ID of the one the firmware
+/// set up for the display, unless the user chose a GPU for Mesa. Without
+/// this, a hybrid laptop can render on its discrete GPU and copy every frame
+/// to the integrated one that drives the screen, which makes resizing slow.
+fn display_gpu() -> Option<u32> {
+    let chosen = [
+        "DRI_PRIME",
+        "MESA_VK_DEVICE_SELECT",
+        "__NV_PRIME_RENDER_OFFLOAD",
+    ];
+    if chosen.iter().any(|name| std::env::var_os(name).is_some()) {
+        return None;
+    }
+    let mut gpus = 0;
+    let mut display = None;
+    for entry in std::fs::read_dir("/sys/class/drm").ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Cards, not their connectors (`card1-eDP-1`).
+        if !name.starts_with("card") || name.contains('-') {
+            continue;
+        }
+        let device = entry.path().join("device");
+        let Ok(id) = std::fs::read_to_string(device.join("device")) else {
+            continue;
+        };
+        gpus += 1;
+        if std::fs::read_to_string(device.join("boot_vga")).is_ok_and(|v| v.trim() == "1") {
+            display = parse_pci_id(&id).ok();
+        }
+    }
+    display.filter(|_| gpus > 1)
 }
 
 fn parse_pci_id(id: &str) -> anyhow::Result<u32> {

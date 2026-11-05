@@ -12,7 +12,9 @@ mod canvas_menu;
 mod color_picker;
 mod controls;
 mod field;
+mod find;
 mod folder_menu;
+mod font_picker;
 mod frame;
 mod graph;
 mod help;
@@ -41,6 +43,7 @@ mod theme;
 mod titlebar;
 mod tool_wheel;
 mod toolbar_menu;
+mod transitions;
 use toolbar_menu::ToolMenu;
 mod updates;
 mod validation;
@@ -79,6 +82,8 @@ actions!(
         NewNote,
         NewPage,
         Search,
+        FindNext,
+        FindPrevious,
         Copy,
         Cut,
         Paste,
@@ -138,7 +143,6 @@ enum Modal {
     PdfPassword(Id, std::path::PathBuf),
     Crop,
     Tags,
-    Search,
     Color,
     ThemeColor {
         dark: bool,
@@ -146,7 +150,6 @@ enum Modal {
     },
     CanvasColor,
     PageSize,
-    Font,
     FontSize,
     TextColor,
     Equation,
@@ -172,7 +175,6 @@ impl Modal {
     }
     fn submit_label(&self, controller: &Controller) -> &'static str {
         match self {
-            Self::Search => "Search",
             Self::Recognition if controller.recognition_for_index => "Keep ink and index",
             Self::Recognition => "Replace writing",
             Self::OpenDocument => "Open",
@@ -213,13 +215,11 @@ impl Modal {
             Self::Crop => "Crop image",
             Self::Notebook(_) => "New folder",
             Self::Tags => "Document tags",
-            Self::Search => "Search your documents",
             Self::Color => "Custom ink color",
             Self::TextColor => "Text color",
             Self::ThemeColor { .. } => "Theme color",
             Self::CanvasColor => "Paper color",
             Self::PageSize => "Custom page size",
-            Self::Font => "Font family",
             Self::FontSize => "Font size",
             Self::EditEquation(_) => "Edit LaTeX equation",
             Self::MathPdfRegion => "PDF region: left, top, width, height",
@@ -265,9 +265,13 @@ pub struct NotesView {
     subscriptions: Vec<Subscription>,
     _appearance_subscription: Subscription,
     motion: std::cell::RefCell<motion::Motion>,
+    transitions: std::cell::RefCell<transitions::Transitions>,
     building_overlay: bool,
     /// How far the dialog being built still has to rise into place, 0–1.
     dialog_rise: f32,
+    /// Entrance progress of the selection toolbar and library sort menu.
+    selection_appear: f32,
+    sort_appear: f32,
     /// The window is closing after an explicit save or discard choice.
     closing: bool,
     settings_open: bool,
@@ -278,6 +282,12 @@ pub struct NotesView {
     modal_error: Option<String>,
     /// Highlighted row of the search or open-document picker.
     modal_cursor: usize,
+    /// The browser-style find bar, when open.
+    find: Option<find::Find>,
+    /// Keeps the highlighted picker row in view during keyboard navigation.
+    picker_scroll: ScrollHandle,
+    /// The open-document filter the highlighted row was chosen for.
+    picker_query: String,
     move_page_destination: Option<Id>,
     /// Menu control to focus once its menu has been built.
     menu_focus: Option<String>,
@@ -319,6 +329,15 @@ pub struct NotesView {
     folder_menu: Option<(Id, Point<Pixels>)>,
     folder_rows: Vec<Id>,
     folder_scroll: UniformListScrollHandle,
+    /// The page thumbnails, scrolled to keep the current page in view.
+    pages_scroll: UniformListScrollHandle,
+    /// Installed font families, read when the font dialog first opens.
+    fonts: Option<std::rc::Rc<Vec<SharedString>>>,
+    font_scroll: UniformListScrollHandle,
+    /// The formatting bar's open font menu.
+    font_menu: Option<font_picker::FontMenu>,
+    font_appear: f32,
+    pages_followed: Option<(Id, usize)>,
     canvas_menu: Option<canvas_menu::CanvasMenu>,
     tool_wheel: Option<tool_wheel::ToolWheel>,
     /// W is held down; its key repeats must not toggle the wheel.
@@ -443,8 +462,11 @@ impl NotesView {
             subscriptions: vec![],
             _appearance_subscription: appearance_subscription,
             motion: Default::default(),
+            transitions: Default::default(),
             building_overlay: false,
             dialog_rise: 0.,
+            selection_appear: 1.,
+            sort_appear: 1.,
             closing: false,
             settings_open: false,
             settings_section: settings::Section::default(),
@@ -452,6 +474,9 @@ impl NotesView {
             pad_button: None,
             modal_error: None,
             modal_cursor: 0,
+            find: None,
+            picker_scroll: ScrollHandle::new(),
+            picker_query: String::new(),
             move_page_destination: None,
             menu_focus: None,
             lost_focus: None,
@@ -486,6 +511,12 @@ impl NotesView {
             folder_menu: None,
             folder_rows: Vec::new(),
             folder_scroll: UniformListScrollHandle::new(),
+            pages_scroll: UniformListScrollHandle::new(),
+            fonts: None,
+            font_scroll: UniformListScrollHandle::new(),
+            font_menu: None,
+            font_appear: 1.,
+            pages_followed: None,
             tool_wheel: None,
             wheel_key_held: false,
             canvas_menu: None,
@@ -618,7 +649,8 @@ impl NotesView {
                 if matches!(view.updater.state, folio_update::State::Failed { .. }) {
                     view.update_preparing = false;
                 }
-                let motion_changed = view.motion.borrow_mut().advance();
+                let motion_changed =
+                    view.motion.borrow_mut().advance() || view.transitions.borrow().animating();
                 let notify = changed || update_changed || motion_changed;
                 let fast = notify
                     || view.controller.needs_fast_poll()
@@ -641,7 +673,9 @@ impl NotesView {
         // Rendering/layout can start work after the latest maintenance tick
         // has selected the idle interval, without another entity notification.
         if self.poll_idle
-            && (self.controller.needs_fast_poll() || self.motion.borrow().needs_frame())
+            && (self.controller.needs_fast_poll()
+                || self.motion.borrow().needs_frame()
+                || self.transitions.borrow().animating())
         {
             self.schedule_poll(Duration::from_millis(16), cx);
         }
@@ -672,6 +706,10 @@ impl NotesView {
             KeyBinding::new("ctrl-n", NewNote, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-shift-n", NewPage, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-f", Search, Some("Folio && !FolioField")),
+            KeyBinding::new("f3", FindNext, Some("Folio && !FolioField")),
+            KeyBinding::new("ctrl-g", FindNext, Some("Folio && !FolioField")),
+            KeyBinding::new("shift-f3", FindPrevious, Some("Folio && !FolioField")),
+            KeyBinding::new("ctrl-shift-g", FindPrevious, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-shift-l", Library, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-shift-p", TogglePages, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-c", Copy, Some("Folio && !FolioField")),
@@ -764,6 +802,7 @@ impl NotesView {
         self.folder_menu = None;
         self.canvas_menu = None;
         self.sort_open = false;
+        self.font_menu = None;
         self.more_open = false;
         self.pen_settings = false;
         self.export_open = false;
@@ -890,7 +929,6 @@ impl NotesView {
                 .map(|n| n.tags.join(", "))
                 .unwrap_or_default(),
             Modal::Tags => self.controller.session().document.metadata.tags.join(", "),
-            Modal::Search => self.controller.search_query.clone(),
             Modal::Color => self.controller.style.color.hex(),
             Modal::ThemeColor { dark, token } => {
                 self.controller.settings.appearance.palette(*dark)[token].hex()
@@ -903,7 +941,7 @@ impl NotesView {
                 self.controller.page().properties.width,
                 self.controller.page().properties.height,
             ),
-            Modal::Font | Modal::FontSize | Modal::TextColor => self
+            Modal::FontSize | Modal::TextColor => self
                 .controller
                 .session()
                 .selection
@@ -913,7 +951,6 @@ impl NotesView {
                         self.controller.page().objects.get(id).map(|o| o.as_ref())
                     {
                         Some(match modal {
-                            Modal::Font => text.font_family.clone(),
                             Modal::FontSize => text.font_size.to_string(),
                             _ => text.color.hex(),
                         })
@@ -951,8 +988,7 @@ impl NotesView {
         let multiline = matches!(modal, Modal::Recognition);
         let secret = matches!(modal, Modal::PdfPassword(..));
         let placeholder = match modal {
-            Modal::Search => Some("Search titles, tags, text and handwriting"),
-            Modal::OpenDocument => Some("Filter documents by name"),
+            Modal::OpenDocument => Some("Filter by name or folder"),
             Modal::MoveNotebook(_) | Modal::MoveDocument(_) => Some("Filter folders"),
             Modal::NewDocument => Some(""),
             Modal::Notebook(_) => Some("Folder name"),
@@ -978,6 +1014,8 @@ impl NotesView {
             field.update(cx, |field, _| field.placeholder = Some(untitled.into()));
         }
         self.modal_cursor = 0;
+        self.picker_query.clear();
+        self.picker_scroll.set_offset(Point::default());
         self.move_page_destination = None;
         self.review_editing = false;
         // Dialogs without a text field keep keyboard focus on their first
@@ -1220,25 +1258,6 @@ impl NotesView {
                         .collect(),
                 ),
             ),
-            Modal::Search => {
-                // Enter runs a new query, then opens the highlighted result.
-                let results = &self.controller.search_results;
-                if content.trim() == self.controller.search_query
-                    && self.controller.search_state == folio_app::SearchState::Complete
-                    && !results.is_empty()
-                {
-                    let result = &results[self.modal_cursor.min(results.len() - 1)];
-                    let (note, page) = (result.note, result.page);
-                    self.controller.navigate_search(note, page);
-                    self.show_editor();
-                } else {
-                    self.modal_cursor = 0;
-                    self.controller.search(content);
-                    field.read(cx).focus.focus(window);
-                    cx.notify();
-                    return;
-                }
-            }
             Modal::SavePreset | Modal::RenamePreset(_) => {
                 let result = if let Modal::RenamePreset(id) = modal {
                     self.controller.rename_preset(id, content)
@@ -1331,19 +1350,6 @@ impl NotesView {
                 };
                 for id in self.controller.session().selection.clone() {
                     self.controller.edit_text(id, |t| t.color = color);
-                }
-            }
-            Modal::Font => {
-                if content.trim().is_empty() {
-                    self.modal_error = Some("Enter a font family, such as sans-serif.".into());
-                    field.read(cx).focus.focus(window);
-                    cx.notify();
-                    return;
-                }
-                let ids = self.controller.session().selection.clone();
-                for id in ids {
-                    let name = content.clone();
-                    self.controller.edit_text(id, |t| t.font_family = name);
                 }
             }
             Modal::FontSize => {
@@ -1964,10 +1970,9 @@ impl NotesView {
             return div();
         };
         field.update(cx, |field, _| field.theme = theme);
-        let search = matches!(modal, Modal::Search);
-        let picker = matches!(modal, Modal::Search | Modal::OpenDocument);
+        let picker = matches!(modal, Modal::OpenDocument);
         let multiline = matches!(modal, Modal::Recognition);
-        let wide = picker || matches!(modal, Modal::NewDocument);
+        let wide = matches!(modal, Modal::OpenDocument | Modal::NewDocument);
         let mut panel = div()
             .flex()
             .flex_col()
@@ -2217,206 +2222,14 @@ impl NotesView {
             )));
         }
         if matches!(modal, Modal::OpenDocument) {
-            panel = panel.child(
-                self.control(
-                    "tab-create-note",
-                    "Create new document",
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(icon(Icon::Plus, theme.ink).size(rems(1.)))
-                        .child("Create new document")
-                        .into_any_element(),
-                    false,
-                    cx,
-                    |this, w, cx| this.new_notebook(w, cx),
-                )
-                .justify_start(),
-            );
-            let mut results = div()
-                .id("tab-picker-results")
-                .max_h(px(340.))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .gap_1();
-            let details = self
-                .controller
-                .folder_details(self.controller.notebooks.iter().map(|folder| folder.id));
-            let matches = self.open_document_matches(cx);
-            let cursor = self.modal_cursor.min(matches.len().saturating_sub(1));
-            if matches.is_empty() {
-                results = results.child(
-                    div()
-                        .p_3()
-                        .text_sm()
-                        .text_color(rgb(theme.muted))
-                        .child("No matching documents"),
-                );
-            }
-            for (index, note) in matches.into_iter().enumerate() {
-                let id = note.id;
-                let mut detail = vec![workspace::edited_label(note.updated_at)];
-                if let Some(folder) = note.notebook.and_then(|f| details.get(&f)) {
-                    detail.insert(0, folder.path.clone());
-                }
-                if self.open_tabs.contains(&id) {
-                    detail.push("Open in a tab".into());
-                }
-                let detail = detail.join(" · ");
-                results = results.child(
-                    self.control(
-                        format!("pick-document-{id}"),
-                        format!("Open {}", note.title),
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_start()
-                            .min_w_0()
-                            .child(div().truncate().child(note.title.clone()))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(theme.muted))
-                                    .truncate()
-                                    .child(detail),
-                            )
-                            .into_any_element(),
-                        index == cursor,
-                        cx,
-                        move |this, w, cx| {
-                            this.open_note(id);
-                            this.close_modal(w, cx);
-                        },
-                    )
-                    .justify_start()
-                    .w_full(),
-                );
-            }
-            panel = panel.child(results);
-        }
-        if search {
-            let mut results = div()
-                .id("search-results")
-                .max_h(px(360.))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .gap_1();
-            let message = match &self.controller.search_state {
-                folio_app::SearchState::Idle => {
-                    "Press Enter to search titles, tags, typed text, equations and indexed handwriting."
-                        .to_owned()
-                }
-                folio_app::SearchState::Searching => {
-                    format!("Searching for “{}”…", self.controller.search_query)
-                }
-                folio_app::SearchState::Failed(error) => {
-                    format!("Search failed: {error}. Press Search to retry.")
-                }
-                folio_app::SearchState::Complete => {
-                    let count = self.controller.search_results.len();
-                    if count == 0 {
-                        format!(
-                            "No matches for “{}”. Search covers titles, tags, typed text, equations, and indexed handwriting.",
-                            self.controller.search_query
-                        )
-                    } else if count >= 100 {
-                        format!(
-                            "Showing the first 100 matching pages for “{}”. Use Up, Down and Enter to open a result.",
-                            self.controller.search_query
-                        )
-                    } else {
-                        format!(
-                            "{count} matching page{} for “{}” · Use Up, Down and Enter to open a result",
-                            if count == 1 { "" } else { "s" },
-                            self.controller.search_query
-                        )
-                    }
-                }
-            };
-            results = results.child(
-                div()
-                    .p_3()
-                    .text_sm()
-                    .text_color(rgb(theme.muted))
-                    .child(message),
-            );
-            let cursor = self
-                .modal_cursor
-                .min(self.controller.search_results.len().saturating_sub(1));
-            for (index, r) in self
-                .controller
-                .search_results
-                .clone()
-                .into_iter()
-                .enumerate()
-            {
-                let note = r.note;
-                let page = r.page;
-                let title = r.page_number.map_or_else(
-                    || r.title.clone(),
-                    |page| format!("{} · Page {page}", r.title),
-                );
-                let mut snippet = String::new();
-                let mut highlights = vec![];
-                for (part, matched) in r.snippet_parts() {
-                    let start = snippet.len();
-                    snippet.push_str(&part);
-                    if matched {
-                        highlights.push((
-                            start..snippet.len(),
-                            HighlightStyle {
-                                color: Some(rgb(theme.ink).into()),
-                                font_weight: Some(FontWeight::SEMIBOLD),
-                                background_color: Some(rgba((theme.accent << 8) | 0x30).into()),
-                                ..Default::default()
-                            },
-                        ));
-                    }
-                }
-                results = results.child(
-                    self.control(
-                        format!("result-{note}-{page}"),
-                        format!("Open result: {title} · {}", r.snippet_text()),
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .items_start()
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(rgb(theme.muted))
-                                    .child(StyledText::new(snippet).with_highlights(highlights)),
-                            )
-                            .into_any_element(),
-                        index == cursor
-                            && field.read(cx).content.trim() == self.controller.search_query,
-                        cx,
-                        move |this, window, cx| {
-                            this.controller.navigate_search(note, page);
-                            this.show_editor();
-                            this.close_modal(window, cx);
-                        },
-                    )
-                    .p_3()
-                    .w_full()
-                    .justify_start(),
-                );
-            }
-            panel = panel.child(results);
+            panel = panel.child(self.open_document_list(&field, cx));
         }
         let hint = match modal {
             Modal::Recognition if self.controller.recognition_for_index => "Ctrl + Enter to index",
             Modal::Recognition if !self.modal_field_visible() => "Escape to close",
             Modal::Recognition => "Ctrl + Enter to replace",
             _ if multiline => "Ctrl + Enter to save",
-            Modal::Search | Modal::OpenDocument => {
-                "Up/Down to choose · Enter to open · Escape to close"
-            }
+            Modal::OpenDocument => "",
             _ if modal.has_field() => "Enter to confirm · Escape to close",
             _ => "Escape to close",
         };
@@ -2482,7 +2295,24 @@ impl NotesView {
             .pt_4()
             .border_t_1()
             .border_color(theme.border)
-            .child(div().text_xs().text_color(rgb(theme.muted)).child(hint))
+            .child(if picker {
+                let key = |label: &'static str| keycap(label, theme);
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(rgb(theme.muted))
+                    .child(key("↑"))
+                    .child(key("↓"))
+                    .child(div().mr_2().child("choose"))
+                    .child(key("Enter"))
+                    .child(div().mr_2().child("open"))
+                    .child(key("Esc"))
+                    .child("close")
+            } else {
+                div().text_xs().text_color(rgb(theme.muted)).child(hint)
+            })
             .child(actions);
         let max_height = (f32::from(window.viewport_size().height)
             / self.controller.settings.ui_scale
@@ -2499,13 +2329,12 @@ impl NotesView {
             // not move under the caret.
             .when(picker, |overlay| overlay.items_start().pt(px(64.)))
             .when(!picker, |overlay| overlay.items_center())
-            .child(
+            .child(transitions::Transitions::dialog_box(
+                1. - self.dialog_rise,
                 div()
                     .flex_shrink_0()
                     .w(px(if wide { 660. } else { 520. }))
                     .max_w_full()
-                    .relative()
-                    .top(px(12. * self.dialog_rise))
                     .max_h(px(max_height))
                     .p_6()
                     .flex()
@@ -2527,27 +2356,251 @@ impl NotesView {
                             .child(panel.flex_shrink_0()),
                     )
                     .child(footer),
-            )
+            ))
     }
-    /// Documents listed by the Ctrl+T picker for its current query.
+    /// Documents listed by the Ctrl+T picker for its current query, most
+    /// recent first. Every word must appear in the title or folder path;
+    /// titles starting with the query come first.
     fn open_document_matches(&self, cx: &App) -> Vec<folio_document::NoteMetadata> {
         let query = self
             .modal
             .as_ref()
             .map(|(_, field)| field.read(cx).content.trim().to_lowercase())
             .unwrap_or_default();
-        self.controller
-            .notes
-            .iter()
-            .filter(|n| !n.trashed && n.title.to_lowercase().contains(&query))
-            .cloned()
-            .collect()
+        let notes = self.controller.notes.iter().filter(|n| !n.trashed);
+        if query.is_empty() {
+            return notes.cloned().collect();
+        }
+        let words = query.split_whitespace().collect::<Vec<_>>();
+        let folders = self
+            .controller
+            .folder_details(self.controller.notebooks.iter().map(|folder| folder.id));
+        let mut matches = notes
+            .filter_map(|n| {
+                let title = n.title.to_lowercase();
+                let folder = n
+                    .notebook
+                    .and_then(|f| folders.get(&f))
+                    .map(|f| f.path.to_lowercase())
+                    .unwrap_or_default();
+                words
+                    .iter()
+                    .all(|w| title.contains(w) || folder.contains(w))
+                    .then(|| (!title.starts_with(&query), n.clone()))
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by_key(|(rank, _)| *rank);
+        matches.into_iter().map(|(_, n)| n).collect()
+    }
+    /// Rows of the Ctrl+T picker: each document with its folder, last edit
+    /// and whether it is already open, then a row to create a new one.
+    fn open_document_list(&mut self, field: &Entity<Field>, cx: &mut Context<Self>) -> Div {
+        let theme = Theme::new(&self.controller.settings);
+        let query = field.read(cx).content.trim().to_lowercase();
+        if query != self.picker_query {
+            self.picker_query = query.clone();
+            self.modal_cursor = 0;
+            self.picker_scroll.set_offset(Point::default());
+        }
+        let details = self
+            .controller
+            .folder_details(self.controller.notebooks.iter().map(|folder| folder.id));
+        let matches = self.open_document_matches(cx);
+        let total = self.controller.notes.iter().filter(|n| !n.trashed).count();
+        let cursor = self.modal_cursor.min(matches.len().saturating_sub(1));
+        let tile = |kind: Icon| {
+            div()
+                .size(px(32.))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme.radius))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.raised())
+                .child(icon(kind, theme.muted).size(rems(1.)))
+        };
+        let badge = |label: &'static str| {
+            div()
+                .flex_shrink_0()
+                .px_2()
+                .rounded_full()
+                .border_1()
+                .border_color(theme.border)
+                .text_xs()
+                .text_color(rgb(theme.muted))
+                .child(label)
+        };
+        let heading = div()
+            .flex()
+            .justify_between()
+            .px_2()
+            .text_xs()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(rgb(theme.muted))
+            .child(if query.is_empty() {
+                "Recent"
+            } else {
+                "Matches"
+            })
+            .child(if query.is_empty() {
+                format!("{total} document{}", if total == 1 { "" } else { "s" })
+            } else {
+                format!("{} of {total}", matches.len())
+            });
+        let mut results = div()
+            .id("tab-picker-results")
+            .track_scroll(&self.picker_scroll)
+            .max_h(px(360.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_0p5();
+        if matches.is_empty() {
+            results = results.child(
+                div()
+                    .px_2()
+                    .py_6()
+                    .flex()
+                    .justify_center()
+                    .text_sm()
+                    .text_color(rgb(theme.muted))
+                    .child(if total == 0 {
+                        "No documents yet".to_owned()
+                    } else {
+                        format!("No documents match “{}”", query)
+                    }),
+            );
+        }
+        for (index, note) in matches.into_iter().enumerate() {
+            let id = note.id;
+            let mut detail = vec![workspace::edited_label(note.updated_at)];
+            if let Some(folder) = note.notebook.and_then(|f| details.get(&f)) {
+                detail.insert(0, folder.path.clone());
+            }
+            let current = id == self.controller.active && self.open_tabs.contains(&id);
+            let open = self.open_tabs.contains(&id);
+            // Emphasize the matched part of the title when lowercasing keeps
+            // its byte offsets.
+            let lower = note.title.to_lowercase();
+            let highlights = lower
+                .find(&query)
+                .filter(|_| !query.is_empty() && lower.len() == note.title.len())
+                .map(|start| {
+                    vec![(
+                        start..start + query.len(),
+                        HighlightStyle {
+                            color: Some(rgb(theme.accent).into()),
+                            font_weight: Some(FontWeight::SEMIBOLD),
+                            ..Default::default()
+                        },
+                    )]
+                })
+                .unwrap_or_default();
+            let mut label = format!("Open {}", note.title);
+            if open {
+                label.push_str(" · Open in a tab");
+            }
+            results = results.child(
+                self.control(
+                    format!("pick-document-{id}"),
+                    label,
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .w_full()
+                        .min_w_0()
+                        .child(tile(Icon::Book))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().truncate().font_weight(FontWeight::MEDIUM).child(
+                                    StyledText::new(note.title.clone()).with_highlights(highlights),
+                                ))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(theme.muted))
+                                        .truncate()
+                                        .child(detail.join(" · ")),
+                                ),
+                        )
+                        .when(note.favorite, |row| {
+                            row.child(icon(Icon::StarFilled, theme.muted).size(rems(0.875)))
+                        })
+                        .when(current, |row| row.child(badge("Current")))
+                        .when(open && !current, |row| row.child(badge("In a tab")))
+                        .into_any_element(),
+                    index == cursor,
+                    cx,
+                    move |this, w, cx| {
+                        this.open_note(id);
+                        this.close_modal(w, cx);
+                    },
+                )
+                .px_2()
+                .py_1p5()
+                .justify_start()
+                .w_full(),
+            );
+        }
+        let create = self
+            .control(
+                "tab-create-note",
+                "Create new document",
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(tile(Icon::Plus))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Create new document"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(theme.muted))
+                                    .child("Starts a blank, untitled document"),
+                            ),
+                    )
+                    .into_any_element(),
+                false,
+                cx,
+                |this, w, cx| this.new_notebook(w, cx),
+            )
+            .px_2()
+            .py_1p5()
+            .justify_start()
+            .w_full();
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(heading)
+            .child(results)
+            .child(
+                div()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .child(create),
+            )
     }
     /// Move the highlighted row of a picker dialog.
     fn navigate_modal(&mut self, down: bool, cx: &mut Context<Self>) {
         let count = match self.modal.as_ref().map(|(m, _)| m) {
             Some(Modal::OpenDocument) => self.open_document_matches(cx).len(),
-            Some(Modal::Search) => self.controller.search_results.len(),
             _ => return,
         };
         if count == 0 {
@@ -2559,6 +2612,7 @@ impl NotesView {
         } else {
             (current + count - 1) % count
         };
+        self.picker_scroll.scroll_to_item(self.modal_cursor);
         cx.notify();
     }
     /// Prepare synthetic 120 Hz input. Dispatch is performed without borrowing
@@ -2765,4 +2819,19 @@ fn this_region(controller: &mut Controller, values: &[f32]) -> Result<(), String
     controller.read_pdf_math(folio_document::Rect::new(
         values[0], values[1], values[2], values[3],
     ))
+}
+
+/// A keyboard key, as shown in hints.
+pub(crate) fn keycap(label: &'static str, theme: Theme) -> Div {
+    div()
+        .min_w(px(18.))
+        .px_1()
+        .flex()
+        .justify_center()
+        .rounded(px(theme.corner_sm().max(3.)))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.raised())
+        .text_color(rgb(theme.ink))
+        .child(label)
 }

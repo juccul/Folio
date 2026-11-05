@@ -415,7 +415,8 @@ impl NotesView {
         };
         let theme = Theme::new(&self.controller.settings);
         let scale = self.controller.settings.ui_scale;
-        let size = scale * (0.92 + 0.08 * appear);
+        // The wheel grows into place through its paint effect.
+        let size = scale;
         let radius = RADIUS * size;
         let (inner, outer) = (RING_INNER * size, RING_OUTER * size);
         let ring = (inner + outer) / 2.;
@@ -473,10 +474,11 @@ impl NotesView {
                 hovers[index]
             };
             segments.push(Segment {
+                // Faint fills keep the wheel's glass visible, as in menus.
                 base: match (enabled, active) {
-                    (true, true) => accent(0.2),
-                    (true, false) => theme.tint(0.75),
-                    (false, _) => theme.tint(0.25),
+                    (true, true) => accent(0.16),
+                    (true, false) => theme.tint(0.3),
+                    (false, _) => theme.tint(0.1),
                 },
                 highlight: if enabled {
                     accent(lit)
@@ -607,7 +609,7 @@ impl NotesView {
             .top(px(radius - hub))
             .size(px(2. * hub))
             .rounded_full()
-            .bg(theme.card())
+            .bg(theme.raised())
             .border_1()
             .border_color(theme.glass_edge())
             .flex()
@@ -635,13 +637,13 @@ impl NotesView {
             .left(wheel.center.x - px(radius))
             .top(wheel.center.y - px(radius))
             .size(px(2. * radius))
-            .opacity(appear)
             .child(
+                // The same frosted glass as menus.
                 div()
                     .absolute()
                     .inset_0()
                     .rounded_full()
-                    .glass_dialog(theme, theme.popover),
+                    .glass(theme, theme.popover),
             )
             .child(painted)
             .children(buttons)
@@ -701,7 +703,11 @@ impl NotesView {
                     cx.notify();
                 }),
             )
-            .child(disc)
+            .child(
+                self.transitions
+                    .borrow_mut()
+                    .overlay("tool-wheel", appear, disc),
+            )
             .into_any_element()
     }
 }

@@ -396,19 +396,25 @@ fn long_active_stroke_recovers_and_cancel_removes_draft() {
 #[test]
 fn search_waits_for_new_text_to_be_durably_indexed() {
     let mut a = app();
-    a.add_text("Freshly written heliotrope".into(), Point::new(10., 20.));
+    a.add_text("Freshly written heliotrope".into(), Point::new(10., 300.));
+    a.add_text("An earlier heliotrope".into(), Point::new(10., 20.));
     a.search("heliotrope".into());
     wait(&mut a);
     assert_eq!(a.search_results.len(), 1);
     let parts = a.search_results[0].snippet_parts();
     assert!(parts.contains(&("heliotrope".to_string(), true)));
-    assert_eq!(
-        a.search_results[0].snippet_text(),
-        "Freshly written heliotrope"
+    assert!(
+        a.search_results[0]
+            .snippet_text()
+            .contains("Freshly written heliotrope")
     );
     let page = a.page().id;
+    a.search_focus = 1;
     a.navigate_search(a.active, page);
-    assert!(!a.search_highlights.is_empty());
+    // The find bar steps through matches in reading order, from the first.
+    assert_eq!(a.search_highlights.len(), 2);
+    assert!(a.search_highlights[0].min.y < a.search_highlights[1].min.y);
+    assert_eq!(a.search_focus, 0);
 }
 #[test]
 fn converted_shapes_keep_raw_sources_through_copy_and_undo() {

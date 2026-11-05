@@ -125,6 +125,36 @@ impl Scene {
             .push(PaintOperation::Primitive(primitive));
     }
 
+    /// The current length of every primitive list, to remove what is
+    /// painted afterwards with [`Scene::take_since`].
+    pub(crate) fn mark(&self) -> SceneMark {
+        SceneMark {
+            operations: self.paint_operations.len(),
+            backdrop_blurs: self.backdrop_blurs.len(),
+            shadows: self.shadows.len(),
+            quads: self.quads.len(),
+            paths: self.paths.len(),
+            underlines: self.underlines.len(),
+            monochrome_sprites: self.monochrome_sprites.len(),
+            polychrome_sprites: self.polychrome_sprites.len(),
+            surfaces: self.surfaces.len(),
+        }
+    }
+
+    /// Remove and return everything painted since `mark`. Layers opened
+    /// since then must have been closed.
+    pub(crate) fn take_since(&mut self, mark: &SceneMark) -> Vec<PaintOperation> {
+        self.backdrop_blurs.truncate(mark.backdrop_blurs);
+        self.shadows.truncate(mark.shadows);
+        self.quads.truncate(mark.quads);
+        self.paths.truncate(mark.paths);
+        self.underlines.truncate(mark.underlines);
+        self.monochrome_sprites.truncate(mark.monochrome_sprites);
+        self.polychrome_sprites.truncate(mark.polychrome_sprites);
+        self.surfaces.truncate(mark.surfaces);
+        self.paint_operations.split_off(mark.operations)
+    }
+
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
         for operation in &prev_scene.paint_operations[range] {
             match operation {
@@ -185,6 +215,19 @@ impl Scene {
     }
 }
 
+/// Lengths of a [`Scene`]'s lists at one point while painting.
+pub(crate) struct SceneMark {
+    pub(crate) operations: usize,
+    backdrop_blurs: usize,
+    shadows: usize,
+    quads: usize,
+    paths: usize,
+    underlines: usize,
+    monochrome_sprites: usize,
+    polychrome_sprites: usize,
+    surfaces: usize,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
 #[cfg_attr(
     all(
@@ -207,6 +250,7 @@ pub(crate) enum PrimitiveKind {
     Surface,
 }
 
+#[derive(Clone)]
 pub(crate) enum PaintOperation {
     Primitive(Primitive),
     StartLayer(Bounds<ScaledPixels>),

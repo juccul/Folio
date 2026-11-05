@@ -1,6 +1,7 @@
 use super::{
     NotesView, Theme,
     field::{Field, InlineStyle},
+    icons::{Icon, icon},
 };
 use folio_app::Tool;
 use folio_document::{Id, Object, Point as DocPoint, Rect, Transform};
@@ -25,6 +26,7 @@ pub(super) enum TextFormat {
     Underline,
     Align(folio_document::Alignment),
     List(folio_document::ListStyle),
+    Size(f32),
 }
 impl NotesView {
     pub(super) fn begin_inline_text(
@@ -125,6 +127,7 @@ impl NotesView {
                 TextFormat::Italic => t.italic = !t.italic,
                 TextFormat::Underline => t.underline = !t.underline,
                 TextFormat::Align(alignment) => t.alignment = alignment,
+                TextFormat::Size(size) => t.font_size = size,
                 TextFormat::List(list) => {
                     t.list = if t.list == list {
                         ListStyle::None
@@ -283,87 +286,238 @@ impl NotesView {
     pub(super) fn text_formatting_bar(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let text = self.controller.session().selection.iter().find_map(|id| {
             match self.controller.page().objects.get(id)?.as_ref() {
-                Object::Text(t) => Some(t),
+                Object::Text(t) => Some(t.clone()),
                 _ => None,
             }
-        })?;
+        });
+        // The font menu belongs to the selected text box.
+        let Some(text) = text else {
+            self.font_menu = None;
+            return None;
+        };
+        use folio_document::{Alignment, ListStyle};
         let theme = Theme::new(&self.controller.settings);
-        let mut row = div()
+        let divider = || {
+            div()
+                .w(px(1.))
+                .h(rems(1.25))
+                .mx_1p5()
+                .flex_shrink_0()
+                .bg(theme.border)
+        };
+        let group = || div().flex().items_center().gap_0p5().flex_shrink_0();
+
+        // Font family, shown in its own face, and a size stepper.
+        let font = self.font_button(&text.font_family, cx);
+        let smaller = FONT_SIZES
+            .iter()
+            .rev()
+            .copied()
+            .find(|&size| size < text.font_size - 0.01);
+        let larger = FONT_SIZES
+            .iter()
+            .copied()
+            .find(|&size| size > text.font_size + 0.01);
+        let step = |this: &Self,
+                    id: &'static str,
+                    label: &'static str,
+                    kind: Icon,
+                    to: Option<f32>,
+                    cx: &mut Context<Self>| {
+            this.format_button(
+                id,
+                label,
+                label.into(),
+                kind,
+                false,
+                to.is_some(),
+                cx,
+                move |this, w, cx| {
+                    if let Some(size) = to {
+                        this.format_text(TextFormat::Size(size), w, cx);
+                    }
+                },
+            )
+        };
+        let size_label = format!("{}", (text.font_size * 10.).round() / 10.);
+        let size = div()
             .flex()
             .items_center()
-            .gap_1()
-            .px_4()
-            .py_1()
-            .border_b_1()
+            .flex_shrink_0()
+            .rounded(px(theme.radius))
+            .bg(theme.raised())
+            .border_1()
             .border_color(theme.border)
+            .child(step(
+                self,
+                "font-size-down",
+                "Smaller text",
+                Icon::Minimize,
+                smaller,
+                cx,
+            ))
             .child(
-                self.button(
-                    "font",
-                    text.font_family.clone(),
-                    false,
-                    cx,
-                    |this, w, cx| this.modal(super::Modal::Font, w, cx),
-                )
-                .text_xs(),
-            )
-            .child(
-                self.button(
+                self.control(
                     "font-size",
-                    format!("{} px", text.font_size),
+                    format!("Font size {size_label} px"),
+                    div()
+                        .min_w(rems(1.75))
+                        .flex()
+                        .justify_center()
+                        .child(size_label)
+                        .into_any_element(),
                     false,
                     cx,
                     |this, w, cx| this.modal(super::Modal::FontSize, w, cx),
                 )
-                .text_xs(),
-            );
-        use folio_document::{Alignment, ListStyle};
-        for (id, label, active, format) in [
-            ("bold", "B", text.bold, TextFormat::Bold),
-            ("italic", "I", text.italic, TextFormat::Italic),
-            ("underline", "U", text.underline, TextFormat::Underline),
-            (
-                "align-left",
-                "Left",
-                text.alignment == Alignment::Left,
-                TextFormat::Align(Alignment::Left),
-            ),
-            (
-                "align-center",
-                "Center",
-                text.alignment == Alignment::Center,
-                TextFormat::Align(Alignment::Center),
-            ),
-            (
-                "align-right",
-                "Right",
-                text.alignment == Alignment::Right,
-                TextFormat::Align(Alignment::Right),
-            ),
-            (
-                "bullet",
-                "• List",
-                text.list == ListStyle::Bullet,
-                TextFormat::List(ListStyle::Bullet),
-            ),
-            (
-                "numbered",
-                "1. List",
-                text.list == ListStyle::Numbered,
-                TextFormat::List(ListStyle::Numbered),
-            ),
-        ] {
-            row = row.child(
-                self.button(id, label, active, cx, move |this, window, cx| {
-                    this.format_text(format, window, cx)
-                })
+                .h(rems(1.875))
+                .min_h_0()
+                .px_1()
                 .text_xs()
-                .px_2()
-                .py_1(),
-            );
-        }
+                .with_hint("Font size", theme, self.hints()),
+            )
+            .child(step(
+                self,
+                "font-size-up",
+                "Larger text",
+                Icon::Plus,
+                larger,
+                cx,
+            ));
+
+        let mut row = div()
+            .flex()
+            .items_center()
+            .px_3()
+            .py_1()
+            .gap_1()
+            .min_w_0()
+            .overflow_hidden()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(font)
+            .child(size)
+            .child(divider());
+
+        let toggles = |this: &Self,
+                       items: &[(
+            &'static str,
+            &'static str,
+            &'static str,
+            Icon,
+            bool,
+            TextFormat,
+        )],
+                       cx: &mut Context<Self>| {
+            let mut g = group();
+            for &(id, label, hint, kind, active, format) in items {
+                g = g.child(this.format_button(
+                    id,
+                    label,
+                    hint.into(),
+                    kind,
+                    active,
+                    true,
+                    cx,
+                    move |this, w, cx| this.format_text(format, w, cx),
+                ));
+            }
+            g
+        };
+        row = row
+            .child(toggles(
+                self,
+                &[
+                    (
+                        "bold",
+                        "Bold",
+                        "Bold · Ctrl+B",
+                        Icon::Bold,
+                        text.bold,
+                        TextFormat::Bold,
+                    ),
+                    (
+                        "italic",
+                        "Italic",
+                        "Italic · Ctrl+I",
+                        Icon::Italic,
+                        text.italic,
+                        TextFormat::Italic,
+                    ),
+                    (
+                        "underline",
+                        "Underline",
+                        "Underline · Ctrl+U",
+                        Icon::Underline,
+                        text.underline,
+                        TextFormat::Underline,
+                    ),
+                ],
+                cx,
+            ))
+            .child(divider())
+            .child(toggles(
+                self,
+                &[
+                    (
+                        "align-left",
+                        "Align left",
+                        "Align left",
+                        Icon::AlignLeft,
+                        text.alignment == Alignment::Left,
+                        TextFormat::Align(Alignment::Left),
+                    ),
+                    (
+                        "align-center",
+                        "Align center",
+                        "Align center",
+                        Icon::AlignCenter,
+                        text.alignment == Alignment::Center,
+                        TextFormat::Align(Alignment::Center),
+                    ),
+                    (
+                        "align-right",
+                        "Align right",
+                        "Align right",
+                        Icon::AlignRight,
+                        text.alignment == Alignment::Right,
+                        TextFormat::Align(Alignment::Right),
+                    ),
+                ],
+                cx,
+            ))
+            .child(divider())
+            .child(toggles(
+                self,
+                &[
+                    (
+                        "bullet",
+                        "Bulleted list",
+                        "Bulleted list",
+                        Icon::List,
+                        text.list == ListStyle::Bullet,
+                        TextFormat::List(ListStyle::Bullet),
+                    ),
+                    (
+                        "numbered",
+                        "Numbered list",
+                        "Numbered list",
+                        Icon::ListNumbers,
+                        text.list == ListStyle::Numbered,
+                        TextFormat::List(ListStyle::Numbered),
+                    ),
+                ],
+                cx,
+            ))
+            .child(divider());
+
+        // Text color: the current color as a ringed swatch.
         let swatch = div()
-            .size(px(14.))
-            .rounded(px(theme.corner_sm()))
+            .size(rems(1.))
+            .flex_shrink_0()
+            .rounded_full()
+            .border_1()
+            .border_color(theme.border)
             .bg(rgb(text.color.rgb()));
         row = row.child(
             self.control(
@@ -372,39 +526,156 @@ impl NotesView {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap_1()
                     .child(swatch)
-                    .child("Color")
+                    .child(icon(Icon::Down, theme.muted).size(rems(0.875)))
                     .into_any_element(),
                 false,
                 cx,
                 |this, w, cx| this.modal(super::Modal::TextColor, w, cx),
             )
-            .text_xs(),
+            .h(rems(1.875))
+            .min_h_0()
+            .px_1p5()
+            .rounded(px(theme.radius))
+            .with_hint("Text color", theme, self.hints()),
         );
-        row = row.child(div().flex_1());
+        row = row.child(div().flex_1().min_w_2());
         row = if self.inline_text.is_some() {
             row.child(
-                self.button("finish-text", "Done", false, cx, |this, w, cx| {
-                    this.finish_inline_text(w, cx)
-                })
-                .text_xs(),
+                self.control(
+                    "finish-text",
+                    "Done",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(icon(Icon::Check, theme.primary_foreground).size(rems(1.)))
+                        .child("Done")
+                        .into_any_element(),
+                    false,
+                    cx,
+                    |this, w, cx| this.finish_inline_text(w, cx),
+                )
+                .h(rems(1.875))
+                .min_h_0()
+                .px_3()
+                .flex_shrink_0()
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .rounded(px(theme.radius))
+                .bg(rgb(theme.accent))
+                .text_color(rgb(theme.primary_foreground))
+                .with_hint("Finish editing · Esc", theme, self.hints()),
             )
         } else {
             let id = text.id;
             row.child(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .flex_shrink_0()
                     .text_xs()
                     .text_color(rgb(theme.muted))
-                    .child("Click inside or press Enter to edit"),
+                    .child("Press")
+                    .child(super::keycap("Enter", theme))
+                    .child("to edit"),
             )
             .child(
-                self.button("edit-text", "Edit text", false, cx, move |this, w, cx| {
-                    this.begin_inline_text(id, w, cx)
-                })
-                .text_xs(),
+                self.control(
+                    "edit-text",
+                    "Edit text",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(icon(Icon::Text, theme.ink).size(rems(1.)))
+                        .child("Edit text")
+                        .into_any_element(),
+                    false,
+                    cx,
+                    move |this, w, cx| this.begin_inline_text(id, w, cx),
+                )
+                .h(rems(1.875))
+                .min_h_0()
+                .px_2p5()
+                .flex_shrink_0()
+                .text_xs()
+                .rounded(px(theme.radius))
+                .border_1()
+                .border_color(theme.border),
             )
         };
         Some(row.into_any_element())
+    }
+    /// An icon button of the formatting bar. `active` styles mark an
+    /// option that is on.
+    #[allow(clippy::too_many_arguments)]
+    fn format_button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        hint: SharedString,
+        kind: Icon,
+        active: bool,
+        enabled: bool,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> Stateful<Div> {
+        let theme = Theme::new(&self.controller.settings);
+        let hover = self.motion.borrow_mut().hover_value(id);
+        let color = if !enabled {
+            theme.muted
+        } else if active {
+            theme.accent
+        } else {
+            theme.ink
+        };
+        let background = if active {
+            rgba((theme.accent << 8) | if theme.dark { 0x38 } else { 0x24 })
+        } else {
+            theme.tint(if enabled { hover } else { 0. })
+        };
+        self.control(
+            id,
+            label,
+            icon(kind, color).size(rems(1.125)).into_any_element(),
+            active,
+            cx,
+            action,
+        )
+        .size(rems(1.875))
+        .min_h_0()
+        .flex_shrink_0()
+        .p_0()
+        .rounded(px(theme.radius))
+        .bg(background)
+        .opacity(if enabled { 1. } else { 0.5 })
+        .with_hint(hint, theme, self.hints())
+    }
+    fn hints(&self) -> bool {
+        !self.blocking_overlay() && self.tool_menu.is_none()
+    }
+}
+
+/// Sizes the formatting bar's stepper moves between, in canvas pixels.
+const FONT_SIZES: &[f32] = &[
+    6., 8., 9., 10., 11., 12., 14., 16., 18., 20., 24., 28., 32., 36., 40., 48., 56., 64., 72.,
+    96., 128., 180.,
+];
+
+trait WithHint {
+    fn with_hint(self, hint: impl Into<SharedString>, theme: Theme, show: bool) -> Self;
+}
+impl WithHint for Stateful<Div> {
+    fn with_hint(self, hint: impl Into<SharedString>, theme: Theme, show: bool) -> Self {
+        let hint = hint.into();
+        self.when(show, |button| {
+            button.tooltip(move |_, cx| {
+                cx.new(|_| super::workspace::Hint(hint.clone(), theme))
+                    .into()
+            })
+        })
     }
 }

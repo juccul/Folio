@@ -97,6 +97,10 @@ pub struct WaylandWindowState {
     globals: Globals,
     renderer: BladeRenderer,
     drawable_size_dirty: bool,
+    /// Whether an interactive resize is in progress.
+    resizing: bool,
+    /// The scale last given to `wl_surface.set_buffer_scale`.
+    buffer_scale: i32,
     bounds: Bounds<Pixels>,
     scale: f32,
     input_handler: Option<PlatformInputHandler>,
@@ -173,6 +177,8 @@ impl WaylandWindowState {
             display: None,
             renderer,
             drawable_size_dirty: false,
+            resizing: false,
+            buffer_scale: 1,
             bounds: options.bounds,
             scale: 1.0,
             input_handler: None,
@@ -419,6 +425,11 @@ impl WaylandWindowStatePtr {
                 state.fullscreen = configure.fullscreen;
                 state.maximized = configure.maximized;
                 state.tiling = configure.tiling;
+                // Give back the spare surface capacity used while resizing.
+                if state.resizing && !configure.resizing {
+                    state.drawable_size_dirty = true;
+                }
+                state.resizing = configure.resizing;
                 // Limit interactive resizes to once per vblank
                 if configure.resizing {
                     state.resize_throttle = true;
@@ -634,6 +645,7 @@ impl WaylandWindowStatePtr {
                 // We use `PreferredBufferScale` instead to set the scale if it's available
                 if state.surface.version() < wl_surface::EVT_PREFERRED_BUFFER_SCALE_SINCE {
                     state.surface.set_buffer_scale(scale);
+                    state.buffer_scale = scale;
                     drop(state);
                     self.rescale(scale as f32);
                 }
@@ -646,6 +658,7 @@ impl WaylandWindowStatePtr {
                 // We use `PreferredBufferScale` instead to set the scale if it's available
                 if state.surface.version() < wl_surface::EVT_PREFERRED_BUFFER_SCALE_SINCE {
                     state.surface.set_buffer_scale(scale);
+                    state.buffer_scale = scale;
                     drop(state);
                     self.rescale(scale as f32);
                 }
@@ -654,6 +667,7 @@ impl WaylandWindowStatePtr {
                 // We use `WpFractionalScale` instead to set the scale if it's available
                 if state.globals.fractional_scale_manager.is_none() {
                     state.surface.set_buffer_scale(factor);
+                    state.buffer_scale = factor;
                     drop(state);
                     self.rescale(factor as f32);
                 }
@@ -1062,8 +1076,32 @@ impl PlatformWindow for WaylandWindow {
         let mut state = self.borrow_mut();
         if state.drawable_size_dirty {
             let device_bounds = state.bounds.to_device_pixels(state.scale);
-            state.renderer.update_drawable_size(device_bounds.size);
+            // Recreating the swapchain is the slowest part of a resize step,
+            // so while resizing keep spare capacity and crop it off below.
+            // Buffers must stay a multiple of the buffer scale, and spare
+            // capacity comes in steps of 64 pixels.
+            let slack =
+                state.resizing && state.viewport.is_some() && 64 % state.buffer_scale.max(1) == 0;
+            state
+                .renderer
+                .update_drawable_size_with_slack(device_bounds.size, slack);
             state.drawable_size_dirty = false;
+            if let Some(viewport) = &state.viewport {
+                // The crop is double-buffered state, so it takes effect with
+                // the buffer presented below. It must fit inside that buffer.
+                let shown = state.renderer.viewport_size();
+                if state.renderer.surface_size() == shown {
+                    viewport.set_source(-1., -1., -1., -1.);
+                } else {
+                    let scale = state.buffer_scale.max(1) as f64;
+                    viewport.set_source(
+                        0.,
+                        0.,
+                        shown.width as f64 / scale,
+                        shown.height as f64 / scale,
+                    );
+                }
+            }
         }
         state.renderer.draw(scene);
     }

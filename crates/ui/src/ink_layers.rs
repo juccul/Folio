@@ -1,6 +1,6 @@
 //! Display-only ink batches. Source strokes and vector exports stay unchanged.
 use super::theme::CanvasTheme;
-use folio_document::{Id, Object, Rect};
+use folio_document::{Id, Object, Page, Rect};
 use std::{
     collections::{HashMap, HashSet},
     ops::Range,
@@ -25,8 +25,11 @@ impl InkBatch {
         self.objects[0].id()
     }
     pub fn matches(&self, other: &Self) -> bool {
+        self.density == other.density && self.same_ink(other)
+    }
+    /// The same strokes and colors, possibly rendered at another density.
+    pub fn same_ink(&self, other: &Self) -> bool {
         self.theme == other.theme
-            && self.density == other.density
             && self.objects.len() == other.objects.len()
             && self
                 .objects
@@ -51,66 +54,87 @@ impl Planner {
         }
         cached.1
     }
+    /// Batches for the visible `objects`, which are in page order at
+    /// `ranks`. Membership follows fixed blocks of the page order rather
+    /// than what is visible, so panning and zooming keep every batch (and
+    /// its cached image) intact; a batch includes its offscreen members.
     pub fn batches(
         &mut self,
+        page: &Page,
         objects: &[Arc<Object>],
+        ranks: &[usize],
         excluded: &HashSet<Id>,
         theme: CanvasTheme,
         density: f32,
     ) -> Vec<(Range<usize>, InkBatch)> {
-        let visible = objects
-            .iter()
-            .map(|object| object.id())
-            .collect::<HashSet<_>>();
-        self.bounds.retain(|id, _| visible.contains(id));
         if !density.is_finite() || density <= 0. {
+            self.bounds.clear();
             return Vec::new();
         }
         // Round up so every cached image has at least one texel per device pixel.
         let density = (density * 2.).ceil() / 2.;
+        let eligible = |object: &Object| {
+            matches!(object, Object::Stroke(_)) && !excluded.contains(&object.id())
+        };
+        let at = |rank: usize| page.order.get(rank).and_then(|id| page.objects.get(id));
+        let mut used = HashSet::new();
         let mut batches = Vec::new();
         let mut start = 0;
         while start < objects.len() {
-            if !matches!(objects[start].as_ref(), Object::Stroke(_))
-                || excluded.contains(&objects[start].id())
+            let rank = ranks.get(start).copied().unwrap_or(usize::MAX);
+            if !eligible(&objects[start])
+                || at(rank).is_none_or(|o| !Arc::ptr_eq(o, &objects[start]))
             {
                 start += 1;
                 continue;
             }
-            let mut end = start;
-            let mut bounds = self.bounds(&objects[start]);
-            while end < objects.len()
-                && end - start < BATCH_SIZE
-                && matches!(objects[end].as_ref(), Object::Stroke(_))
-                && !excluded.contains(&objects[end].id())
-            {
-                bounds = bounds.union(self.bounds(&objects[end]));
+            // The run of eligible ink around `rank` within its block.
+            let block = rank / BATCH_SIZE * BATCH_SIZE;
+            let block_end = (block + BATCH_SIZE).min(page.order.len());
+            let mut first = rank;
+            while first > block && at(first - 1).is_some_and(|o| eligible(o)) {
+                first -= 1;
+            }
+            let mut last = rank + 1;
+            while last < block_end && at(last).is_some_and(|o| eligible(o)) {
+                last += 1;
+            }
+            let mut end = start + 1;
+            while end < objects.len() && ranks.get(end).is_some_and(|r| *r < last) {
                 end += 1;
             }
-            bounds = bounds.expand(3.);
-            let width = (bounds.width() * density).ceil();
-            let height = (bounds.height() * density).ceil();
-            let pixels = width * height;
-            if end - start >= MIN_BATCH
-                && width > 0.
-                && height > 0.
-                && width <= 4096.
-                && height <= 4096.
-                && pixels <= MAX_BATCH_PIXELS as f32
-            {
-                batches.push((
-                    start..end,
-                    InkBatch {
-                        objects: objects[start..end].to_vec(),
-                        bounds,
-                        theme,
-                        density,
-                        pixels: pixels as usize,
-                    },
-                ));
+            let members = (first..last).filter_map(at).cloned().collect::<Vec<_>>();
+            if members.len() >= MIN_BATCH {
+                let mut bounds = self.bounds(&members[0]);
+                for member in &members[1..] {
+                    bounds = bounds.union(self.bounds(member));
+                }
+                used.extend(members.iter().map(|o| o.id()));
+                let bounds = bounds.expand(3.);
+                let width = (bounds.width() * density).ceil();
+                let height = (bounds.height() * density).ceil();
+                let pixels = width * height;
+                if width > 0.
+                    && height > 0.
+                    && width <= 4096.
+                    && height <= 4096.
+                    && pixels <= MAX_BATCH_PIXELS as f32
+                {
+                    batches.push((
+                        start..end,
+                        InkBatch {
+                            objects: members,
+                            bounds,
+                            theme,
+                            density,
+                            pixels: pixels as usize,
+                        },
+                    ));
+                }
             }
             start = end;
         }
+        self.bounds.retain(|id, _| used.contains(id));
         batches
     }
 }
@@ -121,7 +145,18 @@ pub(super) fn batches(
     theme: CanvasTheme,
     density: f32,
 ) -> Vec<(Range<usize>, InkBatch)> {
-    Planner::default().batches(objects, excluded, theme, density)
+    let page = test_page(objects);
+    let ranks = (0..objects.len()).collect::<Vec<_>>();
+    Planner::default().batches(&page, objects, &ranks, excluded, theme, density)
+}
+#[cfg(test)]
+pub(super) fn test_page(objects: &[Arc<Object>]) -> Page {
+    let mut page = Page::new();
+    for object in objects {
+        page.order.push(object.id());
+        page.objects.insert(object.id(), object.clone());
+    }
+    page
 }
 
 pub(super) fn raster(batch: &InkBatch) -> Option<Arc<gpui::RenderImage>> {
@@ -206,7 +241,8 @@ mod tests {
         let excluded = HashSet::from([objects[20].id()]);
         let planned = batches(&objects, &excluded, theme(), 1.25);
         let ranges = planned.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>();
-        assert_eq!(ranges, vec![0..20, 21..40, 41..73]);
+        // Batches follow fixed 32-object blocks of the page order.
+        assert_eq!(ranges, vec![0..20, 21..32, 32..40, 41..64, 64..80]);
         for (range, batch) in planned {
             assert!(
                 batch
@@ -217,6 +253,15 @@ mod tests {
             );
             assert_eq!(batch.density, 1.5);
         }
+        // Panning that shows only part of a block keeps the whole block's
+        // batch, so its cached image survives.
+        let page = test_page(&objects);
+        let visible = &objects[5..30];
+        let ranks = (5..30).collect::<Vec<_>>();
+        let partial = Planner::default().batches(&page, visible, &ranks, &excluded, theme(), 1.25);
+        let full = batches(&objects, &excluded, theme(), 1.25);
+        assert_eq!(partial[0].0, 0..15);
+        assert!(partial[0].1.matches(&full[0].1) && partial[1].1.matches(&full[1].1));
     }
     #[test]
     fn identity_theme_density_and_geometry_invalidate_cached_batches() {

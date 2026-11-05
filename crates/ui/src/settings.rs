@@ -786,15 +786,14 @@ impl NotesView {
             .flex()
             .items_center()
             .justify_center()
-            .child(
+            .child(transitions::Transitions::dialog_box(
+                1. - self.dialog_rise,
                 div()
                     .w(px(900.))
                     .max_w(px((f32::from(window.viewport_size().width) - 32.).max(300.)))
                     .h(px(
                         (f32::from(window.viewport_size().height) - 64.).min(720.)
                     ))
-                    .relative()
-                    .top(px(12. * self.dialog_rise))
                     .glass_dialog(theme, theme.popover)
                     .rounded(px(theme.corner_lg()))
                     .overflow_hidden()
@@ -855,6 +854,6 @@ impl NotesView {
                             .flex_shrink_0()
                             .child("Changes are saved automatically."),
                     ),
-            )
+            ))
     }
 }

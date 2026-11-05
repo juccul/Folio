@@ -5,19 +5,30 @@ use std::{
 };
 
 const DURATION: Duration = Duration::from_millis(180);
+/// Panels settle more slowly, decelerating into place.
+const PANEL_DURATION: Duration = Duration::from_millis(240);
+/// Hover highlights follow the pointer closely.
+const HOVER_DURATION: Duration = Duration::from_millis(120);
 
 #[derive(Clone, Copy)]
 struct Tween {
     from: f32,
     to: f32,
     started: Instant,
+    duration: Duration,
 }
 impl Tween {
     fn sample(self, now: Instant) -> f32 {
         let t = (now.saturating_duration_since(self.started).as_secs_f32()
-            / DURATION.as_secs_f32())
+            / self.duration.as_secs_f32())
         .clamp(0., 1.);
-        self.from + (self.to - self.from) * (1. - (1. - t).powi(3))
+        // Panels use a quintic ease-out: a quick start that glides to rest.
+        let eased = if self.duration == PANEL_DURATION {
+            1. - (1. - t).powi(5)
+        } else {
+            1. - (1. - t).powi(3)
+        };
+        self.from + (self.to - self.from) * eased
     }
     fn retarget(&mut self, target: f32, reduced: bool, now: Instant) -> f32 {
         if reduced {
@@ -28,12 +39,13 @@ impl Tween {
                 from: self.sample(now),
                 to: target,
                 started: now,
+                duration: self.duration,
             };
         }
         self.sample(now)
     }
     fn running(self, now: Instant) -> bool {
-        self.from != self.to && now.saturating_duration_since(self.started) < DURATION
+        self.from != self.to && now.saturating_duration_since(self.started) < self.duration
     }
 }
 
@@ -61,6 +73,7 @@ impl Motion {
                 from: target,
                 to: target,
                 started: now,
+                duration: DURATION,
             },
         );
         target
@@ -77,6 +90,7 @@ impl Motion {
                         from: 0.,
                         to: 0.,
                         started: now,
+                        duration: HOVER_DURATION,
                     },
                     drawn: self.frame,
                 },
@@ -113,6 +127,7 @@ impl Motion {
                 from: value,
                 to: value,
                 started: Instant::now(),
+                duration: DURATION,
             },
         );
     }
@@ -124,6 +139,7 @@ impl Motion {
                 from: if reduced { to } else { from },
                 to,
                 started: Instant::now(),
+                duration: DURATION,
             },
         );
     }
@@ -144,6 +160,7 @@ impl Motion {
                     from: if key == "library-motion" { 0.35 } else { 0. },
                     to: 1.,
                     started: now,
+                    duration: PANEL_DURATION,
                 },
             );
         }
@@ -244,7 +261,7 @@ mod tests {
     fn redraws_do_not_restart_panel_animation_but_reopening_does() {
         let mut motion = Motion::default();
         assert!(motion.panel("dialog", Some("open".into()), false) < 1.);
-        motion.values.get_mut("dialog").unwrap().started -= DURATION;
+        motion.values.get_mut("dialog").unwrap().started -= PANEL_DURATION;
         assert_eq!(motion.panel("dialog", Some("open".into()), false), 1.);
         assert!(!motion.running());
         motion.panel("dialog", None, false);

@@ -110,6 +110,10 @@ impl NotesView {
                     .text_xs(),
                 );
             }
+            let menu =
+                self.transitions
+                    .borrow_mut()
+                    .overlay("library-sort-menu", self.sort_appear, menu);
             anchor = anchor.child(deferred(menu));
         }
         anchor

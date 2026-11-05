@@ -162,6 +162,8 @@ pub struct Field {
     scroll_max: Point<Pixels>,
     /// Muted hint shown while the field is empty.
     pub placeholder: Option<SharedString>,
+    /// Tighter padding, for toolbars such as the find bar.
+    pub compact: bool,
     context_menu: Option<Point<Pixels>>,
 }
 impl Field {
@@ -191,6 +193,7 @@ impl Field {
             scroll_max: point(px(0.), px(0.)),
             follow_caret: true,
             placeholder: None,
+            compact: false,
             context_menu: None,
         }
     }
@@ -939,7 +942,8 @@ impl Render for Field {
             .border_color(theme.input)
             .rounded(px(theme.radius))
             .focus(move |s| s.border_color(rgb(theme.ring)))
-            .p_3()
+            .when(!self.compact, |s| s.p_3())
+            .when(self.compact, |s| s.px_2().py_1())
             .when(self.inline.is_none(), |s| s.overflow_hidden())
             .when(self.inline.is_some(), |s| {
                 s.bg(transparent_black())
@@ -1204,7 +1208,8 @@ impl Render for Field {
                             .absolute()
                             .top_0()
                             .left_0()
-                            .p_3()
+                            .when(!self.compact, |hint| hint.p_3())
+                            .when(self.compact, |hint| hint.px_2().py_1())
                             .text_color(rgb(theme.muted))
                             .child(hint),
                     )

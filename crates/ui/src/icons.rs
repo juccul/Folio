@@ -58,6 +58,7 @@ define_icons! {
     Back => "Back.svg",
     Forward => "Forward.svg",
     Down => "Down.svg",
+    Up => "Up.svg",
     Close => "Close.svg",
     Minimize => "Minimize.svg",
     Maximize => "Maximize.svg",
@@ -110,6 +111,13 @@ define_icons! {
     PaperDots => "PaperDots.svg",
     Palette => "Palette.svg",
     Accessible => "Accessible.svg",
+    Bold => "Bold.svg",
+    Italic => "Italic.svg",
+    Underline => "Underline.svg",
+    AlignLeft => "AlignLeft.svg",
+    AlignCenter => "AlignCenter.svg",
+    AlignRight => "AlignRight.svg",
+    ListNumbers => "ListNumbers.svg",
 }
 
 pub fn icon(kind: Icon, color: u32) -> Svg {

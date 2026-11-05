@@ -21,7 +21,11 @@ impl NotesView {
                 "Select all / Delete selection",
                 "Ctrl A / Delete or Backspace",
             ),
-            ("Search / Save", "Ctrl F / Ctrl S"),
+            ("Find / Save", "Ctrl F / Ctrl S"),
+            (
+                "Next / Previous match",
+                "Enter or F3 / Shift Enter or Shift F3",
+            ),
             ("New document / New page", "Ctrl N / Ctrl Shift N"),
             ("Open a tab / Library", "Ctrl T / Ctrl Shift L"),
             (
@@ -49,7 +53,7 @@ impl NotesView {
         }
         div().absolute().inset_0().occlude().scrim(theme).p_6()
             .flex().items_center().justify_center()
-            .child(div().id("help-panel").relative().top(px(12. * self.dialog_rise)).w(px(560.)).max_w_full()
+            .child(transitions::Transitions::dialog_box(1. - self.dialog_rise, div().id("help-panel").w(px(560.)).max_w_full()
                 .max_h(px((f32::from(window.viewport_size().height) / self.controller.settings.ui_scale - 48.).max(240.)))
                 .overflow_y_scroll().p_6().glass_dialog(theme, theme.popover)
                 .rounded(px(theme.corner_lg()))
@@ -69,6 +73,6 @@ impl NotesView {
                 }))
                 .child(shortcuts)
                 .child(div().pt_3().border_t_1().border_color(theme.border).text_sm().text_color(rgb(theme.muted))
-                    .child("Select handwriting and choose Recognize text or Recognize math, then review, Copy text or Replace writing. Replacement can be undone. Two-finger scrolling pans the canvas. Hold at the end of a stroke to snap a shape. Escape closes a menu or cancels recognition and your current stroke.")))
+                    .child("Select handwriting and choose Recognize text or Recognize math, then review, Copy text or Replace writing. Replacement can be undone. Two-finger scrolling pans the canvas. Hold at the end of a stroke to snap a shape. Escape closes a menu or cancels recognition and your current stroke."))))
     }
 }

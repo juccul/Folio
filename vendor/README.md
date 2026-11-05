@@ -10,8 +10,11 @@ These directories retain full upstream sources and notices.
 - `platform/linux/x11/client.rs`/`event.rs`: XInput2 pressure/tilt valuator discovery and normalization, eraser identity, button/contact/hover frames, hierarchy cancellation, correct 16.16 coordinates and allocation-free valuator lookup.
 - `path_builder.rs`: use 32-bit tessellation indices so large compound ink paths do not disappear above 65,535 vertices.
 - `scene.rs`: transform cached vector paths without tessellating again; affine polychrome sprites with transformed culling bounds.
+- `paint_effect.rs`: `effect()` applies a fade, offset and scale to everything an element paints and keeps a `PaintSnapshot` tree of it (nested effects preserved); `snapshot()` repaints one later with new effects, skipping sprites whose atlas texture was released (`PlatformAtlas::contains_texture`). Used for enter/exit transitions.
 - `window.rs`/`platform/blade/shaders.wgsl`: GPU affine image painting and transformed clipping. PDF/images/text stay aligned with ink during rotation and drag transforms. This renderer extension targets Linux's Blade backend.
 - `elements/img.rs`: expose cached asynchronous raster loading to the canvas.
+- `platform/blade/blade_renderer.rs`/`platform/linux/wayland/window.rs`: during an interactive Wayland resize the swapchain keeps spare capacity in 64-pixel steps and `wp_viewport` crops it, so most resize steps do not recreate the swapchain; the exact size returns when the resize ends.
+- `platform/blade/blade_context.rs`: on a multi-GPU Linux machine, prefer the firmware's display GPU (`boot_vga`) unless `ZED_DEVICE_ID`, `DRI_PRIME`, `MESA_VK_DEVICE_SELECT` or `__NV_PRIME_RENDER_OFFLOAD` chooses one; fall back to the default device if it is unusable.
 - `taffy.rs`: f32 casts for the resolved Taffy layout version.
 - `platform.rs`/`window.rs`/`platform/linux/{wayland,x11}/window.rs`: `activate_window_with_token` activates with a launcher's xdg-activation token (Wayland) or startup-ID timestamp (X11) for single-instance handoff.
 - `platform/windows/pen.rs`/`events.rs`/`window.rs`: Windows Ink pointer history with pressure, tilt, eraser/barrel identity, cancellation, DPI conversion, duplicate mouse filtering, and compatible control events; deferred native title-bar movement and edge resizing.

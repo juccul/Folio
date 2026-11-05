@@ -92,6 +92,18 @@ impl PlatformAtlas for DirectXAtlas {
         }
     }
 
+    fn contains_texture(&self, id: AtlasTextureId) -> bool {
+        let lock = self.0.lock();
+        let textures = match id.kind {
+            AtlasTextureKind::Monochrome => &lock.monochrome_textures,
+            AtlasTextureKind::Polychrome => &lock.polychrome_textures,
+        };
+        textures
+            .textures
+            .get(id.index as usize)
+            .is_some_and(Option::is_some)
+    }
+
     fn remove(&self, key: &AtlasKey) {
         let mut lock = self.0.lock();
 

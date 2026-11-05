@@ -502,6 +502,9 @@ pub struct BladeRenderer {
     gpu: Arc<gpu::Context>,
     surface: gpu::Surface,
     surface_config: gpu::SurfaceConfig,
+    /// The part of the surface the window shows. The surface can be larger
+    /// while the platform crops it (see [`Self::update_drawable_size_with_slack`]).
+    drawable_size: gpu::Extent,
     command_encoder: gpu::CommandEncoder,
     last_sync_point: Option<gpu::SyncPoint>,
     pipelines: BladePipelines,
@@ -578,6 +581,7 @@ impl BladeRenderer {
             gpu: Arc::clone(&context.gpu),
             surface,
             surface_config,
+            drawable_size: config.size,
             command_encoder,
             last_sync_point: None,
             pipelines,
@@ -629,7 +633,21 @@ impl BladeRenderer {
     }
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
-        self.update_drawable_size_impl(size, false);
+        self.update_drawable_size_impl(size, false, false);
+    }
+
+    /// Like `update_drawable_size`, but with `slack` the surface keeps spare
+    /// capacity so that small steps of an interactive resize reuse it
+    /// instead of recreating the swapchain. The caller must then crop the
+    /// presented image to [`Self::viewport_size`], which is drawn at its top
+    /// left. Returns whether the surface was reallocated.
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
+    pub fn update_drawable_size_with_slack(
+        &mut self,
+        size: Size<DevicePixels>,
+        slack: bool,
+    ) -> bool {
+        self.update_drawable_size_impl(size, false, slack)
     }
 
     /// Like `update_drawable_size` but skips the check that the size has changed. This is useful in
@@ -640,16 +658,36 @@ impl BladeRenderer {
         allow(dead_code)
     )]
     pub fn update_drawable_size_even_if_unchanged(&mut self, size: Size<DevicePixels>) {
-        self.update_drawable_size_impl(size, true);
+        self.update_drawable_size_impl(size, true, false);
     }
 
-    fn update_drawable_size_impl(&mut self, size: Size<DevicePixels>, always_resize: bool) {
-        let gpu_size = gpu::Extent {
+    fn update_drawable_size_impl(
+        &mut self,
+        size: Size<DevicePixels>,
+        always_resize: bool,
+        slack: bool,
+    ) -> bool {
+        self.drawable_size = gpu::Extent {
             width: size.width.0 as u32,
             height: size.height.0 as u32,
             depth: 1,
         };
-        if always_resize || gpu_size != self.surface_config.size {
+        let gpu_size = if slack {
+            let current = self.surface_config.size;
+            let [width, height] = path_target_extent(
+                [self.drawable_size.width, self.drawable_size.height],
+                [current.width, current.height],
+            );
+            gpu::Extent {
+                width,
+                height,
+                depth: 1,
+            }
+        } else {
+            self.drawable_size
+        };
+        let reallocate = always_resize || gpu_size != self.surface_config.size;
+        if reallocate {
             self.wait_for_gpu();
             self.surface_config.size = gpu_size;
             self.gpu
@@ -668,6 +706,7 @@ impl BladeRenderer {
                 targets.destroy(&self.gpu);
             }
         }
+        reallocate
     }
 
     pub fn update_transparency(&mut self, transparent: bool) {
@@ -691,12 +730,16 @@ impl BladeRenderer {
         }
     }
 
-    #[cfg_attr(
-        any(target_os = "macos", feature = "wayland", target_os = "windows"),
-        allow(dead_code)
-    )]
-    pub fn viewport_size(&self) -> gpu::Extent {
+    /// The size of the allocated surface, at least [`Self::viewport_size`].
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
+    pub fn surface_size(&self) -> gpu::Extent {
         self.surface_config.size
+    }
+
+    /// The size of the part of the surface the window shows.
+    #[cfg_attr(any(target_os = "macos", target_os = "windows"), allow(dead_code))]
+    pub fn viewport_size(&self) -> gpu::Extent {
+        self.drawable_size
     }
 
     pub fn sprite_atlas(&self) -> &Arc<BladeAtlas> {
@@ -974,7 +1017,8 @@ impl BladeRenderer {
         for batch in scene.batches() {
             match batch {
                 PrimitiveBatch::BackdropBlurs(blurs) => {
-                    let viewport = self.surface_config.size;
+                    // Blur only what is shown, not spare surface capacity.
+                    let viewport = self.drawable_size;
                     for blur in blurs {
                         let Some(region) = blur.region([viewport.width, viewport.height])
                         else {

@@ -12,6 +12,10 @@ impl Controller {
             Err(error) => self.search_state = SearchState::Failed(error),
         }
     }
+    /// Identifies the latest query, so results can be told apart.
+    pub fn search_generation(&self) -> u64 {
+        self.search_generation
+    }
     pub fn search(&mut self, query: String) {
         let query = query.trim().to_owned();
         self.search_query = query.clone();
@@ -63,6 +67,14 @@ impl Controller {
                     .filter(|entry| !entry.stale && matcher.matches(&entry.text))
                     .map(|entry| entry.bounds),
             );
+            // Step through matches in reading order: top to bottom, then
+            // left to right within a line.
+            highlights.sort_by(|a, b| {
+                (a.min.y / 8.)
+                    .floor()
+                    .total_cmp(&(b.min.y / 8.).floor())
+                    .then(a.min.x.total_cmp(&b.min.x))
+            });
             if let Some(r) = highlights.first() {
                 s.viewport.pan = Point::new(
                     100. - r.min.x * s.viewport.zoom,
@@ -70,6 +82,7 @@ impl Controller {
                 );
             }
             self.search_highlights = highlights;
+            self.search_focus = 0;
             self.pending_navigation = None;
         }
     }

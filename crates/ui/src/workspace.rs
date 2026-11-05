@@ -1388,7 +1388,7 @@ impl NotesView {
                                 Icon::Search,
                                 false,
                                 cx,
-                                |this, w, cx| this.modal(Modal::Search, w, cx),
+                                |this, w, cx| this.open_find(w, cx),
                             ))
                             .child(
                                 self.control(
@@ -1833,7 +1833,7 @@ impl NotesView {
                 Icon::Search,
                 false,
                 cx,
-                |this, w, cx| this.modal(Modal::Search, w, cx),
+                |this, w, cx| this.open_find(w, cx),
             ))
     }
     fn page_actions(&self, cx: &mut Context<Self>) -> Div {
@@ -2219,11 +2219,36 @@ impl NotesView {
     }
     pub(super) fn pages_panel(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
-        let total = self.controller.session().document.pages.len();
+        let scale = self.controller.settings.ui_scale;
+        let session = self.controller.session();
+        let total = session.document.pages.len();
+        let current = session.page;
+        // Thumbnails fill the sidebar's width; rows share the height of the
+        // tallest page so every page lines up.
+        let width = 140. * scale;
+        let max_height = 200. * scale;
+        let tallest = session
+            .document
+            .pages
+            .iter()
+            .map(|page| {
+                let aspect = page.properties.width / page.properties.height.max(1.);
+                (width / aspect.max(0.01)).min(max_height)
+            })
+            .fold(0., f32::max);
+        let row_height = tallest + 58. * scale;
+        // Keep the current page in view as it changes, from the canvas or
+        // the keyboard, without fighting the user's own scrolling.
+        let follow = (self.controller.active, current);
+        if self.pages_followed != Some(follow) {
+            self.pages_followed = Some(follow);
+            self.pages_scroll
+                .scroll_to_item(current, ScrollStrategy::Top);
+        }
         let rows = uniform_list(
             "page-thumbnails",
             total,
-            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+            cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
                 let theme = Theme::new(&this.controller.settings);
                 let mut rows = Vec::new();
                 for index in range {
@@ -2234,77 +2259,134 @@ impl NotesView {
                     if let Some(background) = background {
                         this.controller.request_pdf_background(background);
                     }
-                    let thumbnail =
-                        this.thumbnail(
-                            ThumbnailSource::Current(index),
-                            122.,
-                            200. * this.controller.settings.ui_scale,
-                            window,
-                            cx,
-                        );
+                    let thumbnail = this.thumbnail(
+                        ThumbnailSource::Current(index),
+                        width,
+                        max_height,
+                        window,
+                        cx,
+                    );
                     let page = &this.controller.session().document.pages[index];
                     let page_id = page.id;
-                    let label = page.properties.bookmark.as_ref().map_or_else(
+                    let bookmark = page.properties.bookmark.clone();
+                    let label = bookmark.as_ref().map_or_else(
                         || format!("Go to page {}", index + 1),
                         |name| format!("Go to page {} · {name}", index + 1),
                     );
                     let active = index == this.controller.session().page;
+                    let key = format!("page-{page_id}");
+                    let hover = this.motion.borrow_mut().hover_value(&key);
+                    let focused = this.accessibility.is_focused(&key, window);
+                    // The ring frames the page itself: accent when current,
+                    // the focus color for the keyboard, a soft tint while
+                    // hovered.
+                    let ring = if active {
+                        rgb(theme.accent)
+                    } else if focused {
+                        rgb(theme.ring)
+                    } else {
+                        theme.tint(hover * 2.5)
+                    };
+                    let page_view = div()
+                        .p(px(3.))
+                        .rounded(px(theme.corner_sm() + 5.))
+                        .border_2()
+                        .border_color(ring)
+                        .child(
+                            thumbnail
+                                .rounded(px(theme.corner_sm()))
+                                .border_1()
+                                .border_color(theme.glass_edge())
+                                .shadow_sm(),
+                        );
+                    let number = div()
+                        .min_w(rems(1.5))
+                        .px_2()
+                        .flex()
+                        .justify_center()
+                        .rounded_full()
+                        .text_xs()
+                        .font_weight(if active {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .when(active, |n| {
+                            n.bg(rgb(theme.accent))
+                                .text_color(rgb(theme.primary_foreground))
+                        })
+                        .when(!active, |n| n.text_color(rgb(theme.muted)))
+                        .child(format!("{}", index + 1));
+                    let caption = div()
+                        .max_w(px(width))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap_1()
+                        .child(number)
+                        .children(bookmark.map(|name| {
+                            div()
+                                .min_w_0()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .text_xs()
+                                .text_color(rgb(if active { theme.ink } else { theme.muted }))
+                                .child(icon(Icon::Bookmark, theme.muted).size(rems(0.75)))
+                                .child(div().min_w_0().truncate().child(name))
+                        }));
                     let content = div()
                         .flex()
                         .flex_col()
                         .items_center()
-                        .gap_2()
-                        .child(thumbnail)
-                        .child(
-                            div()
-                                .w(px(122.))
-                                .truncate()
-                                .text_xs()
-                                .text_color(rgb(if active { theme.accent } else { theme.muted }))
-                                .child(page.properties.bookmark.clone().map_or_else(
-                                    || format!("{}", index + 1),
-                                    |name| format!("{} · {name}", index + 1),
-                                )),
-                        );
+                        .gap_1p5()
+                        .child(page_view)
+                        .child(caption);
                     rows.push(
-                        div().h(px(260.)).px_3().py_2().child(
-                            this.control(
-                                format!("page-{}", page.id),
-                                label,
-                                content.into_any_element(),
-                                active,
-                                cx,
-                                move |this, _, _| this.controller.change_page(index),
-                            )
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                                    this.controller.change_page(index);
-                                    this.dismiss_popovers();
-                                    this.more_section = MoreSection::Page;
-                                    this.more_anchor = format!("page-{page_id}");
-                                    this.more_open = true;
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }),
-                            )
-                            .on_drag(PageDrag(page_id), |drag, _, _, cx| cx.new(|_| drag.clone()))
-                            .drag_over::<PageDrag>(move |s, _, _, _| {
-                                s.border_color(rgb(theme.accent)).bg(theme.tint(1.))
-                            })
-                            .on_drop(cx.listener(move |this, drag: &PageDrag, _, _| {
-                                this.controller.reorder_page(drag.0, page_id)
-                            }))
-                            .p_3()
-                            .w_full()
-                            .border_2()
-                            .border_color(if active {
-                                rgb(theme.accent)
-                            } else {
-                                transparent_black().into()
-                            })
-                            .bg(theme.tint(if active { 1. } else { 0. })),
-                        ),
+                        div()
+                            .h(px(row_height))
+                            .px_2()
+                            .flex()
+                            .justify_center()
+                            .child(
+                                this.control(
+                                    key,
+                                    label,
+                                    content.into_any_element(),
+                                    active,
+                                    cx,
+                                    move |this, _, _| this.controller.change_page(index),
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Right,
+                                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                        this.controller.change_page(index);
+                                        this.dismiss_popovers();
+                                        this.more_section = MoreSection::Page;
+                                        this.more_anchor = format!("page-{page_id}");
+                                        this.more_open = true;
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }),
+                                )
+                                .on_drag(PageDrag(page_id), |drag, _, _, cx| {
+                                    cx.new(|_| drag.clone())
+                                })
+                                .drag_over::<PageDrag>(move |s, _, _, _| {
+                                    s.border_color(rgb(theme.accent)).bg(theme.tint(1.))
+                                })
+                                .on_drop(cx.listener(move |this, drag: &PageDrag, _, _| {
+                                    this.controller.reorder_page(drag.0, page_id)
+                                }))
+                                .items_start()
+                                .px_1()
+                                .py_2()
+                                // The ring and number show state; no card.
+                                .bg(transparent_black())
+                                .hover(|s| s.bg(transparent_black()))
+                                .active(|s| s.bg(transparent_black()))
+                                .focus(|s| s.border_color(transparent_black())),
+                            ),
                     );
                 }
                 // Virtual rows register during layout, after the root's render.
@@ -2313,6 +2395,7 @@ impl NotesView {
                 rows
             }),
         )
+        .track_scroll(self.pages_scroll.clone())
         .flex_1()
         .min_h_0();
         div()
@@ -2327,17 +2410,30 @@ impl NotesView {
             .child(
                 div()
                     .h(px(48.))
-                    .px_4()
+                    .pl_4()
+                    .pr_2()
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .gap_1()
                     .child(
                         div()
                             .flex_1()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(format!("Pages · {total}")),
+                            .flex()
+                            .items_baseline()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Pages"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(theme.muted))
+                                    .child(format!("{} of {total}", current + 1)),
+                            ),
                     )
                     .child(
                         self.icon_button(
@@ -2369,22 +2465,30 @@ impl NotesView {
             )
             .child(rows)
             .child(
-                self.control(
-                    "add-page",
-                    "Add page",
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(icon(Icon::Plus, theme.ink).size(rems(0.875)))
-                        .child("Add page")
-                        .into_any_element(),
-                    true,
-                    cx,
-                    |this, _, _| this.controller.add_page(),
-                )
-                .text_xs()
-                .m_2(),
+                div()
+                    .p_2()
+                    .flex_shrink_0()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .child(
+                        self.control(
+                            "add-page",
+                            "Add page",
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(icon(Icon::NewPage, theme.ink).size(rems(1.)))
+                                .child("Add page")
+                                .into_any_element(),
+                            false,
+                            cx,
+                            |this, _, _| this.controller.add_page(),
+                        )
+                        .w_full()
+                        .text_xs()
+                        .border_color(theme.border),
+                    ),
             )
     }
     pub(super) fn footer(&mut self, cx: &mut Context<Self>) -> Div {

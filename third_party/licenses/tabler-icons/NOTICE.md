@@ -32,6 +32,7 @@ The filled favorite state in `StarFilled.svg` is derived from the existing `star
 | Back | `chevron-left.svg` |
 | Forward | `chevron-right.svg` |
 | Down | `chevron-down.svg` |
+| Up | `chevron-up.svg` |
 | Close | `x.svg` |
 | Minimize | `minus.svg` |
 | Maximize | `square.svg` |
@@ -73,7 +74,14 @@ The filled favorite state in `StarFilled.svg` is derived from the existing `star
 | PaperDots | `grid-dots.svg` |
 | Palette | `palette.svg` |
 | Accessible | `accessible.svg` |
+| Bold | `bold.svg` |
+| Italic | `italic.svg` |
+| Underline | `underline.svg` |
+| AlignLeft | `align-left.svg` |
+| AlignCenter | `align-center.svg` |
+| AlignRight | `align-right.svg` |
+| ListNumbers | `list-numbers.svg` |
 
-The sixteen icons from Tag to Accessible come from the `@tabler/icons` 3.46.0 package's `icons/outline/` directory under the same license, with the same stroke adjustment.
+The twenty-three icons from Tag to ListNumbers come from the `@tabler/icons` 3.46.0 package's `icons/outline/` directory under the same license, with the same stroke adjustment.
 
 Math.svg, Calculator.svg, Crop.svg and Paste.svg are original Folio drawings in the same outline style, licensed under the project license.

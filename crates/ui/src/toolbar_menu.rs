@@ -123,21 +123,86 @@ impl NotesView {
                 div()
                     .px_3()
                     .py_2()
+                    .flex()
+                    .items_center()
+                    .justify_between()
                     .text_xs()
                     .text_color(rgb(theme.muted))
-                    .child(kind.title()),
+                    .child(kind.title())
+                    // L returns to the last chosen selection mode.
+                    .when(kind == ToolMenu::Selection, |title| {
+                        title.child(super::keycap("L", theme))
+                    }),
             );
         match kind {
             ToolMenu::Selection => {
-                for (id, label, tool) in [
-                    ("lasso", "Lasso", Tool::Lasso),
-                    ("select-rect", "Rectangular selection", Tool::Rectangle),
+                for (id, label, detail, kind, tool) in [
+                    (
+                        "lasso",
+                        "Lasso",
+                        "Circle what to select",
+                        Icon::Lasso,
+                        Tool::Lasso,
+                    ),
+                    (
+                        "select-rect",
+                        "Rectangle",
+                        "Drag a box to select",
+                        Icon::Rectangle,
+                        Tool::Rectangle,
+                    ),
                 ] {
+                    // The mode the selection button uses is checked, even
+                    // while another tool is in use.
+                    let chosen = self.selection_tool == tool;
                     panel = panel.child(
-                        self.button(
+                        self.control(
                             id,
-                            label,
-                            self.controller.tool == tool,
+                            format!("{label} selection · {detail}"),
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .size(rems(2.))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(theme.radius))
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .bg(theme.raised())
+                                        .child(
+                                            icon(
+                                                kind,
+                                                if chosen { theme.accent } else { theme.ink },
+                                            )
+                                            .size(rems(1.125)),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .child(div().font_weight(FontWeight::MEDIUM).child(label))
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(rgb(theme.muted))
+                                                .truncate()
+                                                .child(detail),
+                                        ),
+                                )
+                                .when(chosen, |row| {
+                                    row.child(icon(Icon::Check, theme.accent).size(rems(1.)))
+                                })
+                                .into_any_element(),
+                            chosen,
                             cx,
                             move |this, w, _| {
                                 this.focus.focus(w);
@@ -147,6 +212,7 @@ impl NotesView {
                                 this.dismiss_popovers();
                             },
                         )
+                        .px_2()
                         .w_full()
                         .justify_start(),
                     );
