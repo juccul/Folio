@@ -478,8 +478,19 @@ impl NotesView {
                     .flex()
                     .flex_col()
                     .text_xs()
-                    .child(div().truncate().text_color(rgb(theme.ink)).child(place))
-                    .child(div().truncate().text_color(rgb(theme.muted)).child(detail))
+                    .child(
+                        div()
+                            .truncate()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(theme.ink))
+                            .child(place),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_color(rgb(theme.secondary()))
+                            .child(detail),
+                    )
             }));
         Some(bar)
     }

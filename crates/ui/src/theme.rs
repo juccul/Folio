@@ -3,9 +3,7 @@ use folio_app::{
     Settings,
     appearance::{ThemeColor, ThemeToken},
 };
-use gpui::{
-    BoxShadow, Hsla, Rgba, Styled, linear_color_stop, linear_gradient, point, px, rgb, rgba,
-};
+use gpui::{BoxShadow, Rgba, Styled, linear_color_stop, linear_gradient, point, px, rgba};
 use std::borrow::Cow;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CanvasTheme {
@@ -60,19 +58,13 @@ impl CanvasTheme {
         output
     }
 }
-/// Change only lightness, preserving hue and saturation. Search both directions
-/// and choose the closest RGB result that meets the requested contrast.
+/// Change only perceptual lightness (OKLCH), preserving hue and chroma so
+/// blue stays blue and green stays green. Search both directions and choose
+/// the closest RGB result that meets the requested contrast.
 fn readable_ink(color: u32, paper: u32, minimum: f32) -> u32 {
-    let source: Hsla = rgb(color).into();
-    let at_lightness = |lightness| {
-        let value = Hsla {
-            l: lightness,
-            ..source
-        }
-        .to_rgb();
-        let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u32;
-        (channel(value.r) << 16) | (channel(value.g) << 8) | channel(value.b)
-    };
+    let (lightness, chroma, hue) = oklch(color);
+    let at_lightness = |l: f32| from_oklch(l.clamp(0., 1.), chroma, hue);
+    let source_l = lightness;
     let distance = |candidate: u32| {
         [16, 8, 0]
             .into_iter()
@@ -92,7 +84,7 @@ fn readable_ink(color: u32, paper: u32, minimum: f32) -> u32 {
             let (mut low, mut high) = (0., 1.);
             for _ in 0..18 {
                 let amount = (low + high) / 2.;
-                let next = at_lightness(source.l + (end - source.l) * amount);
+                let next = at_lightness(source_l + (end - source_l) * amount);
                 if contrast(next, paper) >= minimum {
                     high = amount;
                     candidate = next;
@@ -112,6 +104,68 @@ fn readable_ink(color: u32, paper: u32, minimum: f32) -> u32 {
                 0
             }
         })
+}
+fn linear(channel: u32) -> f32 {
+    let x = channel as f32 / 255.;
+    if x <= 0.04045 {
+        x / 12.92
+    } else {
+        ((x + 0.055) / 1.055).powf(2.4)
+    }
+}
+fn encode(x: f32) -> f32 {
+    if x <= 0.0031308 {
+        x * 12.92
+    } else {
+        1.055 * x.powf(1. / 2.4) - 0.055
+    }
+}
+/// sRGB to OKLCH (lightness, chroma, hue in radians).
+fn oklch(color: u32) -> (f32, f32, f32) {
+    let (r, g, b) = (
+        linear((color >> 16) & 255),
+        linear((color >> 8) & 255),
+        linear(color & 255),
+    );
+    let l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b).cbrt();
+    let m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b).cbrt();
+    let s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b).cbrt();
+    let lightness = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+    let a = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+    let b = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+    (lightness, a.hypot(b), b.atan2(a))
+}
+/// OKLCH to sRGB, reducing chroma at the same hue when the color falls
+/// outside the sRGB gamut.
+fn from_oklch(lightness: f32, chroma: f32, hue: f32) -> u32 {
+    let linear_rgb = |chroma: f32| {
+        let (a, b) = (chroma * hue.cos(), chroma * hue.sin());
+        let l = (lightness + 0.3963377774 * a + 0.2158037573 * b).powi(3);
+        let m = (lightness - 0.1055613458 * a - 0.0638541728 * b).powi(3);
+        let s = (lightness - 0.0894841775 * a - 1.2914855480 * b).powi(3);
+        [
+            4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+            -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+            -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+        ]
+    };
+    let inside = |c: f32| linear_rgb(c).iter().all(|v| (-1e-4..=1.0001).contains(v));
+    let mut fitted = chroma;
+    if !inside(chroma) {
+        let (mut low, mut high) = (0., chroma);
+        for _ in 0..20 {
+            let mid = (low + high) / 2.;
+            if inside(mid) {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        fitted = low;
+    }
+    let channel = |v: f32| (encode(v.clamp(0., 1.)) * 255.).round() as u32;
+    let [r, g, b] = linear_rgb(fitted);
+    (channel(r) << 16) | (channel(g) << 8) | channel(b)
 }
 #[derive(Clone, Copy)]
 pub struct Theme {
@@ -295,6 +349,11 @@ impl Theme {
     pub fn card(self) -> Rgba {
         let lift = if self.dark { 0.05 } else { 0. };
         self.at_opacity(mix(self.surface, self.ink, lift), 0.94)
+    }
+    /// The workspace behind pages: in dark mode, darker than the paper so
+    /// pages read as raised sheets.
+    pub fn desk(self) -> u32 {
+        if self.dark { self.bg } else { self.selected }
     }
     /// Selection outlines, handles and lasso: a blue that stays distinct
     /// from ink and paper in both modes.
@@ -596,11 +655,16 @@ mod tests {
                 if contrast(color, paper) >= palette.ink_contrast() {
                     assert_eq!(adjusted, color);
                 }
-                let before: Hsla = rgb(color).into();
-                let after: Hsla = rgb(adjusted).into();
-                let hue_delta = (before.h - after.h).abs();
-                assert!(hue_delta.min(1. - hue_delta) < 0.015);
-                assert!((before.s - after.s).abs() < 0.025);
+                // Perceptual hue is kept for any color with visible chroma.
+                let (_, before_c, before_h) = oklch(color);
+                let (_, _, after_h) = oklch(adjusted);
+                if before_c > 0.03 {
+                    let delta = (before_h - after_h).abs() % std::f32::consts::TAU;
+                    assert!(
+                        delta.min(std::f32::consts::TAU - delta) < 0.06,
+                        "{color:06x}"
+                    );
+                }
                 assert_eq!(
                     CanvasTheme {
                         adapt_ink: false,

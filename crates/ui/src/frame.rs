@@ -51,7 +51,7 @@ impl Render for NotesView {
                 div()
                     .absolute()
                     .inset_0()
-                    .bg(rgb(theme.selected))
+                    .bg(rgb(theme.desk()))
                     .child(self.canvas_layer(cx)),
             );
         }

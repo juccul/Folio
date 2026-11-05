@@ -297,7 +297,7 @@ impl NotesView {
             .h(px(height))
             .overflow_hidden()
             // White PDF pages would otherwise glare beside dark notebooks.
-            .when(bright_raster, |cover| cover.opacity(0.88))
+            .when(bright_raster, |cover| cover.opacity(0.8))
             .bg(rgb(palette.paper))
             .flex()
             .items_center()
@@ -496,14 +496,7 @@ impl NotesView {
         let (color, size) = if chevron {
             (theme.muted, 0.875)
         } else {
-            (
-                if current {
-                    theme.primary_foreground
-                } else {
-                    theme.ink
-                },
-                1.375,
-            )
+            (theme.ink, 1.375)
         };
         self.control(
             id,
@@ -519,8 +512,9 @@ impl NotesView {
         .flex_shrink_0()
         .p_0()
         .rounded(rems(theme.radius / 16.))
+        // One active style: a firm neutral tint with a full-strength icon.
         .bg(if current {
-            rgb(theme.accent).into()
+            rgba((theme.ink << 8) | if theme.dark { 0x3d } else { 0x26 })
         } else {
             theme.tint(self.motion.borrow_mut().hover_value(id))
         })
@@ -1067,6 +1061,8 @@ impl NotesView {
                     div()
                         .id(SharedString::from(format!("note-row-{id}")))
                         .w_full()
+                        // Keep titles and their actions within one glance.
+                        .max_w(rems(60.))
                         .h(rems(4.5))
                         .flex_shrink_0()
                         .flex()
@@ -1263,15 +1259,11 @@ impl NotesView {
                                         .flex_1()
                                         .min_w_0()
                                         .text_size(rems(0.8125))
-                                        .text_color(rgb(if import_failed {
-                                            theme.destructive
-                                        } else {
-                                            theme.secondary()
-                                        }))
+                                        .text_color(rgb(theme.secondary()))
                                         .truncate()
                                         // The cover badge names the failure.
                                         .child(if import_failed {
-                                            "Open to retry".to_owned()
+                                            edited_label(n.updated_at)
                                         } else {
                                             format!("{details} · {edited}")
                                         }),
@@ -2470,7 +2462,7 @@ impl NotesView {
                     // the focus color for the keyboard, a soft tint while
                     // hovered.
                     let ring = if active {
-                        rgb(theme.accent)
+                        rgb(theme.selection())
                     } else if focused {
                         rgb(theme.ring)
                     } else {
@@ -2500,10 +2492,7 @@ impl NotesView {
                         } else {
                             FontWeight::NORMAL
                         })
-                        .when(active, |n| {
-                            n.bg(rgb(theme.accent))
-                                .text_color(rgb(theme.primary_foreground))
-                        })
+                        .when(active, |n| n.text_color(rgb(theme.ink)))
                         .when(!active, |n| n.text_color(rgb(theme.muted)))
                         .child(format!("{}", index + 1));
                     let caption = div()

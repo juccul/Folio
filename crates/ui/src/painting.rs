@@ -1220,7 +1220,7 @@ impl Painter {
                 let background = if on_page {
                     canvas_theme.paper
                 } else {
-                    theme.bg
+                    theme.desk()
                 };
                 let (ring, halo) = super::theme::cursor_colors(background);
                 let circle = folio_ink::circle(center, r, 32)

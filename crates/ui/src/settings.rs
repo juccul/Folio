@@ -868,6 +868,23 @@ impl NotesView {
                                     .min_h_0()
                                     .min_w_0()
                                     .child(body)
+                                    // A soft fade marks content below the fold.
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left_0()
+                                            .right_0()
+                                            .bottom_0()
+                                            .h(rems(1.5))
+                                            .bg(linear_gradient(
+                                                180.,
+                                                linear_color_stop(rgba(theme.popover << 8), 0.),
+                                                linear_color_stop(
+                                                    rgba((theme.popover << 8) | 0xcc),
+                                                    1.,
+                                                ),
+                                            )),
+                                    )
                                     .children(scrollbar),
                             ),
                     )
