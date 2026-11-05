@@ -65,8 +65,8 @@ impl NotesView {
         let short = match id.as_ref() {
             "solve-selection" => Some("Solve"),
             "index-handwriting" => Some("Make searchable"),
-            "recognize-text" => Some("To text"),
-            "recognize-math" => Some("To math"),
+            "recognize-text" => Some("Convert to text"),
+            "recognize-math" => Some("Convert to math"),
             _ => None,
         };
         let content = div()
@@ -225,7 +225,7 @@ impl NotesView {
         }
         row = row
             .child(editing)
-            .child(div().w(px(1.)).h(rems(1.25)).mx_1().bg(theme.border));
+            .child(div().w(px(1.)).h(rems(1.5)).mx_2().bg(theme.cover_edge()));
         for id in self.controller.session().selection.clone() {
             if let Some(folio_document::Object::Equation(e)) =
                 self.controller.page().objects.get(&id).map(|o| o.as_ref())

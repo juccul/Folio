@@ -195,6 +195,7 @@ impl NotesView {
                                 .child(icon(kind, theme.muted))
                                 .child(div().flex_1().child(label))
                                 .child(sample)
+                                .child(div().w(rems(0.25)))
                                 .child(if active {
                                     icon(Icon::Check, theme.ink).into_any_element()
                                 } else {

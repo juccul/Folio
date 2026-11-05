@@ -113,7 +113,8 @@ impl NotesView {
             .flex_shrink_0()
             .px_3()
             .py_1()
-            .border_color(theme.border)
+            .border_1()
+            .border_color(theme.cover_edge())
     }
     /// An outlined − value + control. `step` receives −1 or +1.
     #[allow(clippy::too_many_arguments)]

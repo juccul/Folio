@@ -375,7 +375,7 @@ impl Theme {
     }
     /// Secondary text and idle icons in dense lists: between muted and ink.
     pub fn secondary(self) -> u32 {
-        mix(self.muted, self.ink, 0.25)
+        mix(self.muted, self.ink, if self.dark { 0.4 } else { 0.25 })
     }
     /// The frame of a page preview: stronger than glass so a blank page
     /// stays visible against the surface in both modes.

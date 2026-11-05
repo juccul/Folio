@@ -509,7 +509,7 @@ impl NotesView {
                 } else {
                     theme.ink
                 },
-                1.375,
+                1.5,
             )
         };
         self.control(
@@ -1193,37 +1193,7 @@ impl NotesView {
                                     .child(icon(Icon::Page, theme.muted).size(rems(1.5))),
                             )
                         },
-                    )
-                    .when(import_failed, |cover| {
-                        cover.child(
-                            div()
-                                .absolute()
-                                .left_2()
-                                .right_2()
-                                .bottom_2()
-                                .px_2()
-                                .py_1()
-                                .rounded(px(theme.corner_sm().max(4.)))
-                                // A tinted badge: clear, but quieter than the
-                                // primary action.
-                                .bg(rgb(crate::theme::mix(
-                                    theme.canvas.paper,
-                                    theme.destructive,
-                                    0.16,
-                                )))
-                                .border_1()
-                                .border_color(rgba((theme.destructive << 8) | 0x59))
-                                .text_color(rgb(theme.error_text()))
-                                .text_xs()
-                                .font_weight(FontWeight::MEDIUM)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .gap_1()
-                                .child(icon(Icon::Alert, theme.error_text()).size(rems(0.875)))
-                                .child("Import failed · Open to retry"),
-                        )
-                    });
+                    );
                 let content = div()
                     .w_full()
                     .min_w_0()
@@ -1294,11 +1264,23 @@ impl NotesView {
                                         .flex_1()
                                         .min_w_0()
                                         .text_size(rems(0.8125))
-                                        .text_color(rgb(theme.secondary()))
+                                        .text_color(rgb(if import_failed {
+                                            theme.error_text()
+                                        } else {
+                                            theme.secondary()
+                                        }))
                                         .truncate()
-                                        // The cover badge names the failure.
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .when(import_failed, |line| {
+                                            line.font_weight(FontWeight::MEDIUM).child(
+                                                icon(Icon::Alert, theme.error_text())
+                                                    .size(rems(0.875)),
+                                            )
+                                        })
                                         .child(if import_failed {
-                                            edited_label(n.updated_at)
+                                            "Import failed · Retry".to_owned()
                                         } else {
                                             format!("{details} · {edited}")
                                         }),
