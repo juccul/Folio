@@ -297,6 +297,13 @@ impl NotesView {
         };
         use folio_document::{Alignment, ListStyle};
         let theme = Theme::new(&self.controller.settings);
+        // The selection also holds ink or other objects.
+        let mixed = self.controller.session().selection.iter().any(|id| {
+            !matches!(
+                self.controller.page().objects.get(id).map(|o| o.as_ref()),
+                Some(Object::Text(_))
+            )
+        });
         let divider = || {
             div()
                 .w(px(1.))
@@ -407,7 +414,7 @@ impl NotesView {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(theme.secondary()))
                     .child(icon(Icon::Text, theme.secondary()).size(rems(1.)))
-                    .child("Text"),
+                    .child(if mixed { "Text in selection" } else { "Text" }),
             )
             .child(font)
             .child(size)
@@ -530,9 +537,9 @@ impl NotesView {
             .size(rems(1.))
             .flex_shrink_0()
             .rounded_full()
-            .border_1()
-            .border_color(theme.border)
-            .bg(rgb(text.color.rgb()));
+            .border(px(1.5))
+            .border_color(rgba((theme.ink << 8) | 0x80))
+            .bg(rgb(theme.canvas.ink(text.color.rgb())));
         row = row.child(
             self.control(
                 "text-color",

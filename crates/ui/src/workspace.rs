@@ -465,7 +465,7 @@ impl NotesView {
             action,
         )
         .w(rems(2.5))
-        .h(rems(2.25))
+        .h(rems(2.375))
         .min_h_0()
         .flex_shrink_0()
         .p_0()
@@ -514,7 +514,7 @@ impl NotesView {
             action,
         )
         .w(rems(2.5))
-        .h(rems(2.25))
+        .h(rems(2.375))
         .min_h_0()
         .flex_shrink_0()
         .p_0()
@@ -541,7 +541,7 @@ impl NotesView {
     fn page_controls_group(&self) -> Div {
         let theme = Theme::new(&self.controller.settings);
         div()
-            .h(rems(2.25))
+            .h(rems(2.625))
             .px(rems(0.25))
             .flex()
             .flex_shrink_0()
@@ -1221,9 +1221,9 @@ impl NotesView {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap_3()
+                    .gap_2()
                     .child(cover)
-                    .child(title.w_full());
+                    .child(title.w_full().text_size(rems(0.9375)));
                 let edited = edited_label(n.updated_at)
                     .trim_start_matches("Edited ")
                     .to_owned();
@@ -2086,7 +2086,7 @@ impl NotesView {
             .child(self.page_control_button(
                 "header-add-page",
                 "Add page",
-                Icon::Plus,
+                Icon::NewPage,
                 false,
                 cx,
                 |this, _, _| this.controller.add_page(),
@@ -2204,7 +2204,7 @@ impl NotesView {
         } else {
             Icon::Lasso
         };
-        let mut tools = div().flex().flex_shrink_0().items_center().gap(rems(0.375));
+        let mut tools = div().flex().flex_shrink_0().items_center().gap(rems(0.5));
         let group = |id: &'static str, _current: bool| {
             div()
                 .id(id)
@@ -2401,7 +2401,7 @@ impl NotesView {
             .id("editing-tools")
             .flex_1()
             .min_w_0()
-            .h(rems(2.25))
+            .h(rems(2.625))
             .px(rems(0.3125))
             .flex()
             .items_center()
@@ -2428,7 +2428,7 @@ impl NotesView {
         };
         div()
             .id("writing-toolbar")
-            .h(rems(2.75))
+            .h(rems(3.))
             .flex_shrink_0()
             .px(rems(0.625))
             .flex()
