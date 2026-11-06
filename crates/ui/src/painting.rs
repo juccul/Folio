@@ -313,8 +313,9 @@ fn selection_overlay(
     zoom: f32,
     transform: Transform,
 ) -> ([DocPoint; 5], [DocPoint; 2]) {
-    // Clear of the content, yet within the handles' 10 px reach.
-    let outline = rect_points(bounds.expand(6.5 / zoom)).map(|p| transform.apply(p));
+    // Clear of the content; handles are hit where they are drawn.
+    let outline =
+        rect_points(bounds.expand(folio_app::SELECTION_PADDING / zoom)).map(|p| transform.apply(p));
     let rotation = [
         DocPoint::new(bounds.center().x, bounds.min.y),
         DocPoint::new(bounds.center().x, bounds.min.y - 24. / zoom),

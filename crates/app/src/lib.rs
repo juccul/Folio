@@ -60,6 +60,8 @@ use folio_storage::{Delta, JournalEvent, Persistence, Store};
 pub use history::SaveState;
 pub use import_export::ExportSnapshot;
 pub use interaction::Interaction;
+/// Screen pixels between selected content and its drawn outline and handles.
+pub const SELECTION_PADDING: f32 = 9.;
 pub use library_actions::NoteAction;
 pub use math_solver::{MathReport, MathRequest, MathSession, MathStep, typeset};
 pub use previews::{RasterPreview, relative_transform};

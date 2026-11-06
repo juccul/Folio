@@ -1113,9 +1113,7 @@ impl NotesView {
                         .rounded(px(theme.corner_md()))
                         .border_1()
                         .border_color(transparent_black())
-                        .when(menu_owner, |row| {
-                            row.bg(theme.tint(0.7)).border_color(theme.cover_edge())
-                        })
+                        .when(menu_owner, |row| row.bg(theme.tint(0.7)))
                         .when(!menu_open, |row| row.hover(move |s| s.bg(theme.tint(0.45))))
                         .pr_2()
                         .child(
@@ -1149,8 +1147,8 @@ impl NotesView {
                         )
                         .child(favorite)
                         .child(menu)
-                        // An inset hairline ties each title to its actions.
-                        .child(div().absolute().bottom_0().left_3().right_3().h(px(1.)).bg(
+                        // A hairline as wide as the row highlight.
+                        .child(div().absolute().bottom_0().left_0().right_0().h(px(1.)).bg(
                             if theme.dark {
                                 theme.cover_edge()
                             } else {
@@ -1199,19 +1197,37 @@ impl NotesView {
                     .child(cover_content)
                     // Blank documents get a quiet mark, so the grid does not
                     // read as a wall of identical pages.
-                    // A failed import shows a small alert on plain paper; the
-                    // caption below carries the message.
-                    .when(import_failed, |cover| {
-                        cover.child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(icon(Icon::Alert, theme.error_text()).size(rems(1.25))),
-                        )
-                    });
+                    // A failed import names itself; a blank page says so quietly.
+                    .when(
+                        import_failed
+                            || preview.as_ref().is_some_and(|(page, _)| {
+                                page.objects.is_empty() && page.properties.pdf.is_none()
+                            }),
+                        |cover| {
+                            cover.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_sm()
+                                    .when(import_failed, |mark| {
+                                        mark.text_color(rgb(theme.error_text()))
+                                            .child(
+                                                icon(Icon::Alert, theme.error_text())
+                                                    .size(rems(1.75)),
+                                            )
+                                            .child("Import failed")
+                                    })
+                                    .when(!import_failed, |mark| {
+                                        mark.text_color(rgb(theme.muted)).child("Empty page")
+                                    }),
+                            )
+                        },
+                    );
                 let content = div()
                     .w_full()
                     .min_w_0()
@@ -2120,6 +2136,8 @@ impl NotesView {
                 // A document state, shown by the filled star alone.
                 .bg(favorite_hover),
             )
+            // Keeps the favorite state apart from the page actions.
+            .child(self.editor_separator())
             .child(self.page_control_button(
                 "header-add-page",
                 "Add page",
@@ -2242,13 +2260,17 @@ impl NotesView {
             Icon::Lasso
         };
         let mut tools = div().flex().flex_shrink_0().items_center().gap(rems(0.5));
-        let group = |id: &'static str, _current: bool| {
+        let group = |id: &'static str, current: bool| {
             div()
                 .id(id)
                 .flex()
                 .items_center()
                 .rounded(rems(theme.radius / 16.))
                 .gap(rems(0.0625))
+                // The tool and its options arrow highlight together.
+                .when(!current, |group| {
+                    group.hover(move |s| s.bg(theme.tint(0.6)))
+                })
         };
         tools = tools.child(
             group("pen-tool-group", selected_pen)
@@ -2275,7 +2297,7 @@ impl NotesView {
                             this.pen_settings = open;
                         },
                     )
-                    .w(rems(1.375)),
+                    .w(rems(1.5)),
                 ),
         );
         tools = tools.child(self.tool_button(
@@ -2317,7 +2339,7 @@ impl NotesView {
                         cx,
                         |this, window, cx| this.toggle_tool_menu(ToolMenu::Selection, window, cx),
                     )
-                    .w(rems(1.375)),
+                    .w(rems(1.5)),
                 ),
         );
         for (id, label, kind, tool) in [

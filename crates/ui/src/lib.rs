@@ -2442,7 +2442,7 @@ impl NotesView {
                 .px_2()
                 .rounded_full()
                 .border_1()
-                .border_color(theme.border)
+                .border_color(theme.cover_edge())
                 .text_xs()
                 .text_color(rgb(theme.muted))
                 .child(label)

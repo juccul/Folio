@@ -244,12 +244,18 @@ impl Controller {
             bounds.max,
             Point::new(bounds.min.x, bounds.max.y),
         ];
+        // Handles are drawn on an outline padded away from the content.
+        let padded = bounds.expand(crate::SELECTION_PADDING / zoom);
+        let drawn = [
+            padded.min,
+            Point::new(padded.max.x, padded.min.y),
+            padded.max,
+            Point::new(padded.min.x, padded.max.y),
+        ];
         let image = self.selection_has_image();
-        if let Some((i, corner)) = corners
-            .iter()
-            .enumerate()
-            .find(|(_, corner)| corner.distance(p) < 10. / zoom)
-        {
+        if let Some((i, corner)) = corners.iter().enumerate().find(|(i, corner)| {
+            drawn[*i].distance(p) < 10. / zoom || corner.distance(p) < 10. / zoom
+        }) {
             return Some(Interaction::Resize {
                 anchor: corners[(i + 2) % 4],
                 start: *corner,
@@ -266,11 +272,16 @@ impl Controller {
             Point::new(center.x, bounds.max.y),
             Point::new(bounds.min.x, center.y),
         ];
+        let drawn_sides = [
+            Point::new(center.x, padded.min.y),
+            Point::new(padded.max.x, center.y),
+            Point::new(center.x, padded.max.y),
+            Point::new(padded.min.x, center.y),
+        ];
         if image
-            && let Some((i, side)) = sides
-                .iter()
-                .enumerate()
-                .find(|(_, side)| side.distance(p) < 10. / zoom)
+            && let Some((i, side)) = sides.iter().enumerate().find(|(i, side)| {
+                drawn_sides[*i].distance(p) < 10. / zoom || side.distance(p) < 10. / zoom
+            })
         {
             return Some(Interaction::Resize {
                 anchor: sides[(i + 2) % 4],
