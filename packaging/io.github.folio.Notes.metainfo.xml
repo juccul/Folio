@@ -12,6 +12,9 @@
   <launchable type="desktop-id">io.github.folio.Notes.desktop</launchable>
   <supports><control>pointing</control><control>keyboard</control></supports>
   <releases>
+    <release version="0.2.2" date="2026-11-06">
+      <description><p>A browser-style find bar, a grouped text formatting bar, exit animations, a more readable dark mode, monochrome tool and selection highlights, a denser library list and a resized open-document dialog.</p></description>
+    </release>
     <release version="0.2.1" date="2026-11-04">
       <description><p>A configurable tool wheel, per-button tablet pad settings, an adjustable image crop box, easier canvas text editing and formatting, a fuller tab menu and a new app icon.</p></description>
     </release>
