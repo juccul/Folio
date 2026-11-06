@@ -415,6 +415,7 @@ impl NotesView {
                     .text_color(rgb(theme.secondary()))
                     .child(if mixed { "Text in selection" } else { "Text" }),
             )
+            .child(divider())
             .child(font)
             .child(size)
             .child(divider());

@@ -362,7 +362,7 @@ impl Theme {
     /// paper reads as a sheet with a clear edge.
     pub fn desk(self) -> u32 {
         if self.dark {
-            mix(self.bg, 0xffffff, 0.065)
+            mix(self.bg, 0xffffff, 0.085)
         } else {
             self.selected
         }

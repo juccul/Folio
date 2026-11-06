@@ -306,7 +306,7 @@ impl NotesView {
                     .absolute()
                     .inset_0()
                     .rounded(px(corner))
-                    .bg(rgba(0x00000033))
+                    .bg(rgba(0x00000040))
             });
             element = element
                 .child(
@@ -1089,6 +1089,7 @@ impl NotesView {
                             .text_sm()
                             .text_color(rgb(theme.secondary()))
                             .truncate()
+                            .when(import_failed, |column| column.child("—"))
                             .when(!import_failed, |column| {
                                 column.child(
                                     page_count
@@ -1525,7 +1526,8 @@ impl NotesView {
                             cx,
                             move |this, _, _| this.controller.filter = NoteFilter::Notebook(target),
                         )
-                        .text_xs()
+                        .text_size(rems(0.8125))
+                        .text_color(rgb(theme.secondary()))
                         .py_0()
                         .px_1()
                         .min_h_0()
@@ -1594,8 +1596,9 @@ impl NotesView {
                             .children(breadcrumb.map(|crumbs| {
                                 div()
                                     .absolute()
-                                    .left_0()
+                                    .left(rems(-0.25))
                                     .bottom_full()
+                                    .mb_1()
                                     .h(rems(1.25))
                                     .flex()
                                     .items_center()
@@ -2127,8 +2130,6 @@ impl NotesView {
                 // A document state, shown by the filled star alone.
                 .bg(favorite_hover),
             )
-            // Keeps the favorite state apart from the page actions.
-            .child(self.editor_separator())
             .child(self.page_control_button(
                 "header-add-page",
                 "Add page",

@@ -233,7 +233,9 @@ impl NotesView {
             )),
         );
         // Theme and paper come first; surface styling follows.
+        let palette = theme_rows.pop().unwrap();
         let styling = theme_rows.split_off(1);
+        theme_rows.push(palette);
         div()
             .flex()
             .flex_col()
