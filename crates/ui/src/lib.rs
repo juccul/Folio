@@ -2549,7 +2549,9 @@ impl NotesView {
                 .px_2()
                 .py_1p5()
                 .justify_start()
-                .w_full(),
+                .w_full()
+                // Rows keep their height; the list scrolls instead.
+                .flex_shrink_0(),
             );
         }
         let create = self

@@ -173,6 +173,8 @@ fn from_oklch(lightness: f32, chroma: f32, hue: f32) -> u32 {
     let [r, g, b] = linear_rgb(fitted);
     (channel(r) << 16) | (channel(g) << 8) | channel(b)
 }
+/// Default page color in dark mode when paper follows the theme.
+const DARK_PAPER: u32 = 0x0e0e0e;
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub bg: u32,
@@ -263,10 +265,10 @@ impl Theme {
         let resolve = |token| settings.appearance.color(settings.dark, token);
         let color = |token| resolve(token).rgb();
         let paper = if settings.appearance.canvas_follows_theme {
-            // Dark paper sits just above the workspace black, so pages and
-            // previews keep a visible edge and ink keeps its depth.
+            // The default dark paper: near black, a step above the theme
+            // background so ink keeps its depth.
             if settings.dark {
-                mix(color(Background), 0xffffff, 0.08)
+                DARK_PAPER
             } else {
                 color(Background)
             }
@@ -356,15 +358,16 @@ impl Theme {
         let lift = if self.dark { 0.05 } else { 0. };
         self.at_opacity(mix(self.surface, self.ink, lift), 0.94)
     }
-    /// The workspace behind pages: in dark mode, darker than the paper so
-    /// pages read as raised sheets.
+    /// The workspace behind pages, a step lighter than near-black dark
+    /// paper so the page keeps a clear edge.
     pub fn desk(self) -> u32 {
-        if self.dark { self.bg } else { self.selected }
+        self.selected
     }
-    /// Selection outlines, handles and lasso: a blue that stays distinct
-    /// from ink and paper in both modes.
+    /// Selection outlines, handles and lasso.
     pub fn selection(self) -> u32 {
-        if self.dark { 0x60a5fa } else { 0x2563eb }
+        // Monochrome: the primary color, ink-dark in light mode and
+        // near-white in dark mode.
+        self.accent
     }
     /// Error text: the destructive color, lifted on dark surfaces so small
     /// red text stays readable.
@@ -374,10 +377,6 @@ impl Theme {
         } else {
             self.destructive
         }
-    }
-    /// The selection blue for icons and text on a light tint of itself.
-    pub fn selection_strong(self) -> u32 {
-        if self.dark { 0x93c5fd } else { 0x1d4ed8 }
     }
     /// Secondary text and idle icons in dense lists: between muted and ink.
     pub fn secondary(self) -> u32 {
@@ -422,7 +421,7 @@ pub trait Glass: Styled + Sized {
     /// denser and more strongly blurred than menus, while still following the
     /// glass settings. Every dialog shares this so their surfaces match.
     fn glass_dialog(self, theme: Theme, base: u32) -> Self {
-        let opacity = theme.glass_opacity + (1. - theme.glass_opacity) * 0.35;
+        let opacity = theme.glass_opacity + (1. - theme.glass_opacity) * 0.75;
         self.glass_fill_at(theme, base, opacity, theme.glass_blur * 1.75)
             .glass_frame(theme)
     }
@@ -459,7 +458,11 @@ pub trait Glass: Styled + Sized {
         } else {
             base
         };
-        self.glass_fill(theme, base).glass_frame(theme)
+        // Menus float over busy content; keep them nearly solid so rows
+        // beneath do not show through, while still following the setting.
+        let opacity = theme.glass_opacity + (1. - theme.glass_opacity) * 0.7;
+        self.glass_fill_at(theme, base, opacity, theme.glass_blur)
+            .glass_frame(theme)
     }
     /// The hairline edge and soft shadow of floating glass.
     fn glass_frame(self, theme: Theme) -> Self {
@@ -588,7 +591,7 @@ mod tests {
         };
         settings.appearance.adapt_ink = true;
         let theme = Theme::new(&settings);
-        assert_eq!(theme.canvas.paper, 0x1e1e1e);
+        assert_eq!(theme.canvas.paper, 0x0e0e0e);
         assert!(contrast(theme.canvas.ink(0x2b3934), theme.canvas.paper) >= 3.);
         assert_eq!(theme.canvas.ink(0xffffff), 0xffffff);
         settings.appearance.canvas_follows_theme = false;

@@ -3,41 +3,19 @@ use super::*;
 use folio_document::Page;
 use std::{collections::HashMap, sync::Arc};
 
+/// How long ago a document changed, abbreviated: "Edited 3d ago".
 pub(super) fn edited_label(updated: u64) -> String {
-    let now = folio_document::now_ms();
-    let minutes = now.saturating_sub(updated) / 60_000;
-    let plural = |n: u64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
-    match minutes {
-        0 => "Edited just now".into(),
-        1..=59 => format!("Edited {} ago", plural(minutes, "minute")),
-        60..=1439 => format!("Edited {} ago", plural(minutes / 60, "hour")),
-        1440..=2879 => "Edited yesterday".into(),
-        2880..=10079 => format!("Edited {} ago", plural(minutes / 1440, "day")),
-        10080..=40319 => format!("Edited {} ago", plural(minutes / 10080, "week")),
-        _ => format!("Edited {}", calendar_date(updated)),
-    }
-}
-/// Day, month and year of a millisecond timestamp (UTC).
-fn calendar_date(ms: u64) -> String {
-    // Civil-from-days conversion (Howard Hinnant's algorithm).
-    let days = (ms / 86_400_000) as i64 + 719_468;
-    let era = days.div_euclid(146_097);
-    let day_of_era = days.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 {
-        month_index + 3
-    } else {
-        month_index - 9
+    let minutes = folio_document::now_ms().saturating_sub(updated) / 60_000;
+    let age = match minutes {
+        0 => return "Edited just now".into(),
+        1..=59 => format!("{minutes}min"),
+        60..=1439 => format!("{}h", minutes / 60),
+        1440..=10079 => format!("{}d", minutes / 1440),
+        10080..=43199 => format!("{}w", minutes / 10080),
+        43200..=525_599 => format!("{}m", minutes / 43200),
+        _ => format!("{}y", minutes / 525_600),
     };
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    format!("{day} {} {year}", MONTHS[(month - 1) as usize])
+    format!("Edited {age} ago")
 }
 
 pub(super) struct Hint(pub(super) SharedString, pub(super) Theme);
@@ -315,14 +293,22 @@ impl NotesView {
             .w(px((height * aspect).min(width)))
             .h(px(height))
             .overflow_hidden()
-            // White PDF pages would otherwise glare beside dark notebooks.
-            .when(bright_raster, |cover| cover.opacity(0.72))
+            .relative()
             .bg(rgb(palette.paper))
             .flex()
             .items_center()
             .justify_center();
         if valid && let Some(image) = image {
-            element = element.child(
+            // White PDF pages and images would otherwise glare beside dark
+            // notebooks; a dark veil brings them to about 80 % brightness.
+            let veil = bright_raster.then(|| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded(px(corner))
+                    .bg(rgba(0x00000038))
+            });
+            element = element.children(veil).child(
                 img(image)
                     .size_full()
                     .object_fit(ObjectFit::Contain)
@@ -477,16 +463,7 @@ impl NotesView {
             id,
             label,
             // A favorite on-state uses the accent, as in the library.
-            icon(
-                kind,
-                if id == "favorite-note" && active {
-                    theme.selection_strong()
-                } else {
-                    theme.ink
-                },
-            )
-            .size(rems(1.375))
-            .into_any_element(),
+            icon(kind, theme.ink).size(rems(1.375)).into_any_element(),
             active,
             cx,
             action,
@@ -530,14 +507,7 @@ impl NotesView {
         let (color, size) = if chevron {
             (theme.muted, 0.875)
         } else {
-            (
-                if current {
-                    theme.selection_strong()
-                } else {
-                    theme.ink
-                },
-                1.5,
-            )
+            (theme.ink, 1.5)
         };
         self.control(
             id,
@@ -553,10 +523,9 @@ impl NotesView {
         .flex_shrink_0()
         .p_0()
         .rounded(rems(theme.radius / 16.))
-        // One active style: a firm neutral tint with a full-strength icon.
-        // The active tool shares the selection blue, as a soft tint.
+        // The active tool: a firm neutral tint with a full-strength icon.
         .bg(if current {
-            rgba((theme.selection() << 8) | if theme.dark { 0x38 } else { 0x24 })
+            rgba((theme.ink << 8) | if theme.dark { 0x38 } else { 0x24 })
         } else {
             theme.tint(self.motion.borrow_mut().hover_value(id))
         })
@@ -574,7 +543,6 @@ impl NotesView {
             .bg(rgba((theme.ink << 8) | 0x29))
     }
     fn page_controls_group(&self) -> Div {
-        let theme = Theme::new(&self.controller.settings);
         div()
             .h(rems(2.625))
             .px(rems(0.25))
@@ -582,10 +550,6 @@ impl NotesView {
             .flex_shrink_0()
             .items_center()
             .gap(rems(0.1875))
-            .rounded(rems(theme.corner_md() / 16.))
-            .bg(theme.raised())
-            .border_1()
-            .border_color(theme.glass_edge())
     }
     fn page_control_button(
         &self,
@@ -992,7 +956,7 @@ impl NotesView {
                             Icon::Star
                         },
                         if n.favorite {
-                            theme.selection_strong()
+                            theme.ink
                         } else {
                             theme.secondary()
                         },
@@ -1210,32 +1174,36 @@ impl NotesView {
                     .child(cover_content)
                     // Blank documents get a quiet mark, so the grid does not
                     // read as a wall of identical pages.
-                    .when_some(
-                        preview
-                            .as_ref()
-                            .map(|(page, _)| page)
-                            .filter(|page| page.objects.is_empty() && page.properties.pdf.is_none())
-                            .filter(|_| !import_failed)
-                            .cloned(),
-                        |cover, page| {
+                    // Blank documents and failed imports get one consistent,
+                    // quiet mark so no card looks broken.
+                    .when(
+                        import_failed
+                            || preview.as_ref().is_some_and(|(page, _)| {
+                                page.objects.is_empty() && page.properties.pdf.is_none()
+                            }),
+                        |cover| {
                             cover.child(
                                 div()
                                     .absolute()
                                     .inset_0()
                                     .flex()
-                                    .flex_col()
                                     .items_center()
                                     .justify_center()
                                     .child(
                                         icon(
-                                            match page.properties.paper {
-                                                folio_document::Paper::Grid => Icon::PaperGrid,
-                                                folio_document::Paper::Dots => Icon::PaperDots,
-                                                _ => Icon::PaperRuled,
+                                            if import_failed {
+                                                Icon::Alert
+                                            } else {
+                                                Icon::Page
                                             },
-                                            theme.muted,
+                                            if import_failed {
+                                                theme.error_text()
+                                            } else {
+                                                theme.secondary()
+                                            },
                                         )
-                                        .size(rems(1.25)),
+                                        .size(rems(1.5))
+                                        .opacity(if import_failed { 0.8 } else { 0.45 }),
                                     ),
                             )
                         },
@@ -1517,7 +1485,8 @@ impl NotesView {
                 self.button("breadcrumb-root", "Documents", false, cx, |this, _, _| {
                     this.controller.filter = NoteFilter::All
                 })
-                .text_xs()
+                .text_size(rems(0.8125))
+                .text_color(rgb(theme.secondary()))
                 .py_0()
                 .px_1()
                 // Short enough that the header keeps the height of other views.
@@ -1531,24 +1500,26 @@ impl NotesView {
                 .filter(|folder| folder.id != id)
             {
                 let target = folder.id;
-                row = row.child(div().text_xs().child("/")).child(
-                    self.button(
-                        format!("breadcrumb-{target}"),
-                        folder.name,
-                        target == id,
-                        cx,
-                        move |this, _, _| this.controller.filter = NoteFilter::Notebook(target),
-                    )
-                    .text_xs()
-                    .py_0()
-                    .px_1()
-                    .min_h_0()
-                    .h(rems(1.25))
-                    .max_w(px(150.))
-                    .truncate(),
-                );
+                row = row
+                    .child(icon(Icon::Forward, theme.muted).size(rems(0.75)))
+                    .child(
+                        self.button(
+                            format!("breadcrumb-{target}"),
+                            folder.name,
+                            target == id,
+                            cx,
+                            move |this, _, _| this.controller.filter = NoteFilter::Notebook(target),
+                        )
+                        .text_xs()
+                        .py_0()
+                        .px_1()
+                        .min_h_0()
+                        .h(rems(1.25))
+                        .max_w(px(150.))
+                        .truncate(),
+                    );
             }
-            Some(row.child(div().text_xs().text_color(rgb(theme.muted)).child("/")))
+            Some(row)
         } else if let NoteFilter::NotebookTrash(id) = self.controller.filter {
             Some(
                 div()
@@ -2889,16 +2860,16 @@ impl NotesView {
 mod thumbnail_tests {
     use super::*;
     #[::core::prelude::v1::test]
-    fn edited_labels_pluralize_and_fall_back_to_dates() {
+    fn edited_labels_abbreviate_every_age() {
         let now = folio_document::now_ms();
         let ago = |minutes: u64| edited_label(now - minutes * 60_000);
-        assert_eq!(ago(1), "Edited 1 minute ago");
-        assert_eq!(ago(120), "Edited 2 hours ago");
-        assert_eq!(ago(1500), "Edited yesterday");
-        assert_eq!(ago(3 * 1440), "Edited 3 days ago");
-        assert_eq!(ago(7 * 1440), "Edited 1 week ago");
-        assert_eq!(calendar_date(0), "1 Jan 1970");
-        assert_eq!(calendar_date(1_709_251_200_000), "1 Mar 2024");
+        assert_eq!(ago(0), "Edited just now");
+        assert_eq!(ago(5), "Edited 5min ago");
+        assert_eq!(ago(120), "Edited 2h ago");
+        assert_eq!(ago(1500), "Edited 1d ago");
+        assert_eq!(ago(7 * 1440), "Edited 1w ago");
+        assert_eq!(ago(65 * 1440), "Edited 2m ago");
+        assert_eq!(ago(400 * 1440), "Edited 1y ago");
     }
     fn key(page: &Page) -> ThumbnailKey {
         ThumbnailKey {

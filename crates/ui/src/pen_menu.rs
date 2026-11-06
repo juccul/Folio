@@ -171,10 +171,10 @@ impl NotesView {
                     let active = self.controller.style.tool == tool;
                     // A short sample stroke shows how each pen marks.
                     let (thickness, color) = match tool {
-                        InkTool::Ballpoint => (1.5, rgb(theme.ink)),
-                        InkTool::Fountain => (2.5, rgb(theme.ink)),
-                        InkTool::Pencil => (2., rgba((theme.ink << 8) | 0x8c)),
-                        InkTool::Marker => (4.5, rgb(theme.ink)),
+                        InkTool::Ballpoint => (2., rgb(theme.ink)),
+                        InkTool::Fountain => (3., rgb(theme.ink)),
+                        InkTool::Pencil => (2.5, rgba((theme.ink << 8) | 0xb3)),
+                        InkTool::Marker => (5., rgb(theme.ink)),
                         _ => (9., rgba(0xfacc158c)),
                     };
                     let sample = div()
