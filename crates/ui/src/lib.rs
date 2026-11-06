@@ -2225,7 +2225,9 @@ impl NotesView {
             )));
         }
         if matches!(modal, Modal::OpenDocument) {
-            panel = panel.child(self.open_document_list(&field, cx));
+            // The list takes what the window leaves after the dialog chrome.
+            let room = (f32::from(window.viewport_size().height) - 560.).clamp(232., 600.);
+            panel = panel.child(self.open_document_list(&field, room, cx));
         }
         let hint = match modal {
             Modal::Recognition if self.controller.recognition_for_index => "Ctrl + Enter to index",
@@ -2402,7 +2404,12 @@ impl NotesView {
     }
     /// Rows of the Ctrl+T picker: each document with its folder, last edit
     /// and whether it is already open, then a row to create a new one.
-    fn open_document_list(&mut self, field: &Entity<Field>, cx: &mut Context<Self>) -> Div {
+    fn open_document_list(
+        &mut self,
+        field: &Entity<Field>,
+        room: f32,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let theme = Theme::new(&self.controller.settings);
         let query = field.read(cx).content.trim().to_lowercase();
         if query != self.picker_query {
@@ -2460,7 +2467,7 @@ impl NotesView {
         let mut results = div()
             .id("tab-picker-results")
             .track_scroll(&self.picker_scroll)
-            .max_h(px(360.))
+            .max_h(px(room))
             .overflow_y_scroll()
             .flex()
             .flex_col()
@@ -2481,8 +2488,8 @@ impl NotesView {
                     }),
             );
         }
-        // Rows are about 58 px; the list holds 360 px.
-        let scrolls = matches.len() > 6;
+        // Rows are about 58 px each.
+        let scrolls = matches.len() as f32 * 58. > room;
         for (index, note) in matches.into_iter().enumerate() {
             let id = note.id;
             let mut detail = vec![workspace::edited_label(note.updated_at)];
@@ -2594,7 +2601,8 @@ impl NotesView {
             .px_2()
             .py_1p5()
             .justify_start()
-            .w_full();
+            .w_full()
+            .flex_shrink_0();
         div()
             .flex()
             .flex_col()

@@ -935,6 +935,8 @@ impl NotesView {
                         .map(|count| format!("{count} page{}", if count == 1 { "" } else { "s" }))
                         .unwrap_or_else(|| "Document".into())
                 });
+            let page_count =
+                pages.map(|count| format!("{count} page{}", if count == 1 { "" } else { "s" }));
             let details = if n.tags.is_empty() {
                 details
             } else {
@@ -1033,53 +1035,76 @@ impl NotesView {
                             .flex_col()
                             .gap_0p5()
                             .child(title.text_size(rems(0.9375)))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(rgb(theme.secondary()))
-                                    .truncate()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .when(import_failed, |line| {
-                                        line.child(
-                                            icon(Icon::Alert, theme.error_text()).size(rems(0.875)),
-                                        )
-                                    })
-                                    .child({
-                                        let text = details.clone();
-                                        // Only the failure is red; the date stays neutral.
-                                        let failure = if import_failed {
-                                            vec![(
-                                                0..details.len(),
-                                                HighlightStyle {
-                                                    color: Some(rgb(theme.error_text()).into()),
-                                                    font_weight: Some(FontWeight::MEDIUM),
-                                                    ..Default::default()
-                                                },
-                                            )]
-                                        } else {
-                                            Vec::new()
-                                        };
-                                        StyledText::new(text).with_highlights(failure)
-                                    }),
-                            ),
+                            // A second line only when there is something to say:
+                            // an import error or tags.
+                            .when(import_failed || !n.tags.is_empty(), |column| {
+                                column.child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(rgb(theme.secondary()))
+                                        .truncate()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .when(import_failed, |line| {
+                                            line.child(
+                                                icon(Icon::Alert, theme.error_text())
+                                                    .size(rems(0.875)),
+                                            )
+                                        })
+                                        .child({
+                                            let text = if import_failed {
+                                                details.clone()
+                                            } else {
+                                                n.tags.join(" · ")
+                                            };
+                                            // Only the failure is red.
+                                            let failure = if import_failed {
+                                                vec![(
+                                                    0..details.len(),
+                                                    HighlightStyle {
+                                                        color: Some(rgb(theme.error_text()).into()),
+                                                        font_weight: Some(FontWeight::MEDIUM),
+                                                        ..Default::default()
+                                                    },
+                                                )]
+                                            } else {
+                                                Vec::new()
+                                            };
+                                            StyledText::new(text).with_highlights(failure)
+                                        }),
+                                )
+                            }),
                     )
-                    // The edit date as its own column, so the row reads across.
+                    // Size and age, right-aligned beside the row actions.
                     .child(
                         div()
-                            .w(rems(11.))
+                            .w(rems(14.))
                             .flex_shrink_0()
+                            .flex()
+                            .justify_end()
+                            .pr_4()
                             .text_sm()
                             .text_color(rgb(theme.secondary()))
                             .truncate()
-                            .child(edited_label(n.updated_at)),
+                            .child(
+                                page_count
+                                    .clone()
+                                    .map(|count| {
+                                        format!(
+                                            "{count} · {}",
+                                            edited_label(n.updated_at)
+                                                .trim_start_matches("Edited ")
+                                        )
+                                    })
+                                    .unwrap_or_else(|| edited_label(n.updated_at)),
+                            ),
                     );
                 items = items.child(
                     div()
                         .id(SharedString::from(format!("note-row-{id}")))
                         .w_full()
-                        .h(rems(3.5))
+                        .h(rems(3.75))
                         .flex_shrink_0()
                         .flex()
                         .items_center()
@@ -1174,23 +1199,52 @@ impl NotesView {
                     .child(cover_content)
                     // Blank documents get a quiet mark, so the grid does not
                     // read as a wall of identical pages.
-                    // A failed import gets a quiet alert mark; blank documents
-                    // show their paper alone.
+                    // A failed import tints its cover and says so; blank
+                    // documents show their title as a quiet page heading.
                     .when(import_failed, |cover| {
                         cover.child(
                             div()
                                 .absolute()
                                 .inset_0()
+                                .bg(rgba((theme.destructive << 8) | 0x14))
                                 .flex()
+                                .flex_col()
+                                .gap_2()
                                 .items_center()
                                 .justify_center()
-                                .child(
-                                    icon(Icon::Alert, theme.error_text())
-                                        .size(rems(1.5))
-                                        .opacity(0.8),
-                                ),
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(theme.error_text()))
+                                .child(icon(Icon::Alert, theme.error_text()).size(rems(1.75)))
+                                .child("Import failed"),
                         )
-                    });
+                    })
+                    .when(
+                        !import_failed
+                            && preview.as_ref().is_some_and(|(page, _)| {
+                                page.objects.is_empty() && page.properties.pdf.is_none()
+                            }),
+                        |cover| {
+                            cover.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .p_4()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .text_center()
+                                            .text_size(rems(1.0625))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .line_clamp(3)
+                                            .text_color(rgb(theme.muted))
+                                            .child(n.title.clone()),
+                                    ),
+                            )
+                        },
+                    );
                 let content = div()
                     .w_full()
                     .min_w_0()
@@ -1366,7 +1420,7 @@ impl NotesView {
                     rows.push(
                         this.library_items(notes[start..end].to_vec(), list_view, grid, window, cx)
                             .h(rems(if list_view {
-                                3.5
+                                3.75
                             } else {
                                 grid.row_height() / 16.
                             }))
@@ -1542,8 +1596,9 @@ impl NotesView {
                 div()
                     // Room for the folder breadcrumb in every view, so the
                     // shelf does not shift when a folder opens.
-                    .min_h(rems(5.25))
-                    .py_1()
+                    .min_h(rems(5.75))
+                    .pt_4()
+                    .pb_2()
                     .flex_wrap()
                     .px_8()
                     .flex_shrink_0()
