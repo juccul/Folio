@@ -877,7 +877,7 @@ impl NotesView {
                                             .left_0()
                                             .right_0()
                                             .bottom_0()
-                                            .h(rems(0.75))
+                                            .h(rems(1.25))
                                             .bg(linear_gradient(
                                                 180.,
                                                 linear_color_stop(rgba(theme.popover << 8), 0.),

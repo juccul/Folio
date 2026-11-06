@@ -306,14 +306,16 @@ impl NotesView {
                     .absolute()
                     .inset_0()
                     .rounded(px(corner))
-                    .bg(rgba(0x00000059))
+                    .bg(rgba(0x00000033))
             });
-            element = element.children(veil).child(
-                img(image)
-                    .size_full()
-                    .object_fit(ObjectFit::Contain)
-                    .rounded(px(corner)),
-            );
+            element = element
+                .child(
+                    img(image)
+                        .size_full()
+                        .object_fit(ObjectFit::Contain)
+                        .rounded(px(corner)),
+                )
+                .children(veil);
         } else {
             element = element.child(
                 div()
@@ -1087,18 +1089,20 @@ impl NotesView {
                             .text_sm()
                             .text_color(rgb(theme.secondary()))
                             .truncate()
-                            .child(
-                                page_count
-                                    .clone()
-                                    .map(|count| {
-                                        format!(
-                                            "{count} · {}",
-                                            edited_label(n.updated_at)
-                                                .trim_start_matches("Edited ")
-                                        )
-                                    })
-                                    .unwrap_or_else(|| edited_label(n.updated_at)),
-                            ),
+                            .when(!import_failed, |column| {
+                                column.child(
+                                    page_count
+                                        .clone()
+                                        .map(|count| {
+                                            format!(
+                                                "{count} · {}",
+                                                edited_label(n.updated_at)
+                                                    .trim_start_matches("Edited ")
+                                            )
+                                        })
+                                        .unwrap_or_else(|| edited_label(n.updated_at)),
+                                )
+                            }),
                     );
                 items = items.child(
                     div()
@@ -1197,37 +1201,24 @@ impl NotesView {
                     .child(cover_content)
                     // Blank documents get a quiet mark, so the grid does not
                     // read as a wall of identical pages.
-                    // A failed import names itself; a blank page says so quietly.
-                    .when(
-                        import_failed
-                            || preview.as_ref().is_some_and(|(page, _)| {
-                                page.objects.is_empty() && page.properties.pdf.is_none()
-                            }),
-                        |cover| {
-                            cover.child(
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_sm()
-                                    .when(import_failed, |mark| {
-                                        mark.text_color(rgb(theme.error_text()))
-                                            .child(
-                                                icon(Icon::Alert, theme.error_text())
-                                                    .size(rems(1.75)),
-                                            )
-                                            .child("Import failed")
-                                    })
-                                    .when(!import_failed, |mark| {
-                                        mark.text_color(rgb(theme.muted)).child("Empty page")
-                                    }),
-                            )
-                        },
-                    );
+                    // A failed import shows how to recover; blank pages stay
+                    // plain paper.
+                    .when(import_failed, |cover| {
+                        cover.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .items_center()
+                                .justify_center()
+                                .text_sm()
+                                .text_color(rgb(theme.error_text()))
+                                .child(icon(Icon::Alert, theme.error_text()).size(rems(1.75)))
+                                .child("Open to retry"),
+                        )
+                    });
                 let content = div()
                     .w_full()
                     .min_w_0()
@@ -1314,7 +1305,7 @@ impl NotesView {
                                             )
                                         })
                                         .child(if import_failed {
-                                            "Import failed · Retry".to_owned()
+                                            "Import failed".to_owned()
                                         } else {
                                             format!("{details} · {edited}")
                                         }),

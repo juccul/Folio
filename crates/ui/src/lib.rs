@@ -2573,7 +2573,9 @@ impl NotesView {
                             row.child(icon(Icon::StarFilled, theme.muted).size(rems(0.875)))
                         })
                         .when(current, |row| row.child(badge("Current")))
-                        .when(open && !current, |row| row.child(badge("In a tab")))
+                        .when(open && !current && !failed, |row| {
+                            row.child(badge("In a tab"))
+                        })
                         .into_any_element(),
                     index == cursor,
                     cx,

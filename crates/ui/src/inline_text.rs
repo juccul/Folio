@@ -413,7 +413,6 @@ impl NotesView {
                     .text_size(rems(0.8125))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(theme.secondary()))
-                    .child(icon(Icon::Text, theme.secondary()).size(rems(1.)))
                     .child(if mixed { "Text in selection" } else { "Text" }),
             )
             .child(font)
