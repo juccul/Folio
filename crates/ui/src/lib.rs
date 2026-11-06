@@ -2492,7 +2492,16 @@ impl NotesView {
         let scrolls = matches.len() as f32 * 58. > room;
         for (index, note) in matches.into_iter().enumerate() {
             let id = note.id;
-            let mut detail = vec![workspace::edited_label(note.updated_at)];
+            let failed = self
+                .controller
+                .library_imports
+                .get(&id)
+                .is_some_and(|import| !import.pending);
+            let mut detail = vec![if failed {
+                "Import failed · open to retry".to_owned()
+            } else {
+                workspace::edited_label(note.updated_at)
+            }];
             if let Some(folder) = note.notebook.and_then(|f| details.get(&f)) {
                 detail.insert(0, folder.path.clone());
             }
@@ -2542,8 +2551,21 @@ impl NotesView {
                                 .child(
                                     div()
                                         .text_xs()
-                                        .text_color(rgb(theme.muted))
+                                        .text_color(rgb(if failed {
+                                            theme.error_text()
+                                        } else {
+                                            theme.muted
+                                        }))
                                         .truncate()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .when(failed, |line| {
+                                            line.child(
+                                                icon(Icon::Alert, theme.error_text())
+                                                    .size(rems(0.875)),
+                                            )
+                                        })
                                         .child(detail.join(" · ")),
                                 ),
                         )

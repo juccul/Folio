@@ -358,10 +358,14 @@ impl Theme {
         let lift = if self.dark { 0.05 } else { 0. };
         self.at_opacity(mix(self.surface, self.ink, lift), 0.94)
     }
-    /// The workspace behind pages. In dark mode it is the theme background,
-    /// just below the paper, with the page hairline marking the edge.
+    /// The workspace behind pages: a dark grey in dark mode, so near-black
+    /// paper reads as a sheet with a clear edge.
     pub fn desk(self) -> u32 {
-        if self.dark { self.bg } else { self.selected }
+        if self.dark {
+            mix(self.bg, 0xffffff, 0.065)
+        } else {
+            self.selected
+        }
     }
     /// Selection outlines, handles and lasso.
     pub fn selection(self) -> u32 {

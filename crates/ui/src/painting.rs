@@ -1485,7 +1485,7 @@ impl Painter {
                         bounds.width(),
                         bounds.height(),
                     ),
-                    alpha(0x000000, 0.08),
+                    alpha(0x000000, if theme.dark { 0.45 } else { 0.08 }),
                     window.scale_factor(),
                     &mut rectangles,
                 );
@@ -1523,7 +1523,7 @@ impl Painter {
             if !properties.infinite {
                 let shadow = points.map(|p| DocPoint::new(p.x + 2., p.y + 3.));
                 if let Some(path) = fill_path(&shadow) {
-                    window.paint_path(path, alpha(0x000000, 0.08));
+                    window.paint_path(path, alpha(0x000000, if theme.dark { 0.45 } else { 0.08 }));
                 }
             }
             if let Some(path) = fill_path(&points) {

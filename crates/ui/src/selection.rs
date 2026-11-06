@@ -8,10 +8,11 @@ pub(super) fn toolbar_origin(selection: Rect, canvas: (f32, f32), toolbar: (f32,
     let height = toolbar.1.min((canvas.1 - margin * 2.).max(0.));
     // Leave the rotation handle, drawn 24 px above the bounds, uncovered.
     let above = selection.min.y - height - margin - ROTATION_HANDLE_CLEARANCE;
+    // Below, it clears the outline and handles drawn around the bounds.
     let y = if above >= margin {
         above
     } else {
-        selection.max.y + margin
+        selection.max.y + margin + 12.
     };
     // Centred under the selection, clamped to the canvas.
     Point::new(
@@ -377,7 +378,8 @@ mod tests {
         assert!(200. + 60. < 300. - 24. - 4.);
         assert_eq!(
             toolbar_origin(Rect::new(900., 0., 100., 20.), (1000., 700.), (500., 60.)),
-            Point::new(488., 32.)
+            // Below the selection, clear of its outline and handles.
+            Point::new(488., 44.)
         );
         assert_eq!(
             toolbar_origin(Rect::new(-300., 1000., 50., 20.), (200., 100.), (500., 60.)),

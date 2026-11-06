@@ -1199,52 +1199,19 @@ impl NotesView {
                     .child(cover_content)
                     // Blank documents get a quiet mark, so the grid does not
                     // read as a wall of identical pages.
-                    // A failed import tints its cover and says so; blank
-                    // documents show their title as a quiet page heading.
+                    // A failed import shows a small alert on plain paper; the
+                    // caption below carries the message.
                     .when(import_failed, |cover| {
                         cover.child(
                             div()
                                 .absolute()
                                 .inset_0()
-                                .bg(rgba((theme.destructive << 8) | 0x14))
                                 .flex()
-                                .flex_col()
-                                .gap_2()
                                 .items_center()
                                 .justify_center()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(theme.error_text()))
-                                .child(icon(Icon::Alert, theme.error_text()).size(rems(1.75)))
-                                .child("Import failed"),
+                                .child(icon(Icon::Alert, theme.error_text()).size(rems(1.25))),
                         )
-                    })
-                    .when(
-                        !import_failed
-                            && preview.as_ref().is_some_and(|(page, _)| {
-                                page.objects.is_empty() && page.properties.pdf.is_none()
-                            }),
-                        |cover| {
-                            cover.child(
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .p_4()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        div()
-                                            .text_center()
-                                            .text_size(rems(1.0625))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .line_clamp(3)
-                                            .text_color(rgb(theme.muted))
-                                            .child(n.title.clone()),
-                                    ),
-                            )
-                        },
-                    );
+                    });
                 let content = div()
                     .w_full()
                     .min_w_0()

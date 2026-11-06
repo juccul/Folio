@@ -177,12 +177,27 @@ impl NotesView {
                         InkTool::Marker => (5., rgb(theme.ink)),
                         _ => (9., rgba(0xfacc158c)),
                     };
-                    let sample = div()
-                        .w(px(30.))
-                        .h(px(thickness))
-                        .flex_shrink_0()
-                        .rounded_full()
-                        .bg(color);
+                    // Fountain tapers, pencil is grainy; the rest are even.
+                    let sample = match tool {
+                        InkTool::Fountain => [1., 2., 3., 3.5, 3., 2., 1.]
+                            .into_iter()
+                            .fold(div().w(px(30.)).flex().items_center(), |row, h| {
+                                row.child(div().w(px(30. / 7.)).h(px(h)).bg(color))
+                            }),
+                        InkTool::Pencil => (0..8).fold(
+                            div().w(px(30.)).flex().items_center().gap(px(1.)),
+                            |row, i| {
+                                row.child(
+                                    div()
+                                        .w(px(2.75))
+                                        .h(px(if i % 2 == 0 { 2.5 } else { 2. }))
+                                        .bg(color),
+                                )
+                            },
+                        ),
+                        _ => div().w(px(30.)).h(px(thickness)).rounded_full().bg(color),
+                    }
+                    .flex_shrink_0();
                     panel = panel.child(
                         self.control(
                             format!("pen-type-{id}"),
