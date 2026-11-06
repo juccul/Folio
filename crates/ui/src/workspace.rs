@@ -306,7 +306,7 @@ impl NotesView {
                     .absolute()
                     .inset_0()
                     .rounded(px(corner))
-                    .bg(rgba(0x00000038))
+                    .bg(rgba(0x00000059))
             });
             element = element.children(veil).child(
                 img(image)
@@ -1031,7 +1031,7 @@ impl NotesView {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap_1()
+                            .gap_0p5()
                             .child(title.text_size(rems(0.9375)))
                             .child(
                                 div()
@@ -1079,7 +1079,7 @@ impl NotesView {
                     div()
                         .id(SharedString::from(format!("note-row-{id}")))
                         .w_full()
-                        .h(rems(4.5))
+                        .h(rems(3.5))
                         .flex_shrink_0()
                         .flex()
                         .items_center()
@@ -1174,40 +1174,23 @@ impl NotesView {
                     .child(cover_content)
                     // Blank documents get a quiet mark, so the grid does not
                     // read as a wall of identical pages.
-                    // Blank documents and failed imports get one consistent,
-                    // quiet mark so no card looks broken.
-                    .when(
-                        import_failed
-                            || preview.as_ref().is_some_and(|(page, _)| {
-                                page.objects.is_empty() && page.properties.pdf.is_none()
-                            }),
-                        |cover| {
-                            cover.child(
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        icon(
-                                            if import_failed {
-                                                Icon::Alert
-                                            } else {
-                                                Icon::Page
-                                            },
-                                            if import_failed {
-                                                theme.error_text()
-                                            } else {
-                                                theme.secondary()
-                                            },
-                                        )
+                    // A failed import gets a quiet alert mark; blank documents
+                    // show their paper alone.
+                    .when(import_failed, |cover| {
+                        cover.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    icon(Icon::Alert, theme.error_text())
                                         .size(rems(1.5))
-                                        .opacity(if import_failed { 0.8 } else { 0.45 }),
-                                    ),
-                            )
-                        },
-                    );
+                                        .opacity(0.8),
+                                ),
+                        )
+                    });
                 let content = div()
                     .w_full()
                     .min_w_0()
@@ -1382,7 +1365,11 @@ impl NotesView {
                     let end = (start + columns).min(total);
                     rows.push(
                         this.library_items(notes[start..end].to_vec(), list_view, grid, window, cx)
-                            .h(rems(if list_view { 4.5 } else { grid.row_height() / 16. }))
+                            .h(rems(if list_view {
+                                3.5
+                            } else {
+                                grid.row_height() / 16.
+                            }))
                             .items_start(),
                     );
                 }
@@ -1519,7 +1506,7 @@ impl NotesView {
                         .truncate(),
                     );
             }
-            Some(row)
+            Some(row.child(icon(Icon::Forward, theme.secondary()).size(rems(0.75))))
         } else if let NoteFilter::NotebookTrash(id) = self.controller.filter {
             Some(
                 div()
@@ -1570,11 +1557,21 @@ impl NotesView {
                             .flex_1()
                             .when(compact, |title| title.flex_initial().w_full())
                             .min_w_0()
+                            .relative()
                             .flex()
                             .flex_col()
-                            .gap_1()
-                            // Parent folders sit above the title.
-                            .children(breadcrumb)
+                            // Parent folders sit just above the title, outside
+                            // the flow, so the title never moves between views.
+                            .children(breadcrumb.map(|crumbs| {
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .bottom_full()
+                                    .h(rems(1.25))
+                                    .flex()
+                                    .items_center()
+                                    .child(crumbs)
+                            }))
                             .child(
                                 div()
                                     .text_size(rems(1.5625))

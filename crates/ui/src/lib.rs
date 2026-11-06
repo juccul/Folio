@@ -2276,17 +2276,22 @@ impl NotesView {
                             this.cancel_modal(w, cx)
                         }),
                     )
-                    .child(self.button(
-                        "submit-modal",
-                        if self.equation_draft.is_some() && self.controller.equation_pending {
-                            "Rendering…"
-                        } else {
-                            modal.submit_label(&self.controller)
-                        },
-                        true,
-                        cx,
-                        |this, w, cx| this.submit_modal(w, cx),
-                    ));
+                    .child(
+                        self.button(
+                            "submit-modal",
+                            if self.equation_draft.is_some() && self.controller.equation_pending {
+                                "Rendering…"
+                            } else {
+                                modal.submit_label(&self.controller)
+                            },
+                            true,
+                            cx,
+                            |this, w, cx| this.submit_modal(w, cx),
+                        )
+                        // The confirming action uses the filled primary style.
+                        .bg(rgb(theme.accent))
+                        .text_color(rgb(theme.primary_foreground)),
+                    );
             }
         }
         let footer = div()
@@ -2476,6 +2481,8 @@ impl NotesView {
                     }),
             );
         }
+        // Rows are about 58 px; the list holds 360 px.
+        let scrolls = matches.len() > 6;
         for (index, note) in matches.into_iter().enumerate() {
             let id = note.id;
             let mut detail = vec![workspace::edited_label(note.updated_at)];
@@ -2593,7 +2600,24 @@ impl NotesView {
             .flex_col()
             .gap_2()
             .child(heading)
-            .child(results)
+            .child(
+                // A fade at the bottom shows that more documents scroll in.
+                div().relative().child(results).when(scrolls, |list| {
+                    list.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(rems(2.))
+                            .bg(linear_gradient(
+                                180.,
+                                linear_color_stop(rgba(theme.popover << 8), 0.),
+                                linear_color_stop(rgba((theme.popover << 8) | 0xf2), 1.),
+                            )),
+                    )
+                }),
+            )
             .child(
                 div()
                     .pt_2()

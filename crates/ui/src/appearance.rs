@@ -296,11 +296,7 @@ pub(super) fn switch_track(theme: Theme, progress: f32) -> impl IntoElement {
             window.paint_quad(
                 fill(
                     bounds,
-                    rgb(super::theme::mix(
-                        theme.selected,
-                        if theme.dark { 0x3b82f6 } else { 0x2563eb },
-                        progress,
-                    )),
+                    rgb(super::theme::mix(theme.selected, theme.accent, progress)),
                 )
                 .corner_radii(px(height * 0.5)),
             );
@@ -314,7 +310,11 @@ pub(super) fn switch_track(theme: Theme, progress: f32) -> impl IntoElement {
             window.paint_quad(
                 fill(
                     knob,
-                    rgb(super::theme::mix(theme.muted, 0xffffff, progress)),
+                    rgb(super::theme::mix(
+                        theme.muted,
+                        theme.primary_foreground,
+                        progress,
+                    )),
                 )
                 .corner_radii(px(diameter * 0.5)),
             );

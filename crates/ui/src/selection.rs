@@ -13,11 +13,9 @@ pub(super) fn toolbar_origin(selection: Rect, canvas: (f32, f32), toolbar: (f32,
     } else {
         selection.max.y + margin
     };
+    // Centred under the selection, clamped to the canvas.
     Point::new(
-        selection
-            .min
-            .x
-            .clamp(margin, (canvas.0 - width - margin).max(margin)),
+        (selection.center().x - width / 2.).clamp(margin, (canvas.0 - width - margin).max(margin)),
         y.clamp(margin, (canvas.1 - height - margin).max(margin)),
     )
 }
@@ -372,7 +370,8 @@ mod tests {
     fn actions_follow_selection_without_leaving_small_or_edge_viewports() {
         assert_eq!(
             toolbar_origin(Rect::new(300., 300., 100., 80.), (1000., 700.), (500., 60.)),
-            Point::new(300., 200.)
+            // Centred under the selection.
+            Point::new(100., 200.)
         );
         // The row ends above the rotation handle (24 px plus its radius).
         assert!(200. + 60. < 300. - 24. - 4.);

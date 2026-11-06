@@ -410,7 +410,7 @@ impl NotesView {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .text_xs()
+                    .text_size(rems(0.8125))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(theme.secondary()))
                     .child(icon(Icon::Text, theme.secondary()).size(rems(1.)))
