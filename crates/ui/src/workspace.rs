@@ -1089,7 +1089,6 @@ impl NotesView {
                             .text_sm()
                             .text_color(rgb(theme.secondary()))
                             .truncate()
-                            .when(import_failed, |column| column.child("—"))
                             .when(!import_failed, |column| {
                                 column.child(
                                     page_count
@@ -1497,6 +1496,7 @@ impl NotesView {
                 .items_center()
                 .gap_1()
                 .overflow_x_scroll();
+            row = row.child(icon(Icon::Back, theme.secondary()).size(rems(0.75)));
             row = row.child(
                 self.button("breadcrumb-root", "Documents", false, cx, |this, _, _| {
                     this.controller.filter = NoteFilter::All
@@ -1536,7 +1536,7 @@ impl NotesView {
                         .truncate(),
                     );
             }
-            Some(row.child(icon(Icon::Forward, theme.secondary()).size(rems(0.75))))
+            Some(row)
         } else if let NoteFilter::NotebookTrash(id) = self.controller.filter {
             Some(
                 div()
@@ -2853,7 +2853,8 @@ impl NotesView {
                 self.button("zoom-out", "−", false, cx, |this, _, _| {
                     this.zoom(1. / 1.2)
                 })
-                .py_1()
+                .text_lg()
+                .py_0()
                 .tooltip(move |_, cx| cx.new(|_| Hint("Zoom out · Ctrl+−".into(), theme)).into()),
             )
             .child(
@@ -2870,7 +2871,8 @@ impl NotesView {
             )
             .child(
                 self.button("zoom-in", "+", false, cx, |this, _, _| this.zoom(1.2))
-                    .py_1()
+                    .text_lg()
+                    .py_0()
                     .tooltip(move |_, cx| {
                         cx.new(|_| Hint("Zoom in · Ctrl++".into(), theme)).into()
                     }),

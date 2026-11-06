@@ -317,7 +317,10 @@ fn selection_overlay(
     let outline =
         rect_points(bounds.expand(folio_app::SELECTION_PADDING / zoom)).map(|p| transform.apply(p));
     let rotation = [
-        DocPoint::new(bounds.center().x, bounds.min.y),
+        DocPoint::new(
+            bounds.center().x,
+            bounds.min.y - folio_app::SELECTION_PADDING / zoom,
+        ),
         DocPoint::new(bounds.center().x, bounds.min.y - 24. / zoom),
     ]
     .map(|p| transform.apply(p));
@@ -907,7 +910,9 @@ impl Painter {
                         } else {
                             Cow::Borrowed(text)
                         };
-                        let color = self.display_color(text.color.rgb(), canvas_theme);
+                        // Thin glyphs need more contrast than strokes to look as
+                        // bright on dark paper.
+                        let color = canvas_theme.preview_ink(text.color.rgb());
                         let valid = self.text_layouts.get(&text.id).is_some_and(|cached| {
                             (Arc::ptr_eq(&cached.object, object)
                                 && cached.width == text.rect.width())
@@ -1193,8 +1198,8 @@ impl Painter {
                 for p in points.iter().take(4).copied().chain(sides) {
                     window.paint_quad(quad(
                         Bounds::new(
-                            point_px(DocPoint::new(p.x - 4.5, p.y - 4.5)),
-                            size(px(9.), px(9.)),
+                            point_px(DocPoint::new(p.x - 5., p.y - 5.)),
+                            size(px(10.), px(10.)),
                         ),
                         px(2.),
                         rgb(0xffffff),
@@ -2293,7 +2298,13 @@ mod tests {
             );
             assert_eq!(dragged, released);
             assert_eq!(dragged_rotation, released_rotation);
-            assert!((dragged_rotation[0].distance(dragged_rotation[1]) - 24.).abs() < 0.001);
+            // The stem runs from the padded outline to the knob 24 px above.
+            assert!(
+                (dragged_rotation[0].distance(dragged_rotation[1])
+                    - (24. - folio_app::SELECTION_PADDING))
+                    .abs()
+                    < 0.001
+            );
         }
     }
     #[::core::prelude::v1::test]
