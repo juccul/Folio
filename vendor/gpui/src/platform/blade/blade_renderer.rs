@@ -534,10 +534,23 @@ impl BladeRenderer {
             allow_exclusive_full_screen: false,
             transparent: config.transparent,
         };
-        let surface = context
-            .gpu
-            .create_surface_configured(window, surface_config)
-            .map_err(|err| anyhow::anyhow!("Failed to create surface: {err:?}"))?;
+        // Blade unwraps swapchain creation, which a driver can refuse (for
+        // example `ERROR_INITIALIZATION_FAILED` on a GPU the display server
+        // cannot present from). Report that as an error instead of a panic.
+        let surface = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            context
+                .gpu
+                .create_surface_configured(window, surface_config)
+        }))
+        .map_err(|panic| {
+            let reason = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown error");
+            anyhow::anyhow!("Failed to create surface: {reason}")
+        })?
+        .map_err(|err| anyhow::anyhow!("Failed to create surface: {err:?}"))?;
 
         let command_encoder = context.gpu.create_command_encoder(gpu::CommandEncoderDesc {
             name: "main",

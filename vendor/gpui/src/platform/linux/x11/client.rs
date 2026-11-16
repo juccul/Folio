@@ -434,7 +434,10 @@ impl X11Client {
             .to_string();
         let keyboard_layout = LinuxKeyboardLayout::new(layout_name.into());
 
-        let gpu_context = BladeContext::new().context("Unable to init GPU context")?;
+        let root = xcb_connection.setup().roots[x_root_index].root;
+        let display_device = dri3_render_device(&xcb_connection, root);
+        let gpu_context =
+            BladeContext::new(display_device).context("Unable to init GPU context")?;
 
         let resource_database = x11rb::resource_manager::new_from_default(&xcb_connection)
             .context("Failed to create resource database")?;
@@ -1952,6 +1955,18 @@ pub fn mode_refresh_rate(mode: &randr::ModeInfo) -> Duration {
 
 fn fp3232_to_f32(value: xinput::Fp3232) -> f32 {
     value.integral as f32 + value.frac as f32 / u32::MAX as f32
+}
+
+/// The PCI device ID of the GPU the X server renders with, from DRI3. Under
+/// Xwayland this is the compositor's GPU.
+fn dri3_render_device(xcb_connection: &XCBConnection, root: u32) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt as _;
+    use x11rb::protocol::dri3::ConnectionExt as _;
+
+    xcb_connection.dri3_query_version(1, 0).ok()?.reply().ok()?;
+    let reply = xcb_connection.dri3_open(root, 0).ok()?.reply().ok()?;
+    let device = std::fs::File::from(reply.device_fd).metadata().ok()?.rdev();
+    crate::platform::blade::pci_device_for_dev(device)
 }
 
 fn check_compositor_present(xcb_connection: &XCBConnection, root: u32) -> bool {

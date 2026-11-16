@@ -177,12 +177,14 @@ fn main() -> anyhow::Result<()> {
     for file in files {
         controller.import_as_note(file);
     }
+    let window_error = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let window_failed = window_error.clone();
     application.run(move |cx| {
         mark("event_loop");
         NotesView::bindings(cx);
         if titlebar_smoke { NotesView::titlebar_smoke_bindings(cx); }
         let bounds = Bounds::centered(None, size(px(1320.), px(860.)), cx);
-        let window = cx.open_window(WindowOptions {
+        let window = match cx.open_window(WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             app_id: Some("io.github.folio.Notes".into()),
             titlebar: Some(TitlebarOptions {title:Some("Folio - Notes".into()), appears_transparent: true, ..Default::default()}),
@@ -201,7 +203,17 @@ fn main() -> anyhow::Result<()> {
             }
             if open_editor { view.show_editor(); }
             view
-        })).expect("Open GPUI window");
+        })) {
+            Ok(window) => window,
+            Err(error) => {
+                // A window the GPU cannot present to (for example a driver
+                // refusing the swapchain) ends startup with the reason.
+                *window_failed.borrow_mut() = Some(error);
+                // Quit from inside the event loop: it clears earlier requests.
+                cx.spawn(async move |cx| cx.update(|cx| cx.quit())).detach();
+                return;
+            }
+        };
         mark("window_ready");
         cx.on_window_closed(|cx|cx.quit()).detach();
         cx.activate(true);
@@ -339,7 +351,10 @@ fn main() -> anyhow::Result<()> {
             }).detach();
         }
     });
-    Ok(())
+    match window_error.take() {
+        Some(error) => Err(error.context("Folio could not open its window")),
+        None => Ok(()),
+    }
 }
 
 /// Hand this launch to the instance already running for `data_dir`. While

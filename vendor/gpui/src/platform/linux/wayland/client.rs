@@ -1,4 +1,5 @@
 mod gestures;
+mod render_device;
 use wayland_protocols::wp::pointer_gestures::zv1::client::{zwp_pointer_gestures_v1,zwp_pointer_gesture_pinch_v1};
 mod tablet;
 use tablet::{TabletState,PadState,PadControl};
@@ -536,7 +537,9 @@ impl WaylandClient {
             })
             .unwrap();
 
-        let gpu_context = BladeContext::new().expect("Unable to init GPU context");
+        let display_device = render_device::compositor_render_device(&conn, &globals)
+            .and_then(crate::platform::blade::pci_device_for_dev);
+        let gpu_context = BladeContext::new(display_device).expect("Unable to init GPU context");
 
         let seat = seat.unwrap();
         let globals = Globals::new(
@@ -664,8 +667,23 @@ impl WaylandClient {
             event_loop: Some(event_loop),
         }));
 
-        WaylandSource::new(conn, event_queue)
-            .insert(handle)
+        // `EventQueue::dispatch_pending` discards connection errors, and the
+        // source ignores protocol errors while reading, so after the
+        // compositor posts one (for example rejecting a dmabuf) the closed
+        // socket would wake the loop forever. Report the stored error so the
+        // event loop stops.
+        let backend = conn.backend();
+        handle
+            .insert_source(
+                WaylandSource::new(conn, event_queue),
+                move |_, queue, data| {
+                    let dispatched = queue.dispatch_pending(data)?;
+                    match backend.last_error() {
+                        Some(error) => Err(error.into()),
+                        None => Ok(dispatched),
+                    }
+                },
+            )
             .unwrap();
 
         Self(state)
@@ -837,13 +855,17 @@ impl LinuxClient for WaylandClient {
             .take()
             .expect("App is already running");
 
-        event_loop
-            .run(
-                None,
-                &mut WaylandClientStatePtr(Rc::downgrade(&self.0)),
-                |_| {},
-            )
-            .log_err();
+        if let Err(error) = event_loop.run(
+            None,
+            &mut WaylandClientStatePtr(Rc::downgrade(&self.0)),
+            |_| {},
+        ) {
+            // The compositor's reason was already printed by libwayland.
+            eprintln!(
+                "Lost the Wayland connection, quitting: {:#}",
+                anyhow::Error::from(error)
+            );
+        }
     }
 
     fn write_to_primary(&self, item: crate::ClipboardItem) {

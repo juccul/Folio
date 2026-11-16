@@ -9,7 +9,9 @@ pub struct BladeContext {
 }
 
 impl BladeContext {
-    pub fn new() -> anyhow::Result<Self> {
+    /// `display_device` is the PCI device ID of the GPU the display server
+    /// composites with, when it reported one (see [`pci_device_for_dev`]).
+    pub fn new(display_device: Option<u32>) -> anyhow::Result<Self> {
         let device_id_forced = match std::env::var("ZED_DEVICE_ID") {
             Ok(val) => parse_pci_id(&val)
                 .context("Failed to parse device ID from `ZED_DEVICE_ID` environment variable")
@@ -29,7 +31,12 @@ impl BladeContext {
                 ..Default::default()
             })
         };
-        let gpu = match device_id_forced.or_else(display_gpu) {
+        let preferred = if user_chose_gpu() {
+            None
+        } else {
+            display_device.or_else(boot_display_gpu)
+        };
+        let gpu = match device_id_forced.or(preferred) {
             Some(device_id) => init(device_id).or_else(|err| {
                 if device_id_forced.is_some() {
                     return Err(err);
@@ -45,19 +52,47 @@ impl BladeContext {
     }
 }
 
-/// On a machine with several GPUs, the PCI device ID of the one the firmware
-/// set up for the display, unless the user chose a GPU for Mesa. Without
-/// this, a hybrid laptop can render on its discrete GPU and copy every frame
-/// to the integrated one that drives the screen, which makes resizing slow.
-fn display_gpu() -> Option<u32> {
-    let chosen = [
+/// Whether the user chose a GPU for Mesa or NVIDIA PRIME offload.
+fn user_chose_gpu() -> bool {
+    [
         "DRI_PRIME",
         "MESA_VK_DEVICE_SELECT",
         "__NV_PRIME_RENDER_OFFLOAD",
-    ];
-    if chosen.iter().any(|name| std::env::var_os(name).is_some()) {
-        return None;
-    }
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some())
+}
+
+/// The PCI device ID of the DRM device `dev` (a `dev_t` from the display
+/// server, for a primary or render node).
+///
+/// Rendering on the GPU the compositor uses avoids buffers it cannot import:
+/// a hybrid AMD/NVIDIA laptop whose compositor runs on NVIDIA rejects dmabufs
+/// from the AMD iGPU and drops the connection.
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "freebsd")),
+    allow(dead_code)
+)]
+pub(crate) fn pci_device_for_dev(dev: u64) -> Option<u32> {
+    let (major, minor) = dev_major_minor(dev);
+    let path = format!("/sys/dev/char/{major}:{minor}/device/device");
+    let id = std::fs::read_to_string(path).ok()?;
+    parse_pci_id(&id).ok()
+}
+
+/// glibc's `major()`/`minor()` encoding of a Linux `dev_t`.
+fn dev_major_minor(dev: u64) -> (u64, u64) {
+    let major = ((dev >> 32) & 0xffff_f000) | ((dev >> 8) & 0x0fff);
+    let minor = ((dev >> 12) & 0xffff_ff00) | (dev & 0x00ff);
+    (major, minor)
+}
+
+/// When the display server did not name its GPU: on a machine with several
+/// GPUs, the PCI device ID of the one the firmware set up for the display.
+/// Without this, a hybrid laptop can render on its discrete GPU and copy
+/// every frame to the integrated one that drives the screen, which makes
+/// resizing slow.
+fn boot_display_gpu() -> Option<u32> {
     let mut gpus = 0;
     let mut display = None;
     for entry in std::fs::read_dir("/sys/class/drm").ok()?.flatten() {

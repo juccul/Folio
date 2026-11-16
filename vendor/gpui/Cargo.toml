@@ -550,6 +550,7 @@ optional = true
 version = "0.13.1"
 features = [
     "allow-unsafe-code",
+    "dri3",
     "xkb",
     "randr",
     "xinput",
