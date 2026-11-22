@@ -657,12 +657,13 @@ impl Controller {
                 }
             }
         }
+        let fitted_shape = fit.is_some();
         if let Some(fit) = fit {
             let shape = Shape {
                 id: Id::new_v4(),
                 kind: fit.kind,
                 vertices: fit.vertices,
-                style: stroke.style,
+                style: stroke.style.clone(),
                 transform: Transform::default(),
                 source_strokes: sources,
             };
@@ -675,6 +676,9 @@ impl Controller {
             });
         }
         self.commit("Draw stroke", changes);
+        if !fitted_shape {
+            self.maybe_trigger_auto_math(&stroke);
+        }
     }
     fn finish_erase(&mut self, ids: &HashSet<Id>, fragments: &HashMap<Id, Vec<InkStroke>>) {
         if self.settings.effective_eraser_mode() != EraserMode::Segment {

@@ -192,6 +192,13 @@ impl NotesView {
                 self.controller.settings.encircle_select,
                 3,
             ),
+            (
+                "auto-math-ink-toggle",
+                "Auto-solve math",
+                "Write '=' after a numeric expression to insert a handwritten answer.",
+                self.controller.settings.auto_math_ink,
+                4,
+            ),
         ] {
             gestures.push(self.settings_row(label, description).child(self.appearance_switch(
                 id,
@@ -203,7 +210,8 @@ impl NotesView {
                     match kind {
                         1 => s.scratch_erase = !s.scratch_erase,
                         2 => s.hold_shapes = !s.hold_shapes,
-                        _ => s.encircle_select = !s.encircle_select,
+                        3 => s.encircle_select = !s.encircle_select,
+                        _ => s.auto_math_ink = !s.auto_math_ink,
                     }
                 },
             )));

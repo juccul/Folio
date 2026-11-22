@@ -257,6 +257,7 @@ fn semantics(key: &str) -> Semantics {
             | "scratch-toggle"
             | "hold-toggle"
             | "encircle-toggle"
+            | "auto-math-ink-toggle"
             | "autosave-toggle"
             | "motion-toggle"
             | "reopen-documents"

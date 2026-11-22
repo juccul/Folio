@@ -72,6 +72,7 @@ struct ResultMessage {
 enum Work {
     Recognize(Task),
     Warmup(PathBuf),
+    AutoMath(crate::auto_math::AutoMathJob),
 }
 
 struct StatusMessage {
@@ -82,10 +83,12 @@ struct StatusMessage {
 pub(super) struct Service {
     sender: Option<mpsc::SyncSender<Work>>,
     tx: mpsc::Sender<ResultMessage>,
+    auto_math_tx: mpsc::Sender<crate::auto_math::AutoMathCompletion>,
     progress: mpsc::Sender<StatusMessage>,
     wakeup: folio_storage::WakeupSignal,
     idle_timeout: Duration,
     results: mpsc::Receiver<ResultMessage>,
+    auto_math_results: mpsc::Receiver<crate::auto_math::AutoMathCompletion>,
     status: mpsc::Receiver<StatusMessage>,
     process: Arc<Mutex<Option<Child>>>,
     generation: Arc<AtomicU64>,
@@ -108,14 +111,17 @@ impl Service {
     }
     fn with_idle_timeout(idle_timeout: Duration) -> Self {
         let (tx, results) = mpsc::channel();
+        let (auto_math_tx, auto_math_results) = mpsc::channel();
         let (progress, status) = mpsc::channel();
         Self {
             sender: None,
             tx,
+            auto_math_tx,
             progress,
             wakeup: folio_storage::WakeupSignal::default(),
             idle_timeout,
             results,
+            auto_math_results,
             status,
             process: Arc::new(Mutex::new(None)),
             generation: Arc::new(AtomicU64::new(0)),
@@ -127,9 +133,10 @@ impl Service {
         if self.sender.is_some() {
             return self.sender.as_ref();
         }
-        // A speculative prewarm and one real request can coexist.
-        let (sender, jobs) = mpsc::sync_channel::<Work>(2);
+        // A speculative prewarm, auto-math trigger, and manual request can coexist.
+        let (sender, jobs) = mpsc::sync_channel::<Work>(4);
         let tx = self.tx.clone();
+        let auto_math_tx = self.auto_math_tx.clone();
         let progress = self.progress.clone();
         let wakeup = self.wakeup.clone();
         let idle_timeout = self.idle_timeout;
@@ -166,6 +173,26 @@ impl Service {
                     };
                     let task = match work {
                         Work::Recognize(task) => task,
+                        Work::AutoMath(job) => {
+                            if folio_recognition::Engine::pack_ready(&job.pack) {
+                                if stroke_engine
+                                    .as_ref()
+                                    .is_none_or(|(loaded_pack, _)| loaded_pack != &job.pack)
+                                {
+                                    if let Ok(engine) = folio_recognition::Engine::open(&job.pack) {
+                                        stroke_engine = Some((job.pack.clone(), engine));
+                                    }
+                                }
+                                if let Some((_, engine)) = stroke_engine.as_mut() {
+                                    last_model_use = Instant::now();
+                                    if let Some(done) = job.run(engine) {
+                                        let _ = auto_math_tx.send(done);
+                                        wakeup.notify();
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         Work::Warmup(pack) => {
                             if folio_recognition::Engine::pack_ready(&pack)
                                 && stroke_engine
@@ -435,6 +462,14 @@ impl Service {
             .map_err(|_| "Recognition worker is busy; try again".to_string())?;
         Ok(())
     }
+    pub(crate) fn submit_auto_math(&mut self, job: crate::auto_math::AutoMathJob) {
+        if let Some(sender) = self.ensure_started() {
+            let _ = sender.try_send(Work::AutoMath(job));
+        }
+    }
+    pub(crate) fn try_recv_auto_math(&self) -> Option<crate::auto_math::AutoMathCompletion> {
+        self.auto_math_results.try_recv().ok()
+    }
     fn prewarm(&mut self, pack: PathBuf, intent: u64) {
         if self.last_intent == Some(intent) || self.warming.load(Ordering::Acquire) {
             return;
@@ -659,7 +694,7 @@ impl Controller {
     pub fn recognition_ready(&self) -> bool {
         pack_usable(&self.recognition_pack())
     }
-    fn recognition_pack(&self) -> PathBuf {
+    pub(crate) fn recognition_pack(&self) -> PathBuf {
         pack_path(&self.data_dir)
     }
 }

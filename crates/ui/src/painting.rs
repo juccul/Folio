@@ -115,6 +115,17 @@ enum PaperGeometry {
     Rectangles(Vec<(Rect, Rgba)>),
     Paths(Vec<(Path<Pixels>, Rgba)>),
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DotTileKey {
+    cells: u32,
+    tile_px: u32,
+    radius_tenths: u32,
+    color: u32,
+}
+struct CachedDotTile {
+    key: DotTileKey,
+    image: Arc<RenderImage>,
+}
 #[derive(Clone, Copy, PartialEq)]
 struct ActivePathKey {
     id: Id,
@@ -207,6 +218,7 @@ pub struct Painter {
     paths: HashMap<Id, CachedPath>,
     frame: Option<Arc<VisibleFrame>>,
     paper_cache: Option<CachedPaper>,
+    dot_tile: Option<CachedDotTile>,
     rasters: HashMap<Id, CachedRaster>,
     raster_pending: HashMap<Id, RasterRequest>,
     backgrounds: HashMap<String, ImageSource>,
@@ -241,6 +253,78 @@ fn alpha(color: u32, opacity: f32) -> Rgba {
     let mut color = rgb(color);
     color.a = opacity;
     color
+}
+/// Warm golden-yellow ink color used while Auto Math Solve writes out an answer,
+/// chosen for crisp contrast against the actual page paper brightness.
+fn auto_math_yellow(paper_rgb: u32) -> u32 {
+    let r = (paper_rgb >> 16) & 0xff;
+    let g = (paper_rgb >> 8) & 0xff;
+    let b = paper_rgb & 0xff;
+    let dark_paper = r * 299 + g * 587 + b * 114 < 128_000;
+    if dark_paper { 0xFFD43B } else { 0xE8A800 }
+}
+fn lerp_rgb(from: u32, to: u32, t: f32) -> u32 {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |a: u32, b: u32| -> u32 {
+        let af = a as f32;
+        let bf = b as f32;
+        (af + (bf - af) * t).round().clamp(0.0, 255.0) as u32
+    };
+    let r = mix((from >> 16) & 0xff, (to >> 16) & 0xff);
+    let g = mix((from >> 8) & 0xff, (to >> 8) & 0xff);
+    let b = mix(from & 0xff, to & 0xff);
+    (r << 16) | (g << 8) | b
+}
+/// Slice `points` smoothly along cumulative arc length to fraction `progress in (0, 1]`.
+fn partial_stroke_points(points: &[PathPoint], progress: f32, out: &mut Vec<PathPoint>) {
+    out.clear();
+    if points.is_empty() || progress <= 0.0 {
+        return;
+    }
+    if progress >= 1.0 {
+        out.extend_from_slice(points);
+        return;
+    }
+    if points.len() == 1 {
+        let mut p = points[0];
+        p.radius *= 0.25 + 0.75 * progress.sqrt();
+        out.push(p);
+        return;
+    }
+    let mut total_len = 0.0_f32;
+    for seg in points.windows(2) {
+        total_len += seg[0].position.distance(seg[1].position);
+    }
+    if total_len <= 1e-4 {
+        let scale = 0.25 + 0.75 * progress.sqrt();
+        out.extend(points.iter().map(|p| PathPoint {
+            position: p.position,
+            radius: p.radius * scale,
+        }));
+        return;
+    }
+    let target = progress * total_len;
+    out.push(points[0]);
+    let mut acc = 0.0_f32;
+    for seg in points.windows(2) {
+        let seg_len = seg[0].position.distance(seg[1].position);
+        if acc + seg_len >= target {
+            let f = if seg_len > 1e-5 {
+                ((target - acc) / seg_len).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let pos = seg[0].position.lerp(seg[1].position, f);
+            let r = (seg[0].radius + (seg[1].radius - seg[0].radius) * f) * 0.85;
+            out.push(PathPoint {
+                position: pos,
+                radius: r.max(0.1),
+            });
+            break;
+        }
+        acc += seg_len;
+        out.push(seg[1]);
+    }
 }
 fn point_px(p: DocPoint) -> Point<Pixels> {
     point(px(p.x), px(p.y))
@@ -399,6 +483,9 @@ impl Painter {
     fn clear_page(&mut self, window: &mut Window) {
         for painter in self.pages.values_mut() {
             painter.clear_page(window);
+        }
+        if let Some(tile) = self.dot_tile.take() {
+            let _ = window.drop_image(tile.image);
         }
         self.clear_ink_layers(window);
         self.retain_rasters(
@@ -568,7 +655,7 @@ impl Painter {
         }
         let mut warm_assets = HashSet::new();
         let mut visible_decoding = false;
-        for index in nearby {
+        for &index in &nearby {
             let page_id = controller.session().document.pages[index].id;
             let visible_page = ids.contains(&page_id);
             let Some(pdf) = controller.session().document.pages[index]
@@ -642,10 +729,15 @@ impl Painter {
                 false
             }
         });
-        // Retain only visible pages, so scrolling a long document cannot grow
-        // native path/image caches without bound.
+        // Retain visible pages plus one immediate neighbor on each side so
+        // scrolling across page boundaries does not evict and re-rasterize
+        // ink layers on every reversal, while still bounding long documents.
+        let nearby_ids = nearby
+            .iter()
+            .map(|index| controller.session().document.pages[*index].id)
+            .collect::<HashSet<_>>();
         self.pages.retain(|id, painter| {
-            if ids.contains(id) {
+            if nearby_ids.contains(id) {
                 true
             } else {
                 painter.clear_page(window);
@@ -653,6 +745,7 @@ impl Painter {
             }
         });
         let backgrounds = &mut self.backgrounds;
+        let dot_tile = &mut self.dot_tile;
         for (index, viewport) in frames {
             let id = controller.session().document.pages[index].id;
             let painter = self.pages.entry(id).or_default();
@@ -667,6 +760,7 @@ impl Painter {
                 bounds,
                 editing,
                 backgrounds,
+                dot_tile,
                 window,
                 cx,
             );
@@ -682,6 +776,7 @@ impl Painter {
         bounds: Bounds<Pixels>,
         editing: Option<Id>,
         backgrounds: &mut HashMap<String, ImageSource>,
+        dot_tile: &mut Option<CachedDotTile>,
         window: &mut Window,
         cx: &mut Context<NotesView>,
     ) {
@@ -822,11 +917,19 @@ impl Painter {
             };
         // Native backends upload/rasterize every path triangle on each frame.
         // Cache consecutive settled strokes as display-only images. Selection,
-        // erasing and edits immediately fall back to original vector objects.
+        // erasing, active auto-math animations and edits immediately fall back
+        // to original vector objects.
+        let auto_math_anim =
+            controller.auto_math_animation_states(page_id, std::time::Instant::now());
+        if !auto_math_anim.is_empty() {
+            window.request_animation_frame();
+        }
+        let mut partial_buf = Vec::new();
         let mut ink_plan_changed = false;
         let ink_batches = if self.ink_layer_override.unwrap_or(true) {
             let mut excluded = selection.union(erasing).copied().collect::<HashSet<_>>();
             excluded.extend(editing);
+            excluded.extend(auto_math_anim.keys().copied());
             let density = ((self.layer_zoom * window.scale_factor()) * 2.).ceil() / 2.;
             let clip = super::ink_layers::high_zoom_clip(visible, density);
             if !self.ink_plan.as_ref().is_some_and(|plan| {
@@ -871,7 +974,16 @@ impl Painter {
         let frame_start = std::time::Instant::now();
         let mut deferred = false;
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            self.paper(&properties, visible, world, backgrounds, window, cx, controller);
+            self.paper(
+                &properties,
+                visible,
+                world,
+                backgrounds,
+                dot_tile,
+                window,
+                cx,
+                controller,
+            );
             for (index, object) in frame.objects.iter().enumerate() {
                 if index < skip_until {
                     continue;
@@ -960,7 +1072,33 @@ impl Painter {
                 let transform = world.compose(movement).compose(object.transform());
                 match object.as_ref() {
                     Object::Stroke(s) => {
-                        let color = self.display_color(s.style.color.rgb(), canvas_theme);
+                        let base_color = self.display_color(s.style.color.rgb(), canvas_theme);
+                        let color = if let Some(anim) = auto_math_anim.get(&s.id) {
+                            if anim.progress <= 0.001 {
+                                continue;
+                            }
+                            let tinted = lerp_rgb(
+                                base_color,
+                                auto_math_yellow(canvas_theme.paper),
+                                anim.yellow_mix,
+                            );
+                            if anim.progress < 0.999 {
+                                let points = s.decode_display_path(&mut self.path_buf);
+                                partial_stroke_points(points, anim.progress, &mut partial_buf);
+                                if let Some(path) =
+                                    ink_path_from_points(&partial_buf, &mut self.outline_scratch)
+                                {
+                                    window.paint_path(
+                                        path.transformed(coefficients(transform)),
+                                        alpha(tinted, s.style.opacity),
+                                    );
+                                }
+                                continue;
+                            }
+                            tinted
+                        } else {
+                            base_color
+                        };
                         let valid = self
                             .paths
                             .get(&s.id)
@@ -1630,6 +1768,7 @@ impl Painter {
         visible: Rect,
         world: Transform,
         backgrounds: &mut HashMap<String, ImageSource>,
+        dot_tile: &mut Option<CachedDotTile>,
         window: &mut Window,
         cx: &mut Context<NotesView>,
         controller: &Controller,
@@ -1722,6 +1861,65 @@ impl Painter {
             }
             return;
         }
+        let scale = window.scale_factor();
+        if properties.paper == Paper::Dots {
+            if !page.intersects(visible) {
+                return;
+            }
+            // Infinite pages (including rotated) are clipped by the outer canvas
+            // mask; axis-aligned finite pages clip cleanly to the page sheet.
+            // Only rotated finite pages fall back to vector dot paths below.
+            let tile_mask = if properties.infinite {
+                Some(None)
+            } else {
+                axis_aligned_bounds(page, world).map(|b| Some(ContentMask { bounds: gpui_bounds(b) }))
+            };
+            let zoom = world.scale();
+            let render_zoom = if self.layer_zoom > 0. {
+                self.layer_zoom
+            } else {
+                zoom
+            };
+            if let Some(page_mask) = tile_mask
+                && zoom.is_finite()
+                && zoom > 0.
+                && let Some((tile_key, tile_doc)) =
+                    dot_tile_spec(paper_spacing(zoom), render_zoom, scale, canvas_theme.dots)
+            {
+                let spacing = paper_spacing(zoom);
+                let clip = paper_clip(page, visible);
+                if let Some(tiles) = dot_tile_rects(clip, spacing, tile_doc) {
+                    if dot_tile.as_ref().is_none_or(|t| t.key != tile_key) {
+                        if let Some(old) = dot_tile.take() {
+                            let _ = window.drop_image(old.image);
+                        }
+                        if let Some(image) = raster_dot_tile(tile_key) {
+                            *dot_tile = Some(CachedDotTile {
+                                key: tile_key,
+                                image,
+                            });
+                        }
+                    }
+                    if let Some(cached) = dot_tile.as_ref() {
+                        let image = cached.image.clone();
+                        let matrix = gpu_transform(world);
+                        window.with_content_mask(page_mask, |window| {
+                            for rect in tiles {
+                                let _ = window.paint_image_transformed(
+                                    gpui_bounds(rect),
+                                    Default::default(),
+                                    image.clone(),
+                                    0,
+                                    false,
+                                    matrix,
+                                );
+                            }
+                        });
+                        return;
+                    }
+                }
+            }
+        }
         let key = PaperKey {
             paper: properties.paper,
             page,
@@ -1729,7 +1927,6 @@ impl Painter {
             world,
             canvas: canvas_theme,
         };
-        let scale = window.scale_factor();
         let needs_rebuild = self
             .paper_cache
             .as_ref()
@@ -1801,6 +1998,117 @@ fn paper_dot_centers(clip: Rect, spacing: f32) -> impl Iterator<Item = DocPoint>
             clip.contains(p).then_some(p)
         })
     })
+}
+
+/// Choose a repeating dot-grid tile sized ~256–512 logical px so panning and
+/// scrolling reuse one small GPU texture instead of rebuilding thousands of
+/// triangle-fan path vertices and running a fullscreen 4× MSAA path pass.
+fn dot_tile_spec(spacing: f32, render_zoom: f32, scale: f32, color: u32) -> Option<(DotTileKey, f32)> {
+    if !spacing.is_finite()
+        || spacing <= 0.
+        || !render_zoom.is_finite()
+        || render_zoom <= 0.
+        || !scale.is_finite()
+        || scale <= 0.
+    {
+        return None;
+    }
+    let cell_logical = spacing * render_zoom;
+    let cells: u32 = if cell_logical <= 24. {
+        16
+    } else if cell_logical <= 64. {
+        8
+    } else if cell_logical <= 128. {
+        4
+    } else {
+        2
+    };
+    let tile_doc = spacing * cells as f32;
+    let exact_tile_px = tile_doc * render_zoom * scale;
+    let tile_px = exact_tile_px.round().clamp(32., 1024.) as u32;
+    let dot_radius_px = render_zoom.max(0.7) * scale * (tile_px as f32 / exact_tile_px.max(1.));
+    let max_radius = (tile_px as f32 / cells as f32) * 0.45;
+    let radius_tenths = (dot_radius_px.min(max_radius) * 10.).round().max(5.) as u32;
+    Some((
+        DotTileKey {
+            cells,
+            tile_px,
+            radius_tenths,
+            color,
+        },
+        tile_doc,
+    ))
+}
+
+/// Rasterize one repeating `cells × cells` dot tile in straight BGRA. Every
+/// pixel carries the dot RGB so GPU bilinear sampling interpolates only alpha
+/// without dark fringes on light or dark paper.
+fn raster_dot_tile(key: DotTileKey) -> Option<Arc<RenderImage>> {
+    let side = key.tile_px as usize;
+    let r = ((key.color >> 16) & 0xff) as u8;
+    let g = ((key.color >> 8) & 0xff) as u8;
+    let b = (key.color & 0xff) as u8;
+    let mut bgra = vec![0u8; side * side * 4];
+    for pixel in bgra.as_chunks_mut::<4>().0 {
+        pixel[0] = b;
+        pixel[1] = g;
+        pixel[2] = r;
+    }
+    let cell_px = key.tile_px as f32 / key.cells as f32;
+    let radius = key.radius_tenths as f32 / 10.;
+    let pad = (radius + 1.).ceil() as i32;
+    let max_coord = key.tile_px as i32 - 1;
+    for cy in 0..key.cells {
+        let cy_px = (cy as f32 + 0.5) * cell_px;
+        let y0 = (cy_px.floor() as i32 - pad).max(0);
+        let y1 = (cy_px.ceil() as i32 + pad).min(max_coord);
+        for cx in 0..key.cells {
+            let cx_px = (cx as f32 + 0.5) * cell_px;
+            let x0 = (cx_px.floor() as i32 - pad).max(0);
+            let x1 = (cx_px.ceil() as i32 + pad).min(max_coord);
+            for iy in y0..=y1 {
+                let dy = iy as f32 + 0.5 - cy_px;
+                let row = iy as usize * side;
+                for ix in x0..=x1 {
+                    let dx = ix as f32 + 0.5 - cx_px;
+                    let cov = (radius + 0.5 - dx.hypot(dy)).clamp(0., 1.);
+                    let a = (cov * 255.).round() as u8;
+                    if a > 0 {
+                        let idx = (row + ix as usize) * 4 + 3;
+                        bgra[idx] = bgra[idx].max(a);
+                    }
+                }
+            }
+        }
+    }
+    RenderImage::from_ephemeral_bgra(key.tile_px, key.tile_px, bgra).map(Arc::new)
+}
+
+/// Document-space tile rectangles covering `clip` such that every cell center
+/// aligns identically with [`paper_dot_centers`] (`x * spacing + 16`).
+fn dot_tile_rects(clip: Rect, spacing: f32, tile_doc: f32) -> Option<Vec<Rect>> {
+    if clip.width() <= 0. || clip.height() <= 0. || !tile_doc.is_finite() || tile_doc <= 0. {
+        return None;
+    }
+    let base = 16. - 0.5 * spacing;
+    let tx0 = ((clip.min.x - base) / tile_doc).floor() as i32;
+    let tx1 = ((clip.max.x - base) / tile_doc).ceil() as i32;
+    let ty0 = ((clip.min.y - base) / tile_doc).floor() as i32;
+    let ty1 = ((clip.max.y - base) / tile_doc).ceil() as i32;
+    let cols = tx1.saturating_sub(tx0) as usize;
+    let rows = ty1.saturating_sub(ty0) as usize;
+    if cols == 0 || rows == 0 || cols.saturating_mul(rows) > 4096 {
+        return None;
+    }
+    let mut rects = Vec::with_capacity(cols * rows);
+    for ty in ty0..ty1 {
+        let y = base + ty as f32 * tile_doc;
+        for tx in tx0..tx1 {
+            let x = base + tx as f32 * tile_doc;
+            rects.push(Rect::new(x, y, tile_doc, tile_doc));
+        }
+    }
+    Some(rects)
 }
 
 fn axis_aligned_bounds(rect: Rect, world: Transform) -> Option<Rect> {
@@ -2564,6 +2872,29 @@ mod tests {
                     assert_eq!((p.x - 16.).rem_euclid(32.), 0.);
                     assert_eq!((p.y - 16.).rem_euclid(32.), 0.);
                 }
+                let (tile_key, tile_doc) =
+                    dot_tile_spec(spacing, zoom, 1., key.canvas.dots).unwrap();
+                let tiles = dot_tile_rects(key.visible, spacing, tile_doc).unwrap();
+                assert!(!tiles.is_empty() && tiles.len() <= 256);
+                for tile in &tiles {
+                    // Every cell center inside every tile lands on the exact dot lattice.
+                    let first_x = tile.min.x + 0.5 * spacing;
+                    let first_y = tile.min.y + 0.5 * spacing;
+                    assert!((first_x - 16.).rem_euclid(spacing).abs() < 1e-3);
+                    assert!((first_y - 16.).rem_euclid(spacing).abs() < 1e-3);
+                }
+                if rotation == 0. && (zoom == 1. || zoom == 0.25) {
+                    let image = raster_dot_tile(tile_key).unwrap();
+                    let side = tile_key.tile_px as usize;
+                    let cell = tile_key.tile_px as f32 / tile_key.cells as f32;
+                    let cx = (0.5 * cell).floor() as usize;
+                    let min_alpha = if zoom >= 1. { 180 } else { 100 };
+                    image.with_bytes(0, |bytes| {
+                        let bytes = bytes.unwrap();
+                        assert!(bytes[(cx * side + cx) * 4 + 3] >= min_alpha);
+                        assert_eq!(bytes[3], 0);
+                    });
+                }
                 for paper in [Paper::Ruled, Paper::Grid, Paper::Dots] {
                     key.paper = paper;
                     assert_eq!(paper_paths(&key).len(), 1);
@@ -2624,7 +2955,28 @@ mod tests {
                     "CPU paper tessellation only: {paper:?}, zoom={zoom}, ms/frame={:.3}",
                     start.elapsed().as_secs_f64() * 1000. / frames as f64
                 );
-                if paper != Paper::Dots {
+                if paper == Paper::Dots {
+                    let spacing = paper_spacing(zoom);
+                    let (tile_key, tile_doc) =
+                        dot_tile_spec(spacing, zoom, 1., canvas.dots).unwrap();
+                    let _tile = raster_dot_tile(tile_key).unwrap();
+                    let start = std::time::Instant::now();
+                    let mut tile_count = 0;
+                    for _ in 0..frames {
+                        let tiles = std::hint::black_box(
+                            dot_tile_rects(key.visible, spacing, tile_doc).unwrap(),
+                        );
+                        tile_count = tiles.len();
+                        key.world.tx += 1.;
+                        key.visible.min.x -= 1. / zoom;
+                        key.visible.max.x -= 1. / zoom;
+                        key.page = key.visible.expand(32.);
+                    }
+                    println!(
+                        "CPU dot-tile preparation (cached texture): zoom={zoom}, tiles={tile_count}, ms/frame={:.4}",
+                        start.elapsed().as_secs_f64() * 1000. / frames as f64
+                    );
+                } else {
                     let start = std::time::Instant::now();
                     for _ in 0..frames {
                         std::hint::black_box(paper_rectangles(&key, 1.).unwrap());

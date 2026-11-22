@@ -150,6 +150,8 @@ pub struct Settings {
     pub scratch_erase: bool,
     pub hold_shapes: bool,
     pub encircle_select: bool,
+    /// Write '=' after a numeric handwritten expression to insert its handwritten answer.
+    pub auto_math_ink: bool,
     pub autosave: bool,
     pub cursor_size: f32,
     /// Solve math in the solver panel as soon as a problem is entered or read.
@@ -359,6 +361,7 @@ impl Default for Settings {
             scratch_erase: true,
             hold_shapes: true,
             encircle_select: true,
+            auto_math_ink: true,
             autosave: true,
             cursor_size: 12.,
             math_auto_solve: true,
@@ -388,19 +391,25 @@ mod tests {
 
     #[test]
     fn smart_ink_defaults_on_and_explicit_opt_outs_persist() {
-        let smart_ink = |s: &Settings| [s.scratch_erase, s.hold_shapes, s.encircle_select];
-        assert_eq!(smart_ink(&Settings::default()), [true; 3]);
+        let smart_ink =
+            |s: &Settings| [s.scratch_erase, s.hold_shapes, s.encircle_select, s.auto_math_ink];
+        assert_eq!(smart_ink(&Settings::default()), [true; 4]);
         // Profiles that predate a toggle never recorded an opt-out for it.
         let legacy: Settings = serde_json::from_value(serde_json::json!({"dark": true})).unwrap();
-        assert_eq!(smart_ink(&legacy), [true; 3]);
+        assert_eq!(smart_ink(&legacy), [true; 4]);
         let mut opted_out = Settings::default();
         opted_out.scratch_erase = false;
         opted_out.encircle_select = false;
+        opted_out.auto_math_ink = false;
         for (saved, expected) in [
-            (serde_json::to_string(&opted_out).unwrap(), [false, true, false]),
             (
-                r#"{"scratch_erase":false,"hold_shapes":false,"encircle_select":false}"#.into(),
-                [false; 3],
+                serde_json::to_string(&opted_out).unwrap(),
+                [false, true, false, false],
+            ),
+            (
+                r#"{"scratch_erase":false,"hold_shapes":false,"encircle_select":false,"auto_math_ink":false}"#
+                    .into(),
+                [false; 4],
             ),
         ] {
             let mut reopened: Settings = serde_json::from_str(&saved).unwrap();

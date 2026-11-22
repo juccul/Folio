@@ -13,6 +13,7 @@
 //! - `import_export`, `previews`, `memory`: files, raster previews and budgets
 //! - `recognition`, `math_solver`, `equations`: OCR, solving and LaTeX
 pub mod appearance;
+mod auto_math;
 mod background;
 mod clipboard;
 mod equations;
@@ -50,6 +51,7 @@ mod templates;
 mod tests;
 mod text_boxes;
 mod workers;
+pub use auto_math::{AutoMathAnimation, AutoMathStrokeState};
 pub use folders::FolderDetails;
 use folio_canvas::{PageStack, SpatialIndex, Viewport};
 use folio_document::*;
@@ -263,6 +265,12 @@ pub struct Controller {
     math_live_ocr: Option<(Id, String)>,
     math_ink_signatures: HashMap<Id, String>,
 
+    // Inline auto-math solver triggered when drawing '='.
+    auto_math_solved_eqs: HashSet<(Id, Id)>,
+    auto_math_generated_ids: HashSet<Id>,
+    auto_math_solved_rows: Vec<auto_math::SolvedAutoMathRow>,
+    auto_math_animations: Vec<AutoMathAnimation>,
+
     // Services and workers. Fields drop in order: keep the writer lease last,
     // after persistence and all worker owners are dropped.
     math_service: math_solver::Service,
@@ -343,6 +351,10 @@ impl Controller {
             math_ink_due: None,
             math_live_ocr: None,
             math_ink_signatures: HashMap::new(),
+            auto_math_solved_eqs: HashSet::new(),
+            auto_math_generated_ids: HashSet::new(),
+            auto_math_solved_rows: Vec::new(),
+            auto_math_animations: Vec::new(),
             recognition_service: recognition::Service::new(recognition::pack_path(&data_dir)),
             recognition_generation: 0,
             recognition_pending: false,
@@ -486,6 +498,7 @@ impl Controller {
             || self.equation_pending
             || self.math_session.as_ref().is_some_and(|s| s.pending)
             || !self.math_live_pending.is_empty()
+            || !self.auto_math_animations.is_empty()
             || self.pending_note.is_some()
     }
     pub(crate) fn end_temporary_selection(&mut self) {

@@ -91,6 +91,7 @@ impl Controller {
     pub fn tick(&mut self) -> bool {
         let mut changed = false;
         changed |= self.poll_recognition();
+        changed |= self.poll_auto_math();
         changed |= self.poll_math_solver();
         if self.pending_pdf_password.is_none() {
             self.pending_pdf_password = self.pdf_password_queue.pop_front();
