@@ -126,6 +126,7 @@ impl PointerHandler for WinitState {
                 },
                 // Regular events on the main surface.
                 PointerEventKind::Enter { .. } => {
+                    window.folio_pointer_motion(event.position);
                     self.events_sink
                         .push_window_event(WindowEvent::CursorEntered { device_id }, window_id);
 
@@ -149,6 +150,7 @@ impl PointerHandler for WinitState {
                         .push_window_event(WindowEvent::CursorLeft { device_id }, window_id);
                 },
                 PointerEventKind::Motion { .. } => {
+                    window.folio_pointer_motion(event.position);
                     self.events_sink.push_window_event(
                         WindowEvent::CursorMoved { device_id, position },
                         window_id,
@@ -163,6 +165,7 @@ impl PointerHandler for WinitState {
                     let state = if matches!(kind, PointerEventKind::Press { .. }) {
                         ElementState::Pressed
                     } else {
+                        window.folio_pointer_release();
                         ElementState::Released
                     };
                     self.events_sink.push_window_event(

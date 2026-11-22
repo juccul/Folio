@@ -1747,7 +1747,7 @@ impl Window {
             focused: tx.focused().map(str::to_owned),
             dark: view.system_dark,
             hovered: view.window_hovered,
-            maximized: false,
+            maximized: crate::titlebar::window_maximized(),
             effects: Vec::new(),
             raster: None,
         }
@@ -1760,7 +1760,7 @@ impl Window {
             focused: view.focused_key.clone(),
             dark: view.system_dark,
             hovered: view.window_hovered,
-            maximized: false,
+            maximized: crate::titlebar::window_maximized(),
             effects: Vec::new(),
             raster: None,
         }

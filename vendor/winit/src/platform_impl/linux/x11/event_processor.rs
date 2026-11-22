@@ -1066,6 +1066,10 @@ impl EventProcessor {
             return;
         }
 
+        if state == ElementState::Released && event.detail as u32 == xlib::Button1 {
+            self.with_window(event.event as xproto::Window, |window| window.cancel_pending_move());
+        }
+
         // Folio: pens publish pressure and tilt; their barrel buttons and pads' express keys
         // are tablet buttons rather than clicks.
         if self.tablet_button(event, state == ElementState::Pressed) {
@@ -1129,6 +1133,7 @@ impl EventProcessor {
         }
 
         let cursor_moved = self.with_window(window, |window| {
+            window.pending_move_motion(new_cursor_pos.0, new_cursor_pos.1);
             let mut shared_state_lock = window.shared_state_lock();
             util::maybe_change(&mut shared_state_lock.cursor_pos, new_cursor_pos)
         });

@@ -79,6 +79,11 @@ pub struct Window {
 }
 
 impl Window {
+    /// Folio: the window's state, for `platform::client_frame` requests.
+    pub(crate) fn frame_state(&self) -> std::sync::Weak<Mutex<WindowState>> {
+        Arc::downgrade(&self.window_state)
+    }
+
     pub(crate) fn new(
         event_loop_window_target: &ActiveEventLoop,
         attributes: WindowAttributes,

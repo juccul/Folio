@@ -124,6 +124,8 @@ pub struct UnownedWindow {
     pub shared_state: Mutex<SharedState>,
     redraw_sender: WakeSender<WindowId>,
     activation_sender: WakeSender<super::ActivationToken>,
+    /// Folio: where a client-framed window's move was asked for, until the pointer moves.
+    pending_move: Mutex<Option<(f64, f64)>>,
 }
 
 macro_rules! leap {
@@ -351,6 +353,7 @@ impl UnownedWindow {
             shared_state: SharedState::new(guessed_monitor, &window_attrs),
             redraw_sender: event_loop.redraw_sender.clone(),
             activation_sender: event_loop.activation_sender.clone(),
+            pending_move: Mutex::new(None),
         };
 
         // Title must be set before mapping. Some tiling window managers (i.e. i3) use the window
@@ -1659,11 +1662,60 @@ impl UnownedWindow {
 
     /// Moves the window while it is being dragged.
     pub fn drag_window(&self) -> Result<(), ExternalError> {
+        // Folio: a client-framed window moves once the pointer does, so a press and release
+        // reach the application (a double click on the title bar maximizes) instead of the
+        // window manager's move.
+        let cursor = self.shared_state_lock().cursor_pos;
+        if let Some(cursor) = cursor.filter(|_| crate::platform_impl::client_frame::enabled()) {
+            *self.pending_move.lock().unwrap() = Some(cursor);
+            return Ok(());
+        }
         self.drag_initiate(util::MOVERESIZE_MOVE)
     }
 
+    /// Folio: starts a deferred move once the pointer travels past a few pixels.
+    pub(crate) fn pending_move_motion(&self, x: f64, y: f64) {
+        let start = *self.pending_move.lock().unwrap();
+        if let Some(start) = start {
+            if crate::platform_impl::client_frame::past_drag_slop(start, (x, y)) {
+                *self.pending_move.lock().unwrap() = None;
+                let _ = self.drag_initiate(util::MOVERESIZE_MOVE);
+            }
+        }
+    }
+
+    /// Folio: the button went up before the pointer moved far enough to move the window.
+    pub(crate) fn cancel_pending_move(&self) {
+        *self.pending_move.lock().unwrap() = None;
+    }
+
     #[inline]
-    pub fn show_window_menu(&self, _position: Position) {}
+    /// Folio: opens the window manager's window menu through `_GTK_SHOW_WINDOW_MENU`
+    /// (Mutter, KWin and others), as GTK's client-side decorations do.
+    pub fn show_window_menu(&self, position: Position) {
+        let point: PhysicalPosition<i32> = position.to_physical(self.scale_factor());
+        let Ok(origin) = self.inner_position() else { return };
+        let atoms = self.xconn.atoms();
+        if let Ok(cookie) = self.xconn.xcb_connection().ungrab_pointer(x11rb::CURRENT_TIME) {
+            cookie.ignore_error();
+        }
+        if let Ok(cookie) = self.xconn.send_client_msg(
+            self.xwindow,
+            self.root,
+            atoms[_GTK_SHOW_WINDOW_MENU],
+            Some(xproto::EventMask::SUBSTRUCTURE_REDIRECT | xproto::EventMask::SUBSTRUCTURE_NOTIFY),
+            [
+                util::VIRTUAL_CORE_POINTER as u32,
+                (origin.x + point.x) as u32,
+                (origin.y + point.y) as u32,
+                0,
+                0,
+            ],
+        ) {
+            cookie.ignore_error();
+        }
+        let _ = self.xconn.flush_requests();
+    }
 
     /// Resizes the window while it is being dragged.
     pub fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), ExternalError> {

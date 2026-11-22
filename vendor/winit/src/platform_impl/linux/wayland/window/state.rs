@@ -155,6 +155,10 @@ pub struct WindowState {
     /// The value is the serial of the event triggered moved.
     has_pending_move: Option<u32>,
 
+    /// Folio: the pointer's last position on the surface, and where a deferred move began.
+    folio_pointer: (f64, f64),
+    folio_pending_move: Option<(f64, f64)>,
+
     /// The underlying SCTK window.
     pub window: Window,
 
@@ -202,6 +206,8 @@ impl WindowState {
             frame_callback_state: FrameCallbackState::None,
             seat_focus: Default::default(),
             has_pending_move: None,
+            folio_pointer: (0., 0.),
+            folio_pending_move: None,
             ime_allowed: false,
             ime_purpose: ImePurpose::Normal,
             last_configure: None,
@@ -452,7 +458,34 @@ impl WindowState {
     }
 
     /// Start the window drag.
-    pub fn drag_window(&self) -> Result<(), ExternalError> {
+    pub fn drag_window(&mut self) -> Result<(), ExternalError> {
+        // Folio: a client-framed window moves once the pointer does, so a press and release
+        // reach the application (a double click on the title bar maximizes) instead of the
+        // compositor's move grab.
+        if crate::platform_impl::client_frame::enabled() {
+            self.folio_pending_move = Some(self.folio_pointer);
+            return Ok(());
+        }
+        self.start_move()
+    }
+
+    /// Folio: the pointer moved over the window; starts a deferred move past a few points.
+    pub fn folio_pointer_motion(&mut self, position: (f64, f64)) {
+        self.folio_pointer = position;
+        if let Some(start) = self.folio_pending_move {
+            if crate::platform_impl::client_frame::past_drag_slop(start, position) {
+                self.folio_pending_move = None;
+                let _ = self.start_move();
+            }
+        }
+    }
+
+    /// Folio: the button went up before the pointer moved far enough to move the window.
+    pub fn folio_pointer_release(&mut self) {
+        self.folio_pending_move = None;
+    }
+
+    fn start_move(&self) -> Result<(), ExternalError> {
         let xdg_toplevel = self.window.xdg_toplevel();
         // TODO(kchibisov) handle touch serials.
         self.apply_on_pointer(|_, data| {

@@ -211,6 +211,7 @@ pub fn run(
     rune_args: Vec<String>,
     ready: impl FnOnce(rune::AppHandle<AppState>),
 ) {
+    titlebar::request_client_frame();
     let mut view = view;
     if open_editor {
         view.show_editor();

@@ -56,7 +56,7 @@ use dnd::{Dnd, DndState};
 use event_processor::{EventProcessor, MAX_MOD_REPLAY_LEN};
 use ime::{Ime, ImeCreationError, ImeReceiver, ImeRequest, ImeSender};
 pub(crate) use monitor::{MonitorHandle, VideoModeHandle};
-use window::UnownedWindow;
+pub(crate) use window::UnownedWindow;
 pub(crate) use xdisplay::{XConnection, XError, XNotSupported};
 
 // Xinput constants not defined in x11rb
@@ -779,6 +779,13 @@ impl DeviceId {
 }
 
 pub(crate) struct Window(Arc<UnownedWindow>);
+
+impl Window {
+    /// Folio: the window, for `platform::client_frame` requests.
+    pub(crate) fn unowned(&self) -> Weak<UnownedWindow> {
+        Arc::downgrade(&self.0)
+    }
+}
 
 impl Deref for Window {
     type Target = UnownedWindow;

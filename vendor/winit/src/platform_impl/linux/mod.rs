@@ -37,6 +37,7 @@ pub(crate) use crate::cursor::OnlyCursorImageSource as PlatformCustomCursorSourc
 pub(crate) use crate::icon::RgbaIcon as PlatformIcon;
 pub(crate) use crate::platform_impl::Fullscreen;
 
+pub(crate) mod client_frame;
 pub(crate) mod common;
 #[cfg(wayland_platform)]
 pub(crate) mod wayland;
@@ -290,9 +291,14 @@ impl Window {
     #[inline]
     pub(crate) fn new(
         window_target: &ActiveEventLoop,
-        attribs: WindowAttributes,
+        mut attribs: WindowAttributes,
     ) -> Result<Self, RootOsError> {
-        match *window_target {
+        // Folio: a decorated window draws its own frame when the application asks.
+        let client_frame = attribs.decorations && client_frame::enabled();
+        if client_frame {
+            attribs.decorations = false;
+        }
+        let window = match *window_target {
             #[cfg(wayland_platform)]
             ActiveEventLoop::Wayland(ref window_target) => {
                 wayland::Window::new(window_target, attribs).map(Window::Wayland)
@@ -301,7 +307,11 @@ impl Window {
             ActiveEventLoop::X(ref window_target) => {
                 x11::Window::new(window_target, attribs).map(Window::X)
             },
+        }?;
+        if client_frame {
+            client_frame::register(&window);
         }
+        Ok(window)
     }
 
     pub(crate) fn maybe_queue_on_main(&self, f: impl FnOnce(&Self) + Send + 'static) {

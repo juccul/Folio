@@ -94,6 +94,7 @@ atom_manager! {
 
     // Miscellaneous Atoms
     _GTK_THEME_VARIANT,
+    _GTK_SHOW_WINDOW_MENU,
     _MOTIF_WM_HINTS,
     _NET_ACTIVE_WINDOW,
     _NET_CLIENT_LIST,

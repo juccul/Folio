@@ -56,3 +56,6 @@ pub mod scancode;
 
 /// Folio extension: pen pressure, tilt and tablet pad input beside the pointer events.
 pub mod tablet;
+
+/// Folio extension: an application-drawn window frame on Linux.
+pub mod client_frame;
