@@ -713,8 +713,129 @@ impl NotesView {
                 self.selection_appear,
                 toolbar,
             ));
+        } else if !self.library_open
+            && !self.canvas_input_blocked()
+            && self.controller.interaction.is_none()
+            && self.inline_text.is_none()
+            && !self.cropping()
+            && let Some(info) = self.controller.hovered_auto_math_answer()
+        {
+            center = center.child(self.auto_math_hover_popup(info));
         }
         center
+    }
+    /// Compact glass popup showing the detected LaTeX for a hovered auto-completed answer.
+    fn auto_math_hover_popup(
+        &self,
+        info: folio_app::AutoMathHoverInfo,
+    ) -> impl IntoElement + use<> {
+        let theme = Theme::new(&self.controller.settings);
+        let (canvas_w, canvas_h) = self
+            .canvas_bounds
+            .map(|b| (f32::from(b.size.width), f32::from(b.size.height)))
+            .unwrap_or((1000., 700.));
+        let max_inner_w = (canvas_w - 48.).clamp(120., 380.);
+
+        let (main_w, main_h) = if let Some(ref vec) = info.vector {
+            let natural_h = (vec.height * 1.15).clamp(24., 44.);
+            let w = (vec.width / vec.height.max(1.) * natural_h).clamp(64., max_inner_w);
+            let h = (vec.height / vec.width.max(1.) * w).clamp(20., natural_h);
+            (w, h)
+        } else {
+            (
+                (info.detected_latex.len() as f32 * 8.0).clamp(64., max_inner_w),
+                22.,
+            )
+        };
+
+        let ctx_dims = info.context_latex.as_ref().map(|ctx| {
+            if let Some(ref vec) = info.context_vector {
+                let natural_h = (vec.height * 0.85).clamp(15., 24.);
+                let w = (vec.width / vec.height.max(1.) * natural_h).clamp(56., max_inner_w);
+                let h = (vec.height / vec.width.max(1.) * w).clamp(14., natural_h);
+                (w, h)
+            } else {
+                ((ctx.len() as f32 * 6.5).clamp(56., max_inner_w), 16.)
+            }
+        });
+
+        let inner_w = ctx_dims.map_or(main_w, |(cw, _)| main_w.max(cw));
+        let popup_w = inner_w + 24.;
+        let popup_h = 16. + main_h + ctx_dims.map_or(0., |(_, ch)| ch + 6.);
+
+        let r = info.anchor_bounds;
+        let viewport = self.controller.session().viewport;
+        let screen = folio_document::Rect::from_points(
+            [
+                r.min,
+                DocPoint::new(r.max.x, r.min.y),
+                r.max,
+                DocPoint::new(r.min.x, r.max.y),
+            ]
+            .map(|p| viewport.to_screen(p)),
+        );
+        let left = (screen.center().x - popup_w * 0.5).clamp(12., (canvas_w - popup_w - 12.).max(12.));
+        let above_y = screen.min.y - popup_h - 10.;
+        let top = if above_y >= 12. {
+            above_y
+        } else {
+            (screen.max.y + 10.).min((canvas_h - popup_h - 12.).max(12.))
+        };
+
+        let mut card = div()
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(popup_w))
+            .px_3()
+            .py_2()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_1()
+            .rounded(px(theme.corner_md()))
+            .glass(theme, theme.popover)
+            .shadow_md();
+
+        if let Some(vec) = info.vector {
+            card = card.child(
+                div()
+                    .w(px(main_w))
+                    .child(self.native_formula(vec, main_h, theme.ink)),
+            );
+        } else {
+            card = card.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(theme.ink))
+                    .child(info.detected_latex),
+            );
+        }
+
+        if let (Some(ctx), Some((cw, ch))) = (info.context_latex, ctx_dims) {
+            if let Some(cvec) = info.context_vector {
+                card = card.child(
+                    div()
+                        .w(px(cw))
+                        .pt_0p5()
+                        .border_t_1()
+                        .border_color(theme.glass_edge())
+                        .child(self.native_formula(cvec, ch, theme.muted)),
+                );
+            } else {
+                card = card.child(
+                    div()
+                        .pt_0p5()
+                        .border_t_1()
+                        .border_color(theme.glass_edge())
+                        .text_xs()
+                        .text_color(rgb(theme.muted))
+                        .child(ctx),
+                );
+            }
+        }
+
+        card
     }
     /// Whether the selected objects show their action toolbar.
     fn selection_toolbar_shown(&self) -> bool {

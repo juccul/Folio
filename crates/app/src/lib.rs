@@ -51,7 +51,7 @@ mod templates;
 mod tests;
 mod text_boxes;
 mod workers;
-pub use auto_math::{AutoMathAnimation, AutoMathStrokeState};
+pub use auto_math::{AutoMathAnimation, AutoMathHoverInfo, AutoMathStrokeState};
 pub use folders::FolderDetails;
 use folio_canvas::{PageStack, SpatialIndex, Viewport};
 use folio_document::*;

@@ -12,6 +12,9 @@
   <launchable type="desktop-id">io.github.folio.Notes.desktop</launchable>
   <supports><control>pointing</control><control>keyboard</control></supports>
   <releases>
+    <release version="0.2.5" date="2026-11-22">
+      <description><p>Inline Auto Math Solver with animated handwritten answers, detected-LaTeX hover popups, chained page variables and simple algebra, and a complete pure-Rust statistics table solver (Normal, Student's t, Chi-square, F, Shapiro-Wilk, Binomial, Poisson); improved offline handwriting and math recognition models; and cached dot-grid paper tiles for smoother scrolling.</p></description>
+    </release>
     <release version="0.2.4" date="2026-11-22">
       <description><p>Fix upgrading from Folio 0.2.2 and earlier: ignore leftover GLM-OCR llama-vulkan pack.json files in user data directories so the bundled offline stroke recognition models load automatically.</p></description>
     </release>

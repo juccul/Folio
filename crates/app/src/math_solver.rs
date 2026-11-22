@@ -412,6 +412,36 @@ impl Service {
                                 ..Default::default()
                             });
                         }
+                        if matches!(
+                            task.request.operation.as_str(),
+                            "auto" | "evaluate" | "simplify" | "live"
+                        ) && let Some((input_latex, answer, explanation)) =
+                            crate::auto_math::eval::solve_statistics_panel(
+                                &task.request.expression,
+                                &task.request.variables,
+                            )
+                        {
+                            let mut report = MathReport {
+                                answer: answer.clone(),
+                                answer_latex: answer.clone(),
+                                approximate: answer.clone(),
+                                input_latex: input_latex.clone(),
+                                title: "Statistics".into(),
+                                status: "verified".into(),
+                                methods: vec!["statistics".into()],
+                                steps: vec![MathStep {
+                                    rule: "statistics_table".into(),
+                                    before: input_latex,
+                                    after: answer,
+                                    explanation,
+                                    status: "verified".into(),
+                                    ..Default::default()
+                                }],
+                                ..Default::default()
+                            };
+                            prepare_report(&mut report);
+                            return Ok(report);
+                        }
                         restart = true;
                         let c = ensure_client(&mut client, &task.pack, &worker_process)?;
                         // Publish in-flight work before rechecking the generation, so

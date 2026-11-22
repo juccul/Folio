@@ -1674,6 +1674,10 @@ impl NotesView {
             && self.region_selection.is_none()
             && !bounds.contains(&position)
         {
+            if phase == Phase::Hover && self.controller.cursor.is_some() {
+                self.controller.cursor = None;
+                cx.notify();
+            }
             return;
         }
         let position = DocPoint::new(

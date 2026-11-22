@@ -1,16 +1,21 @@
-# Folio 0.2.4
+# Folio 0.2.5
 
-- **Upgrade fix for built-in handwriting and math recognition**: ignore leftover GLM-OCR `llama-vulkan` `pack.json` files in existing user data directories (from Folio 0.2.2 and earlier) so upgraded Linux Flatpak, Linux archive, and Windows installations automatically use the bundled `recognition/` stroke models without manual cleanup.
-
-Includes all changes from Folio 0.2.3:
-
-- **Built-in offline handwriting and math recognition**: replaces the 1.47 GB GLM-OCR / `llama-server` download with bundled pure-Rust stroke-sequence models (`folio-recognition`, ~38 MiB total) that run directly on CPU with zero downloads, zero external inference servers, and zero Vulkan/GPU requirements.
-  - **Math v2** (18.58M-parameter RoPE Conformer Encoder + KV-cached Decoder): trained on Google MathWriting with 10 kinematic/spatial stroke features and stroke-order shuffling augmentation (`28.3 ms` median on CPU; `66.5%` exact match on full held-out MathWriting test; `62.5%` EM / `6.83%` CER vs GLM-OCR `46.5%` EM / `15.3%` CER on 200-sample head-to-head).
-  - **Handwriting v2** (16.63M-parameter 8-layer RoPE Conformer-CTC + Bigram Lexicon Beam Search): two-pass scale-invariant multi-line vector clustering and delayed-stroke reordering (`i`-dots and `t`-crosses) directly from raw ink strokes (`56.8 ms` median on CPU; `2.25%` CER / `85.5%` exact line match vs GLM-OCR `16.0%` CER / `49.7%` EM on 200 unseen-writer samples; `0.82%` raw greedy CER on unseen BRUSH stylus writers).
-  - Removes the first-use 1.47 GB OCR download dialog, `llama-server` process management, and raster image / PDF crop OCR paths.
-- **Smoother writing and previews**: pixel-lattice-snapped ink batch rasters, prefix-layer stand-in caching while appending strokes, and stand-in page thumbnails prevent ink shifting, ink flickering, and page-preview flashing while writing.
-- **Memory, storage and rendering optimizations**: compact bit-exact binary serialization for ink strokes, lower RAM usage across thumbnails, fonts, image/atlas caches, and Wayland/GPUI frame buffers, plus zero-Hz idle sleeping when no animations or background work are active.
-- **Reliability and bug fixes**: fixes across document storage, history/undo, PDF/image handling, selection, math solver workflows, and UI stability.
+- **Inline Auto Math Solver (optional, Settings → Recognition)**: draw `=` after a handwritten expression (such as `4+4=`, `\sqrt{3}=`, `Tan(\frac{\pi}{4})=`, `\frac{4}{\frac{4}{4}}=`, or `100^{10}=`) to automatically synthesize handwritten answer ink matching your pen color, height, slant, and pressure.
+  - **Natural write-on animation**: strokes appear sequentially with a slight overlapping stagger in golden-yellow ink and smoothly fade to your pen color once finished.
+  - **Detected-LaTeX hover popup**: hover over any auto-completed answer to see the rendered LaTeX of what was recognized to produce it, along with any page variable or distribution context that contributed.
+  - **Page variables & simple algebra**: resolves handwritten variable assignments (`y = 3`, `x = y^2 + 4`), linear equations (`2x + 4 = 10` → `x = 3`), case-insensitive single-letter variable fallbacks, and polynomial simplification (`2x + 3x = 5x`, `(x + 1)^2 = x^2 + 2x + 1`).
+  - **Robust 2D equation detection**: isolates tightly stacked rows while preserving character cap/crossbars (`T` in `Tan(...)`, `\pi`, `t`, `5`), bowed/nested fraction bars, multi-character subscripts/superscripts, compact `=` signs, and parenthesized `=` inside `P(X = k) =`.
+- **Built-in Statistics Table Solver** (inline Auto Math & Math Panel): pure-Rust exact solver covering all standard university statistics reference tables:
+  - Standard & general Normal ($\Phi(z)$, $\varphi(z)$, $\Phi^{-1}(p)$, $z_\alpha$, $P(Z \le z)$, $X \sim N(\mu, \sigma^2)$)
+  - Student's $t$ ($t_{\text{df}, \alpha}$, $t_{\alpha, \text{df}}$, $\text{df} = \infty$, $P(T \ge t)$)
+  - Chi-square ($\chi^2_{\text{df}, \alpha}$, $P(\chi^2 \ge c)$)
+  - $F$-distribution ($F_\alpha(f_1, f_2)$ for any $\alpha$, including $f_1 = \infty$ or $f_2 = \infty$)
+  - Shapiro-Wilk normality test (exact $n = 2..50$ weights `sw_a(n, i)`, exact $n = 3..50$ critical values $W_{n, \alpha}$, direct sample $W(x_1, \dots, x_n)$ statistic, and Royston AS R94 fallback)
+  - Binomial $B(n, p)$ and Poisson $\text{Pois}(\mu)$ cumulative probabilities, PMFs, $E(X)$, $\operatorname{Var}(X)$, and page `X \sim ...` declarations.
+- **Improved offline handwriting & math recognition**:
+  - **Handwriting v2**: CTC lexicon/edit-distance word rescoring reduces 1–2 letter typos while preserving non-dictionary words, numbers, and punctuation.
+  - **Math v4**: eliminates `<unk>` decoding artifacts and improves handwritten letters, trig/log functions (`Sin`, `Tan`, `log`), `0` vs `\circ`, `\pi`, and multi-digit exponents (`77.20%` validation exact match, `4.69%` CER).
+- **Smoother dot-grid scrolling**: replaces per-frame dot-grid vector tessellation + 4× MSAA with a cached repeating tile texture and retains adjacent pages in cache during vertical scrolling.
 
 Windows x64 setup EXE and portable ZIP, Linux x86_64 Flatpak and desktop archive, checksums and complete corresponding source are published together with the bundled `recognition/` models. Updates remain signed and user-initiated.
 
