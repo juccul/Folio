@@ -4,11 +4,13 @@ use super::compat::*;
 include!(concat!(env!("OUT_DIR"), "/icons.rs"));
 
 /// An icon element: GPUI's `svg()` with a path and a text colour.
+#[allow(dead_code)]
 pub struct Svg {
     kind: Icon,
     color: rune::Color,
     size: f32,
 }
+#[allow(dead_code)]
 impl Svg {
     pub fn size(mut self, s: impl Into<Length>) -> Self {
         self.size = match s.into() {

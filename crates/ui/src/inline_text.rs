@@ -687,7 +687,7 @@ trait WithHint {
     fn with_hint(self, hint: impl Into<SharedString>, theme: Theme, show: bool) -> Self;
 }
 impl WithHint for Stateful<Div> {
-    fn with_hint(self, hint: impl Into<SharedString>, theme: Theme, show: bool) -> Self {
+    fn with_hint(self, hint: impl Into<SharedString>, _theme: Theme, show: bool) -> Self {
         let hint = hint.into();
         self.when(show, |button| {
             button.tooltip(hint.clone())

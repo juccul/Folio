@@ -21,22 +21,6 @@ pub(super) fn toolbar_origin(selection: Rect, canvas: (f32, f32), toolbar: (f32,
     )
 }
 
-struct SelectionHint {
-    text: SharedString,
-    theme: Theme,
-}
-impl SelectionHint {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_3()
-            .py_2()
-            .rounded(px(self.theme.corner_sm()))
-            .glass(self.theme, self.theme.popover)
-            .text_xs()
-            .text_color(rgb(self.theme.ink))
-            .child(self.text.clone())
-    }
-}
 impl NotesView {
     fn selection_button(
         &self,

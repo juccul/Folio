@@ -56,11 +56,11 @@ fn main() {
         .unwrap();
         variants.push(name);
     }
-    writeln!(out, "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum Icon {{").unwrap();
+    writeln!(out, "#[allow(dead_code)]\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum Icon {{").unwrap();
     for v in &variants {
         writeln!(out, "    {v},").unwrap();
     }
-    writeln!(out, "}}\nimpl Icon {{\n    pub const ALL: &'static [Icon] = &[").unwrap();
+    writeln!(out, "}}\n#[allow(dead_code)]\nimpl Icon {{\n    pub const ALL: &'static [Icon] = &[").unwrap();
     for v in &variants {
         writeln!(out, "        Icon::{v},").unwrap();
     }

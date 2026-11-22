@@ -338,7 +338,6 @@ impl NotesView {
             item: super::folder_menu::LibraryItem::Folder(id),
             title: name.clone(),
             theme,
-            position: Point::default(),
         };
         let content = div()
             .flex()
@@ -643,7 +642,6 @@ impl NotesView {
                 item: super::folder_menu::LibraryItem::Document(id),
                 title: n.title.clone(),
                 theme,
-                position: Point::default(),
             };
             let session_pages = self
                 .controller

@@ -53,14 +53,6 @@ pub(super) enum Style {
 const DIALOG_BOX: &str = "dialog-box";
 
 impl Style {
-    fn exit_duration(self) -> Duration {
-        Duration::from_millis(match self {
-            Style::Menu => 130,
-            Style::Wheel => 140,
-            Style::Dialog => 170,
-            Style::SlideLeft | Style::SlideRight => 180,
-        })
-    }
 
     /// The overlay's effect `t` (eased, 0 to 1) of the way through entering.
     pub(super) fn enter(self, t: f32) -> PaintEffect {

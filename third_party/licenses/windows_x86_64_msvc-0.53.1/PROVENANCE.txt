@@ -1,3 +1,0 @@
-Source: registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_msvc@0.53.1
-License: MIT OR Apache-2.0
-Repository: https://github.com/microsoft/windows-rs

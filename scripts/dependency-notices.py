@@ -54,9 +54,8 @@ For dual-licensed dependencies, select MIT where offered, otherwise Apache-2.0 w
 ## Bundled components and system tools
 
 - Built-in offline stroke recognition (`folio-recognition`, `recognition/`): bundled pure-Rust INT8-quantized RoPE Conformer models (`math_v2.frec`, `htr_v2.frec`, `htr_lm.json.gz`) run directly on CPU with no external runtime or downloads. Dataset provenance and notices are in [recognition/NOTICE.txt](recognition/NOTICE.txt) (MathWriting CC-BY-4.0; Penpal MIT; DeepWriting CC BY-NC-SA 4.0; BRUSH research). Historical GLM-OCR and ConvText upstream notices remain preserved under [third_party/ocr](third_party/ocr) and [third_party/htr-convtext](third_party/htr-convtext); current recognition does not load them.
-- GPUI 0.2.2: Apache-2.0; local tablet/rendering patches are documented in [vendor/README.md](vendor/README.md). All upstream notices are retained.
-- xattr 0.2.3: MIT or Apache-2.0; local Linux ENODATA compatibility patch.
-- proc-macro-error2 2.0.1: MIT or Apache-2.0; local public proc_macro re-export compatibility patch.
+- Rune (the interface framework, pinned to a `dev` revision of https://github.com/anomalyco/rune, with its patched winit, sctk-adwaita, parley_engine, wgpu-hal and AccessKit adapters): MIT, © Anomaly. Its license is retained under `third_party/licenses/rune-*`; the patched crates keep their upstream notices.
+- GPUI 0.2.2, xattr 0.2.3 and proc-macro-error2 2.0.1 remain vendored under [vendor/](vendor/README.md) with their notices but are not built on this branch.
 - FreeType: the FreeType License (FTL), selected instead of GPL-2.0. Portions of this software are copyright © The FreeType Project (www.freetype.org). All rights reserved. The bundled FreeType and HarfBuzz notices are included under `freetype-sys`.
 - SQLite's bundled engine is public domain; the Rust bindings retain their MIT license. See the SQLite source header in the corresponding `libsqlite3-sys` source package.
 - STIX Two Math bundled by latex-rust: SIL Open Font License 1.1, with font copyright and notices copied under latex-rust. Equation SVG output consists of glyph outlines.

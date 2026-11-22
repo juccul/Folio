@@ -478,7 +478,7 @@ impl Painter {
         }
         self.clear_page(window);
     }
-    fn release_background(source: &ImageSource, window: &mut Window, cx: &mut Context<NotesView>) {
+    fn release_background(source: &ImageSource, window: &mut Window, _: &mut Context<NotesView>) {
         // Sources are requested when added to the warm cache. Removing the
         // decoded asset alone does not remove its uploaded sprite-atlas image.
         if let Some(image) = source.render_image() {
@@ -521,6 +521,7 @@ impl Painter {
             }
         });
     }
+    #[cfg(test)]
     pub(super) fn ink_layer_counts(&self) -> (usize, usize) {
         self.pages
             .values()
@@ -1764,7 +1765,7 @@ impl Painter {
         backgrounds: &mut HashMap<String, ImageSource>,
         dot_tile: &mut Option<CachedDotTile>,
         window: &mut Window,
-        cx: &mut Context<NotesView>,
+        _cx: &mut Context<NotesView>,
         controller: &Controller,
     ) {
         let theme = Theme::new(&controller.settings);

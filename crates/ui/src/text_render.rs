@@ -9,8 +9,6 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct Layout {
     tree: Option<Arc<usvg::Tree>>,
-    pub font_size: f32,
-    pub line_height: f32,
 }
 /// Only properties that affect glyph shaping, wrapping, or line positions.
 #[derive(Clone)]
@@ -70,11 +68,7 @@ pub fn layout(text: &TextBlock, color: u32, _: &mut Window) -> Layout {
             usvg::Tree::from_str(&svg, &folio_export::object_svg_options(&object)).ok()
         })
         .map(Arc::new);
-    Layout {
-        tree,
-        font_size: text.font_size,
-        line_height: text.font_size * 1.4,
-    }
+    Layout { tree }
 }
 impl Layout {
     pub fn paint(&self, transform: Transform, _color: u32, _underline: bool, window: &mut Window) {
@@ -111,21 +105,3 @@ pub fn paint_label(label: &str, origin: Point<Pixels>, size: f32, color: u32, wi
     }
 }
 
-pub fn fill_rect(rect: Rect, transform: Transform, color: Rgba, window: &mut Window) {
-    let points = [
-        rect.min,
-        DocPoint::new(rect.max.x, rect.min.y),
-        rect.max,
-        DocPoint::new(rect.min.x, rect.max.y),
-    ]
-    .map(|p| transform.apply(p));
-    let mut path = PathBuilder::fill();
-    path.move_to(point(px(points[0].x), px(points[0].y)));
-    for p in &points[1..] {
-        path.line_to(point(px(p.x), px(p.y)));
-    }
-    path.close();
-    if let Ok(path) = path.build() {
-        window.paint_path(path, color);
-    }
-}

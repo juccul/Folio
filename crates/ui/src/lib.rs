@@ -16,7 +16,6 @@ mod canvas_menu;
 mod color_picker;
 mod controls;
 mod field;
-pub(crate) use field::FieldCallback;
 mod find;
 mod folder_menu;
 mod font_picker;
@@ -61,7 +60,7 @@ pub use compat::*;
 pub use field::{Entity, Field, FieldBoundsChanged, InlineStyle, Navigate, Submitted};
 use folio_app::{Controller, ExportKind, Interaction, NoteFilter, RecognitionKind, Tool};
 use folio_document::{Color, Id, InkTool, Paper, Point as DocPoint};
-use folio_input::{Device, PenEvent, Phase, TimestampExtender, Tool as PenTool};
+use folio_input::{Device, PenEvent, Phase, Tool as PenTool};
 use icons::{Icon, icon};
 pub use painting::CanvasFrame;
 pub use shell::{AppState, run};
@@ -347,11 +346,8 @@ pub struct NotesView {
     wheel_key_held: bool,
     thumbnails: thumbnails::Thumbnails,
     writing_style: Option<folio_document::PenStyle>,
-    timestamps: TimestampExtender,
     last_tablet: Option<Instant>,
     pen_in_range: bool,
-    /// The pen's barrel buttons in the last tablet frame.
-    pen_buttons: u32,
     gesture_start: Option<folio_canvas::Viewport>,
     mouse_pan: bool,
     start: Instant,
@@ -371,8 +367,6 @@ pub struct NotesView {
     pub chrome_leading: f32,
     /// Effects queued while the view was built, applied by the next poll.
     deferred: Vec<Effect>,
-    /// The time poll should run again for background work, if idle.
-    next_wake: Option<Duration>,
 }
 
 /// A scroll viewport's key, the row a view asks it to reveal, and where it
@@ -549,10 +543,8 @@ impl NotesView {
             canvas_menu: None,
             thumbnails: thumbnails::Thumbnails::default(),
             writing_style: None,
-            timestamps: TimestampExtender::default(),
             last_tablet: None,
             pen_in_range: false,
-            pen_buttons: 0,
             gesture_start: None,
             mouse_pan: false,
             start: Instant::now(),
@@ -568,7 +560,6 @@ impl NotesView {
             chrome_trailing: 0.,
             chrome_leading: 0.,
             deferred: Vec::new(),
-            next_wake: None,
         }
     }
     /// Background maintenance before each frame: document workers, saving,

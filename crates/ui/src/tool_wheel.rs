@@ -1,7 +1,6 @@
-//! A radial tool picker: press W, the pen's lower barrel button or a
-//! tablet-pad button set to `wheel`. Pointing at a tool highlights it;
-//! clicking or tapping it, or Enter on a focused tool, chooses it. Escape,
-//! W, the barrel button or a press elsewhere closes the wheel.
+//! A radial tool picker: press W or a tablet-pad button set to `wheel`.
+//! Pointing at a tool highlights it; clicking or tapping it, or Enter on a
+//! focused tool, chooses it. Escape, W or a press elsewhere closes it.
 use super::*;
 use std::f32::consts::{PI, TAU};
 
@@ -16,9 +15,6 @@ const HUB: f32 = 33.;
 const GAP: f32 = 4.;
 /// Movement within this radius of the center chooses nothing.
 const DEAD_ZONE: f32 = 26.;
-/// The `TabletEvent::buttons` bit of the pen's lower barrel button
-/// (BTN_STYLUS on Wayland, button 2 on X11). The upper button erases.
-const WHEEL_PEN_BUTTON: u32 = 1;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ToolWheel {
@@ -135,22 +131,6 @@ fn reached(distance: f32) -> bool {
     distance >= RING_INNER
 }
 
-/// A change of the wheel's barrel button between two tablet frames.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Barrel {
-    Pressed,
-    Released,
-}
-pub(super) fn barrel(previous: u32, buttons: u32) -> Option<Barrel> {
-    match (
-        previous & WHEEL_PEN_BUTTON != 0,
-        buttons & WHEEL_PEN_BUTTON != 0,
-    ) {
-        (false, true) => Some(Barrel::Pressed),
-        (true, false) => Some(Barrel::Released),
-        _ => None,
-    }
-}
 
 /// Where the wheel is drawn for a pointer at `at`: there, unless that would
 /// put part of the wheel outside the window.
@@ -288,28 +268,6 @@ impl NotesView {
         if previous != (wheel.aimed, wheel.pointing) {
             cx.notify();
         }
-    }
-    /// The pen's lower barrel button opens and closes the wheel at the pen,
-    /// unless that is turned off in Settings. Returns whether the wheel used
-    /// this tablet frame.
-    pub(super) fn pen_tool_wheel(
-        &mut self,
-        event: &TabletEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let gone = matches!(event.phase, TabletPhase::Leave | TabletPhase::Cancel);
-        let previous =
-            std::mem::replace(&mut self.pen_buttons, if gone { 0 } else { event.buttons });
-        if gone || !self.controller.settings.barrel_opens_wheel {
-            return false;
-        }
-        match barrel(previous, event.buttons) {
-            Some(Barrel::Pressed) => self.toggle_tool_wheel(event.position, window, cx),
-            Some(Barrel::Released) => {}
-            None => return false,
-        }
-        true
     }
     fn wheel_slot_enabled(&self, slot: WheelTool) -> bool {
         !self.controller.read_only() || matches!(slot, WheelTool::Select | WheelTool::Pan)
@@ -674,16 +632,6 @@ mod tests {
         // Every wheel tool has a saved name the app crate knows.
         let names: Vec<_> = WheelTool::ALL.map(WheelTool::slug).into();
         assert_eq!(names, folio_app::WHEEL_TOOLS);
-    }
-    #[test]
-    fn lower_barrel_button_opens_and_releases_the_wheel() {
-        // Bit 1 is the lower barrel button; bit 2, the upper one, erases.
-        assert_eq!(barrel(0, 1), Some(Barrel::Pressed));
-        assert_eq!(barrel(2, 3), Some(Barrel::Pressed));
-        assert_eq!(barrel(1, 1), None);
-        assert_eq!(barrel(3, 2), Some(Barrel::Released));
-        assert_eq!(barrel(0, 2), None);
-        assert_eq!(barrel(2, 0), None);
     }
     #[test]
     fn wheel_stays_inside_the_window() {

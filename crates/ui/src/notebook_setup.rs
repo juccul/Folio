@@ -1,4 +1,4 @@
-use super::{Field, FieldBoundsChanged, NotesView, Submitted, Theme};
+use super::{Field, NotesView, Submitted, Theme};
 use folio_document::{Color, PageProperties, Paper};
 use super::*;
 

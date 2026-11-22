@@ -213,19 +213,11 @@ pub(super) fn role(key: &str) -> &'static str {
 pub(super) fn toggles(key: &str) -> bool {
     semantics(key).toggle
 }
-pub(super) fn expands(key: &str) -> bool {
-    key.starts_with("toggle-folder-")
-        || matches!(
-            key,
-            "select-options" | "insert-options" | "width-options" | "custom-color"
-        )
-}
 pub(super) fn selects(key: &str) -> bool {
     matches!(semantics(key).role, "tab" | "treeitem" | "option")
 }
 struct Control {
     key: String,
-    label: String,
     callback: Callback,
     enabled: bool,
     focus: FocusHandle,
@@ -276,7 +268,7 @@ impl Accessibility {
     pub fn control(
         &self,
         key: &str,
-        label: &str,
+        _label: &str,
         callback: Callback,
         enabled: bool,
         _active: bool,
@@ -289,7 +281,6 @@ impl Accessibility {
         }
         let control = Control {
             key: key.into(),
-            label: Self::label_for(key, label),
             callback,
             enabled,
             focus: focus.clone(),
@@ -344,25 +335,8 @@ impl Accessibility {
         };
         Some(members[next].focus.clone())
     }
-    pub fn action(&self, key: &str) -> Option<(Callback, FocusHandle)> {
-        self.controls
-            .borrow()
-            .iter()
-            .find(|c| c.key == key && c.enabled)
-            .map(|c| (c.callback.clone(), c.focus.clone()))
-    }
     pub(super) fn control_bounds_for_key(&self, key: &str) -> Option<Rect> {
         self.bounds.borrow().get(key).copied()
-    }
-    pub fn control_bounds(&self, label: &str) -> Option<Rect> {
-        let key = self
-            .controls
-            .borrow()
-            .iter()
-            .find(|c| c.label == label)?
-            .key
-            .clone();
-        self.bounds.borrow().get(&key).copied()
     }
     pub fn set_bounds(&self, key: &str, rect: [f32; 4]) {
         self.bounds

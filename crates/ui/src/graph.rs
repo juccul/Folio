@@ -2,7 +2,7 @@
 //! earlier versions. Recolor before rasterizing so antialiasing stays correct.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Palette {
+pub(crate) struct Palette {
     pub paper: u32,
     pub grid: u32,
     pub axes: u32,

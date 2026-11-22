@@ -6269,11 +6269,3 @@ dependencies = [
  "syn 3.0.6",
  "winnow",
 ]
-
-[[patch.unused]]
-name = "proc-macro-error2"
-version = "2.0.1"
-
-[[patch.unused]]
-name = "xattr"
-version = "0.2.3"

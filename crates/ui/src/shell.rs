@@ -108,9 +108,6 @@ fn view_fn(s: &AppState, cx: &mut rune::Cx<AppState>) -> rune::El {
         })
 }
 
-/// The font the interface uses, as GPUI's root `font_family` named it.
-pub const FONT_FAMILY: &str = "Noto Sans";
-
 fn on_key(s: &mut AppState, key: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
     let Some(event) = KeyDownEvent::from_rune(key) else {
         return false;

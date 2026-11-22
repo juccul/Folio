@@ -12,7 +12,6 @@ pub(super) struct LibraryDrag {
     pub item: LibraryItem,
     pub title: String,
     pub theme: Theme,
-    pub position: Point<Pixels>,
 }
 impl DragView for LibraryDrag {
     fn preview(&self) -> Div {

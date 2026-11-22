@@ -276,13 +276,6 @@ impl NotesView {
         );
         cx.notify();
     }
-    /// Keyboard focus moved while the document menu is open: show its ring.
-    pub(super) fn keyboard_in_document_menu(&mut self, cx: &mut Context<Self>) {
-        if self.document_menu.is_some() && !self.document_menu_keyboard {
-            self.document_menu_keyboard = true;
-            cx.notify();
-        }
-    }
     /// Close the tabs a tab-menu action names. When the active document is
     /// among them, the clicked tab becomes active first, so closing does not
     /// load neighbors that are about to close too.

@@ -222,7 +222,7 @@ impl Theme {
         }
         canvas
     }
-    pub fn graph_for_page(
+    pub(crate) fn graph_for_page(
         self,
         properties: &folio_document::PageProperties,
     ) -> super::graph::Palette {

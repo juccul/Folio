@@ -337,6 +337,8 @@ impl NotesView {
     }
     /// Selects the row of a pressed pad button while the Writing settings
     /// are shown, adding rows up to it.
+    // Tablet pads and pen barrel buttons reach GPUI through Folio's platform patches; Rune reports pointers only.
+    #[allow(dead_code)]
     pub(super) fn pad_button_pressed(&mut self, event: &TabletPadEvent, cx: &mut Context<Self>) {
         let Some(button) = event.button.map(|b| b as usize) else {
             return;

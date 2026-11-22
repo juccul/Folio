@@ -77,15 +77,6 @@ pub(super) struct Inputs {
     _subscriptions: Vec<Subscription>,
 }
 impl Inputs {
-    pub(super) fn visible_fields(&self, cx: &App) -> [bool; 4] {
-        [
-            !self.latex_open
-                && (self.problem_editing || self.expression.read(cx).content().trim().is_empty()),
-            self.settings_open && !self.latex_open,
-            self.mode == Mode::Check && !self.latex_open,
-            self.mode == Mode::Graph && !self.latex_open,
-        ]
-    }
     pub(super) fn result_dirty(&self, cx: &App) -> bool {
         self.result_latex.read(cx).content() != self.result_source
     }
