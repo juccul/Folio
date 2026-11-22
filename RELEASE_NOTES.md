@@ -1,4 +1,8 @@
-# Folio 0.2.3
+# Folio 0.2.4
+
+- **Upgrade fix for built-in handwriting and math recognition**: ignore leftover GLM-OCR `llama-vulkan` `pack.json` files in existing user data directories (from Folio 0.2.2 and earlier) so upgraded Linux Flatpak, Linux archive, and Windows installations automatically use the bundled `recognition/` stroke models without manual cleanup.
+
+Includes all changes from Folio 0.2.3:
 
 - **Built-in offline handwriting and math recognition**: replaces the 1.47 GB GLM-OCR / `llama-server` download with bundled pure-Rust stroke-sequence models (`folio-recognition`, ~38 MiB total) that run directly on CPU with zero downloads, zero external inference servers, and zero Vulkan/GPU requirements.
   - **Math v2** (18.58M-parameter RoPE Conformer Encoder + KV-cached Decoder): trained on Google MathWriting with 10 kinematic/spatial stroke features and stroke-order shuffling augmentation (`28.3 ms` median on CPU; `66.5%` exact match on full held-out MathWriting test; `62.5%` EM / `6.83%` CER vs GLM-OCR `46.5%` EM / `15.3%` CER on 200-sample head-to-head).

@@ -1,8 +1,8 @@
-# Development status — Folio 0.2.3
+# Development status — Folio 0.2.4
 
 Updated 2026-11-22. Folio is a runnable Rust/GPUI Linux and Windows desktop application. Production certification still requires physical tablets and additional desktop/distribution sessions; synthetic events and CPU benchmarks do not establish hardware-to-display latency.
 
-Version 0.2.3 replaces GLM-OCR and `llama-server` with built-in, zero-download pure-Rust offline stroke-sequence recognition (`folio-recognition`, ~38 MiB bundled directly into packages), adds major memory/rendering/storage optimizations, eliminates ink and page-preview flicker during writing, and fixes bugs across storage, editing, and UI. Windows setup/portable and signed Flatpak packages share the same release source. See `WINDOWS.md` for Windows Ink support and validation limits.
+Version 0.2.4 is a hotfix on top of 0.2.3 that ignores leftover GLM-OCR `llama-vulkan` `pack.json` files in existing user data directories so upgraded installations immediately load the bundled `recognition/` stroke models. Version 0.2.3 replaces GLM-OCR and `llama-server` with built-in, zero-download pure-Rust offline stroke-sequence recognition (`folio-recognition`, ~38 MiB bundled directly into packages), adds major memory/rendering/storage optimizations, eliminates ink and page-preview flicker during writing, and fixes bugs across storage, editing, and UI. Windows setup/portable and signed Flatpak packages share the same release source. See `WINDOWS.md` for Windows Ink support and validation limits.
 
 ## Continuous integration
 

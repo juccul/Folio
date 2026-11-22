@@ -719,9 +719,18 @@ fn salvage_keeps_valid_reviewed_ink_and_skips_annotations_with_missing_sources()
 #[test]
 fn bundled_stroke_engine_recognizes_handwriting_and_math_offline() {
     let (mut app, root) = fixture();
+    // Simulate upgrading from Folio <=0.2.2 with a leftover llama-vulkan pack.json
+    // in the user's data directory: Folio must ignore it and use the bundled models.
+    let legacy_dir = root.join("recognition");
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    std::fs::write(
+        legacy_dir.join("pack.json"),
+        br#"{"backend":"llama-vulkan","quantization":"Q8_0","runtime":"b11457"}"#,
+    )
+    .unwrap();
     assert!(
         app.recognition_ready(),
-        "Bundled stroke models should be ready out of the box"
+        "Bundled stroke models should override stale legacy llama-vulkan pack.json"
     );
     // Draw a simple vertical stroke ("1") and test both math & text pipelines end-to-end.
     let id = draw_points(&mut app, &[[100., 20.], [100., 60.], [100., 100.]]);

@@ -669,7 +669,7 @@ pub(super) fn pack_path(data_dir: &std::path::Path) -> PathBuf {
         return path.into();
     }
     let local = data_dir.join("recognition/pack.json");
-    if local.is_file() {
+    if pack_usable(&local) {
         return local;
     }
     if let Ok(exe) = std::env::current_exe() {
