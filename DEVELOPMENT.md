@@ -6,7 +6,7 @@ Version 0.2.4 is a hotfix on top of 0.2.3 that ignores leftover GLM-OCR `llama-v
 
 ## Rune presentation layer
 
-`crates/ui` builds the whole interface with Rune (pinned to a `dev` revision in the workspace `Cargo.toml`, together with the `[patch.crates-io]` entries Rune requires). Rune needs Rust 1.99 or newer and, on Linux, `libxkbcommon` and `libwayland-client` development packages at build time.
+`crates/ui` builds the whole interface with Rune (pinned to a `dev` revision in the workspace `Cargo.toml`, together with the `[patch.crates-io]` entries Rune requires). It builds with the stable toolchain (verified with Rust 1.97) and, on Linux, needs the `libxkbcommon` and `libwayland-client` development packages at build time.
 
 - **Views.** `compat.rs` keeps the GPUI-style vocabulary the views were written in (`div()`, inherited text styles, block layout, `cx.listener` handlers, actions and key bindings) and builds plain Rune elements from it each frame. The view state lives in one `NotesView`; Rune re-runs the view after every handler. Layout changes land at once (`instant_changes`), as GPUI drew them; colours keep Rune's motion. `executor.rs` runs GPUI-style `cx.spawn` futures on the UI thread before each frame and `background_executor()` work on threads of its own.
 - **Canvases.** Pages, page thumbnails and small painted controls (tool wheel, colour tracks) paint on the CPU with tiny-skia (`paint.rs`) at the window's device scale and are shown as Rune images. Settled ink is still cached as images of 32-stroke batches. Canvas text uses usvg, as export does. `FOLIO_PROFILE_CANVAS=1` prints each canvas paint time.
