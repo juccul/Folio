@@ -375,17 +375,26 @@ impl TransformationMatrix {
 /// A decoded image: premultiplied RGBA for painting, and Rune pixels for
 /// elements, made on first use.
 pub struct RenderImage {
+    pub id: u64,
     pixmap: Arc<sk::Pixmap>,
     pixels: std::sync::Mutex<Option<rune::Pixels>>,
 }
+static NEXT_IMAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// A length in device pixels, as GPUI measured images.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DevicePixels(pub i32);
 impl RenderImage {
     pub fn from_pixmap(pixmap: sk::Pixmap) -> Self {
         Self {
+            id: NEXT_IMAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             pixmap: Arc::new(pixmap),
             pixels: std::sync::Mutex::new(None),
         }
     }
     fn from_bgra_straight(width: u32, height: u32, data: &[u8]) -> Option<Self> {
+        if (width as u64).checked_mul(height as u64).and_then(|n| n.checked_mul(4)) != Some(data.len() as u64) {
+            return None;
+        }
         let mut pixmap = sk::Pixmap::new(width, height)?;
         for (dst, src) in pixmap
             .pixels_mut()
@@ -408,6 +417,9 @@ impl RenderImage {
     }
     /// Straight-alpha RGBA, as image decoders give it.
     pub fn from_rgba(width: u32, height: u32, data: &[u8]) -> Option<Self> {
+        if (width as u64).checked_mul(height as u64).and_then(|n| n.checked_mul(4)) != Some(data.len() as u64) {
+            return None;
+        }
         let mut pixmap = sk::Pixmap::new(width, height)?;
         for (dst, src) in pixmap
             .pixels_mut()
@@ -418,8 +430,23 @@ impl RenderImage {
         }
         Some(Self::from_pixmap(pixmap))
     }
-    pub fn size(&self) -> Size<u32> {
-        size(self.pixmap.width(), self.pixmap.height())
+    pub fn size(&self, _frame: usize) -> Size<DevicePixels> {
+        size(
+            DevicePixels(self.pixmap.width() as i32),
+            DevicePixels(self.pixmap.height() as i32),
+        )
+    }
+    /// The frame's pixels as straight-alpha BGRA, as GPUI stored images.
+    pub fn with_bytes<R>(&self, frame: usize, f: impl FnOnce(Option<&[u8]>) -> R) -> R {
+        if frame > 0 {
+            return f(None);
+        }
+        let mut bgra = self.pixmap.data().to_vec();
+        crate::graph::unpremultiply(&mut bgra);
+        for pixel in bgra.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        f(Some(&bgra))
     }
     pub fn pixmap(&self) -> &sk::Pixmap {
         &self.pixmap
@@ -510,11 +537,21 @@ pub fn img(source: impl Into<ImageSource>) -> Div {
 // ---------------------------------------------------------------- raster
 
 /// A pixmap being painted, in window points through `transform`.
+///
+/// Clips are rectangles in device pixels. Shapes wholly inside the clip draw
+/// directly; only shapes that cross its edge pay for a coverage mask, which
+/// is made once per clip.
 pub struct Raster {
     pub pixmap: sk::Pixmap,
     pub transform: sk::Transform,
-    clips: Vec<sk::Mask>,
+    clips: Vec<sk::Rect>,
+    mask: Option<(sk::Rect, sk::Mask)>,
     scale: f32,
+}
+enum Clip {
+    None,
+    Skip,
+    Mask,
 }
 impl Raster {
     pub fn new(width: u32, height: u32, scale: f32, origin: Point<Pixels>) -> Option<Self> {
@@ -523,11 +560,48 @@ impl Raster {
             transform: sk::Transform::from_scale(scale, scale)
                 .pre_translate(-origin.x.0, -origin.y.0),
             clips: Vec::new(),
+            mask: None,
             scale,
         })
     }
-    fn mask(&self) -> Option<&sk::Mask> {
-        self.clips.last()
+    /// How a shape with device bounds `bounds` meets the current clip.
+    fn clip_for(&self, bounds: Option<sk::Rect>) -> Clip {
+        let Some(clip) = self.clips.last() else {
+            return Clip::None;
+        };
+        let Some(b) = bounds else {
+            return Clip::Mask;
+        };
+        if b.right() <= clip.left()
+            || b.left() >= clip.right()
+            || b.bottom() <= clip.top()
+            || b.top() >= clip.bottom()
+        {
+            Clip::Skip
+        } else if b.left() >= clip.left()
+            && b.right() <= clip.right()
+            && b.top() >= clip.top()
+            && b.bottom() <= clip.bottom()
+        {
+            Clip::None
+        } else {
+            Clip::Mask
+        }
+    }
+    /// The coverage mask of the current clip, made on first use.
+    fn clip_mask(&mut self) -> Option<&sk::Mask> {
+        let clip = *self.clips.last()?;
+        if self.mask.as_ref().is_none_or(|(r, _)| *r != clip) {
+            let mut mask = sk::Mask::new(self.pixmap.width(), self.pixmap.height())?;
+            mask.fill_path(
+                &sk::PathBuilder::from_rect(clip),
+                sk::FillRule::Winding,
+                true,
+                sk::Transform::identity(),
+            );
+            self.mask = Some((clip, mask));
+        }
+        self.mask.as_ref().map(|(_, m)| m)
     }
     pub fn fill_path(&mut self, path: &sk::Path, color: Rgba, rule: FillRule, transform: sk::Transform) {
         let mut paint = sk::Paint::default();
@@ -537,9 +611,16 @@ impl Raster {
             FillRule::NonZero => sk::FillRule::Winding,
             FillRule::EvenOdd => sk::FillRule::EvenOdd,
         };
-        let mask = self.clips.last().cloned();
-        self.pixmap
-            .fill_path(path, &paint, rule, transform, mask.as_ref());
+        let bounds = path.bounds().transform(transform);
+        match self.clip_for(bounds) {
+            Clip::Skip => {}
+            Clip::None => self.pixmap.fill_path(path, &paint, rule, transform, None),
+            Clip::Mask => {
+                self.clip_mask();
+                let mask = self.mask.as_ref().map(|(_, m)| m);
+                self.pixmap.fill_path(path, &paint, rule, transform, mask);
+            }
+        }
     }
     pub fn stroke_path(
         &mut self,
@@ -559,40 +640,37 @@ impl Raster {
             dash: dash.and_then(|d| sk::StrokeDash::new(d.to_vec(), 0.)),
             ..Default::default()
         };
-        let mask = self.clips.last().cloned();
-        self.pixmap
-            .stroke_path(path, &paint, &stroke, transform, mask.as_ref());
+        let bounds = path
+            .bounds()
+            .outset(width, width)
+            .and_then(|b| b.transform(transform));
+        match self.clip_for(bounds) {
+            Clip::Skip => {}
+            Clip::None => self.pixmap.stroke_path(path, &paint, &stroke, transform, None),
+            Clip::Mask => {
+                self.clip_mask();
+                let mask = self.mask.as_ref().map(|(_, m)| m);
+                self.pixmap.stroke_path(path, &paint, &stroke, transform, mask);
+            }
+        }
     }
     pub fn push_clip(&mut self, bounds: Bounds<Pixels>) {
-        let Some(rect) = sk::Rect::from_xywh(
+        let rect = sk::Rect::from_xywh(
             bounds.origin.x.0,
             bounds.origin.y.0,
             bounds.size.width.0.max(0.),
             bounds.size.height.0.max(0.),
-        ) else {
-            return;
+        )
+        .and_then(|r| r.transform(self.transform));
+        let full = sk::Rect::from_xywh(0., 0., self.pixmap.width() as f32, self.pixmap.height() as f32);
+        let parent = self.clips.last().copied().or(full);
+        let clip = match (rect, parent) {
+            (Some(r), Some(p)) => r.intersect(&p).unwrap_or(sk::Rect::from_xywh(0., 0., 0.1, 0.1).unwrap()),
+            (Some(r), None) => r,
+            (None, Some(p)) => p,
+            (None, None) => return,
         };
-        let path = sk::PathBuilder::from_rect(rect);
-        let mut mask = match self.clips.last() {
-            Some(m) => m.clone(),
-            None => {
-                let Some(mut m) = sk::Mask::new(self.pixmap.width(), self.pixmap.height()) else {
-                    return;
-                };
-                m.fill_path(
-                    &sk::PathBuilder::from_rect(
-                        sk::Rect::from_xywh(0., 0., self.pixmap.width() as f32, self.pixmap.height() as f32)
-                            .unwrap(),
-                    ),
-                    sk::FillRule::Winding,
-                    false,
-                    sk::Transform::identity(),
-                );
-                m
-            }
-        };
-        mask.intersect_path(&path, sk::FillRule::Winding, true, self.transform);
-        self.clips.push(mask);
+        self.clips.push(clip);
     }
     pub fn pop_clip(&mut self) {
         self.clips.pop();
@@ -607,13 +685,52 @@ impl Raster {
         let t = transform.pre_concat(
             sk::Transform::from_row(sx, 0., 0., sy, bounds.origin.x.0, bounds.origin.y.0),
         );
+        let Some(dest) = sk::Rect::from_xywh(0., 0., w, h).and_then(|r| r.transform(t)) else {
+            return;
+        };
+        let quality = if (t.sx - 1.).abs() < 1e-4 && (t.sy - 1.).abs() < 1e-4 && t.kx == 0. && t.ky == 0. {
+            sk::FilterQuality::Nearest
+        } else {
+            sk::FilterQuality::Bilinear
+        };
+        let axis_aligned = t.kx == 0. && t.ky == 0.;
+        if axis_aligned {
+            // An axis-aligned image is a rectangle filled with its pattern,
+            // cut to the clip without a mask.
+            let rect = match self.clips.last() {
+                Some(clip) => match dest.intersect(clip) {
+                    Some(r) => r,
+                    None => return,
+                },
+                None => dest,
+            };
+            let paint = sk::Paint {
+                shader: sk::Pattern::new(
+                    image.as_ref(),
+                    sk::SpreadMode::Pad,
+                    quality,
+                    1.,
+                    t,
+                ),
+                anti_alias: false,
+                ..Default::default()
+            };
+            self.pixmap.fill_rect(rect, &paint, sk::Transform::identity(), None);
+            return;
+        }
         let paint = sk::PixmapPaint {
-            quality: sk::FilterQuality::Bilinear,
+            quality,
             ..Default::default()
         };
-        let mask = self.clips.last().cloned();
-        self.pixmap
-            .draw_pixmap(0, 0, image.as_ref(), &paint, t, mask.as_ref());
+        match self.clip_for(Some(dest)) {
+            Clip::Skip => {}
+            Clip::None => self.pixmap.draw_pixmap(0, 0, image.as_ref(), &paint, t, None),
+            Clip::Mask => {
+                self.clip_mask();
+                let mask = self.mask.as_ref().map(|(_, m)| m);
+                self.pixmap.draw_pixmap(0, 0, image.as_ref(), &paint, t, mask);
+            }
+        }
     }
 }
 
@@ -694,10 +811,11 @@ impl Window {
                     anti_alias: true,
                     ..Default::default()
                 };
-                let mask = raster.clips.last().cloned();
+                raster.clip_mask();
+                let mask = raster.mask.as_ref().filter(|_| !raster.clips.is_empty()).map(|(_, m)| m);
                 raster
                     .pixmap
-                    .fill_path(&path, &paint, sk::FillRule::Winding, t, mask.as_ref());
+                    .fill_path(&path, &paint, sk::FillRule::Winding, t, mask);
             }
         }
         let width = quad.border_widths.top.0;
@@ -934,12 +1052,21 @@ pub fn view_canvas(
                     scale,
                     bounds.origin,
                 );
+                let started = std::time::Instant::now();
                 paint(bcx.view, bounds, &mut window, bcx.cx);
+                let painted = started.elapsed();
                 if let Some(raster) = window.raster.take() {
                     let (pw, ph) = (raster.pixmap.width(), raster.pixmap.height());
                     let mut rgba = raster.pixmap.take();
                     crate::graph::unpremultiply(&mut rgba);
                     layout_pixels.set(pw, ph, rgba);
+                }
+                if std::env::var_os("FOLIO_PROFILE_CANVAS").is_some() {
+                    eprintln!(
+                        "FOLIO_CANVAS {key}: paint {:.2} ms, total {:.2} ms",
+                        painted.as_secs_f64() * 1000.,
+                        started.elapsed().as_secs_f64() * 1000.
+                    );
                 }
                 bcx.cx.effects.extend(window.effects);
             }

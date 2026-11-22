@@ -2989,73 +2989,31 @@ mod tests {
     }
     #[::core::prelude::v1::test]
     fn raster_jobs_are_invalidated_by_pixels_page_and_theme() {
-        // Still previews retain the original immutable allocation until their
-        // last owner drops. Only appearance conversion needs another buffer.
+        // Previews keep their pixels; only appearance conversion changes them.
         let data = Arc::new(vec![0, 0, 0, 255, 12, 34, 56, 128]);
-        let weak = Arc::downgrade(&data);
         let image = preview_image(2, 1, data.clone(), None).unwrap();
-        image.with_bytes(0, |bytes| {
-            let bytes = bytes.unwrap();
-            assert_eq!(bytes.as_ptr(), data.as_ptr());
-            assert_eq!(bytes, data.as_slice());
-        });
+        image.with_bytes(0, |bytes| assert_eq!(bytes.unwrap(), data.as_slice()));
         assert!(image.with_bytes(1, |bytes| bytes.is_none()));
-        assert_eq!(image.size(0), size(2.into(), 1.into()));
-        assert_eq!(image.frame_count(), 1);
-        assert_eq!(image.delay(0), image::Delay::from_numer_denom_ms(0, 1));
+        assert_eq!(image.size(0), size(DevicePixels(2), DevicePixels(1)));
         let mut theme = Theme::new(&folio_app::Settings::default()).canvas;
         theme.adapt_ink = false;
         let original =
             preview_image(2, 1, data.clone(), Some(RasterAppearance::Ink(theme))).unwrap();
-        assert_eq!(original.as_bytes(0).unwrap().as_ptr(), data.as_ptr());
-        theme.adapt_ink = true;
-        theme.paper = 0xffffff;
-        {
-            let readable =
-                preview_image(2, 1, data.clone(), Some(RasterAppearance::Ink(theme))).unwrap();
-            assert_eq!(readable.as_bytes(0).unwrap().as_ptr(), data.as_ptr());
-        }
+        original.with_bytes(0, |bytes| assert_eq!(bytes.unwrap(), data.as_slice()));
         theme.paper = 0x000000;
         theme.adapt_ink = true;
         let adapted =
             preview_image(2, 1, data.clone(), Some(RasterAppearance::Ink(theme))).unwrap();
+        // Images are stored premultiplied, so translucent channels may
+        // round by one step.
         adapted.with_bytes(0, |bytes| {
-            let bytes = bytes.unwrap();
-            assert_eq!(bytes, theme.preview_pixels(&data).as_ref());
-            assert_ne!(bytes.as_ptr(), data.as_ptr());
+            let expected = theme.preview_pixels(&data);
+            assert!(bytes.unwrap().iter().zip(expected.iter()).all(|(a, b)| a.abs_diff(*b) <= 1));
         });
         assert_eq!(data.as_slice(), &[0, 0, 0, 255, 12, 34, 56, 128]);
         assert!(preview_image(2, 2, data.clone(), None).is_none());
         assert!(preview_image(u32::MAX, u32::MAX, data.clone(), None).is_none());
         assert!(preview_image(0, 1, Arc::new(Vec::new()), None).is_none());
-        drop(data);
-        drop(original);
-        assert!(weak.upgrade().is_some());
-        drop(image);
-        assert!(weak.upgrade().is_none());
-        assert_eq!(adapted.frame_count(), 1);
-
-        // Animated image decoding still uses owned frames and their delays.
-        let frames = smallvec::smallvec![
-            image::Frame::from_parts(
-                image::RgbaImage::from_raw(1, 1, vec![1, 2, 3, 4]).unwrap(),
-                0,
-                0,
-                image::Delay::from_numer_denom_ms(20, 1),
-            ),
-            image::Frame::from_parts(
-                image::RgbaImage::from_raw(1, 1, vec![5, 6, 7, 8]).unwrap(),
-                0,
-                0,
-                image::Delay::from_numer_denom_ms(30, 1),
-            ),
-        ];
-        let animation = RenderImage::new(frames);
-        assert_eq!(animation.frame_count(), 2);
-        assert_eq!(animation.size(1), size(1.into(), 1.into()));
-        assert_eq!(animation.as_bytes(1).unwrap(), &[5, 6, 7, 8]);
-        assert_eq!(animation.delay(0), image::Delay::from_numer_denom_ms(20, 1));
-        assert_eq!(animation.delay(1), image::Delay::from_numer_denom_ms(30, 1));
 
         let request = RasterRequest {
             page: Id::new_v4(),

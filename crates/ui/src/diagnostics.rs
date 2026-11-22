@@ -291,7 +291,6 @@ mod tests {
             buttons: 2,
             eraser: true,
             phase,
-            modifiers: Modifiers::default(),
         }
     }
     #[test]
