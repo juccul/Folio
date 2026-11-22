@@ -123,13 +123,19 @@ impl Transitions {
     pub fn overlay(&mut self, key: &'static str, t: f32, child: impl IntoElement) -> AnyElement {
         let style = self.styles.get(key).copied().unwrap_or(Style::Menu);
         let effect = style.enter(t);
-        div()
-            .id(format!("overlay-{key}"))
-            .absolute()
-            .inset_0()
-            .child(child)
-            .el(move |e| effect.apply(e).transition(rune::Transition::opacity()))
-            .into_any_element()
+        // The effect applies to the overlay's own element, so it keeps
+        // its place in the layout.
+        match child.into_any_element() {
+            AnyElement::Div(d) => d
+                .id(format!("overlay-{key}"))
+                .el(move |e| effect.apply(e).transition(rune::Transition::opacity()))
+                .into_any_element(),
+            other => div()
+                .id(format!("overlay-{key}"))
+                .child(other)
+                .el(move |e| effect.apply(e).transition(rune::Transition::opacity()))
+                .into_any_element(),
+        }
     }
     /// Draw `child` as the box of a dialog overlay, `t` of the way through entering.
     pub fn dialog_box(t: f32, child: impl IntoElement) -> Div {
