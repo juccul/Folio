@@ -561,6 +561,16 @@ pub struct Div {
     height: Option<Length>,
     scroll_y: bool,
     scroll_x: bool,
+    /// GPUI's `top: 100%` / `bottom: 100%`: placed beside the parent.
+    full: Option<rune::Side>,
+    anchor_to: Option<String>,
+}
+thread_local! {
+    static NEXT_ANCHOR: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// Starts a frame's generated anchor keys afresh.
+pub fn begin_anchors() {
+    NEXT_ANCHOR.with(|n| n.set(0));
 }
 pub fn div() -> Div {
     Div {
@@ -584,6 +594,8 @@ pub fn div() -> Div {
         height: None,
         scroll_y: false,
         scroll_x: false,
+        full: None,
+        anchor_to: None,
     }
 }
 
@@ -608,7 +620,21 @@ impl Div {
             (Display::Flex, Dir::Row) => rune::row().items_stretch(),
             _ => rune::col(),
         };
-        if let Some(key) = self.key {
+        let mut key = self.key;
+        let anchors_children = self
+            .children
+            .iter()
+            .any(|c| matches!(c, AnyElement::Div(d) if d.full.is_some()));
+        if anchors_children && key.is_none() {
+            let n = NEXT_ANCHOR.with(|n| {
+                let v = n.get();
+                n.set(v + 1);
+                v
+            });
+            key = Some(format!("anchor-parent-{n}"));
+        }
+        let own_key = key.clone();
+        if let Some(key) = key {
             e = e.key(key);
         }
         if let Some(w) = self.width {
@@ -662,7 +688,9 @@ impl Div {
         if let Some(c) = self.press_bg {
             e = e.press(c);
         }
-        if self.absolute {
+        if let (Some(side), Some(anchor)) = (self.full, &self.anchor_to) {
+            e = e.anchored(anchor.clone(), side, rune::Align::Start, 0.);
+        } else if self.absolute {
             let [t, r, b, l] = self.inset;
             e = e.pin(l, t, r, b);
         }
@@ -675,9 +703,14 @@ impl Div {
         } else if self.scroll_x {
             e = e.scroll_x();
         }
-        for child in self.children {
+        for mut child in self.children {
             if child.is_empty() {
                 continue;
+            }
+            if let AnyElement::Div(d) = &mut child
+                && d.full.is_some()
+            {
+                d.anchor_to = own_key.clone();
             }
             e = e.child(child.build(&text, bcx));
         }
@@ -2134,8 +2167,9 @@ impl Div {
     pub fn with_sizing_behavior<T>(self, _: T) -> Self {
         self
     }
-    pub fn with_priority(self, priority: i16) -> Self {
-        self.op(move |e| e.paint_order(100 + priority))
+    pub fn with_priority(self, _priority: i16) -> Self {
+        // Deferred elements are raised in tree order.
+        self
     }
     pub fn tooltip(self, text: impl Into<String>) -> Self {
         self.tooltip_text(text)
@@ -2147,7 +2181,7 @@ impl Div {
 }
 /// Draws `child` above everything after it, as GPUI's deferred elements do.
 pub fn deferred(child: impl IntoElement) -> Div {
-    div().child(child).op_public(|e| e.paint_order(100))
+    div().child(child).op_public(|e| e.raise())
 }
 impl Div {
     pub fn op_public(self, f: impl FnOnce(El) -> El + 'static) -> Self {
@@ -2259,8 +2293,9 @@ impl Div {
     pub fn flex_initial(self) -> Self {
         self
     }
-    pub fn top_full(self) -> Self {
-        self.top(px(0.))
+    pub fn top_full(mut self) -> Self {
+        self.full = Some(rune::Side::Bottom);
+        self
     }
     pub fn object_fit(self, _: crate::paint::ObjectFit) -> Self {
         self
@@ -2501,8 +2536,9 @@ impl Div {
     pub fn p_7(self) -> Self {
         self.p(px(1.75 * REM))
     }
-    pub fn bottom_full(self) -> Self {
-        self.bottom(px(0.))
+    pub fn bottom_full(mut self) -> Self {
+        self.full = Some(rune::Side::Top);
+        self
     }
     /// GPUI's hover group: Rune tracks hover per element, so a group is
     /// the element itself.

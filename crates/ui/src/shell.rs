@@ -60,6 +60,7 @@ fn view_fn(s: &AppState, cx: &mut rune::Cx<AppState>) -> rune::El {
     compat::clear_actions();
     paint::begin_frame(view.scale);
     compat::begin_drops();
+    compat::begin_anchors();
     let mut window = Window::render(&view);
     let mut context = Context::fresh();
     let element = div()
