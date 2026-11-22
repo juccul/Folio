@@ -1752,7 +1752,8 @@ impl NotesView {
                     );
             tabs = if dragged == Some(id) {
                 // Lifted above its neighbors while it moves.
-                tabs.child(deferred(surface.glass(theme, theme.popover)).with_priority(1))
+                // Raised in place, so the element keeps the press it is dragged by.
+                tabs.child(surface.glass(theme, theme.popover).el(|e| e.raise()))
             } else {
                 tabs.child(surface)
             };

@@ -693,6 +693,13 @@ impl Div {
         } else if self.absolute {
             let [t, r, b, l] = self.inset;
             e = e.pin(l, t, r, b);
+        } else if self.inset.iter().any(Option::is_some) {
+            // A relatively positioned element's insets move it visually.
+            let [t, _, _, l] = self.inset;
+            let (x, y) = (l.unwrap_or(0.), t.unwrap_or(0.));
+            if x != 0. || y != 0. {
+                e = e.offset(x, y);
+            }
         }
         if self.clip {
             let radius = self.radius.map_or(0., |r| r[0]);
