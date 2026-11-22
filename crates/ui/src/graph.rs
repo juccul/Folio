@@ -61,10 +61,7 @@ pub(super) fn image(width: u32, height: u32, mut pixels: Vec<u8>) -> Arc<RenderI
         }
         pixel.swap(0, 2);
     }
-    let buffer = image::RgbaImage::from_raw(width, height, pixels).unwrap();
-    Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
-        buffer
-    )]))
+    Arc::new(RenderImage::from_ephemeral_bgra(width, height, pixels).unwrap())
 }
 
 #[cfg(test)]

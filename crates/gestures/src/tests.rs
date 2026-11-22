@@ -285,14 +285,16 @@ fn raster_traces_of_reported_large_and_unequal_scrubs_trigger_on_visible_ink() {
             .map(|points| {
                 let mut object = stroke(&points);
                 if let Object::Stroke(s) = &mut object {
-                    s.path = points
-                        .into_iter()
-                        .map(|position| PathPoint {
-                            position,
-                            radius: 1.5,
-                        })
-                        .collect::<Vec<_>>()
-                        .into();
+                    s.path = std::sync::Arc::new(
+                        points
+                            .into_iter()
+                            .map(|position| PathPoint {
+                                position,
+                                radius: 1.5,
+                            })
+                            .collect::<Vec<_>>()
+                            .into(),
+                    );
                 }
                 object
             })
@@ -506,17 +508,19 @@ fn validated_scratch_targets_every_real_crossing_without_box_only_hits() {
     // Sparse segments must be hit between their endpoints too.
     let mut sparse = stroke(&[Point::new(40., -10.), Point::new(40., 30.)]);
     if let Object::Stroke(s) = &mut sparse {
-        s.path = vec![
-            PathPoint {
-                position: Point::new(40., -10.),
-                radius: 1.,
-            },
-            PathPoint {
-                position: Point::new(40., 30.),
-                radius: 1.,
-            },
-        ]
-        .into();
+        s.path = std::sync::Arc::new(
+            vec![
+                PathPoint {
+                    position: Point::new(40., -10.),
+                    radius: 1.,
+                },
+                PathPoint {
+                    position: Point::new(40., 30.),
+                    radius: 1.,
+                },
+            ]
+            .into(),
+        );
     }
     assert!(gesture.erases(&sparse));
     // Its box surrounds the scribble, but its actual ink goes around it.

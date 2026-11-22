@@ -4,7 +4,7 @@ members = ["apps/desktop", "crates/*"]
 exclude = ["vendor/gpui", "vendor/xattr", "vendor/proc-macro-error2"]
 
 [workspace.package]
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "GPL-3.0-or-later"
 rust-version = "1.92"
@@ -30,5 +30,20 @@ debug = 0
 [profile.test]
 debug = 0
 [profile.release]
-lto = "thin"
+opt-level = "z"
+lto = "fat"
 codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.release.package.folio-ink]
+opt-level = "s"
+
+[profile.release.package.folio-document]
+opt-level = "s"
+
+[profile.release.package.folio-canvas]
+opt-level = "s"
+
+[profile.release.package.folio-recognition]
+opt-level = 3

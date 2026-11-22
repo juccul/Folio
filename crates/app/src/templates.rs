@@ -111,7 +111,11 @@ mod tests {
             app.saved = app.saved.max(receipt.sequence);
         }
         app.trim_caches();
-        assert_eq!(app.sessions.len(), 8, "Cache pressure was not exercised");
+        assert_eq!(
+            app.sessions.len(),
+            memory::MAX_SESSIONS,
+            "Cache pressure was not exercised"
+        );
         assert!(
             !app.sessions.contains_key(&unpinned),
             "An unpinned old note should have been evicted"

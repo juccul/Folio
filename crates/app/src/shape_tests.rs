@@ -234,7 +234,7 @@ fn pen_up_checks_a_hold_even_when_preview_tick_was_missed() {
         let source = shapes(app)[0].source_strokes[0];
         let original = app.page().objects[&source].clone();
         assert!(
-            matches!(original.as_ref(),Object::Stroke(s) if s.raw[0].pressure==0.7&&s.raw[0].tilt_x==12.)
+            matches!(original.as_ref(),Object::Stroke(s) if s.raw.first().is_some_and(|p| p.pressure==0.7&&p.tilt_x==12.))
         );
         app.undo();
         assert!(app.page().objects.is_empty());

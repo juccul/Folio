@@ -324,8 +324,7 @@ fn asynchronous_results_remain_suggestions_and_stale_results_are_rejected() {
     let (mut app, root) = fixture();
     // Processing takes longer than the idle timeout: running work must survive.
     fake_pack(&root, 0.25);
-    app.recognition_service =
-        Service::with_idle_timeout(app.recognition_pack(), Duration::from_millis(150));
+    app.recognition_service = Service::with_idle_timeout(Duration::from_millis(150));
     let id = draw(&mut app, 20.);
     app.session_mut().selection = HashSet::from([id]);
     let before = app.page().objects.clone();
@@ -718,53 +717,33 @@ fn salvage_keeps_valid_reviewed_ink_and_skips_annotations_with_missing_sources()
 }
 
 #[test]
-fn first_ocr_request_waits_for_setup_choice_without_dispatching_downloads() {
+fn bundled_stroke_engine_recognizes_handwriting_and_math_offline() {
     let (mut app, root) = fixture();
-    let id = draw(&mut app, 20.);
+    assert!(
+        app.recognition_ready(),
+        "Bundled stroke models should be ready out of the box"
+    );
+    // Draw a simple vertical stroke ("1") and test both math & text pipelines end-to-end.
+    let id = draw_points(&mut app, &[[100., 20.], [100., 60.], [100., 100.]]);
     app.session_mut().selection = HashSet::from([id]);
-    let review = app.recognition_snapshot(RecognitionKind::Text).unwrap();
-    let pack = root.join("recognition/pack.json");
-    // Startup preparation must also leave a missing pack untouched.
-    let generation = AtomicU64::new(0);
-    let process = Mutex::new(None);
-    let stages = Mutex::new(Vec::new());
-    native::Cache::default()
-        .prepare_existing(
-            &pack,
-            &native::Context {
-                generation: 0,
-                current: &generation,
-                process: &process,
-                progress: &|text| stages.lock().unwrap().push(text),
-            },
-        )
-        .unwrap();
-    assert!(stages.lock().unwrap().is_empty());
-    assert!(process.lock().unwrap().is_none());
-    assert!(!pack.parent().unwrap().exists());
-    app.recognition_service
-        .submit(
-            Task {
-                submitted: Instant::now(),
-                queued: Instant::now(),
-                generation: 1,
-                pack: pack.clone(),
-                review,
-                image: None,
-                auto_setup: true,
-            },
-            false,
-        )
-        .unwrap();
     app.prepare_recognition();
-    assert!(app.recognition_setup_needed());
-    assert!(!app.recognition_service.warming.load(Ordering::Acquire));
-    assert!(app.recognition_service.last_task.is_none());
-    std::thread::sleep(Duration::from_millis(30));
-    assert!(!pack.exists());
-    assert!(app.recognition_service.results.try_recv().is_err());
-    app.cancel_recognition();
-    assert!(!app.recognition_setup_needed());
-    assert!(!app.settings.ocr_download_allowed);
+    app.recognize_selection(RecognitionKind::Math).unwrap();
+    wait_result(&mut app);
+    let math_text = app
+        .recognition_review
+        .as_ref()
+        .expect("bundled math recognition should succeed")
+        .text
+        .clone();
+    assert!(!math_text.trim().is_empty());
+    app.recognize_selection(RecognitionKind::Text).unwrap();
+    wait_result(&mut app);
+    let htr_text = app
+        .recognition_review
+        .as_ref()
+        .expect("bundled handwriting recognition should succeed")
+        .text
+        .clone();
+    assert!(!htr_text.trim().is_empty());
     clean(app, root);
 }

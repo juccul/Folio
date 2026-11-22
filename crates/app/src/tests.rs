@@ -31,7 +31,7 @@ fn draw_edit_undo_save_reload() {
         Object::Stroke(s) => s.clone(),
         _ => panic!(),
     };
-    assert_eq!(s.raw[0].tilt_x, 14.);
+    assert_eq!(s.raw.first().unwrap().tilt_x, 14.);
     a.set_tool(Tool::Eraser);
     a.select_all();
     assert_eq!(a.tool, Tool::Lasso);
@@ -252,7 +252,7 @@ fn paste_image_anchors_at_target_and_selects_it_on_its_page() {
     let Object::Stroke(stroke) = a.page().ordered_objects().last().unwrap().as_ref() else {
         panic!("the outside press must ink, not select");
     };
-    assert!(stroke.raw[0].position().distance(start) < 0.01);
+    assert!(stroke.raw.first().unwrap().position().distance(start) < 0.01);
     a.undo();
     a.undo();
     a.undo();
@@ -739,8 +739,10 @@ fn segment_erase_is_atomic_and_preserves_original_sensor_data() {
     let mut a = app();
     let root = a.data_dir.clone();
     let mut original = ink();
-    Arc::make_mut(&mut original.raw)[0].tilt_x = -0.0;
-    Arc::make_mut(&mut original.raw)[1].buttons = 5;
+    let mut raw = original.raw.to_vec();
+    raw[0].tilt_x = -0.0;
+    raw[1].buttons = 5;
+    original.raw = Arc::new(raw.into());
     insert(&mut a, original.clone());
     a.settings.segment_eraser = true;
     a.set_tool(Tool::Eraser);
@@ -785,8 +787,11 @@ fn segment_erase_is_atomic_and_preserves_original_sensor_data() {
         };
         assert!(Arc::ptr_eq(&first.raw, &stroke.raw));
         assert!(Arc::ptr_eq(&first.path, &stroke.path));
-        assert_eq!(stroke.raw[0].tilt_x.to_bits(), (-0.0_f32).to_bits());
-        assert_eq!(stroke.raw[1].buttons, 5);
+        assert_eq!(
+            stroke.raw.first().unwrap().tilt_x.to_bits(),
+            (-0.0_f32).to_bits()
+        );
+        assert_eq!(stroke.raw.get(1).unwrap().buttons, 5);
     }
     for (command, _) in a.session().history.entries() {
         for change in &command.changes {

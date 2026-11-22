@@ -143,7 +143,6 @@ impl NotesView {
                 folio_document::Object::Stroke(_)
                     | folio_document::Object::Text(_)
                     | folio_document::Object::Equation(_)
-                    | folio_document::Object::Image(_)
             )
         });
         let canvas_size = self

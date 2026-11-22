@@ -215,6 +215,10 @@ impl Controller {
         self.dirty_notes.remove(&id);
         self.closed_sessions.remove(&id);
         self.notes.retain(|n| n.id != id);
+        if self.save_notes.is_empty() && self.dirty_notes.is_empty() {
+            self.saved = self.queued;
+            self.save_error = None;
+        }
         self.library_undo.retain(|entry| entry.note != id);
         self.settings.workspace.open_tabs.retain(|tab| *tab != id);
         self.settings

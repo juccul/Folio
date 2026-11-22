@@ -27,11 +27,14 @@ fn main() {
         .map(|index| {
             let stroke = Object::Stroke(InkStroke {
                 id: Id::new_v4(),
-                raw: Arc::new(vec![StrokePoint::new(Point::new(0., 0.), 0.5, 0)]),
-                path: Arc::new(vec![PathPoint {
-                    position: Point::new(0., 0.),
-                    radius: 2.,
-                }]),
+                raw: Arc::new(vec![StrokePoint::new(Point::new(0., 0.), 0.5, 0)].into()),
+                path: Arc::new(
+                    vec![PathPoint {
+                        position: Point::new(0., 0.),
+                        radius: 2.,
+                    }]
+                    .into(),
+                ),
                 style: PenStyle::default(),
                 transform: Transform::translate(
                     (index % 100) as f32 * 20.,

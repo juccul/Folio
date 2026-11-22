@@ -42,6 +42,30 @@ pub struct Command {
     pub changes: Vec<Change>,
 }
 impl Command {
+    pub fn shrink_to_fit(&mut self) {
+        self.label.shrink_to_fit();
+        self.changes.shrink_to_fit();
+        for change in &mut self.changes {
+            match change {
+                Change::InkText { before, after, .. } => {
+                    before.shrink_to_fit();
+                    after.shrink_to_fit();
+                }
+                Change::Groups { before, after, .. } => {
+                    before.shrink_to_fit();
+                    after.shrink_to_fit();
+                }
+                Change::Page { before, after, .. } => {
+                    for page in before.iter_mut().chain(after.iter_mut()) {
+                        page.order.shrink_to_fit();
+                        page.groups.shrink_to_fit();
+                        page.ink_text.shrink_to_fit();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     pub fn apply(&self, doc: &mut Document, forward: bool) {
         #[derive(Default)]
         struct PageLookup {
@@ -183,6 +207,9 @@ impl Command {
                         p.objects.insert(*id, o.clone());
                     } else {
                         p.objects.remove(id);
+                        if !inserted.is_empty() {
+                            inserted.retain(|(p_id, o_id, _)| !(*p_id == *page && *o_id == *id));
+                        }
                         if self.changes.len() == 1 {
                             p.order.retain(|v| v != id);
                         } else {
@@ -203,10 +230,12 @@ impl Command {
                 let new = if forward { after } else { before };
                 if let Some(old) = old {
                     removed.remove(&old.id);
+                    inserted.retain(|(p_id, _, _)| *p_id != old.id);
                     doc.pages.retain(|p| p.id != old.id)
                 }
                 if let Some(new) = new {
                     removed.remove(&new.id);
+                    inserted.retain(|(p_id, _, _)| *p_id != new.id);
                     doc.pages.insert((*index).min(doc.pages.len()), new.clone())
                 }
             }
@@ -333,17 +362,26 @@ impl History {
             .map(|c| (c, true))
             .chain(self.redo.iter().rev().map(|c| (c, false)))
     }
-    pub fn from_commands(undo: Vec<Command>, redo: Vec<Command>) -> Self {
+    pub fn from_commands(mut undo: Vec<Command>, mut redo: Vec<Command>) -> Self {
+        for command in undo.iter_mut().chain(redo.iter_mut()) {
+            command.shrink_to_fit();
+        }
+        undo.shrink_to_fit();
+        redo.shrink_to_fit();
         Self { undo, redo }
     }
 
-    pub fn execute(&mut self, cmd: Command, doc: &mut Document) {
+    pub fn execute(&mut self, mut cmd: Command, doc: &mut Document) {
         if cmd.changes.is_empty() {
             return;
         }
         cmd.apply(doc, true);
+        cmd.shrink_to_fit();
         self.undo.push(cmd);
         self.redo.clear();
+        if self.redo.capacity() > 32 {
+            self.redo.shrink_to_fit();
+        }
         if self.undo.len() > 512 {
             self.undo.remove(0);
         }

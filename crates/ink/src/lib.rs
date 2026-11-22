@@ -1,7 +1,7 @@
 //! GPUI-independent incremental ink processing. Velocity-adaptive filtering,
 //! pressure width, distance interpolation and rounded vector outlines.
 use folio_document::*;
-use std::f32::consts::PI;
+use std::{f32::consts::PI, sync::Arc};
 
 pub struct StrokeBuilder {
     id: Id,
@@ -76,8 +76,8 @@ impl StrokeBuilder {
         }
         Some(InkStroke {
             id: self.id,
-            raw: self.raw.clone().into(),
-            path: self.path.clone().into(),
+            raw: Arc::new(RawSamples::from_slice(&self.raw)),
+            path: Arc::new(PathSamples::from_slice(&self.path)),
             style: self.style.clone(),
             transform: Transform::default(),
             created_at: now_ms(),
@@ -96,11 +96,8 @@ impl StrokeBuilder {
         &self.raw
     }
     pub fn finish(mut self) -> Option<InkStroke> {
-        if self.raw.is_empty() {
-            return None;
-        }
+        let endpoint = self.raw.last()?.position();
         // Catch the endpoint without changing sensor data. Taper fountain/pencil ends.
-        let endpoint = self.raw.last().unwrap().position();
         if let Some(last) = self.path.last().copied()
             && endpoint.distance(last.position) > 0.2
         {
@@ -120,8 +117,8 @@ impl StrokeBuilder {
         }
         Some(InkStroke {
             id: self.id,
-            raw: self.raw.into(),
-            path: self.path.into(),
+            raw: Arc::new(RawSamples::from_slice(&self.raw)),
+            path: Arc::new(PathSamples::from_slice(&self.path)),
             style: self.style,
             transform: Transform::default(),
             created_at: now_ms(),
@@ -147,14 +144,14 @@ fn radius(style: &PenStyle, pressure: f32, tx: f32, ty: f32) -> f32 {
 pub fn rebuild(stroke: &mut InkStroke) {
     let mut builder = StrokeBuilder::new(stroke.style.clone());
     for p in stroke.raw.iter() {
-        builder.push(*p)
+        builder.push(p)
     }
     if let Some(s) = builder.finish() {
         if let Some(fragment) = &mut stroke.fragment_path {
             // Repeated cuts retain the whole original centerline. A long fragment
             // must not scan that centerline for every point during a width edit.
             let mut nearest = (fragment.len() >= 128 && s.path.len() >= 128)
-                .then(|| s.path.iter().copied().enumerate().collect::<Vec<_>>());
+                .then(|| s.path.iter().enumerate().collect::<Vec<_>>());
             if let Some(points) = &mut nearest {
                 build_nearest_tree(points, 0);
             }
@@ -231,26 +228,73 @@ fn nearest_radius(points: &[(usize, PathPoint)], position: Point) -> f32 {
     search(points, position, 0, &mut best);
     best.1.radius
 }
+/// Reusable scratch buffers for zero-allocation batch stroke outlining.
+#[derive(Default)]
+pub struct OutlineScratch {
+    keep: Vec<bool>,
+    pending: Vec<(usize, usize)>,
+    samples: Vec<PathPoint>,
+    run: Vec<PathPoint>,
+    left: Vec<Point>,
+    contour: Vec<Point>,
+}
+
+/// Precomputed `(cos(i * PI / 16), sin(i * PI / 16))` for `i = 1..=16`.
+/// Eliminates `atan2`, `cos`, and `sin` calls in rounded stroke caps.
+const SEMICIRCLE_STEPS: [(f32, f32); 16] = [
+    (0.980785280, 0.195090322),
+    (0.923879533, 0.382683432),
+    (0.831469612, 0.555570233),
+    (0.707106781, 0.707106781),
+    (0.555570233, 0.831469612),
+    (0.382683432, 0.923879533),
+    (0.195090322, 0.980785280),
+    (0.000000000, 1.000000000),
+    (-0.195090322, 0.980785280),
+    (-0.382683432, 0.923879533),
+    (-0.555570233, 0.831469612),
+    (-0.707106781, 0.707106781),
+    (-0.831469612, 0.555570233),
+    (-0.923879533, 0.382683432),
+    (-0.980785280, 0.195090322),
+    (-1.000000000, 0.000000000),
+];
+
 /// Same-winding round brush contours, filled once using NonZero. Split at
 /// cusps or turns whose curvature is tighter than the brush radius: offset
 /// normals would fold there and cut holes through a retraced stroke. Regular
 /// portions remain compact outlines, rather than thousands of overlapping disks.
 /// Neither raw samples nor processed centerlines are modified by rendering.
 pub fn outline(path: &[PathPoint]) -> Vec<Vec<Point>> {
-    let samples = render_samples(path);
-    let mut contours = vec![];
-    let mut run = Vec::with_capacity(samples.len());
-    for &p in &samples {
-        if let Some(last) = run.last_mut() {
-            let last: &mut PathPoint = last;
-            if last.position.distance(p.position) < 1e-5 {
-                last.radius = last.radius.max(p.radius);
-                continue;
-            }
+    let mut scratch = OutlineScratch::default();
+    let mut contours = Vec::new();
+    visit_outline(path, &mut scratch, |contour| {
+        contours.push(contour.to_vec());
+    });
+    contours
+}
+
+/// Stream each same-winding round brush contour into `on_contour` while reusing
+/// `scratch` buffers across strokes to avoid per-stroke heap allocations.
+pub fn visit_outline(
+    path: &[PathPoint],
+    scratch: &mut OutlineScratch,
+    mut on_contour: impl FnMut(&[Point]),
+) {
+    render_samples_into(path, &mut scratch.keep, &mut scratch.pending, &mut scratch.samples);
+    scratch.run.clear();
+    let sample_count = scratch.samples.len();
+    for i in 0..sample_count {
+        let p = scratch.samples[i];
+        if let Some(last) = scratch.run.last_mut()
+            && last.position.distance(p.position) < 1e-5
+        {
+            last.radius = last.radius.max(p.radius);
+            continue;
         }
-        if run.len() >= 2 {
-            let a = run[run.len() - 2];
-            let b = run[run.len() - 1];
+        if scratch.run.len() >= 2 {
+            let a = scratch.run[scratch.run.len() - 2];
+            let b = scratch.run[scratch.run.len() - 1];
             let incoming = a.position.distance(b.position);
             let outgoing = b.position.distance(p.position);
             let dot = ((b.position.x - a.position.x) * (p.position.x - b.position.x)
@@ -261,28 +305,47 @@ pub fn outline(path: &[PathPoint]) -> Vec<Vec<Point>> {
                 * 0.8)
                 .min(0.9);
             if angle > limit || (p.radius - b.radius).abs() > outgoing * 0.5 {
-                contours.push(round_outline(&run));
-                run.clear();
-                run.push(b);
+                round_outline_into(&scratch.run, &mut scratch.left, &mut scratch.contour);
+                on_contour(&scratch.contour);
+                scratch.run.clear();
+                scratch.run.push(b);
             }
         }
-        run.push(p);
+        scratch.run.push(p);
     }
-    if !run.is_empty() {
-        contours.push(round_outline(&run));
+    if !scratch.run.is_empty() {
+        round_outline_into(&scratch.run, &mut scratch.left, &mut scratch.contour);
+        on_contour(&scratch.contour);
     }
-    contours
 }
+
 /// Bound rendering error in both centerline and pressure radius. Process short
 /// blocks so simplification cannot become quadratic in a long active stroke.
 /// The document continues to own every original processed and raw sample.
+#[cfg(test)]
 fn render_samples(path: &[PathPoint]) -> Vec<PathPoint> {
+    let mut keep = Vec::new();
+    let mut pending = Vec::new();
+    let mut out = Vec::new();
+    render_samples_into(path, &mut keep, &mut pending, &mut out);
+    out
+}
+
+fn render_samples_into(
+    path: &[PathPoint],
+    keep: &mut Vec<bool>,
+    pending: &mut Vec<(usize, usize)>,
+    out: &mut Vec<PathPoint>,
+) {
+    out.clear();
     if path.len() < 3 {
-        return path.to_vec();
+        out.extend_from_slice(path);
+        return;
     }
-    let mut keep = vec![false; path.len()];
+    keep.clear();
+    keep.resize(path.len(), false);
+    pending.clear();
     let mut begin = 0;
-    let mut pending = Vec::with_capacity(256);
     while begin < path.len() - 1 {
         let end = (begin + 256).min(path.len() - 1);
         keep[begin] = true;
@@ -323,17 +386,51 @@ fn render_samples(path: &[PathPoint]) -> Vec<PathPoint> {
         }
         begin = end;
     }
-    path.iter()
-        .zip(keep)
-        .filter_map(|(p, keep)| keep.then_some(*p))
-        .collect()
-}
-fn round_outline(path: &[PathPoint]) -> Vec<Point> {
-    if path.len() == 1 {
-        return circle(path[0].position, path[0].radius, 32);
+    for (p, &kept) in path.iter().zip(keep.iter()) {
+        if kept {
+            out.push(*p);
+        }
     }
-    let mut right = Vec::with_capacity(path.len() * 2 + 32);
-    let mut left = Vec::with_capacity(path.len());
+}
+
+fn push_semicircle_cap(center: Point, radius: f32, bx: f32, by: f32, out: &mut Vec<Point>) {
+    for &(c, s) in &SEMICIRCLE_STEPS {
+        let vx = bx * c - by * s;
+        let vy = by * c + bx * s;
+        out.push(Point::new(center.x + vx * radius, center.y + vy * radius));
+    }
+}
+
+fn unit_direction(from: Point, to: Point) -> (f32, f32) {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    let len = dx.hypot(dy);
+    if len < 1e-12 {
+        (1., 0.)
+    } else {
+        (dx / len, dy / len)
+    }
+}
+
+fn round_outline_into(path: &[PathPoint], left: &mut Vec<Point>, right: &mut Vec<Point>) {
+    right.clear();
+    if path.len() == 1 {
+        let center = path[0].position;
+        let r = path[0].radius;
+        right.reserve(32);
+        right.push(Point::new(center.x + r, center.y));
+        for &(c, s) in &SEMICIRCLE_STEPS[..15] {
+            right.push(Point::new(center.x + r * c, center.y + r * s));
+        }
+        right.push(Point::new(center.x - r, center.y));
+        for &(c, s) in &SEMICIRCLE_STEPS[..15] {
+            right.push(Point::new(center.x - r * c, center.y - r * s));
+        }
+        return;
+    }
+    left.clear();
+    right.reserve(path.len() * 2 + 32);
+    left.reserve(path.len());
     for (i, p) in path.iter().enumerate() {
         let a = path[i.saturating_sub(1)].position;
         let b = path[(i + 1).min(path.len() - 1)].position;
@@ -350,25 +447,13 @@ fn round_outline(path: &[PathPoint]) -> Vec<Point> {
     }
     let end = path[path.len() - 1];
     let previous = path[path.len() - 2].position;
-    let angle = (end.position.y - previous.y).atan2(end.position.x - previous.x);
-    for i in 1..=16 {
-        let a = angle - PI / 2. + PI * i as f32 / 16.;
-        right.push(Point::new(
-            end.position.x + a.cos() * end.radius,
-            end.position.y + a.sin() * end.radius,
-        ));
-    }
-    right.extend(left.into_iter().rev());
+    let (ux, uy) = unit_direction(previous, end.position);
+    push_semicircle_cap(end.position, end.radius, uy, -ux, right);
+    right.extend(left.iter().rev().copied());
     let start = path[0];
     let next = path[1].position;
-    let angle = (next.y - start.position.y).atan2(next.x - start.position.x);
-    for i in 1..=16 {
-        let a = angle + PI / 2. + PI * i as f32 / 16.;
-        right.push(Point::new(
-            start.position.x + a.cos() * start.radius,
-            start.position.y + a.sin() * start.radius,
-        ));
-    }
+    let (ux, uy) = unit_direction(start.position, next);
+    push_semicircle_cap(start.position, start.radius, -uy, ux, right);
     let area = right
         .iter()
         .zip(right.iter().cycle().skip(1))
@@ -378,7 +463,6 @@ fn round_outline(path: &[PathPoint]) -> Vec<Point> {
     if area < 0. {
         right.reverse();
     }
-    right
 }
 pub fn circle(center: Point, r: f32, n: usize) -> Vec<Point> {
     (0..n)
@@ -534,9 +618,8 @@ pub fn inside_polygon(p: Point, polygon: &[Point]) -> bool {
 pub fn refine(stroke: &mut InkStroke) {
     let mut path = stroke
         .fragment_path
-        .as_deref()
-        .unwrap_or(stroke.path.as_slice())
-        .to_vec();
+        .clone()
+        .unwrap_or_else(|| stroke.path.to_vec());
     for _ in 0..2 {
         // Keep the original previous sample as we overwrite the output in place.
         // The next sample has not been changed yet, matching a separate input buffer.
@@ -570,7 +653,7 @@ mod tests {
         let s = stroke();
         assert_eq!(s.raw.len(), 10);
         assert!(s.path.len() > s.raw.len());
-        assert!(!outline(&s.path).is_empty());
+        assert!(!outline(&s.path.to_vec()).is_empty());
     }
     #[test]
     fn pressure_changes_width() {
@@ -608,7 +691,10 @@ mod tests {
                     })
                     .collect()
             });
-            let mut expected = s.fragment_path.as_deref().unwrap_or(&s.path).to_vec();
+            let mut expected = s
+            .fragment_path
+            .clone()
+            .unwrap_or_else(|| s.path.to_vec());
             for _ in 0..2 {
                 let original = expected.clone();
                 for i in 1..expected.len().saturating_sub(1) {
@@ -675,17 +761,19 @@ mod tests {
     #[test]
     fn swept_hit_crosses_sparse_segments_and_handles_degenerate_sweeps() {
         let mut s = stroke();
-        s.path = vec![
-            PathPoint {
-                position: Point::new(0., 0.),
-                radius: 1.,
-            },
-            PathPoint {
-                position: Point::new(100., 0.),
-                radius: 1.,
-            },
-        ]
-        .into();
+        s.path = Arc::new(
+            vec![
+                PathPoint {
+                    position: Point::new(0., 0.),
+                    radius: 1.,
+                },
+                PathPoint {
+                    position: Point::new(100., 0.),
+                    radius: 1.,
+                },
+            ]
+            .into(),
+        );
         for transform in [
             Transform::default(),
             Transform::translate(100., 200.).compose(Transform::around(Point::default(), 2., 0.6)),
@@ -712,17 +800,19 @@ mod tests {
     #[test]
     fn sparse_tapers_do_not_hit_near_the_narrow_end_or_miss_the_wide_cap() {
         let mut s = stroke();
-        s.path = vec![
-            PathPoint {
-                position: Point::new(0., 0.),
-                radius: 1.,
-            },
-            PathPoint {
-                position: Point::new(100., 0.),
-                radius: 20.,
-            },
-        ]
-        .into();
+        s.path = Arc::new(
+            vec![
+                PathPoint {
+                    position: Point::new(0., 0.),
+                    radius: 1.,
+                },
+                PathPoint {
+                    position: Point::new(100., 0.),
+                    radius: 20.,
+                },
+            ]
+            .into(),
+        );
         for transform in [
             Transform::default(),
             Transform::translate(200., 100.).compose(Transform::around(Point::default(), 2., 0.4)),
@@ -751,17 +841,19 @@ mod tests {
     fn tapered_sweeps_agree_with_dense_disk_union_away_from_the_boundary() {
         let mut s = stroke();
         for (ra, rb) in [(1., 20.), (20., 1.), (1., 150.), (4., 4.)] {
-            s.path = vec![
-                PathPoint {
-                    position: Point::default(),
-                    radius: ra,
-                },
-                PathPoint {
-                    position: Point::new(100., 0.),
-                    radius: rb,
-                },
-            ]
-            .into();
+            s.path = Arc::new(
+                vec![
+                    PathPoint {
+                        position: Point::default(),
+                        radius: ra,
+                    },
+                    PathPoint {
+                        position: Point::new(100., 0.),
+                        radius: rb,
+                    },
+                ]
+                .into(),
+            );
             for i in 0..64 {
                 let a = Point::new(
                     (i as f32 * 0.37).sin() * 80. + 50.,
@@ -886,17 +978,19 @@ mod cut_tests {
         builder.push(StrokePoint::new(Point::new(0., 0.), 0.7, 0));
         builder.push(StrokePoint::new(Point::new(100., 0.), 0.7, 8));
         let mut original = builder.finish().unwrap();
-        original.path = vec![
-            PathPoint {
-                position: Point::new(0., 0.),
-                radius: 1.,
-            },
-            PathPoint {
-                position: Point::new(100., 0.),
-                radius: 1.,
-            },
-        ]
-        .into();
+        original.path = Arc::new(
+            vec![
+                PathPoint {
+                    position: Point::new(0., 0.),
+                    radius: 1.,
+                },
+                PathPoint {
+                    position: Point::new(100., 0.),
+                    radius: 1.,
+                },
+            ]
+            .into(),
+        );
         original.refined_path = Some(original.path.to_vec());
         original.refinement_enabled = true;
         original.transform = Transform::translate(50., 40.);
@@ -993,6 +1087,25 @@ mod contour_tests {
             );
             assert!(contour.iter().all(|p| p.x.is_finite() && p.y.is_finite()));
         }
+
+        // Verify scratch reuse across single-point and multi-point strokes matches `outline`
+        // and that the trig-free semicircle caps match exact circle geometry.
+        let mut scratch = OutlineScratch::default();
+        let dot = [PathPoint {
+            position: Point::new(5., 7.),
+            radius: 3.,
+        }];
+        let mut dot_contours = Vec::new();
+        visit_outline(&dot, &mut scratch, |c| dot_contours.push(c.to_vec()));
+        let expected_dot = circle(dot[0].position, dot[0].radius, 32);
+        assert_eq!(dot_contours.len(), 1);
+        assert_eq!(dot_contours[0].len(), expected_dot.len());
+        for (a, b) in dot_contours[0].iter().zip(&expected_dot) {
+            assert!(a.distance(*b) < 1e-4, "dot cap mismatch: {a:?} vs {b:?}");
+        }
+        let mut reused = Vec::new();
+        visit_outline(&points, &mut scratch, |c| reused.push(c.to_vec()));
+        assert_eq!(reused, outline(&points));
     }
     #[test]
     fn rendering_simplification_bounds_position_and_pressure_error() {

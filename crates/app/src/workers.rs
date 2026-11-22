@@ -206,116 +206,202 @@ struct Task {
 }
 type JobKey = (Id, Id, u8);
 pub struct Workers {
-    documents: mpsc::SyncSender<Task>,
-    search: mpsc::SyncSender<Task>,
-    pdf_scroll: mpsc::SyncSender<Task>,
+    documents: std::sync::OnceLock<mpsc::SyncSender<Task>>,
+    search: std::sync::OnceLock<mpsc::SyncSender<Task>>,
+    pdf_scroll: std::sync::OnceLock<mpsc::SyncSender<Task>>,
+    tx: mpsc::SyncSender<Finished>,
+    wakeup: folio_storage::WakeupSignal,
     generations: Mutex<std::collections::HashMap<JobKey, Arc<AtomicU64>>>,
     pub results: mpsc::Receiver<Finished>,
 }
+struct ReaderCache {
+    path: PathBuf,
+    #[cfg(unix)]
+    identity: (u64, u64),
+    store: folio_storage::Store,
+}
+impl ReaderCache {
+    #[cfg(unix)]
+    fn file_identity(path: &std::path::Path) -> Option<(u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+    }
+
+    fn get<'a>(
+        slot: &'a mut Option<Self>,
+        database: &PathBuf,
+    ) -> Result<&'a folio_storage::Store, folio_storage::Error> {
+        #[cfg(unix)]
+        let current = Self::file_identity(database);
+        let reusable = slot.as_ref().is_some_and(|cached| {
+            cached.path == *database && {
+                #[cfg(unix)]
+                {
+                    current.is_some_and(|id| id == cached.identity)
+                }
+                #[cfg(not(unix))]
+                {
+                    true
+                }
+            }
+        });
+        if !reusable {
+            *slot = None;
+            let store = folio_storage::Store::open_reader(database)?;
+            #[cfg(unix)]
+            let identity = current
+                .or_else(|| Self::file_identity(database))
+                .unwrap_or((0, 0));
+            *slot = Some(Self {
+                path: database.clone(),
+                #[cfg(unix)]
+                identity,
+                store,
+            });
+        }
+        Ok(&slot.as_ref().expect("reader initialized").store)
+    }
+}
 impl Workers {
+    pub fn set_wakeup(&self, wakeup: folio_storage::Wakeup) {
+        self.wakeup.set(wakeup);
+    }
     pub fn new() -> Self {
         let (tx, results) = mpsc::sync_channel(8);
-        let spawn = |name: &str| {
-            let (sender, receiver) = mpsc::sync_channel::<Task>(16);
-            let tx = tx.clone();
-            thread::Builder::new()
-                .name(name.into())
-                .spawn(move || {
-                    while let Ok(task) = receiver.recv() {
-                        let cancelled = || task.token.load(Ordering::Acquire) != task.generation;
-                        let result = if cancelled() {
-                            Finished::Cancelled
-                        } else {
-                            let load_note = match &task.job {
-                                Job::Load { id, .. } => Some(*id),
-                                _ => None,
-                            };
-                            let import_note = match &task.job {
-                                Job::ImportPdf { note, .. }
-                                | Job::ImportImage { note, .. }
-                                | Job::ImportNotebook { note, .. }
-                                | Job::TemplatePage { note, .. } => Some(*note),
-                                _ => None,
-                            };
-                            let search_generation = match &task.job {
-                                Job::Search { generation, .. } => Some(*generation),
-                                _ => None,
-                            };
-                            let equation_generation = match &task.job {
-                                Job::Equation { generation, .. } => Some(*generation),
-                                _ => None,
-                            };
-                            let failure = match &task.job {
-                                Job::Preview {
-                                    note, page, object, ..
-                                } => Some((Some((*note, *page, object.clone())), None)),
-                                Job::PdfPreview { background, .. } => {
-                                    Some((None, background.preview_asset.clone()))
-                                }
-                                _ => None,
-                            };
-                            let result =
-                                process(task.job).unwrap_or_else(|message| match failure {
-                                    Some((Some((note, page, object)), _)) => {
-                                        Finished::PreviewError {
-                                            note,
-                                            page,
-                                            object,
-                                            message,
-                                        }
-                                    }
-                                    Some((_, Some(asset))) => {
-                                        Finished::PdfPreviewError { asset, message }
-                                    }
-                                    _ => match import_note {
-                                        Some(note) => Finished::ImportError { note, message },
-                                        None => match load_note {
-                                            Some(id) => Finished::LoadError { id, message },
-                                            None => match equation_generation {
-                                                Some(generation) => Finished::EquationError {
-                                                    generation,
-                                                    message,
-                                                },
-                                                None => match search_generation {
-                                                    Some(generation) => Finished::SearchError {
-                                                        generation,
-                                                        message,
-                                                    },
-                                                    None => Finished::Error(message),
-                                                },
-                                            },
-                                        },
-                                    },
-                                });
-                            if cancelled() {
-                                Finished::Cancelled
-                            } else {
-                                result
-                            }
-                        };
-                        if tx.send(result).is_err() {
-                            break;
-                        }
-                    }
-                })
-                .expect("start offline worker");
-            sender
-        };
         Self {
-            documents: spawn("folio-documents"),
-            search: spawn("folio-search"),
-            // Quick scrolling previews must not wait behind a full-resolution
-            // PDF render, export, or other long document operation.
-            pdf_scroll: spawn("folio-pdf-scroll"),
+            documents: std::sync::OnceLock::new(),
+            search: std::sync::OnceLock::new(),
+            pdf_scroll: std::sync::OnceLock::new(),
+            tx,
+            wakeup: folio_storage::WakeupSignal::default(),
             generations: Mutex::new(std::collections::HashMap::new()),
             results,
         }
     }
+    fn spawn_lane(&self, name: &str) -> mpsc::SyncSender<Task> {
+        let (sender, receiver) = mpsc::sync_channel::<Task>(16);
+        let tx = self.tx.clone();
+        let wakeup = self.wakeup.clone();
+        thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                let mut reader: Option<ReaderCache> = None;
+                loop {
+                    let task = if reader.is_some() {
+                        #[cfg(unix)]
+                        let next = receiver.recv_timeout(std::time::Duration::from_millis(500));
+                        #[cfg(not(unix))]
+                        let next = receiver.try_recv().map_err(|err| match err {
+                            mpsc::TryRecvError::Empty => mpsc::RecvTimeoutError::Timeout,
+                            mpsc::TryRecvError::Disconnected => {
+                                mpsc::RecvTimeoutError::Disconnected
+                            }
+                        });
+                        match next {
+                            Ok(task) => task,
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                reader = None;
+                                continue;
+                            }
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
+                    } else {
+                        match receiver.recv() {
+                            Ok(task) => task,
+                            Err(_) => break,
+                        }
+                    };
+                    let cancelled = || task.token.load(Ordering::Acquire) != task.generation;
+                    let result = if cancelled() {
+                        Finished::Cancelled
+                    } else {
+                        let load_note = match &task.job {
+                            Job::Load { id, .. } => Some(*id),
+                            _ => None,
+                        };
+                        let import_note = match &task.job {
+                            Job::ImportPdf { note, .. }
+                            | Job::ImportImage { note, .. }
+                            | Job::ImportNotebook { note, .. }
+                            | Job::TemplatePage { note, .. } => Some(*note),
+                            _ => None,
+                        };
+                        let search_generation = match &task.job {
+                            Job::Search { generation, .. } => Some(*generation),
+                            _ => None,
+                        };
+                        let equation_generation = match &task.job {
+                            Job::Equation { generation, .. } => Some(*generation),
+                            _ => None,
+                        };
+                        let failure = match &task.job {
+                            Job::Preview {
+                                note, page, object, ..
+                            } => Some((Some((*note, *page, object.clone())), None)),
+                            Job::PdfPreview { background, .. } => {
+                                Some((None, background.preview_asset.clone()))
+                            }
+                            _ => None,
+                        };
+                        let result = process(task.job, &mut reader).unwrap_or_else(|message| {
+                            reader = None;
+                            match failure {
+                                Some((Some((note, page, object)), _)) => Finished::PreviewError {
+                                    note,
+                                    page,
+                                    object,
+                                    message,
+                                },
+                                Some((_, Some(asset))) => {
+                                    Finished::PdfPreviewError { asset, message }
+                                }
+                                _ => match import_note {
+                                    Some(note) => Finished::ImportError { note, message },
+                                    None => match load_note {
+                                        Some(id) => Finished::LoadError { id, message },
+                                        None => match equation_generation {
+                                            Some(generation) => Finished::EquationError {
+                                                generation,
+                                                message,
+                                            },
+                                            None => match search_generation {
+                                                Some(generation) => Finished::SearchError {
+                                                    generation,
+                                                    message,
+                                                },
+                                                None => Finished::Error(message),
+                                            },
+                                        },
+                                    },
+                                },
+                            }
+                        });
+                        if cancelled() {
+                            Finished::Cancelled
+                        } else {
+                            result
+                        }
+                    };
+                    if tx.send(result).is_err() {
+                        break;
+                    }
+                    wakeup.notify();
+                }
+            })
+            .expect("start offline worker");
+        sender
+    }
     pub fn submit(&self, job: Job) -> Result<(), String> {
         let sender = match &job {
-            Job::Search { .. } | Job::Load { .. } | Job::LibraryPreview { .. } => &self.search,
-            Job::PdfPreview { size, .. } if *size <= 960 => &self.pdf_scroll,
-            _ => &self.documents,
+            Job::Search { .. } | Job::Load { .. } | Job::LibraryPreview { .. } => {
+                self.search.get_or_init(|| self.spawn_lane("folio-search"))
+            }
+            Job::PdfPreview { size, .. } if *size <= 960 => self
+                .pdf_scroll
+                .get_or_init(|| self.spawn_lane("folio-pdf-scroll")),
+            _ => self
+                .documents
+                .get_or_init(|| self.spawn_lane("folio-documents")),
         };
         let key = match &job {
             Job::Search { .. } => Some((Id::nil(), Id::nil(), 1)),
@@ -364,12 +450,12 @@ pub(crate) fn placed_image_size(width: u32, height: u32) -> Point {
     let scale = (500. / width as f32).min(1.);
     Point::new(width as f32 * scale, height as f32 * scale)
 }
-fn process(job: Job) -> Result<Finished, String> {
+fn process(job: Job, reader: &mut Option<ReaderCache>) -> Result<Finished, String> {
     (|| -> Result<Finished, Box<dyn std::error::Error>> {
         Ok(match job {
             Job::Tracked { id, job } => Finished::Tracked {
                 id,
-                result: Box::new(process(*job).unwrap_or_else(Finished::Error)),
+                result: Box::new(process(*job, reader).unwrap_or_else(Finished::Error)),
             },
             Job::SaveTemplate {
                 document,
@@ -419,13 +505,18 @@ fn process(job: Job) -> Result<Finished, String> {
                 updated,
                 cover,
                 database,
-            } => Finished::LibraryPreview {
-                note,
-                updated,
-                result: folio_storage::Store::open_reader(database)
-                    .and_then(|store| store.library_preview(note, cover))
-                    .map_err(|e| e.to_string()),
-            },
+            } => {
+                let result = ReaderCache::get(reader, &database)
+                    .and_then(|store| store.library_preview(note, cover));
+                if result.is_err() {
+                    *reader = None;
+                }
+                Finished::LibraryPreview {
+                    note,
+                    updated,
+                    result: result.map_err(|e| e.to_string()),
+                }
+            }
             Job::Cleanup { root } => {
                 Finished::Cleaned(folio_storage::recovery::quarantine_orphans(&root)?)
             }
@@ -475,11 +566,11 @@ fn process(job: Job) -> Result<Finished, String> {
                 database,
                 generation,
             } => {
-                let store = folio_storage::Store::open_reader(database)?;
+                let store = ReaderCache::get(reader, &database)?;
                 let mut results = folio_search::search(&store.connection, &query)?;
                 let mut position = store
                     .connection
-                    .prepare("SELECT position FROM pages WHERE id=?1 AND note_id=?2")?;
+                    .prepare_cached("SELECT position FROM pages WHERE id=?1 AND note_id=?2")?;
                 for result in &mut results {
                     result.page_number = position
                         .query_row([result.page.to_string(), result.note.to_string()], |row| {
@@ -495,7 +586,7 @@ fn process(job: Job) -> Result<Finished, String> {
                 }
             }
             Job::Load { id, database } => {
-                let store = folio_storage::Store::open_reader(database)?;
+                let store = ReaderCache::get(reader, &database)?;
                 let (document, history) = store
                     .load_with_history(id)?
                     .ok_or("Note no longer exists")?;
@@ -562,7 +653,18 @@ fn process(job: Job) -> Result<Finished, String> {
                     return Err("Supported images: PNG, JPEG, WebP".into());
                 }
                 let id = Id::new_v4();
-                let target = folio_platform::copy_asset(&path, &assets, &id.to_string(), &ext)?;
+                let copied = folio_platform::copy_asset(&path, &assets, &id.to_string(), &ext);
+                if assets
+                    .parent()
+                    .is_some_and(|root| path.parent() == Some(&root.join("jobs")))
+                    && path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|name| name.starts_with("clipboard-"))
+                {
+                    let _ = std::fs::remove_file(&path);
+                }
+                let target = copied?;
                 let placed = placed_image_size(size.0, size.1);
                 Finished::Image {
                     note,

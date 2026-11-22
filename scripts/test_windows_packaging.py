@@ -101,6 +101,20 @@ assert importlib.metadata.version('compact-demo') == '1.0'
         self.assertNotIn('](third_party/licenses/demo-1.0/)', inventory)
         self.assertIn('](third_party/licenses/INDEX.md)', inventory)
 
+    def test_stage_recognition_copies_required_bundle_assets(self):
+        source = self.root / 'source'
+        rec = source / 'recognition'
+        rec.mkdir(parents=True)
+        required = ('pack.json', 'math_v2.frec', 'htr_v2.frec', 'htr_lm.json.gz', 'NOTICE.txt')
+        for name in required:
+            (rec / name).write_bytes(b'test-' + name.encode())
+        destination = self.root / 'package'
+        destination.mkdir()
+        with patch.object(packaging, 'ROOT', source):
+            packaging.stage_recognition(destination)
+        for name in required:
+            self.assertEqual((destination / 'recognition' / name).read_bytes(), b'test-' + name.encode())
+
 
 if __name__ == '__main__':
     unittest.main()

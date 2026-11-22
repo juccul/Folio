@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Build a real x86_64 Flatpak bundle with offline math and PDF previews.
+"""Build a real x86_64 Flatpak bundle with offline math, stroke recognition, and PDF previews.
 
 Requires installed Freedesktop SDK/Platform 25.08, cmake/ninja in the SDK, and a
-Python with scripts/math-solver-requirements.txt. Network is used only for first-use OCR asset downloads.
+Python with scripts/math-solver-requirements.txt. Handwriting and math recognition models
+are bundled directly in `/app/recognition/` for zero-download offline use.
 Poppler is fetched only at build time and verified against a pinned SHA-256.
 """
 import argparse

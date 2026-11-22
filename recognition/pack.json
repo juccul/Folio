@@ -1,0 +1,6 @@
+{
+  "backend": "folio-stroke-v2",
+  "math": "math_v2.frec",
+  "htr": "htr_v2.frec",
+  "lm": "htr_lm.json.gz"
+}

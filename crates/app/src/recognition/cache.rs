@@ -25,28 +25,6 @@ impl Identity {
             hash.update((Arc::as_ptr(object) as usize).to_le_bytes());
             sources.push(Arc::downgrade(object));
         }
-        match &task.image {
-            Some(ImageSource::Object(object, assets)) => {
-                let Object::Image(image) = object.as_ref() else {
-                    return None;
-                };
-                stamp(
-                    &mut hash,
-                    &folio_export::asset_path(assets, &image.asset).ok()?,
-                )?;
-            }
-            Some(ImageSource::Pdf(pdf, assets, crop)) => {
-                hash.update(serde_json::to_vec(pdf).ok()?);
-                for value in [crop.min.x, crop.min.y, crop.max.x, crop.max.y] {
-                    hash.update(value.to_bits().to_le_bytes());
-                }
-                stamp(
-                    &mut hash,
-                    &folio_export::asset_path(assets, &pdf.asset).ok()?,
-                )?;
-            }
-            None => {}
-        }
         Some(Self {
             digest: hash.finalize().into(),
             sources,
@@ -55,18 +33,6 @@ impl Identity {
     fn alive(&self) -> bool {
         self.sources.iter().all(|source| source.strong_count() > 0)
     }
-}
-fn stamp(hash: &mut Sha256, path: &std::path::Path) -> Option<()> {
-    let metadata = std::fs::metadata(path).ok()?;
-    let modified = metadata
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?;
-    hash.update(path.as_os_str().as_encoded_bytes());
-    hash.update(metadata.len().to_le_bytes());
-    hash.update(modified.as_nanos().to_le_bytes());
-    Some(())
 }
 #[derive(Default)]
 pub(super) struct Results(VecDeque<(Identity, String)>);
@@ -126,8 +92,6 @@ mod tests {
                 queued: Instant::now(),
                 generation: 1,
                 pack: "pack.json".into(),
-                auto_setup: false,
-                image: None,
                 review: RecognitionReview {
                     kind: RecognitionKind::Text,
                     text: String::new(),

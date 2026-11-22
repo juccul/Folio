@@ -22,14 +22,21 @@ use std::{borrow::Cow, sync::Arc};
 pub(crate) struct CosmicTextSystem(RwLock<CosmicTextSystemState>);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct FontKey {
+struct FontMatchKey {
     family: SharedString,
+    weight_bits: u32,
+    style: FontStyle,
     features: FontFeatures,
 }
 
-impl FontKey {
-    fn new(family: SharedString, features: FontFeatures) -> Self {
-        Self { family, features }
+impl FontMatchKey {
+    fn new(font: &Font) -> Self {
+        Self {
+            family: font.family.clone(),
+            weight_bits: font.weight.0.to_bits(),
+            style: font.style,
+            features: font.features.clone(),
+        }
     }
 }
 
@@ -37,11 +44,12 @@ struct CosmicTextSystemState {
     swash_cache: SwashCache,
     font_system: FontSystem,
     scratch: ShapeBuffer,
-    /// Contains all already loaded fonts, including all faces. Indexed by `FontId`.
+    /// Contains all already loaded fonts, including only matched faces. Indexed by `FontId`.
     loaded_fonts: Vec<LoadedFont>,
-    /// Caches the `FontId`s associated with a specific family to avoid iterating the font database
-    /// for every font face in a family.
-    font_ids_by_family_cache: HashMap<FontKey, SmallVec<[FontId; 4]>>,
+    /// Reuse already loaded `(db_id, features)` faces across queries.
+    loaded_by_face: HashMap<(cosmic_text::fontdb::ID, FontFeatures), FontId>,
+    /// Caches exact font query matches without mapping every face in a family.
+    font_id_cache: HashMap<FontMatchKey, FontId>,
 }
 
 struct LoadedFont {
@@ -53,14 +61,15 @@ struct LoadedFont {
 impl CosmicTextSystem {
     pub(crate) fn new() -> Self {
         // todo(linux) make font loading non-blocking
-        let mut font_system = FontSystem::new();
+        let font_system = FontSystem::new();
 
         Self(RwLock::new(CosmicTextSystemState {
             font_system,
             swash_cache: SwashCache::new(),
             scratch: ShapeBuffer::default(),
             loaded_fonts: Vec::new(),
-            font_ids_by_family_cache: HashMap::default(),
+            loaded_by_face: HashMap::default(),
+            font_id_cache: HashMap::default(),
         }))
     }
 }
@@ -91,32 +100,15 @@ impl PlatformTextSystem for CosmicTextSystem {
     }
 
     fn font_id(&self, font: &Font) -> Result<FontId> {
-        // todo(linux): Do we need to use CosmicText's Font APIs? Can we consolidate this to use font_kit?
         let mut state = self.0.write();
-        let key = FontKey::new(font.family.clone(), font.features.clone());
-        let candidates = if let Some(font_ids) = state.font_ids_by_family_cache.get(&key) {
-            font_ids.as_slice()
-        } else {
-            let font_ids = state.load_family(&font.family, &font.features)?;
-            state.font_ids_by_family_cache.insert(key.clone(), font_ids);
-            state.font_ids_by_family_cache[&key].as_ref()
-        };
+        let key = FontMatchKey::new(font);
+        if let Some(&font_id) = state.font_id_cache.get(&key) {
+            return Ok(font_id);
+        }
 
-        // todo(linux) ideally we would make fontdb's `find_best_match` pub instead of using font-kit here
-        let candidate_properties = candidates
-            .iter()
-            .map(|font_id| {
-                let database_id = state.loaded_font(*font_id).font.id();
-                let face_info = state.font_system.db().face(database_id).expect("");
-                face_info_into_properties(face_info)
-            })
-            .collect::<SmallVec<[_; 4]>>();
-
-        let ix =
-            font_kit::matching::find_best_match(&candidate_properties, &font_into_properties(font))
-                .context("requested font family contains no font matching the other parameters")?;
-
-        Ok(candidates[ix])
+        let font_id = state.load_best_face(font)?;
+        state.font_id_cache.insert(key, font_id);
+        Ok(font_id)
     }
 
     fn font_metrics(&self, font_id: FontId) -> FontMetrics {
@@ -203,56 +195,72 @@ impl CosmicTextSystemState {
                 }
             }
         }
+        self.font_id_cache.clear();
         Ok(())
     }
 
     #[profiling::function]
-    fn load_family(
-        &mut self,
-        name: &str,
-        features: &FontFeatures,
-    ) -> Result<SmallVec<[FontId; 4]>> {
+    fn load_best_face(&mut self, font: &Font) -> Result<FontId> {
         // TODO: Determine the proper system UI font.
-        let name = crate::text_system::font_name_with_fallbacks(name, "IBM Plex Sans");
+        let name = crate::text_system::font_name_with_fallbacks(&font.family, "IBM Plex Sans");
 
-        let families = self
+        let mut candidates = self
             .font_system
             .db()
             .faces()
             .filter(|face| face.families.iter().any(|family| *name == family.0))
-            .map(|face| (face.id, face.post_script_name.clone()))
-            .collect::<SmallVec<[_; 4]>>();
+            .map(|face| {
+                (
+                    face.id,
+                    face_info_into_properties(face),
+                    face.post_script_name.clone(),
+                )
+            })
+            .collect::<SmallVec<[_; 8]>>();
 
-        let mut loaded_font_ids = SmallVec::new();
-        for (font_id, postscript_name) in families {
-            let font = self
+        let target_properties = font_into_properties(font);
+        let allowed_bad_font_names = [
+            "SegoeFluentIcons", // NOTE: Segoe fluent icons postscript name is inconsistent
+            "Segoe Fluent Icons",
+        ];
+
+        while !candidates.is_empty() {
+            let props = candidates
+                .iter()
+                .map(|(_, properties, _)| *properties)
+                .collect::<SmallVec<[_; 8]>>();
+            let ix = font_kit::matching::find_best_match(&props, &target_properties)
+                .context("requested font family contains no font matching the other parameters")?;
+            let (db_id, _, postscript_name) = candidates.remove(ix);
+
+            if let Some(&existing) = self.loaded_by_face.get(&(db_id, font.features.clone())) {
+                return Ok(existing);
+            }
+
+            let loaded = self
                 .font_system
-                .get_font(font_id)
+                .get_font(db_id)
                 .context("Could not load font")?;
 
             // HACK: To let the storybook run and render Windows caption icons. We should actually do better font fallback.
-            let allowed_bad_font_names = [
-                "SegoeFluentIcons", // NOTE: Segoe fluent icons postscript name is inconsistent
-                "Segoe Fluent Icons",
-            ];
-
-            if font.as_swash().charmap().map('m') == 0
+            if loaded.as_swash().charmap().map('m') == 0
                 && !allowed_bad_font_names.contains(&postscript_name.as_str())
             {
-                self.font_system.db_mut().remove_face(font.id());
                 continue;
-            };
+            }
 
             let font_id = FontId(self.loaded_fonts.len());
-            loaded_font_ids.push(font_id);
             self.loaded_fonts.push(LoadedFont {
-                font,
-                features: features.try_into()?,
+                font: loaded,
+                features: (&font.features).try_into()?,
                 is_known_emoji_font: check_is_known_emoji_font(&postscript_name),
             });
+            self.loaded_by_face
+                .insert((db_id, font.features.clone()), font_id);
+            return Ok(font_id);
         }
 
-        Ok(loaded_font_ids)
+        anyhow::bail!("requested font family contains no font matching the other parameters")
     }
 
     fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>> {
@@ -366,6 +374,9 @@ impl CosmicTextSystemState {
                 features: CosmicFontFeatures::new(),
                 is_known_emoji_font: check_is_known_emoji_font(&face.post_script_name),
             });
+            self.loaded_by_face
+                .entry((id, FontFeatures::default()))
+                .or_insert(font_id);
 
             font_id
         }

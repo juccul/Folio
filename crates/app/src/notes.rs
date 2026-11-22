@@ -105,6 +105,7 @@ impl Controller {
         let delta = Delta::full(&d);
         self.notes.insert(0, d.metadata.clone());
         self.sessions.insert(id, Session::new(d));
+        self.needs_memory_trim = true;
         self.activate_note(id);
         self.filter = NoteFilter::All;
         self.search_highlights.clear();
@@ -173,17 +174,25 @@ impl Controller {
         self.library_previews.remove(&id);
         self.library_preview_recency.retain(|note| *note != id);
         self.loading_notes.remove(&id);
+        self.needs_memory_trim = true;
+        if !self.notes.iter().any(|n| n.id == id) {
+            // The note was permanently deleted while its load was in flight;
+            // never re-insert it into `sessions`, or a later flush would resurrect it.
+            self.pending_actions.remove(&id);
+            if self.pending_note == Some(id) {
+                self.pending_note = None;
+                self.pending_navigation = None;
+            }
+            return;
+        }
         self.session_recency.retain(|n| *n != id);
         self.session_recency.push_back(id);
         if !self.sessions.contains_key(&id) {
-            let mut session = Session::new(document);
-            session.history = history;
             let page = view
                 .map(|(_, page, _)| page)
                 .or_else(|| self.settings.remembered_page(id));
-            if let Some(page) = page {
-                session.show_page(page);
-            }
+            let mut session = Session::with_page(document, page);
+            session.history = history;
             if let Some((_, _, viewport)) = view {
                 session.viewport = viewport;
             }
@@ -270,6 +279,7 @@ impl Controller {
         self.notes.insert(0, d.metadata.clone());
         let delta = Delta::full(&d);
         self.sessions.insert(id, Session::new(d));
+        self.needs_memory_trim = true;
         self.persist(delta);
         id
     }

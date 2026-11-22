@@ -238,12 +238,17 @@ impl Controller {
         self.library_import_failed(note, "PDF import cancelled".into());
     }
     pub fn unlock_pdf(&mut self, note: Id, path: PathBuf, password: String) {
-        self.submit(Job::ImportPdf {
+        let job = Job::ImportPdf {
             note,
             path,
             assets: self.assets.clone(),
             password: Some(password),
-        });
+        };
+        if let Err(error) = self.workers.submit(job) {
+            self.library_import_failed(note, error);
+        } else {
+            self.busy += 1;
+        }
     }
     pub(crate) fn image_imported(&mut self, note: Id, page: Id, object: Object, select: bool) {
         self.import_finished(note);

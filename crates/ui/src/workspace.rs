@@ -1,7 +1,6 @@
 //! Library, document chrome and page navigation. All mutations go through Controller.
+use super::thumbnails::ThumbnailSource;
 use super::*;
-use folio_document::Page;
-use std::{collections::HashMap, sync::Arc};
 
 /// How long ago a document changed, abbreviated: "Edited 3d ago".
 pub(super) fn edited_label(updated: u64) -> String {
@@ -33,81 +32,6 @@ impl Render for Hint {
     }
 }
 
-#[derive(Default)]
-pub(super) struct Thumbnails {
-    entries: HashMap<Id, Thumbnail>,
-    pending: HashMap<Id, u64>,
-    clock: u64,
-}
-#[derive(Clone, PartialEq)]
-struct ThumbnailKey {
-    revision: u64,
-    properties: folio_document::PageProperties,
-    theme: super::theme::CanvasTheme,
-    pdf_ready: bool,
-    /// Raster size in device pixels, so covers are drawn at the size shown
-    /// instead of being downsampled until thin ink fades.
-    edge: u32,
-}
-struct Thumbnail {
-    key: ThumbnailKey,
-    generation: u64,
-    image: Option<Arc<RenderImage>>,
-    error: Option<String>,
-    aspect: f32,
-    touched: u64,
-}
-impl Thumbnails {
-    fn touch(&mut self, id: Id, key: &ThumbnailKey) -> (u64, bool) {
-        self.clock += 1;
-        let touched = self.clock;
-        let valid = self.entries.get(&id).is_some_and(|entry| &entry.key == key);
-        (touched, valid)
-    }
-    fn start(
-        &mut self,
-        id: Id,
-        key: ThumbnailKey,
-        aspect: f32,
-        touched: u64,
-        mut release: impl FnMut(Arc<RenderImage>),
-    ) {
-        if !self.entries.contains_key(&id)
-            && self.entries.len() >= 48
-            && let Some(oldest) = self
-                .entries
-                .iter()
-                .filter(|(id, _)| !self.pending.contains_key(id))
-                .min_by_key(|(_, entry)| entry.touched)
-                .map(|(id, _)| *id)
-            && let Some(image) = self.entries.remove(&oldest).and_then(|entry| entry.image)
-        {
-            release(image);
-        }
-        if let Some(image) = self
-            .entries
-            .insert(
-                id,
-                Thumbnail {
-                    key,
-                    generation: touched,
-                    image: None,
-                    error: None,
-                    aspect,
-                    touched,
-                },
-            )
-            .and_then(|entry| entry.image)
-        {
-            release(image);
-        }
-        self.pending.insert(id, touched);
-    }
-}
-enum ThumbnailSource {
-    Cover(Arc<Page>),
-    Current(usize),
-}
 /// Library grid geometry, in logical pixels: cards stretch so each row
 /// fills the shelf, between a minimum and maximum width.
 #[derive(Clone, Copy)]
@@ -170,166 +94,6 @@ impl NotesView {
         self.accessibility
             .focus_virtual_control(&format!("folder-{target}"), window, cx);
         true
-    }
-    fn thumbnail(
-        &mut self,
-        source: ThumbnailSource,
-        width: f32,
-        max_height: f32,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let page = match &source {
-            ThumbnailSource::Cover(page) => page.as_ref(),
-            ThumbnailSource::Current(index) => &self.controller.session().document.pages[*index],
-        };
-        let theme = Theme::new(&self.controller.settings);
-        let palette = theme.canvas_for_page(&page.properties);
-        let bright_raster = theme.dark
-            && (page.properties.pdf.is_some()
-                || page
-                    .objects
-                    .values()
-                    .any(|o| matches!(o.as_ref(), folio_document::Object::Image(_))));
-        let pdf_ready = page
-            .properties
-            .pdf
-            .as_ref()
-            .and_then(|p| p.preview_asset.as_ref())
-            .is_none_or(|a| self.controller.assets.join(a).is_file());
-        let edge = ((max_height * window.scale_factor()).ceil() as u32).clamp(128, 768);
-        // PDF previews are already rasters; resampling them small blurs text.
-        let edge = if page.properties.pdf.is_some() {
-            edge.max(384)
-        } else {
-            edge
-        };
-        let key = ThumbnailKey {
-            revision: page.revision,
-            properties: page.properties.clone(),
-            theme: palette,
-            pdf_ready,
-            edge,
-        };
-        let id = page.id;
-        let default_aspect = page.properties.width / page.properties.height.max(1.);
-        let (touched, valid) = self.thumbnails.touch(id, &key);
-        if !valid && self.thumbnails.pending.len() < 2 && !self.thumbnails.pending.contains_key(&id)
-        {
-            let generation = touched;
-            let aspect = page.properties.width / page.properties.height.max(1.);
-            self.thumbnails.start(id, key, aspect, touched, |image| {
-                // Dropping the Arc alone leaves its sprite-atlas allocation alive.
-                let _ = window.drop_image(image);
-            });
-            // Snapshot only when a raster job is needed. Cached redraws avoid
-            // cloning the entire page/object map, and appearance adaptation runs
-            // on the worker with the rasterization.
-            let source = match source {
-                ThumbnailSource::Cover(page) => page,
-                ThumbnailSource::Current(_) => Arc::new(page.clone()),
-            };
-            let assets = self.controller.assets.clone();
-            let task = cx.background_executor().spawn(async move {
-                let mut page = source.as_ref().clone();
-                export_options::apply(&mut page, theme, export_options::Appearance::Visible);
-                // Covers are drawn at a fraction of page size; thicken ink so
-                // handwriting stays legible instead of fading into the paper.
-                let palette = theme.canvas_for_page(&page.properties);
-                for object in page.objects.values_mut() {
-                    match Arc::make_mut(object) {
-                        folio_document::Object::Stroke(stroke) => {
-                            stroke.style.width *= if theme.dark { 1.8 } else { 1.4 };
-                            stroke.style.color = folio_document::Color::from_rgb(
-                                palette.preview_ink(stroke.style.color.rgb()),
-                            );
-                        }
-                        folio_document::Object::Text(text) => {
-                            text.color = folio_document::Color::from_rgb(
-                                palette.preview_ink(text.color.rgb()),
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-                folio_export::raster_page_thumbnail(&page, &assets, edge)
-                    .map(|p| {
-                        let aspect = p.width() as f32 / p.height() as f32;
-                        (graph::image(p.width(), p.height(), p.take()), aspect)
-                    })
-                    .map_err(|e| e.to_string())
-            });
-            cx.spawn(async move |view, cx| {
-                let result = task.await;
-                let _ = view.update(cx, |view, cx| {
-                    view.thumbnails.pending.remove(&id);
-                    if let Some(entry) = view.thumbnails.entries.get_mut(&id)
-                        && entry.generation == generation
-                    {
-                        match result {
-                            Ok((image, aspect)) => {
-                                entry.image = Some(image);
-                                entry.aspect = aspect;
-                            }
-                            Err(error) => entry.error = Some(error),
-                        }
-                    }
-                    cx.notify();
-                });
-            })
-            .detach();
-        }
-        let entry = self.thumbnails.entries.get_mut(&id);
-        let (image, error, aspect) = if let Some(entry) = entry {
-            entry.touched = touched;
-            (entry.image.clone(), entry.error.clone(), entry.aspect)
-        } else {
-            (None, None, default_aspect)
-        };
-        let height = (width / aspect.max(0.01)).min(max_height);
-        let corner = (theme.radius - 1.).max(0.);
-        let mut element = div()
-            .rounded(px(corner))
-            .w(px((height * aspect).min(width)))
-            .h(px(height))
-            .overflow_hidden()
-            .relative()
-            .bg(rgb(palette.paper))
-            .flex()
-            .items_center()
-            .justify_center();
-        if valid && let Some(image) = image {
-            // White PDF pages and images would otherwise glare beside dark
-            // notebooks; a dark veil brings them to about 80 % brightness.
-            let veil = bright_raster.then(|| {
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded(px(corner))
-                    .bg(rgba(0x00000040))
-            });
-            element = element
-                .child(
-                    img(image)
-                        .size_full()
-                        .object_fit(ObjectFit::Contain)
-                        .rounded(px(corner)),
-                )
-                .children(veil);
-        } else {
-            element = element.child(
-                div()
-                    .p_2()
-                    .text_xs()
-                    .text_color(rgb(palette.foreground))
-                    .child(if error.is_some() {
-                        "Preview unavailable"
-                    } else {
-                        "Rendering preview…"
-                    }),
-            );
-        }
-        element
     }
 }
 
@@ -910,8 +674,21 @@ impl NotesView {
                 .sessions
                 .get(&id)
                 .map(|s| s.document.pages.len());
-            let preview = self.controller.library_preview(id);
-            let pages = preview.as_ref().map(|(_, count)| *count).or(session_pages);
+            let cover_w = (grid.card - LibraryGrid::INSET * 2.) * self.controller.settings.ui_scale;
+            let cover_h = grid.cover_height() * self.controller.settings.ui_scale;
+            let cached_cover = (!list_view)
+                .then(|| self.cached_cover_thumbnail(&n, cover_w, cover_h, window))
+                .flatten();
+            let preview = if cached_cover.is_some() {
+                None
+            } else {
+                self.controller.library_preview(id)
+            };
+            let pages = cached_cover
+                .as_ref()
+                .map(|(_, count)| *count)
+                .or_else(|| preview.as_ref().map(|(_, count)| *count))
+                .or(session_pages);
             // The document whose menu is open keeps its highlight.
             let menu_open = self.document_menu.is_some();
             let menu_owner =
@@ -1161,14 +938,22 @@ impl NotesView {
                         )),
                 );
             } else {
-                let cover_content = if let Some((page, _)) = &preview {
+                let cover_content = if let Some((cover_div, _)) = cached_cover {
+                    cover_div
+                } else if let Some((page, page_count)) = &preview {
                     if let Some(pdf) = &page.properties.pdf {
                         self.controller.request_pdf_background(pdf.clone());
                     }
                     self.thumbnail(
-                        ThumbnailSource::Cover(page.clone()),
-                        (grid.card - LibraryGrid::INSET * 2.) * self.controller.settings.ui_scale,
-                        grid.cover_height() * self.controller.settings.ui_scale,
+                        ThumbnailSource::Cover {
+                            note: id,
+                            updated_at: n.updated_at,
+                            cover_page: n.cover_page,
+                            page: page.clone(),
+                            page_count: *page_count,
+                        },
+                        cover_w,
+                        cover_h,
                         window,
                         cx,
                     )
@@ -2892,7 +2677,7 @@ impl NotesView {
 }
 
 #[cfg(test)]
-mod thumbnail_tests {
+mod edited_label_tests {
     use super::*;
     #[::core::prelude::v1::test]
     fn edited_labels_abbreviate_every_age() {
@@ -2905,76 +2690,5 @@ mod thumbnail_tests {
         assert_eq!(ago(7 * 1440), "Edited 1w ago");
         assert_eq!(ago(65 * 1440), "Edited 2m ago");
         assert_eq!(ago(400 * 1440), "Edited 1y ago");
-    }
-    fn key(page: &Page) -> ThumbnailKey {
-        ThumbnailKey {
-            revision: page.revision,
-            properties: page.properties.clone(),
-            theme: Theme::new(&folio_app::Settings::default()).canvas,
-            pdf_ready: true,
-            edge: 384,
-        }
-    }
-    #[::core::prelude::v1::test]
-    fn thumbnail_cache_keys_invalidate_content_properties_theme_and_pdf_readiness() {
-        let page = Page::new();
-        let original = key(&page);
-        let mut cache = Thumbnails::default();
-        let mut atlas = std::collections::HashSet::new();
-        cache.start(page.id, original.clone(), 1., 1, |_| {
-            panic!("A new cache entry cannot retire an image")
-        });
-        cache.pending.remove(&page.id);
-        let image = graph::image(1, 1, vec![0; 4]);
-        let old_image = Arc::downgrade(&image);
-        atlas.insert(image.id);
-        cache.entries.get_mut(&page.id).unwrap().image = Some(image);
-        assert!(cache.touch(page.id, &original).1);
-        for change in [
-            |k: &mut ThumbnailKey| k.revision += 1,
-            |k: &mut ThumbnailKey| k.properties.width += 10.,
-            |k: &mut ThumbnailKey| k.theme.paper ^= 0xffffff,
-            |k: &mut ThumbnailKey| k.pdf_ready = false,
-        ] {
-            let mut changed = original.clone();
-            change(&mut changed);
-            assert!(!cache.touch(page.id, &changed).1);
-        }
-        assert!(!cache.touch(Id::new_v4(), &original).1);
-        let mut changed = original.clone();
-        changed.revision += 1;
-        let (generation, _) = cache.touch(page.id, &changed);
-        cache.start(page.id, changed.clone(), 1., generation, |image| {
-            assert!(atlas.remove(&image.id), "Image retired more than once");
-        });
-        assert!(old_image.upgrade().is_none());
-        assert!(cache.touch(page.id, &changed).1);
-        assert!(atlas.is_empty());
-
-        // Scrolling through many covers retires old atlas allocations while
-        // keeping an in-flight replacement pinned until its result arrives.
-        for _ in 0..80 {
-            let next = Id::new_v4();
-            let (touched, _) = cache.touch(next, &original);
-            cache.start(next, original.clone(), 1., touched, |image| {
-                assert!(atlas.remove(&image.id), "Image retired more than once");
-            });
-            let image = graph::image(1, 1, vec![0; 4]);
-            atlas.insert(image.id);
-            cache.entries.get_mut(&next).unwrap().image = Some(image);
-            cache.pending.remove(&next);
-        }
-        assert!(cache.entries.contains_key(&page.id));
-        assert_eq!(cache.pending.get(&page.id), Some(&generation));
-        assert_eq!(
-            atlas,
-            cache
-                .entries
-                .values()
-                .filter_map(|entry| entry.image.as_ref().map(|image| image.id))
-                .collect(),
-            "Evicted covers must not leave sprite-atlas images behind"
-        );
-        assert!(atlas.len() < 80, "Scrolling must evict old cover images");
     }
 }

@@ -75,11 +75,32 @@ enum Command {
     Download,
     Restart(PathBuf),
 }
+pub type Wakeup = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Clone)]
+struct EventSink {
+    tx: Sender<Event>,
+    wakeup: Arc<std::sync::Mutex<Option<Wakeup>>>,
+}
+impl EventSink {
+    fn send(&self, event: Event) -> Result<(), mpsc::SendError<Event>> {
+        let result = self.tx.send(event);
+        if result.is_ok() {
+            let wake = self.wakeup.lock().ok().and_then(|g| g.clone());
+            if let Some(wake) = wake {
+                wake();
+            }
+        }
+        result
+    }
+}
+
 pub struct Updater {
     pub state: State,
     pub check_error: Option<String>,
     command: Option<Sender<Command>>,
     events: Receiver<Event>,
+    wakeup: Arc<std::sync::Mutex<Option<Wakeup>>>,
     cancel: Arc<AtomicBool>,
 }
 enum Event {
@@ -120,6 +141,11 @@ impl Backend {
     }
 }
 impl Updater {
+    pub fn set_wakeup(&self, wakeup: Wakeup) {
+        if let Ok(mut slot) = self.wakeup.lock() {
+            *slot = Some(wakeup);
+        }
+    }
     pub fn disabled() -> Self {
         let (_, events) = mpsc::channel();
         Self {
@@ -127,12 +153,18 @@ impl Updater {
             check_error: None,
             command: None,
             events,
+            wakeup: Arc::new(std::sync::Mutex::new(None)),
             cancel: Arc::new(AtomicBool::new(false)),
         }
     }
     pub fn new() -> Self {
         let (commands, receive) = mpsc::channel();
-        let (events, incoming) = mpsc::channel();
+        let (tx, incoming) = mpsc::channel();
+        let wakeup = Arc::new(std::sync::Mutex::new(None));
+        let events = EventSink {
+            tx,
+            wakeup: wakeup.clone(),
+        };
         let cancel = Arc::new(AtomicBool::new(false));
         let backend = Backend::detect();
         let command = if backend == Backend::Unsupported {
@@ -158,6 +190,7 @@ impl Updater {
             check_error: None,
             command,
             events: incoming,
+            wakeup,
             cancel,
         }
     }
@@ -185,6 +218,9 @@ impl Updater {
             && let Some(command) = &self.command
         {
             self.check_error = None;
+            if self.state == State::Current {
+                self.state = State::Checking;
+            }
             let _ = command.send(Command::Check);
         }
     }
@@ -201,15 +237,16 @@ impl Updater {
             let _ = command.send(Command::Download);
         }
     }
-    pub fn restart(&mut self, data: PathBuf) {
+    pub fn restart(&mut self, data: PathBuf) -> bool {
         if self.state.can_restart()
             && let Some(command) = &self.command
         {
             self.state = State::Preparing {
                 version: self.state.version().unwrap().into(),
             };
-            let _ = command.send(Command::Restart(data));
+            return command.send(Command::Restart(data)).is_ok();
         }
+        false
     }
 }
 impl Default for Updater {
@@ -333,7 +370,7 @@ struct WorkerConfig {
 }
 fn worker(
     commands: Receiver<Command>,
-    events: Sender<Event>,
+    events: EventSink,
     cancel: Arc<AtomicBool>,
     backend: Backend,
 ) -> Result<(), String> {
@@ -357,7 +394,7 @@ fn worker(
 }
 fn worker_session(
     commands: Receiver<Command>,
-    events: Sender<Event>,
+    events: EventSink,
     cancel: Arc<AtomicBool>,
     config: WorkerConfig,
     client: Client,
@@ -469,6 +506,9 @@ fn worker_session(
                     continue;
                 };
                 if ready {
+                    let _ = events.send(Event::State(State::Ready {
+                        version: r.version.clone(),
+                    }));
                     continue;
                 }
                 let version = r.version.clone();
@@ -526,6 +566,9 @@ fn worker_session(
                     continue;
                 };
                 if !ready {
+                    let _ = events.send(Event::State(State::Available {
+                        version: r.version.clone(),
+                    }));
                     continue;
                 }
                 if backend != Backend::Flatpak
@@ -735,15 +778,16 @@ mod tests {
             check_error: None,
             command: Some(tx),
             events,
+            wakeup: Arc::new(std::sync::Mutex::new(None)),
             cancel: Arc::new(AtomicBool::new(false)),
         };
         updater.download();
-        updater.restart("notes".into());
+        assert!(!updater.restart("notes".into()));
         assert!(commands.try_recv().is_err());
         updater.state = State::Available {
             version: "0.1.4".into(),
         };
-        updater.restart("notes".into());
+        assert!(!updater.restart("notes".into()));
         assert!(commands.try_recv().is_err());
         updater.download();
         updater.download();

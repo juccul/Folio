@@ -297,7 +297,6 @@ impl NotesView {
         (self.document_menu.is_some() || self.folder_menu.is_some() || self.canvas_menu.is_some())
             && !self.update_preparing
             && self.modal.is_none()
-            && !self.controller.recognition_setup_needed()
             && !self.settings_open
             && !self.help_open
             && self.controller.error.is_none()

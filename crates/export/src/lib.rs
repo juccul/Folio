@@ -2,7 +2,7 @@
 mod pdf;
 use base64::Engine;
 use folio_document::*;
-use folio_ink::outline;
+use folio_ink::{OutlineScratch, visit_outline};
 use std::{
     fmt::Write as _,
     io::Write as _,
@@ -45,43 +45,54 @@ pub fn escape(text: &str) -> String {
     escaped
 }
 
-fn matrix(t: Transform) -> String {
-    format!("matrix({} {} {} {} {} {})", t.a, t.b, t.c, t.d, t.tx, t.ty)
-}
-fn polygon(points: &[Point]) -> String {
-    let mut s = String::new();
+fn write_polygon(s: &mut String, points: &[Point]) {
     for (i, p) in points.iter().enumerate() {
         let _ = write!(s, "{}{} {} ", if i == 0 { "M" } else { "L" }, p.x, p.y);
     }
     s.push('Z');
-    s
 }
-pub fn object_svg(object: &Object, assets: &Path) -> Result<String> {
+fn write_object_svg(
+    out: &mut String,
+    object: &Object,
+    assets: &Path,
+    path_buf: &mut Vec<PathPoint>,
+    scratch: &mut OutlineScratch,
+) -> Result<()> {
     let t = object.transform();
-    let body = match object {
-        Object::Stroke(s) => format!(
-            "<path d=\"{}\" fill=\"{}\" fill-rule=\"nonzero\" opacity=\"{}\"/>",
-            outline(s.display_path())
-                .iter()
-                .map(|c| polygon(c))
-                .collect::<String>(),
-            s.style.color.hex(),
-            s.style.opacity
-        ),
+    let _ = write!(
+        out,
+        "<g transform=\"matrix({} {} {} {} {} {})\">",
+        t.a, t.b, t.c, t.d, t.tx, t.ty
+    );
+    match object {
+        Object::Stroke(s) => {
+            out.push_str("<path d=\"");
+            visit_outline(s.decode_display_path(path_buf), scratch, |contour| {
+                write_polygon(out, contour);
+            });
+            let _ = write!(
+                out,
+                "\" fill=\"{}\" fill-rule=\"nonzero\" opacity=\"{}\"/>",
+                s.style.color.hex(),
+                s.style.opacity
+            );
+        }
         Object::Shape(s) => {
-            let mut d = String::new();
+            out.push_str("<path d=\"");
             for (i, p) in s.vertices.iter().enumerate() {
-                let _ = write!(d, "{}{} {} ", if i == 0 { "M" } else { "L" }, p.x, p.y);
+                let _ = write!(out, "{}{} {} ", if i == 0 { "M" } else { "L" }, p.x, p.y);
             }
-            format!(
-                "<path d=\"{d}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" opacity=\"{}\"/>",
+            let _ = write!(
+                out,
+                "\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" opacity=\"{}\"/>",
                 s.style.color.hex(),
                 s.style.width,
                 s.style.opacity
-            )
+            );
         }
         Object::Text(o) => {
-            let mut body = format!(
+            let _ = write!(
+                out,
                 "<text font-family=\"{}\" font-size=\"{}\" fill=\"{}\" font-weight=\"{}\" font-style=\"{}\" text-decoration=\"{}\">",
                 escape(&o.font_family),
                 o.font_size,
@@ -102,15 +113,14 @@ pub fn object_svg(object: &Object, assets: &Path) -> Result<String> {
                     ListStyle::Numbered => format!("{}. ", i + 1),
                 };
                 let _ = write!(
-                    body,
+                    out,
                     "<tspan x=\"{x}\" y=\"{}\" text-anchor=\"{anchor}\" xml:space=\"preserve\">{}{}</tspan>",
                     o.rect.min.y + o.font_size * (1. + i as f32 * 1.4),
                     escape(&prefix),
                     escape(line)
                 );
             }
-            body.push_str("</text>");
-            body
+            out.push_str("</text>");
         }
         Object::Image(o) => {
             if let Some(crop) = o.crop {
@@ -122,7 +132,8 @@ pub fn object_svg(object: &Object, assets: &Path) -> Result<String> {
                     r.height() / crop.height(),
                 );
                 let image = image_svg(&o.asset, source, assets)?;
-                format!(
+                let _ = write!(
+                    out,
                     "<svg x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" viewBox=\"{} {} {} {}\" overflow=\"hidden\">{image}</svg>",
                     r.min.x,
                     r.min.y,
@@ -132,37 +143,49 @@ pub fn object_svg(object: &Object, assets: &Path) -> Result<String> {
                     r.min.y,
                     r.width(),
                     r.height()
-                )
+                );
             } else {
-                image_svg(&o.asset, o.rect, assets)?
+                out.push_str(&image_svg(&o.asset, o.rect, assets)?);
             }
         }
         Object::Equation(e) => {
             if let Some(svg) = &e.rendered_svg {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(svg);
-                format!(
+                let _ = write!(
+                    out,
                     "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" href=\"data:image/svg+xml;base64,{encoded}\"/>",
                     e.rect.min.x,
                     e.rect.min.y,
                     e.rect.width(),
                     e.rect.height()
-                )
+                );
             } else {
-                format!(
+                let _ = write!(
+                    out,
                     "<text x=\"{}\" y=\"{}\" font-size=\"24\" fill=\"#2b3934\">{}</text>",
                     e.rect.min.x,
                     e.rect.min.y + 24.,
                     escape(&e.latex)
-                )
+                );
             }
         }
-    };
-    Ok(format!("<g transform=\"{}\">{body}</g>", matrix(t)))
+    }
+    out.push_str("</g>");
+    Ok(())
+}
+
+pub fn object_svg(object: &Object, assets: &Path) -> Result<String> {
+    let mut out = String::new();
+    let mut path_buf = Vec::new();
+    let mut scratch = OutlineScratch::default();
+    write_object_svg(&mut out, object, assets, &mut path_buf, &mut scratch)?;
+    Ok(out)
 }
 /// Word wrapping uses the same local font shaping as SVG/PDF export. Explicit
 /// newlines remain paragraph boundaries; long individual words are retained.
 fn text_lines(o: &TextBlock) -> Vec<String> {
     let width = o.rect.width().max(o.font_size);
+    let options = text_block_options(o);
     let measure = |text: &str| {
         let svg = format!(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><text y=\"100\" font-family=\"{}\" font-size=\"{}\" font-weight=\"{}\" font-style=\"{}\">{}</text></svg>",
@@ -172,7 +195,7 @@ fn text_lines(o: &TextBlock) -> Vec<String> {
             if o.italic { "italic" } else { "normal" },
             escape(text)
         );
-        resvg::usvg::Tree::from_str(&svg, &svg_options())
+        resvg::usvg::Tree::from_str(&svg, &options)
             .ok()
             .map(|t| t.root().abs_bounding_box().width())
             .unwrap_or(text.chars().count() as f32 * o.font_size * 0.6)
@@ -281,9 +304,15 @@ fn preview_region(page: &Page) -> Rect {
     }
 }
 pub fn page_svg(page: &Page, assets: &Path, paper: bool) -> Result<String> {
-    page_svg_in(page, assets, paper, export_region(page))
+    page_svg_in(page, assets, paper, export_region(page), false)
 }
-fn page_svg_in(page: &Page, assets: &Path, paper: bool, region: Rect) -> Result<String> {
+fn page_svg_in(
+    page: &Page,
+    assets: &Path,
+    paper: bool,
+    region: Rect,
+    clip_to_region: bool,
+) -> Result<String> {
     let p = &page.properties;
     let mut body = if paper {
         paper_svg(p, region, assets)?
@@ -291,8 +320,13 @@ fn page_svg_in(page: &Page, assets: &Path, paper: bool, region: Rect) -> Result<
         String::new()
     };
     let hidden = page.hidden_sources();
-    for o in page.ordered_objects().filter(|o| !hidden.contains(&o.id())) {
-        body.push_str(&object_svg(o, assets)?)
+    let mut path_buf = Vec::new();
+    let mut scratch = OutlineScratch::default();
+    for o in page
+        .ordered_objects()
+        .filter(|o| !hidden.contains(&o.id()) && (!clip_to_region || o.bounds().intersects(region)))
+    {
+        write_object_svg(&mut body, o, assets, &mut path_buf, &mut scratch)?;
     }
     Ok(wrap_svg(region, region.width(), region.height(), &body))
 }
@@ -362,11 +396,22 @@ pub fn raster_object_limited(
     assets: &Path,
     max_pixels: u32,
 ) -> Result<(Rect, resvg::tiny_skia::Pixmap)> {
+    if let Object::Image(img) = object {
+        return raster_image_object(img, assets, max_pixels);
+    }
     let body = object_svg(object, assets)?;
-    let options = if matches!(object, Object::Stroke(_) | Object::Shape(_)) {
-        resvg::usvg::Options::default()
-    } else {
+    let needs_fonts = match object {
+        Object::Stroke(_) | Object::Shape(_) | Object::Image(_) => false,
+        Object::Equation(e) => e
+            .rendered_svg
+            .as_deref()
+            .is_none_or(|svg| svg.contains("<text")),
+        Object::Text(_) => true,
+    };
+    let options = if needs_fonts {
         svg_options()
+    } else {
+        resvg::usvg::Options::default()
     };
     let mut bounds = object.bounds().expand(3.);
     if matches!(object, Object::Text(_)) {
@@ -387,13 +432,387 @@ pub fn raster_object_limited(
     let tree = resvg::usvg::Tree::from_str(&svg, &options)?;
     Ok((bounds, raster_tree(&tree, scale)?))
 }
-fn page_options(page: &Page) -> resvg::usvg::Options<'static> {
-    if page
-        .objects
-        .values()
-        .all(|object| matches!(object.as_ref(), Object::Stroke(_) | Object::Shape(_)))
+
+/// Rasterize an `ImageObject` directly without base64-encoding into SVG or loading system fonts.
+fn raster_image_object(
+    img: &ImageObject,
+    assets: &Path,
+    max_pixels: u32,
+) -> Result<(Rect, resvg::tiny_skia::Pixmap)> {
+    let path = asset_path(assets, &img.asset)?;
+    let decoded = image::ImageReader::open(&path)?
+        .with_guessed_format()?
+        .decode()?;
+    let (src_w, src_h) = (decoded.width(), decoded.height());
+    if src_w == 0 || src_h == 0 {
+        return Err(Error::Invalid("Empty image asset".into()));
+    }
+    let rgba = if let Some(crop) = img.crop {
+        let cx = ((crop.min.x * src_w as f32).floor().max(0.) as u32).min(src_w - 1);
+        let cy = ((crop.min.y * src_h as f32).floor().max(0.) as u32).min(src_h - 1);
+        let cw = ((crop.width() * src_w as f32).ceil().max(1.) as u32).min(src_w - cx);
+        let ch = ((crop.height() * src_h as f32).ceil().max(1.) as u32).min(src_h - cy);
+        decoded.crop_imm(cx, cy, cw, ch).into_rgba8()
+    } else {
+        decoded.into_rgba8()
+    };
+    let bounds = Object::Image(img.clone()).bounds().expand(3.);
+    let scale = 2.0_f32
+        .min(((max_pixels.max(1) as f32) / (bounds.width() * bounds.height()).max(1.)).sqrt())
+        .min(4096. / bounds.width().max(1.))
+        .min(4096. / bounds.height().max(1.));
+    if !scale.is_finite() || scale <= 0. {
+        return Err(Error::Invalid("Export scale must be finite and positive".into()));
+    }
+    let out_w = (bounds.width() * scale).ceil() as u32;
+    let out_h = (bounds.height() * scale).ceil() as u32;
+    if out_w == 0 || out_h == 0 || out_w > 8192 || out_h > 8192 || out_w as u64 * out_h as u64 > 32_000_000 {
+        return Err(Error::Invalid("Export exceeds 32 million pixels; reduce scale or page size".into()));
+    }
+    let (rw, rh) = rgba.dimensions();
+    let mut raw = rgba.into_raw();
+    // Convert straight RGBA to tiny_skia premultiplied RGBA.
+    for p in raw.chunks_exact_mut(4) {
+        let a = p[3] as u32;
+        if a < 255 {
+            p[0] = ((p[0] as u32 * a + 127) / 255) as u8;
+            p[1] = ((p[1] as u32 * a + 127) / 255) as u8;
+            p[2] = ((p[2] as u32 * a + 127) / 255) as u8;
+        }
+    }
+    let src_pixmap = resvg::tiny_skia::Pixmap::from_vec(
+        raw,
+        resvg::tiny_skia::IntSize::from_wh(rw, rh)
+            .ok_or_else(|| Error::Invalid("Invalid image dimensions".into()))?,
+    )
+    .ok_or_else(|| Error::Invalid("Cannot build source pixmap".into()))?;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(out_w, out_h)
+        .ok_or_else(|| Error::Invalid("Cannot allocate export image".into()))?;
+    let r = img.rect;
+    let sx = r.width() / rw as f32;
+    let sy = r.height() / rh as f32;
+    let local = resvg::tiny_skia::Transform::from_row(sx, 0., 0., sy, r.min.x, r.min.y);
+    let t = img.transform;
+    let obj_tx = resvg::tiny_skia::Transform::from_row(t.a, t.b, t.c, t.d, t.tx, t.ty);
+    let view_tx = resvg::tiny_skia::Transform::from_scale(scale, scale)
+        .pre_translate(-bounds.min.x, -bounds.min.y);
+    let full_tx = view_tx.pre_concat(obj_tx).pre_concat(local);
+    let paint = resvg::tiny_skia::PixmapPaint {
+        opacity: 1.,
+        blend_mode: resvg::tiny_skia::BlendMode::SourceOver,
+        quality: resvg::tiny_skia::FilterQuality::Bilinear,
+    };
+    pixmap.draw_pixmap(0, 0, src_pixmap.as_ref(), &paint, full_tx, None);
+    Ok((bounds, pixmap))
+}
+
+fn fill_ink_stroke(
+    pixmap: &mut resvg::tiny_skia::Pixmap,
+    paint: &mut resvg::tiny_skia::Paint,
+    view_tx: resvg::tiny_skia::Transform,
+    stroke: &InkStroke,
+    color: Color,
+    path_buf: &mut Vec<PathPoint>,
+    scratch: &mut OutlineScratch,
+) {
+    let mut pb = resvg::tiny_skia::PathBuilder::new();
+    visit_outline(
+        stroke.decode_display_path(path_buf),
+        scratch,
+        |contour| {
+            if let Some(first) = contour.first() {
+                pb.move_to(first.x, first.y);
+                for p in contour.iter().skip(1) {
+                    pb.line_to(p.x, p.y);
+                }
+                pb.close();
+            }
+        },
+    );
+    let Some(path) = pb.finish() else {
+        return;
+    };
+    let alpha = (stroke.style.opacity.clamp(0., 1.) * 255.).round() as u8;
+    paint.set_color_rgba8(color.r, color.g, color.b, alpha);
+    let t = stroke.transform;
+    let obj_tx = resvg::tiny_skia::Transform::from_row(t.a, t.b, t.c, t.d, t.tx, t.ty);
+    pixmap.fill_path(
+        &path,
+        paint,
+        resvg::tiny_skia::FillRule::Winding,
+        view_tx.pre_concat(obj_tx),
+        None,
+    );
+}
+
+/// Rasterize ink strokes directly into a premultiplied RGBA pixmap without SVG
+/// string formatting or XML/usvg parsing.
+pub fn raster_ink_strokes<'a>(
+    strokes: impl IntoIterator<Item = (&'a InkStroke, Color)>,
+    bounds: Rect,
+    scale: f32,
+) -> Result<resvg::tiny_skia::Pixmap> {
+    if !scale.is_finite() || scale <= 0. {
+        return Err(Error::Invalid("Export scale must be finite and positive".into()));
+    }
+    let w = (bounds.width() * scale - 1e-3).ceil().max(1.) as u32;
+    let h = (bounds.height() * scale - 1e-3).ceil().max(1.) as u32;
+    if w == 0 || h == 0 || w > 8192 || h > 8192 || w as u64 * h as u64 > 32_000_000 {
+        return Err(Error::Invalid("Export exceeds 32 million pixels".into()));
+    }
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h)
+        .ok_or_else(|| Error::Invalid("Cannot allocate ink layer image".into()))?;
+    let view_tx = resvg::tiny_skia::Transform::from_scale(scale, scale)
+        .pre_translate(-bounds.min.x, -bounds.min.y);
+    let mut paint = resvg::tiny_skia::Paint {
+        anti_alias: true,
+        ..Default::default()
+    };
+    let mut path_buf = Vec::new();
+    let mut scratch = OutlineScratch::default();
+    for (stroke, color) in strokes {
+        fill_ink_stroke(
+            &mut pixmap,
+            &mut paint,
+            view_tx,
+            stroke,
+            color,
+            &mut path_buf,
+            &mut scratch,
+        );
+    }
+    Ok(pixmap)
+}
+
+fn is_basic_latin_text(text: &str) -> bool {
+    text.chars().all(|c| {
+        c <= '\u{024F}'
+            || matches!(
+                c,
+                '•' | '–' | '—' | '…' | '‘' | '’' | '“' | '”' | '×' | '÷' | '−' | '±'
+            )
+    })
+}
+
+fn is_generic_family(family: &str) -> bool {
+    let trimmed = family.trim();
+    trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("sans-serif")
+        || trimmed.eq_ignore_ascii_case("serif")
+        || trimmed.eq_ignore_ascii_case("monospace")
+        || trimmed.eq_ignore_ascii_case("sans")
+}
+
+struct MinimalFonts {
+    db: std::sync::Arc<resvg::usvg::fontdb::Database>,
+    families: std::collections::HashSet<String>,
+    has_bold: bool,
+    has_italic: bool,
+}
+
+fn load_family_variants(db: &mut resvg::usvg::fontdb::Database, path: &Path) -> Option<String> {
+    let before = db.len();
+    let _ = db.load_font_file(path);
+    if db.len() == before {
+        return None;
+    }
+    let family = db
+        .faces()
+        .skip(before)
+        .find(|face| face.weight == resvg::usvg::fontdb::Weight::NORMAL)
+        .or_else(|| db.faces().nth(before))
+        .and_then(|face| face.families.first())
+        .map(|(name, _)| name.clone());
+    if let (Some(parent), Some(stem), Some(ext)) = (
+        path.parent(),
+        path.file_stem().and_then(|s| s.to_str()),
+        path.extension().and_then(|e| e.to_str()),
+    ) {
+        let base = stem.split('-').next().unwrap_or(stem);
+        let mut candidates = Vec::with_capacity(10);
+        for suffix in ["Bold", "Italic", "BoldItalic", "Oblique", "BoldOblique"] {
+            candidates.push(parent.join(format!("{base}-{suffix}.{ext}")));
+        }
+        // Windows standard font file naming (segoeui{b,i,z}, arial{bd,i,bi}, times{bd,i,bi}, consola{b,i,z}).
+        for suffix in ["b", "i", "z", "bd", "bi"] {
+            candidates.push(parent.join(format!("{stem}{suffix}.{ext}")));
+        }
+        for candidate in candidates {
+            if candidate != path && candidate.is_file() {
+                let _ = db.load_font_file(&candidate);
+            }
+        }
+    }
+    family
+}
+
+fn find_default_font(candidates: &[&str], fc_generic: &str) -> Option<PathBuf> {
+    for candidate in candidates {
+        let path = Path::new(candidate);
+        if path.is_file() {
+            return Some(path.to_path_buf());
+        }
+    }
+    #[cfg(target_os = "linux")]
     {
+        let output = std::process::Command::new("fc-match")
+            .args(["-f", "%{file}", fc_generic])
+            .output()
+            .ok()?;
+        if output.status.success() {
+            let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    let _ = fc_generic;
+    None
+}
+
+fn minimal_fonts() -> Option<&'static MinimalFonts> {
+    static MINIMAL: std::sync::OnceLock<Option<MinimalFonts>> = std::sync::OnceLock::new();
+    MINIMAL
+        .get_or_init(|| {
+            let mut db = resvg::usvg::fontdb::Database::new();
+            // Match `svg_options()` family priority so wrapping and rendering agree.
+            let sans = find_default_font(
+                &[
+                    "/usr/share/fonts/adwaita-sans-fonts/AdwaitaSans-Regular.ttf",
+                    "/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf",
+                    "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+                    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+                    "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+                    "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                    "/System/Library/Fonts/Helvetica.ttc",
+                    "C:\\Windows\\Fonts\\segoeui.ttf",
+                    "C:\\Windows\\Fonts\\arial.ttf",
+                ],
+                "sans-serif",
+            )
+            .and_then(|p| load_family_variants(&mut db, &p));
+            let serif = find_default_font(
+                &[
+                    "/usr/share/fonts/google-noto/NotoSerif-Regular.ttf",
+                    "/usr/share/fonts/noto/NotoSerif-Regular.ttf",
+                    "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf",
+                    "/usr/share/fonts/liberation/LiberationSerif-Regular.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+                    "/usr/share/fonts/TTF/DejaVuSerif.ttf",
+                    "/System/Library/Fonts/Times.ttc",
+                    "C:\\Windows\\Fonts\\times.ttf",
+                ],
+                "serif",
+            )
+            .and_then(|p| load_family_variants(&mut db, &p));
+            let mono = find_default_font(
+                &[
+                    "/usr/share/fonts/adwaita-mono-fonts/AdwaitaMono-Regular.ttf",
+                    "/usr/share/fonts/Adwaita/AdwaitaMono-Regular.ttf",
+                    "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Regular.ttf",
+                    "/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+                    "/usr/share/fonts/google-noto/NotoSansMono-Regular.ttf",
+                    "/System/Library/Fonts/Menlo.ttc",
+                    "C:\\Windows\\Fonts\\consola.ttf",
+                ],
+                "monospace",
+            )
+            .and_then(|p| load_family_variants(&mut db, &p));
+            let fallback = sans.clone().or_else(|| serif.clone()).or_else(|| mono.clone())?;
+            db.set_sans_serif_family(sans.unwrap_or_else(|| fallback.clone()));
+            db.set_serif_family(serif.unwrap_or_else(|| fallback.clone()));
+            db.set_monospace_family(mono.unwrap_or(fallback));
+            let has_bold = db
+                .faces()
+                .any(|f| f.weight.0 >= resvg::usvg::fontdb::Weight::BOLD.0);
+            let has_italic = db.faces().any(|f| {
+                matches!(
+                    f.style,
+                    resvg::usvg::fontdb::Style::Italic | resvg::usvg::fontdb::Style::Oblique
+                )
+            });
+            let families = db
+                .faces()
+                .flat_map(|f| f.families.iter().map(|(n, _)| n.to_ascii_lowercase()))
+                .collect();
+            Some(MinimalFonts {
+                db: std::sync::Arc::new(db),
+                families,
+                has_bold,
+                has_italic,
+            })
+        })
+        .as_ref()
+}
+
+fn minimal_covers_text(minimal: &MinimalFonts, text: &TextBlock) -> bool {
+    is_basic_latin_text(&text.text)
+        && (is_generic_family(&text.font_family)
+            || minimal
+                .families
+                .contains(&text.font_family.trim().to_ascii_lowercase()))
+        && (!text.bold || minimal.has_bold)
+        && (!text.italic || minimal.has_italic)
+}
+
+fn minimal_svg_options(minimal: &MinimalFonts) -> resvg::usvg::Options<'static> {
+    resvg::usvg::Options {
+        fontdb: minimal.db.clone(),
+        font_family: "sans-serif".into(),
+        ..Default::default()
+    }
+}
+
+fn text_block_options(o: &TextBlock) -> resvg::usvg::Options<'static> {
+    if let Some(minimal) = minimal_fonts()
+        && minimal_covers_text(minimal, o)
+    {
+        return minimal_svg_options(minimal);
+    }
+    svg_options()
+}
+
+fn page_options(page: &Page) -> resvg::usvg::Options<'static> {
+    let mut needs_fonts = false;
+    let mut needs_full = false;
+    let minimal = minimal_fonts();
+    for object in page.objects.values() {
+        match object.as_ref() {
+            Object::Text(text) => {
+                needs_fonts = true;
+                if minimal.is_none_or(|m| !minimal_covers_text(m, text)) {
+                    needs_full = true;
+                    break;
+                }
+            }
+            Object::Equation(e) => {
+                if let Some(svg) = e.rendered_svg.as_deref() {
+                    if svg.contains("<text") || svg.contains(":text") {
+                        needs_fonts = true;
+                        needs_full = true;
+                        break;
+                    }
+                } else {
+                    needs_fonts = true;
+                    if !is_basic_latin_text(&e.latex) || minimal.is_none() {
+                        needs_full = true;
+                        break;
+                    }
+                }
+            }
+            Object::Stroke(_) | Object::Shape(_) | Object::Image(_) => {}
+        }
+    }
+    if !needs_fonts {
         resvg::usvg::Options::default()
+    } else if !needs_full
+        && let Some(minimal) = minimal
+    {
+        minimal_svg_options(minimal)
     } else {
         svg_options()
     }
@@ -444,7 +863,7 @@ pub fn raster_page_limited(
     assets: &Path,
     edge: u32,
 ) -> Result<resvg::tiny_skia::Pixmap> {
-    raster_svg_limited(page, &page_svg(page, assets, true)?, edge)
+    raster_page_in(page, assets, edge, export_region(page), false)
 }
 /// A thumbnail of `preview_region`, with its longest edge at most `edge` pixels.
 pub fn raster_page_thumbnail(
@@ -452,8 +871,95 @@ pub fn raster_page_thumbnail(
     assets: &Path,
     edge: u32,
 ) -> Result<resvg::tiny_skia::Pixmap> {
-    let svg = page_svg_in(page, assets, true, preview_region(page))?;
-    raster_svg_limited(page, &svg, edge)
+    raster_page_in(page, assets, edge, preview_region(page), true)
+}
+fn raster_page_in(
+    page: &Page,
+    assets: &Path,
+    edge: u32,
+    region: Rect,
+    clip_to_region: bool,
+) -> Result<resvg::tiny_skia::Pixmap> {
+    let hidden = page.hidden_sources();
+    let has_complex = page.ordered_objects().any(|o| {
+        !hidden.contains(&o.id())
+            && (!clip_to_region || o.bounds().intersects(region))
+            && !matches!(o.as_ref(), Object::Stroke(_) | Object::Shape(_))
+    });
+    if has_complex {
+        let svg = page_svg_in(page, assets, true, region, clip_to_region)?;
+        return raster_svg_limited(page, &svg, edge);
+    }
+    // Fast path for ink/shape/blank pages: render only the compact paper SVG
+    // (preserving exact pattern parity) and rasterize visible strokes/shapes
+    // directly with tiny-skia, avoiding multi-megabyte SVG XML allocation.
+    let paper = wrap_svg(
+        region,
+        region.width(),
+        region.height(),
+        &paper_svg(&page.properties, region, assets)?,
+    );
+    let tree = resvg::usvg::Tree::from_str(&paper, &resvg::usvg::Options::default())?;
+    let scale = edge.clamp(1, 2048) as f32 / tree.size().width().max(tree.size().height()).max(1.);
+    let mut pixmap = raster_tree(&tree, scale)?;
+    let view_tx = resvg::tiny_skia::Transform::from_scale(scale, scale)
+        .pre_translate(-region.min.x, -region.min.y);
+    let mut paint = resvg::tiny_skia::Paint {
+        anti_alias: true,
+        ..Default::default()
+    };
+    let mut path_buf = Vec::new();
+    let mut scratch = OutlineScratch::default();
+    for object in page.ordered_objects().filter(|o| {
+        !hidden.contains(&o.id()) && (!clip_to_region || o.bounds().intersects(region))
+    }) {
+        match object.as_ref() {
+            Object::Stroke(stroke) => {
+                fill_ink_stroke(
+                    &mut pixmap,
+                    &mut paint,
+                    view_tx,
+                    stroke,
+                    stroke.style.color,
+                    &mut path_buf,
+                    &mut scratch,
+                );
+            }
+            Object::Shape(shape) => {
+                let mut pb = resvg::tiny_skia::PathBuilder::new();
+                if let Some(first) = shape.vertices.first() {
+                    pb.move_to(first.x, first.y);
+                    for p in shape.vertices.iter().skip(1) {
+                        pb.line_to(p.x, p.y);
+                    }
+                }
+                let Some(path) = pb.finish() else {
+                    continue;
+                };
+                let c = shape.style.color;
+                let alpha = (shape.style.opacity.clamp(0., 1.) * 255.).round() as u8;
+                paint.set_color_rgba8(c.r, c.g, c.b, alpha);
+                let stroke = resvg::tiny_skia::Stroke {
+                    width: shape.style.width,
+                    line_cap: resvg::tiny_skia::LineCap::Round,
+                    line_join: resvg::tiny_skia::LineJoin::Round,
+                    ..Default::default()
+                };
+                let t = shape.transform;
+                let obj_tx =
+                    resvg::tiny_skia::Transform::from_row(t.a, t.b, t.c, t.d, t.tx, t.ty);
+                pixmap.stroke_path(
+                    &path,
+                    &paint,
+                    &stroke,
+                    view_tx.pre_concat(obj_tx),
+                    None,
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(pixmap)
 }
 fn raster_svg_limited(page: &Page, svg: &str, edge: u32) -> Result<resvg::tiny_skia::Pixmap> {
     let tree = resvg::usvg::Tree::from_str(svg, &page_options(page))?;
@@ -461,7 +967,24 @@ fn raster_svg_limited(page: &Page, svg: &str, edge: u32) -> Result<resvg::tiny_s
     raster_tree(&tree, scale)
 }
 pub fn raster_svg(svg: &str, scale: f32) -> Result<resvg::tiny_skia::Pixmap> {
-    let tree = resvg::usvg::Tree::from_str(svg, &svg_options())?;
+    let has_text = svg.contains("<text")
+        || svg.contains(":text")
+        || svg.contains("data:image/svg+xml");
+    let options = if !has_text {
+        resvg::usvg::Options::default()
+    } else if is_basic_latin_text(svg)
+        && !svg.contains("data:image/svg+xml")
+        && !svg.contains("font-family")
+        && !svg.contains("font-weight")
+        && !svg.contains("font-style")
+        && !svg.contains("&#")
+        && let Some(minimal) = minimal_fonts()
+    {
+        minimal_svg_options(minimal)
+    } else {
+        svg_options()
+    };
+    let tree = resvg::usvg::Tree::from_str(svg, &options)?;
     raster_tree(&tree, scale)
 }
 /// Rasterize generated paths/shapes without loading a system font database.
@@ -801,15 +1324,17 @@ mod overlap_tests {
                 builder.push(p);
             }
             let mut stroke = builder.finish().unwrap();
-            stroke.path = positions
-                .iter()
-                .enumerate()
-                .map(|(i, &position)| PathPoint {
-                    position,
-                    radius: 4. + i as f32,
-                })
-                .collect::<Vec<_>>()
-                .into();
+            stroke.path = std::sync::Arc::new(
+                positions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &position)| PathPoint {
+                        position,
+                        radius: 4. + i as f32,
+                    })
+                    .collect::<Vec<_>>()
+                    .into(),
+            );
             stroke.style.opacity = 0.4;
             let body = object_svg(&Object::Stroke(stroke.clone()), Path::new(".")).unwrap();
             let svg = format!(

@@ -99,7 +99,10 @@ impl Session {
         let worker = thread::spawn(move || {
             worker_session(
                 receive_commands,
-                send_events,
+                EventSink {
+                    tx: send_events,
+                    wakeup: Arc::new(std::sync::Mutex::new(None)),
+                },
                 stop,
                 config,
                 Client::builder().https_only(true).build().unwrap(),

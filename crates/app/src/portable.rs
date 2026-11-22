@@ -114,6 +114,14 @@ fn collect(
         if kind.is_dir() {
             collect(root, &path, files)?;
         } else if kind.is_file() {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with('.'))
+            {
+                // Skip atomic temp files (e.g. `.preview-*.png` from PDF scroll previews).
+                continue;
+            }
             let name = path
                 .strip_prefix(root)
                 .map_err(|e| e.to_string())?

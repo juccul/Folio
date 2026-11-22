@@ -7,45 +7,40 @@ use std::{
     sync::{Arc, Weak},
 };
 
-type Pool<T> = HashMap<(usize, u64), Vec<Weak<Vec<T>>>>;
-trait Sample {
-    type Bits: Hash + Eq;
-    fn bits(&self) -> Self::Bits;
+type Pool<T> = HashMap<(usize, u64), Vec<Weak<T>>>;
+trait SampleBuffer {
+    fn sample_len(&self) -> usize;
+    fn sample_bytes(&self) -> &[u8];
 }
-impl Sample for StrokePoint {
-    type Bits = ([u32; 5], u64, u32);
-    fn bits(&self) -> Self::Bits {
-        (
-            [self.x, self.y, self.pressure, self.tilt_x, self.tilt_y].map(f32::to_bits),
-            self.timestamp,
-            self.buttons,
-        )
+impl SampleBuffer for RawSamples {
+    fn sample_len(&self) -> usize {
+        self.len()
+    }
+    fn sample_bytes(&self) -> &[u8] {
+        self.as_bytes()
     }
 }
-impl Sample for PathPoint {
-    type Bits = [u32; 3];
-    fn bits(&self) -> Self::Bits {
-        [self.position.x, self.position.y, self.radius].map(f32::to_bits)
+impl SampleBuffer for PathSamples {
+    fn sample_len(&self) -> usize {
+        self.len()
+    }
+    fn sample_bytes(&self) -> &[u8] {
+        self.as_bytes()
     }
 }
-fn intern<T: Sample>(pool: &mut Pool<T>, buffer: &mut Arc<Vec<T>>) {
-    if buffer.is_empty() {
+fn intern<T: SampleBuffer>(pool: &mut Pool<T>, buffer: &mut Arc<T>) {
+    if buffer.sample_len() == 0 {
         return;
     }
+    let bytes = buffer.sample_bytes();
     let mut hash = DefaultHasher::new();
-    for sample in buffer.iter() {
-        sample.bits().hash(&mut hash);
-    }
-    let candidates = pool.entry((buffer.len(), hash.finish())).or_default();
+    bytes.hash(&mut hash);
+    let candidates = pool.entry((buffer.sample_len(), hash.finish())).or_default();
     candidates.retain(|candidate| candidate.strong_count() > 0);
     for candidate in candidates.iter().filter_map(Weak::upgrade) {
-        // Check exact bits after hashing, including signed zero and sensor data.
-        if Arc::ptr_eq(&candidate, buffer)
-            || candidate
-                .iter()
-                .zip(buffer.iter())
-                .all(|(a, b)| a.bits() == b.bits())
-        {
+        // Canonical compressed bytes match if and only if every bit matches,
+        // including signed zero and sensor metadata.
+        if Arc::ptr_eq(&candidate, buffer) || candidate.sample_bytes() == bytes {
             *buffer = candidate;
             return;
         }
@@ -55,14 +50,40 @@ fn intern<T: Sample>(pool: &mut Pool<T>, buffer: &mut Arc<Vec<T>>) {
 
 #[derive(Default)]
 pub(super) struct StrokeInterner {
-    raw: Pool<StrokePoint>,
-    path: Pool<PathPoint>,
+    raw: Pool<RawSamples>,
+    path: Pool<PathSamples>,
 }
 impl StrokeInterner {
     pub fn object(&mut self, object: &mut Object) {
-        if let Object::Stroke(stroke) = object {
-            intern(&mut self.raw, &mut stroke.raw);
-            intern(&mut self.path, &mut stroke.path);
+        match object {
+            Object::Stroke(stroke) => {
+                if let Some(path) = &mut stroke.fragment_path {
+                    path.shrink_to_fit();
+                }
+                if let Some(path) = &mut stroke.refined_path {
+                    path.shrink_to_fit();
+                }
+                intern(&mut self.raw, &mut stroke.raw);
+                intern(&mut self.path, &mut stroke.path);
+            }
+            Object::Shape(shape) => {
+                shape.vertices.shrink_to_fit();
+                shape.source_strokes.shrink_to_fit();
+            }
+            Object::Text(text) => {
+                text.text.shrink_to_fit();
+                text.font_family.shrink_to_fit();
+            }
+            Object::Image(image) => {
+                image.asset.shrink_to_fit();
+            }
+            Object::Equation(equation) => {
+                equation.latex.shrink_to_fit();
+                if let Some(svg) = &mut equation.rendered_svg {
+                    svg.shrink_to_fit();
+                }
+                equation.source_strokes.shrink_to_fit();
+            }
         }
     }
     pub fn seed(&mut self, document: &Document) {

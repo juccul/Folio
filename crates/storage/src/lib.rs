@@ -1,5 +1,6 @@
 //! Transactional incremental SQLite storage. Every command persists only changed
 //! objects, with WAL/FULL durability. The UI never performs disk writes.
+mod binary;
 mod intern;
 pub mod recovery;
 use folio_document::*;
@@ -158,7 +159,16 @@ impl Delta {
                                     page: p.id,
                                     id: o.id(),
                                     value: Some(o.clone()),
-                                })
+                                });
+                            }
+                            for &old_id in changed.objects.keys() {
+                                if !p.objects.contains_key(&old_id) {
+                                    objects.push(ObjectWrite {
+                                        page: p.id,
+                                        id: old_id,
+                                        value: None,
+                                    });
+                                }
                             }
                         }
                     }
@@ -331,8 +341,9 @@ impl Store {
                     }
                     let header: PageHeader = serde_json::from_str(&header)?;
                     let mut text = std::collections::HashMap::new();
-                    for data in objects.query_map([&page], |r| r.get::<_, String>(0))? {
-                        let object: Object = serde_json::from_str(&data?)?;
+                    let mut obj_rows = objects.query([&page])?;
+                    while let Some(obj_row) = obj_rows.next()? {
+                        let object = binary::decode_object_ref(obj_row.get_ref(0)?)?;
                         if !object.searchable_text().is_empty() {
                             text.insert(object.id(), object.searchable_text().to_owned());
                         }
@@ -369,6 +380,7 @@ impl Store {
             tx.pragma_update(None, "user_version", 6)?;
             tx.commit()?;
         }
+        let _ = conn.execute_batch("PRAGMA shrink_memory;");
         Ok(Self {
             connection: conn,
             path,
@@ -404,6 +416,7 @@ impl Store {
             })
             .transpose()?;
         transaction.commit()?;
+        let _ = self.connection.execute_batch("PRAGMA shrink_memory;");
         Ok(result)
     }
 
@@ -434,29 +447,33 @@ impl Store {
             |r| r.get::<_, i64>(0),
         )?;
         let objects = {
-            let mut query = tx.prepare("SELECT data FROM objects WHERE page_id=?1")?;
+            let mut query = tx.prepare_cached("SELECT data FROM objects WHERE page_id=?1")?;
+            let mut rows = query.query([header.id.to_string()])?;
             let mut objects = std::collections::BTreeMap::new();
-            for row in query.query_map([header.id.to_string()], |r| r.get::<_, String>(0))? {
-                let mut object: Object = serde_json::from_str(&row?)?;
+            while let Some(row) = rows.next()? {
+                let mut object = binary::decode_object_ref(row.get_ref(0)?)?;
                 interner.object(&mut object);
                 objects.insert(object.id(), Arc::new(object));
             }
             objects
         };
+        let mut order = header.order;
+        order.shrink_to_fit();
         let page = Page {
             ink_text: header.ink_text,
             id: header.id,
             properties: header.properties,
             objects,
-            order: header.order,
+            order,
             groups: header.groups,
             revision: header.revision,
         };
         tx.commit()?;
+        let _ = self.connection.execute_batch("PRAGMA shrink_memory;");
         let mut check = Document::new("preview");
         check.pages = vec![page];
         check.validate().map_err(Error::Invalid)?;
-        Ok(Some((check.pages.pop().unwrap(), count as usize)))
+        Ok(check.pages.pop().map(|page| (page, count as usize)))
     }
     pub fn load(&self, id: Id) -> Result<Option<Document>> {
         let transaction = self.connection.unchecked_transaction()?;
@@ -485,13 +502,17 @@ impl Store {
             .connection
             .prepare_cached("SELECT data FROM objects WHERE page_id=?1")?;
         for row in q.query_map([id.to_string()], |r| r.get::<_, String>(0))? {
-            let h: PageHeader = serde_json::from_str(&row?)?;
+            let mut h: PageHeader = serde_json::from_str(&row?)?;
             let mut objects = std::collections::BTreeMap::new();
-            for row in object_query.query_map([h.id.to_string()], |r| r.get::<_, String>(0))? {
-                let mut o: Object = serde_json::from_str(&row?)?;
+            let mut obj_rows = object_query.query([h.id.to_string()])?;
+            while let Some(obj_row) = obj_rows.next()? {
+                let mut o = binary::decode_object_ref(obj_row.get_ref(0)?)?;
                 interner.object(&mut o);
                 objects.insert(o.id(), Arc::new(o));
             }
+            h.order.shrink_to_fit();
+            h.ink_text.shrink_to_fit();
+            h.groups.shrink_to_fit();
             pages.push(Page {
                 ink_text: h.ink_text,
                 id: h.id,
@@ -502,6 +523,7 @@ impl Store {
                 revision: h.revision,
             });
         }
+        pages.shrink_to_fit();
         let page_indices: std::collections::HashMap<_, _> = pages
             .iter()
             .enumerate()
@@ -510,11 +532,10 @@ impl Store {
         let mut drafts = self
             .connection
             .prepare("SELECT page_id,data FROM drafts WHERE note_id=?1")?;
-        for row in drafts.query_map([id.to_string()], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })? {
-            let (page_id, data) = row?;
-            let mut o: Object = serde_json::from_str(&data)?;
+        let mut draft_rows = drafts.query([id.to_string()])?;
+        while let Some(row) = draft_rows.next()? {
+            let page_id = row.get::<_, String>(0)?;
+            let mut o = binary::decode_object_ref(row.get_ref(1)?)?;
             interner.object(&mut o);
             let page_id = Id::parse_str(&page_id)
                 .map_err(|_| Error::Invalid("Invalid draft page ID".into()))?;
@@ -611,14 +632,11 @@ impl Store {
             }
             execute_cached(&tx, "DELETE FROM drafts WHERE id=?1", [o.id.to_string()])?;
             if let Some(value) = &o.value {
+                let encoded = binary::encode_object(value)?;
                 execute_cached(
                     &tx,
                     "INSERT INTO objects VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET page_id=excluded.page_id,data=excluded.data",
-                    params![
-                        o.id.to_string(),
-                        o.page.to_string(),
-                        serde_json::to_string(value)?
-                    ],
+                    params![o.id.to_string(), o.page.to_string(), encoded],
                 )?;
             } else {
                 execute_cached(&tx, "DELETE FROM objects WHERE id=?1", [o.id.to_string()])?;
@@ -663,15 +681,11 @@ impl Store {
                 JournalEvent::Replace(history) => {
                     execute_cached(&tx, "DELETE FROM history WHERE note_id=?1", [&note])?;
                     for (index, (command, applied)) in history.entries().enumerate() {
+                        let encoded = binary::encode_command(command)?;
                         execute_cached(
                             &tx,
                             "INSERT INTO history VALUES(?1,?2,?3,?4)",
-                            params![
-                                &note,
-                                index as i64,
-                                serde_json::to_string(command)?,
-                                applied
-                            ],
+                            params![&note, index as i64, encoded, applied],
                         )?;
                     }
                 }
@@ -686,10 +700,11 @@ impl Store {
                         [&note],
                         |r| r.get(0),
                     )?;
+                    let encoded = binary::encode_command(command)?;
                     execute_cached(
                         &tx,
                         "INSERT INTO history VALUES(?1,?2,?3,1)",
-                        params![note, ordinal, serde_json::to_string(command)?],
+                        params![note, ordinal, encoded],
                     )?;
                     execute_cached(
                         &tx,
@@ -731,14 +746,10 @@ impl Store {
             .prepare("SELECT command,applied FROM history WHERE note_id=?1 ORDER BY ordinal")?;
         let mut rows = query.query([note.to_string()])?;
         while let Some(row) = rows.next()? {
-            // Decode from SQLite's borrowed text instead of copying a large
-            // page/selection snapshot into a temporary JSON String.
-            let value = row.get_ref(0)?;
-            let data = value
-                .as_str()
-                .map_err(|error| Error::Invalid(format!("History record: {error}")))?;
+            // Decode from SQLite's borrowed slice/text instead of copying a
+            // large page/selection snapshot into a temporary String.
             let applied = row.get::<_, bool>(1)?;
-            let mut command = serde_json::from_str(data)?;
+            let mut command = binary::decode_command_ref(row.get_ref(0)?)?;
             interner.command(&mut command);
             if applied {
                 undo.push(command);
@@ -751,7 +762,11 @@ impl Store {
     }
     pub fn draft(&self, note: Id, page: Id, id: Id, value: Option<&Arc<Object>>) -> Result<()> {
         if let Some(value) = value {
-            self.connection.execute("INSERT INTO drafts VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET data=excluded.data",params![id.to_string(),note.to_string(),page.to_string(),serde_json::to_string(value)?])?;
+            let encoded = binary::encode_object(value)?;
+            self.connection.execute(
+                "INSERT INTO drafts VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+                params![id.to_string(), note.to_string(), page.to_string(), encoded],
+            )?;
         } else {
             self.connection
                 .execute("DELETE FROM drafts WHERE id=?1", [id.to_string()])?;
@@ -817,9 +832,11 @@ impl Store {
         Ok(())
     }
     pub fn checkpoint(&self) -> Result<PathBuf> {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let backup = self
             .path
-            .with_extension(format!("recovery-{}.sqlite3", now_ms()));
+            .with_extension(format!("recovery-{}-{seq}.sqlite3", now_ms()));
         self.connection
             .execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()])?;
         self.connection
@@ -848,26 +865,68 @@ enum Work {
     Flush(mpsc::Sender<std::result::Result<(), String>>),
     Stop,
 }
+pub type Wakeup = Arc<dyn Fn() + Send + Sync>;
+
+/// Thread-safe signal for waking the UI thread when background work finishes.
+#[derive(Clone, Default)]
+pub struct WakeupSignal(Arc<std::sync::Mutex<Option<Wakeup>>>);
+
+impl WakeupSignal {
+    pub fn set(&self, wakeup: Wakeup) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some(wakeup);
+        }
+    }
+
+    pub fn notify(&self) {
+        let wake = self.0.lock().ok().and_then(|guard| guard.clone());
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+}
+
 pub struct Persistence {
     sender: mpsc::SyncSender<Work>,
     pub receipts: mpsc::Receiver<Receipt>,
+    wakeup: WakeupSignal,
     join: Option<JoinHandle<()>>,
     sequence: u64,
 }
 impl Persistence {
+    pub fn set_wakeup(&self, wakeup: Wakeup) {
+        self.wakeup.set(wakeup);
+    }
     pub fn new(mut store: Store) -> Self {
         let (sender, receiver) = mpsc::sync_channel(64);
         let (tx, receipts) = mpsc::channel();
+        let wakeup = WakeupSignal::default();
+        let worker_wakeup = wakeup.clone();
         let join = thread::Builder::new()
             .name("folio-storage".into())
             .spawn(move || {
+                let send_receipt = |receipt: Receipt| {
+                    if tx.send(receipt).is_ok() {
+                        worker_wakeup.notify();
+                    }
+                };
                 let mut error: Option<String> = None;
                 let mut failed = std::collections::HashSet::new();
                 let mut pending_notebooks = std::collections::HashMap::new();
                 let mut pending_deletes = std::collections::HashSet::new();
+                let mut pending_note_deletes = std::collections::HashSet::new();
                 let mut pending_settings = None;
                 let mut last_checkpoint = std::time::Instant::now();
-                while let Ok(work) = receiver.recv() {
+                let mut queued_work: Option<Work> = None;
+                loop {
+                    let work = match queued_work.take() {
+                        Some(work) => work,
+                        None => match receiver.recv() {
+                            Ok(work) => work,
+                            Err(_) => break,
+                        },
+                    };
+                    let mut may_checkpoint = true;
                     match work {
                         Work::Draft {
                             note,
@@ -876,7 +935,7 @@ impl Persistence {
                             value,
                         } => {
                             if let Err(e) = store.draft(note, page, id, value.as_ref()) {
-                                let _ = tx.send(Receipt {
+                                send_receipt(Receipt {
                                     sequence: 0,
                                     result: Err(e.to_string()),
                                 });
@@ -884,6 +943,7 @@ impl Persistence {
                         }
                         Work::Save(sequence, delta) => {
                             let note = delta.metadata.id;
+                            pending_note_deletes.remove(&note);
                             let result = if failed.contains(&note) && !delta.authoritative {
                                 Err("Earlier save failed; waiting for a complete recovery save"
                                     .to_string())
@@ -896,6 +956,7 @@ impl Persistence {
                                     if failed.is_empty()
                                         && pending_notebooks.is_empty()
                                         && pending_deletes.is_empty()
+                                        && pending_note_deletes.is_empty()
                                         && pending_settings.is_none()
                                     {
                                         error = None;
@@ -906,7 +967,7 @@ impl Persistence {
                                     error = Some(message.clone());
                                 }
                             }
-                            let _ = tx.send(Receipt { sequence, result });
+                            send_receipt(Receipt { sequence, result });
                         }
                         Work::DeleteNotebook(id) => {
                             pending_deletes.insert(id);
@@ -916,7 +977,7 @@ impl Persistence {
                                 .execute("DELETE FROM notebooks WHERE id=?1", [id.to_string()])
                             {
                                 error = Some(e.to_string());
-                                let _ = tx.send(Receipt {
+                                send_receipt(Receipt {
                                     sequence: 0,
                                     result: Err(e.to_string()),
                                 });
@@ -926,12 +987,15 @@ impl Persistence {
                         }
                         Work::DeleteNote(id) => {
                             failed.remove(&id);
+                            pending_note_deletes.insert(id);
                             if let Err(e) = store.delete_note(id) {
                                 error = Some(e.to_string());
-                                let _ = tx.send(Receipt {
+                                send_receipt(Receipt {
                                     sequence: 0,
                                     result: Err(e.to_string()),
                                 });
+                            } else {
+                                pending_note_deletes.remove(&id);
                             }
                         }
                         Work::Notebook(n) => {
@@ -939,7 +1003,7 @@ impl Persistence {
                             pending_deletes.remove(&n.id);
                             if let Err(e) = store.save_notebook(&n) {
                                 error = Some(e.to_string());
-                                let _ = tx.send(Receipt {
+                                send_receipt(Receipt {
                                     sequence: 0,
                                     result: Err(e.to_string()),
                                 });
@@ -951,7 +1015,7 @@ impl Persistence {
                             pending_settings = Some(data.clone());
                             if let Err(e) = store.save_setting("preferences", &data) {
                                 error = Some(e.to_string());
-                                let _ = tx.send(Receipt {
+                                send_receipt(Receipt {
                                     sequence: 0,
                                     result: Err(e.to_string()),
                                 });
@@ -961,13 +1025,14 @@ impl Persistence {
                         }
                         Work::Checkpoint => {
                             if let Err(e) = store.checkpoint() {
-                                let _ = tx.send(Receipt {
+                                send_receipt(Receipt {
                                     sequence: 0,
                                     result: Err(e.to_string()),
                                 });
                             }
                         }
                         Work::Flush(reply) => {
+                            may_checkpoint = false;
                             pending_notebooks
                                 .retain(|_, notebook| store.save_notebook(notebook).is_err());
                             pending_deletes.retain(|id| {
@@ -976,6 +1041,7 @@ impl Persistence {
                                     .execute("DELETE FROM notebooks WHERE id=?1", [id.to_string()])
                                     .is_err()
                             });
+                            pending_note_deletes.retain(|id| store.delete_note(*id).is_err());
                             if pending_settings
                                 .as_ref()
                                 .is_some_and(|data| store.save_setting("preferences", data).is_ok())
@@ -985,12 +1051,13 @@ impl Persistence {
                             if failed.is_empty()
                                 && pending_notebooks.is_empty()
                                 && pending_deletes.is_empty()
+                                && pending_note_deletes.is_empty()
                                 && pending_settings.is_none()
                             {
                                 error = None;
                             } else if error.is_none() {
                                 error = Some(
-                                    "Settings or folders are still awaiting a successful save"
+                                    "Settings, folders, or deletions are still awaiting a successful save"
                                         .into(),
                                 );
                             }
@@ -1006,11 +1073,23 @@ impl Persistence {
                         }
                         Work::Stop => break,
                     }
-                    if last_checkpoint.elapsed().as_secs() > 300 && failed.is_empty() {
-                        if let Ok(path) = store.checkpoint() {
-                            prune_checkpoints(&path);
+                    if may_checkpoint
+                        && last_checkpoint.elapsed().as_secs() > 300
+                        && failed.is_empty()
+                    {
+                        // Do not run VACUUM INTO ahead of already-queued work (such as a shutdown Flush).
+                        match receiver.try_recv() {
+                            Ok(next) => {
+                                queued_work = Some(next);
+                            }
+                            Err(mpsc::TryRecvError::Empty) => {
+                                if let Ok(path) = store.checkpoint() {
+                                    prune_checkpoints(&path);
+                                }
+                                last_checkpoint = std::time::Instant::now();
+                            }
+                            Err(mpsc::TryRecvError::Disconnected) => break,
                         }
-                        last_checkpoint = std::time::Instant::now();
                     }
                 }
             })
@@ -1018,6 +1097,7 @@ impl Persistence {
         Self {
             sender,
             receipts,
+            wakeup,
             join: Some(join),
             sequence: 0,
         }
@@ -1657,7 +1737,7 @@ mod tests {
             rect: Rect::new(20., 100., 180., 64.),
             source_strokes: vec![],
             transform: Transform::default(),
-            math_link: Some(link),
+            math_link: Some(Box::new(link)),
         });
         document.pages[0].order.push(id);
         document.pages[0].objects.insert(id, Arc::new(equation));
@@ -1732,6 +1812,100 @@ mod tests {
                 .objects
                 .is_empty()
         );
+        // Strokes persist as compact FLS1 binary blobs while legacy JSON rows stay readable.
+        let stroke = Object::Stroke(InkStroke {
+            id: Id::new_v4(),
+            raw: Arc::new(
+                vec![
+                    StrokePoint {
+                        timestamp: 100,
+                        x: -0.0,
+                        y: 12.5,
+                        pressure: 0.75,
+                        tilt_x: -0.0,
+                        tilt_y: 4.5,
+                        buttons: 2,
+                    },
+                    StrokePoint::new(Point::new(10., 20.), 0.5, 108),
+                ]
+                .into(),
+            ),
+            path: Arc::new(
+                vec![
+                    PathPoint {
+                        position: Point::new(0., 12.5),
+                        radius: 2.0,
+                    },
+                    PathPoint {
+                        position: Point::new(10., 20.),
+                        radius: 1.5,
+                    },
+                ]
+                .into(),
+            ),
+            style: PenStyle::default(),
+            transform: Transform::translate(5., -3.),
+            created_at: 42,
+            fragment_path: Some(vec![PathPoint {
+                position: Point::new(1., 13.),
+                radius: 2.0,
+            }]),
+            refined_path: Some(vec![PathPoint {
+                position: Point::new(2., 14.),
+                radius: 1.8,
+            }]),
+            refinement_enabled: true,
+        });
+        let stroke_id = stroke.id();
+        let add_stroke = Command {
+            label: "stroke".into(),
+            changes: vec![Change::Object {
+                page,
+                id: stroke_id,
+                before: None,
+                after: Some(Arc::new(stroke.clone())),
+                index: 0,
+            }],
+        };
+        add_stroke.apply(&mut d, true);
+        s.save(&Delta::command(&d, &add_stroke)).unwrap();
+        let stored_blob: Vec<u8> = s
+            .connection
+            .query_row(
+                "SELECT data FROM objects WHERE id=?1",
+                [stroke_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(stored_blob.starts_with(b"FLS1"));
+        assert!(
+            binary::decode_object_value(rusqlite::types::Value::Blob(
+                stored_blob[..stored_blob.len() - 1].to_vec()
+            ))
+            .is_err()
+        );
+        let reloaded = s.load(d.metadata.id).unwrap().unwrap();
+        assert_eq!(reloaded, d);
+        if let Object::Stroke(loaded_stroke) = reloaded.pages[0].objects[&stroke_id].as_ref() {
+            assert_eq!(
+                loaded_stroke.raw.first().unwrap().x.to_bits(),
+                (-0.0_f32).to_bits()
+            );
+            assert_eq!(
+                loaded_stroke.raw.first().unwrap().tilt_x.to_bits(),
+                (-0.0_f32).to_bits()
+            );
+        } else {
+            panic!("expected stroke");
+        }
+        // Overwrite with legacy JSON text and confirm seamless read fallback.
+        s.connection
+            .execute(
+                "UPDATE objects SET data=?2 WHERE id=?1",
+                params![stroke_id.to_string(), serde_json::to_string(&stroke).unwrap()],
+            )
+            .unwrap();
+        assert_eq!(s.load(d.metadata.id).unwrap().unwrap(), d);
     }
     #[test]
     fn recovery_is_a_valid_database() {
@@ -1919,5 +2093,44 @@ mod resilience_tests {
         assert_eq!(recovery::quarantine_orphans(&root).unwrap(), 1);
         assert!(root.join("assets/needed.png").is_file());
         assert!(!root.join("assets/orphan.png").exists());
+
+        // Same-ID Change::Page replacement removing an object must delete the removed
+        // object row so Delta::command + Store::load remains valid.
+        let mut store = Store::open(root.join("notes.sqlite3")).unwrap();
+        let mut page_doc = Document::new("Same-ID replace");
+        let extra = Arc::new(Object::Text(TextBlock {
+            id: Id::new_v4(),
+            text: "to remove".into(),
+            rect: Rect::new(0., 0., 50., 20.),
+            transform: Transform::default(),
+            font_family: "sans-serif".into(),
+            font_size: 14.,
+            color: Color::INK,
+            bold: false,
+            italic: false,
+            underline: false,
+            alignment: Alignment::Left,
+            list: ListStyle::None,
+        }));
+        page_doc.pages[0].order.push(extra.id());
+        page_doc.pages[0].objects.insert(extra.id(), extra);
+        store.save(&Delta::full(&page_doc)).unwrap();
+        let before_page = page_doc.pages[0].clone();
+        let mut after_page = before_page.clone();
+        after_page.order.clear();
+        after_page.objects.clear();
+        let cmd = Command {
+            label: "Replace page".into(),
+            changes: vec![Change::Page {
+                index: 0,
+                before: Some(before_page),
+                after: Some(after_page),
+            }],
+        };
+        cmd.apply(&mut page_doc, true);
+        store.save(&Delta::command(&page_doc, &cmd)).unwrap();
+        let loaded = store.load(page_doc.metadata.id).unwrap().unwrap();
+        assert!(loaded.pages[0].objects.is_empty());
+        assert!(loaded.pages[0].order.is_empty());
     }
 }

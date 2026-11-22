@@ -163,8 +163,10 @@ struct ProcessClient {
     pack: PathBuf,
 }
 pub(super) struct Service {
-    sender: Option<mpsc::SyncSender<Job>>,
+    sender: Mutex<Option<mpsc::SyncSender<Job>>>,
+    tx: mpsc::SyncSender<Completion>,
     results: mpsc::Receiver<Completion>,
+    wakeup: folio_storage::WakeupSignal,
     process: Arc<Mutex<Option<Child>>>,
     generation: Arc<AtomicU64>,
     /// Set while the worker owes a response, so cancellation only kills real work.
@@ -173,7 +175,8 @@ pub(super) struct Service {
 /// Matches the OCR model's idle release; a resident SymPy process holds RAM.
 const IDLE_STOP: Duration = Duration::from_secs(300);
 fn stop(process: &Mutex<Option<Child>>) {
-    if let Some(mut child) = process.lock().unwrap().take() {
+    let mut guard = process.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(mut child) = guard.take() {
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -322,15 +325,32 @@ fn exchange(
     serde_json::from_str(&line).map_err(|e| e.to_string())
 }
 impl Service {
+    pub fn set_wakeup(&self, wakeup: folio_storage::Wakeup) {
+        self.wakeup.set(wakeup);
+    }
     pub fn new() -> Self {
-        let (sender, jobs) = mpsc::sync_channel::<Job>(32);
         let (tx, results) = mpsc::sync_channel(8);
-        let process = Arc::new(Mutex::new(None));
-        let generation = Arc::new(AtomicU64::new(0));
-        let in_flight = Arc::new(AtomicBool::new(false));
-        let worker_process = process.clone();
-        let worker_generation = generation.clone();
-        let worker_in_flight = in_flight.clone();
+        Self {
+            sender: Mutex::new(None),
+            tx,
+            results,
+            wakeup: folio_storage::WakeupSignal::default(),
+            process: Arc::new(Mutex::new(None)),
+            generation: Arc::new(AtomicU64::new(0)),
+            in_flight: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    fn ensure_sender(&self) -> mpsc::SyncSender<Job> {
+        let mut slot = self.sender.lock().unwrap();
+        if let Some(sender) = slot.as_ref() {
+            return sender.clone();
+        }
+        let (sender, jobs) = mpsc::sync_channel::<Job>(32);
+        let tx = self.tx.clone();
+        let wakeup = self.wakeup.clone();
+        let worker_process = self.process.clone();
+        let worker_generation = self.generation.clone();
+        let worker_in_flight = self.in_flight.clone();
         std::thread::Builder::new()
             .name("folio-math-solver".into())
             .spawn(move || {
@@ -427,17 +447,13 @@ impl Service {
                     {
                         break;
                     }
+                    wakeup.notify();
                 }
                 stop(&worker_process);
             })
             .expect("start math solver");
-        Self {
-            sender: Some(sender),
-            results,
-            process,
-            generation,
-            in_flight,
-        }
+        *slot = Some(sender.clone());
+        sender
     }
     /// Discard queued and running work. An idle process stays warm.
     fn cancel(&self, generation: u64) {
@@ -447,9 +463,7 @@ impl Service {
         }
     }
     fn submit(&self, task: Task) -> Result<(), String> {
-        self.sender
-            .as_ref()
-            .ok_or("Math solver stopped")?
+        self.ensure_sender()
             .try_send(Job::Solve(task))
             .map_err(|_| "Math solver queue is full; try again".into())
     }
@@ -461,8 +475,8 @@ impl Service {
             .unwrap()
             .as_mut()
             .is_some_and(|p| p.try_wait().ok().flatten().is_none());
-        if !running && let Some(sender) = &self.sender {
-            let _ = sender.try_send(Job::Warm(pack));
+        if !running {
+            let _ = self.ensure_sender().try_send(Job::Warm(pack));
         }
     }
 }
@@ -470,7 +484,9 @@ impl Drop for Service {
     fn drop(&mut self) {
         self.generation.store(u64::MAX, Ordering::SeqCst);
         stop(&self.process);
-        self.sender.take();
+        if let Ok(mut slot) = self.sender.lock() {
+            slot.take();
+        }
     }
 }
 impl Controller {
@@ -569,19 +585,6 @@ impl Controller {
         {
             self.math_after_ocr = true;
             self.recognize_selection(RecognitionKind::Math)?;
-        } else if self
-            .math_session
-            .as_ref()
-            .unwrap()
-            .request
-            .expression
-            .is_empty()
-            && self
-                .selected_objects()
-                .any(|o| matches!(o.as_ref(), Object::Image(_)))
-        {
-            self.math_after_ocr = true;
-            self.recognize_math_image(RecognitionKind::Math)?;
         }
         Ok(())
     }
@@ -635,6 +638,7 @@ impl Controller {
             return Err("Select a smaller problem".into());
         }
         let sources = session.sources.clone();
+        request.variables = self.math_variables()?;
         self.math_generation = self.math_generation.wrapping_add(1);
         if self.math_session.as_ref().is_some_and(|s| s.pending)
             || !self.math_live_pending.is_empty()
@@ -646,14 +650,20 @@ impl Controller {
                 .store(self.math_generation, Ordering::Release);
         }
         self.math_live_pending.clear();
-        request.variables = self.math_variables()?;
-        self.math_service.submit(Task {
+        if let Err(error) = self.math_service.submit(Task {
             generation: self.math_generation,
             pack: self.math_pack(),
             request: request.clone(),
             purpose: Purpose::Panel(sources),
-        })?;
-        let session = self.math_session.as_mut().unwrap();
+        }) {
+            if let Some(session) = self.math_session.as_mut() {
+                session.pending = false;
+            }
+            return Err(error);
+        }
+        let Some(session) = self.math_session.as_mut() else {
+            return Err("No math problem is open".into());
+        };
         session.request = request;
         session.pending = true;
         session.report = None;
@@ -741,19 +751,12 @@ impl Controller {
         if self.can_recognize_selection() {
             self.recognize_selection(kind)?;
         } else {
-            self.recognize_math_image(kind)?;
+            return Err(
+                "Select handwritten ink, text, or an equation to read into the math solver".into(),
+            );
         }
         self.math_after_ocr = true;
         self.math_ocr_next = next_line;
-        Ok(())
-    }
-    pub fn read_pdf_math(&mut self, fractions: Rect) -> Result<(), String> {
-        if self.math_session.is_none() {
-            self.open_math_solver()?;
-        }
-        self.recognize_pdf_math_region(fractions, RecognitionKind::Math)?;
-        self.math_after_ocr = true;
-        self.math_ocr_next = false;
         Ok(())
     }
     pub fn math_variables(&self) -> Result<BTreeMap<String, String>, String> {
@@ -841,7 +844,7 @@ impl Controller {
             .any(|o| matches!(o.as_ref(), Object::Stroke(_)));
         let attach = has_ink || source_text == request.expression;
         if live || graph || report.assignment.is_some() {
-            equation.math_link = Some(MathLink {
+            equation.math_link = Some(Box::new(MathLink {
                 last_error: None,
                 expression: report.assignment.as_ref().map_or_else(
                     || request.expression.clone(),
@@ -880,7 +883,7 @@ impl Controller {
                     sources.bounds.width().max(360.) + 24.,
                     sources.bounds.height().max(64.) + 24.,
                 )),
-            });
+            }));
         }
         Ok(equation)
     }
@@ -1091,7 +1094,7 @@ impl Controller {
                 ink_version: link
                     .ink_region
                     .map(|r| ink_signature(&self.math_region_sources(r))),
-                link: Box::new(link),
+                link,
             },
         })?;
         self.math_live_pending.insert(id);
@@ -1119,17 +1122,33 @@ impl Controller {
         if self.session().linked_math.is_empty() {
             return;
         }
-        if command.changes.iter().any(|change| match change {
-            Change::Object { before, after, .. } => before
-                .iter()
-                .chain(after.iter())
-                .any(|object| matches!(object.as_ref(), Object::Stroke(_))),
-            Change::Page { .. } => true,
-            _ => false,
-        }) {
+        let mut ink_changed = false;
+        let mut symbolic_changed = false;
+        for change in &command.changes {
+            match change {
+                Change::Object { before, after, .. } => {
+                    for object in before.iter().chain(after.iter()) {
+                        match object.as_ref() {
+                            Object::Stroke(_) => ink_changed = true,
+                            Object::Text(_) | Object::Equation(_) => symbolic_changed = true,
+                            _ => {}
+                        }
+                    }
+                }
+                Change::Page { .. } => {
+                    ink_changed = true;
+                }
+                _ => {}
+            }
+        }
+        if ink_changed {
             self.last_math_ink = Instant::now();
             self.math_scan_cursor = 0;
             self.math_ink_due = Some(self.last_math_ink + Duration::from_millis(700));
+        } else if symbolic_changed {
+            self.math_scan_cursor = 0;
+            let due = self.last_math_scan + Duration::from_millis(600);
+            self.math_ink_due = Some(self.math_ink_due.map_or(due, |prev| prev.min(due)));
         }
     }
     /// The UI can sleep until this deadline instead of polling continuously during the pause.
@@ -1302,7 +1321,7 @@ impl Controller {
                                 after.latex = report.answer_latex;
                                 after.rendered_svg = Some(svg);
                                 link.last_error = None;
-                                after.math_link = Some(*link);
+                                after.math_link = Some(link);
                                 let index = self.sessions[&note]
                                     .document
                                     .page(page)
@@ -1331,7 +1350,7 @@ impl Controller {
                             if let Object::Equation(old) = before.as_ref() {
                                 let mut after = old.clone();
                                 link.last_error = Some(error);
-                                after.math_link = Some(*link);
+                                after.math_link = Some(link);
                                 let index = self.sessions[&note]
                                     .document
                                     .page(page)
@@ -1481,7 +1500,7 @@ impl Controller {
                     ink_version: link
                         .ink_region
                         .map(|r| ink_signature(&self.math_region_sources(r))),
-                    link: Box::new(link),
+                    link,
                 };
                 if self
                     .math_service
@@ -2026,79 +2045,6 @@ for line in sys.stdin:
         wait(&mut app);
         assert_eq!(app.page().objects[&result].searchable_text(), "4");
         assert_eq!(app.page().objects[&first], original);
-        clean(app, root);
-    }
-    #[test]
-    fn image_math_flows_through_review_and_solver_without_replacing_image() {
-        let (mut app, root) = fixture();
-        mock_ocr(&app, &root);
-        std::fs::create_dir_all(&app.assets).unwrap();
-        image::RgbImage::from_pixel(80, 40, image::Rgb([255, 255, 255]))
-            .save(app.assets.join("problem.png"))
-            .unwrap();
-        let object = Object::Image(ImageObject {
-            id: Id::new_v4(),
-            asset: "problem.png".into(),
-            rect: Rect::new(20., 30., 160., 80.),
-            transform: Transform::default(),
-            crop: Some(Rect::new(0., 0., 0.5, 1.)),
-        });
-        let id = object.id();
-        let page = app.page().id;
-        app.commit(
-            "Image",
-            vec![Change::Object {
-                page,
-                id,
-                before: None,
-                after: Some(Arc::new(object)),
-                index: 0,
-            }],
-        );
-        let original = app.page().objects[&id].clone();
-        app.session_mut().selection = HashSet::from([id]);
-        app.open_math_solver().unwrap();
-        wait(&mut app);
-        assert_eq!(
-            app.math_session.as_ref().unwrap().request.expression,
-            "2x+3=11"
-        );
-        app.run_math_solver(app.math_session.as_ref().unwrap().request.clone())
-            .unwrap();
-        wait(&mut app);
-        app.insert_math_result(false, false).unwrap();
-        assert_eq!(app.page().objects[&id], original);
-        clean(app, root);
-    }
-    #[test]
-    fn pdf_region_uses_local_rendering_and_rejects_changed_background() {
-        let (mut app, root) = fixture();
-        mock_ocr(&app, &root);
-        let source = root.join("problem.pdf");
-        app.add_text("2x+3=11".into(), Point::new(60., 80.));
-        folio_export::pdf(&app.session().document, &app.assets, &source).unwrap();
-        let mut pages = folio_pdf::import(&source, &app.assets).unwrap();
-        app.apply_pdf(app.active, std::mem::take(&mut pages));
-        let pdf_index = app
-            .session()
-            .document
-            .pages
-            .iter()
-            .position(|p| p.properties.pdf.is_some())
-            .unwrap();
-        app.change_page(pdf_index);
-        app.open_math_solver().unwrap();
-        assert!(app.read_pdf_math(Rect::new(0., 0., 1.1, 0.5)).is_err());
-        app.read_pdf_math(Rect::new(0., 0., 0.7, 0.4)).unwrap();
-        wait(&mut app);
-        assert_eq!(
-            app.math_session.as_ref().unwrap().request.expression,
-            "2x+3=11"
-        );
-        let snapshot = app.math_session.as_ref().unwrap().sources.clone();
-        assert!(app.math_sources_current(&snapshot));
-        app.session_mut().document.pages[pdf_index].properties.pdf = None;
-        assert!(!app.math_sources_current(&snapshot));
         clean(app, root);
     }
     #[test]

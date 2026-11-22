@@ -386,11 +386,14 @@ fn malformed_geometry_and_styles_are_rejected_before_rendering() {
 fn anisotropic_ink_bounds_contain_the_transformed_brush() {
     let stroke = InkStroke {
         id: Id::new_v4(),
-        raw: Arc::new(vec![StrokePoint::new(Point::new(0., 0.), 0.5, 0)]),
-        path: Arc::new(vec![PathPoint {
-            position: Point::new(0., 0.),
-            radius: 4.,
-        }]),
+        raw: Arc::new(vec![StrokePoint::new(Point::new(0., 0.), 0.5, 0)].into()),
+        path: Arc::new(
+            vec![PathPoint {
+                position: Point::new(0., 0.),
+                radius: 4.,
+            }]
+            .into(),
+        ),
         style: PenStyle::default(),
         transform: Transform {
             a: 10.,
@@ -434,4 +437,179 @@ fn nonfinite_or_singular_transforms_have_no_inverse() {
     ] {
         assert!(transform.inverse().is_none());
     }
+}
+#[test]
+fn compact_samples_roundtrip_bit_exact_and_json_compatible() {
+    let empty_raw = RawSamples::from_slice(&[]);
+    assert!(empty_raw.is_empty());
+    assert_eq!(empty_raw.to_vec(), Vec::new());
+    let empty_path = PathSamples::from_slice(&[]);
+    assert!(empty_path.is_empty());
+    assert_eq!(empty_path.to_vec(), Vec::new());
+
+    // Varying fields including -0.0, +0.0, subnormals, varying tilt/buttons/timestamps.
+    let raw_pts = vec![
+        StrokePoint {
+            timestamp: 1000,
+            x: -0.0,
+            y: 0.0,
+            pressure: 0.5,
+            tilt_x: -0.0,
+            tilt_y: 12.25,
+            buttons: 0,
+        },
+        StrokePoint {
+            timestamp: 1008,
+            x: 1.5,
+            y: -3.25,
+            pressure: 0.75,
+            tilt_x: 1.0,
+            tilt_y: -0.0,
+            buttons: 5,
+        },
+        StrokePoint {
+            timestamp: 1021,
+            x: 3.125,
+            y: -6.5,
+            pressure: 0.9,
+            tilt_x: 0.0,
+            tilt_y: f32::MIN_POSITIVE,
+            buttons: 2,
+        },
+        StrokePoint {
+            timestamp: 1021,
+            x: 1000.5,
+            y: -500.25,
+            pressure: 0.125,
+            tilt_x: -14.5,
+            tilt_y: 8.75,
+            buttons: 0,
+        },
+    ];
+    let compact_raw = RawSamples::from_slice(&raw_pts);
+    assert_eq!(compact_raw.len(), raw_pts.len());
+    let decoded_raw = compact_raw.to_vec();
+    for (got, want) in decoded_raw.iter().zip(&raw_pts) {
+        assert_eq!(got.timestamp, want.timestamp);
+        assert_eq!(got.x.to_bits(), want.x.to_bits());
+        assert_eq!(got.y.to_bits(), want.y.to_bits());
+        assert_eq!(got.pressure.to_bits(), want.pressure.to_bits());
+        assert_eq!(got.tilt_x.to_bits(), want.tilt_x.to_bits());
+        assert_eq!(got.tilt_y.to_bits(), want.tilt_y.to_bits());
+        assert_eq!(got.buttons, want.buttons);
+    }
+    let json = serde_json::to_string(&compact_raw).unwrap();
+    let json_vec: Vec<StrokePoint> = serde_json::from_str(&json).unwrap();
+    assert_eq!(json_vec, raw_pts);
+    let from_json: RawSamples = serde_json::from_str(&json).unwrap();
+    assert_eq!(from_json, compact_raw);
+
+    // Smooth handwriting stroke compresses substantially and agrees on O(1) bounds.
+    let smooth_raw: Vec<StrokePoint> = (0..64)
+        .map(|i| {
+            StrokePoint::new(
+                Point::new(i as f32 * 2.5, (i as f32 * 0.2).sin() * 14. + 100.),
+                0.7,
+                1_700_000_000 + i as u64 * 8,
+            )
+        })
+        .collect();
+    let smooth_compact_raw = RawSamples::from_slice(&smooth_raw);
+    assert_eq!(smooth_compact_raw.to_vec(), smooth_raw);
+    assert!(
+        smooth_compact_raw.byte_len() < std::mem::size_of_val(smooth_raw.as_slice()) / 3,
+        "expected >3x raw compression, got {} vs {}",
+        smooth_compact_raw.byte_len(),
+        std::mem::size_of_val(smooth_raw.as_slice())
+    );
+
+    let smooth_path: Vec<PathPoint> = (0..96)
+        .map(|i| PathPoint {
+            position: Point::new(i as f32 * 1.5, (i as f32 * 0.15).cos() * 12. + 50.),
+            radius: 1.5 + (i as f32 * 0.1).sin() * 0.4,
+        })
+        .collect();
+    let compact_path = PathSamples::from_slice(&smooth_path);
+    for (got, want) in compact_path.iter().zip(&smooth_path) {
+        assert_eq!(got.position.x.to_bits(), want.position.x.to_bits());
+        assert_eq!(got.position.y.to_bits(), want.position.y.to_bits());
+        assert_eq!(got.radius.to_bits(), want.radius.to_bits());
+    }
+    let stroke = InkStroke {
+        id: Id::new_v4(),
+        raw: Arc::new(smooth_compact_raw),
+        path: Arc::new(compact_path),
+        style: PenStyle::default(),
+        transform: Transform::translate(25., -10.),
+        created_at: 0,
+        fragment_path: None,
+        refined_path: None,
+        refinement_enabled: false,
+    };
+    let fast_bounds = stroke.bounds();
+    let mut rotated = stroke.clone();
+    rotated.fragment_path = Some(smooth_path);
+    assert_eq!(fast_bounds, rotated.bounds());
+
+    // Reject malformed PathSamples headers (unknown flags, mismatched HAS_NAN, overlong varints).
+    let mut tampered = stroke.path.as_bytes().to_vec();
+    tampered[0] |= 0x80;
+    assert!(PathSamples::from_encoded(stroke.path.len() as u32, &tampered).is_none());
+    let mut bad_nan = stroke.path.as_bytes().to_vec();
+    bad_nan[0] ^= 0x02;
+    assert!(PathSamples::from_encoded(stroke.path.len() as u32, &bad_nan).is_none());
+    // Overlong ULEB32 encoding of delta 0 (0x80, 0x00) in a 2-point path must be rejected.
+    let overlong = [0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0x00, 0x00];
+    assert!(PathSamples::from_encoded(2, &overlong).is_none());
+
+    // Multi-change Command::apply must not leave dangling IDs in page.order when an
+    // object is inserted and deleted (or its page is replaced) within the same command.
+    let mut doc = Document::new("Order");
+    let page_id = doc.pages[0].id;
+    let obj = Arc::new(Object::Stroke(stroke));
+    let oid = obj.id();
+    let cancel_cmd = Command {
+        label: "Insert then delete".into(),
+        changes: vec![
+            Change::Object {
+                page: page_id,
+                id: oid,
+                before: None,
+                after: Some(obj.clone()),
+                index: 0,
+            },
+            Change::Object {
+                page: page_id,
+                id: oid,
+                before: Some(obj.clone()),
+                after: None,
+                index: 0,
+            },
+        ],
+    };
+    cancel_cmd.apply(&mut doc, true);
+    assert!(doc.validate().is_ok());
+    assert!(doc.pages[0].order.is_empty());
+
+    let replacement = doc.pages[0].clone();
+    let replace_cmd = Command {
+        label: "Insert then replace page".into(),
+        changes: vec![
+            Change::Object {
+                page: page_id,
+                id: oid,
+                before: None,
+                after: Some(obj),
+                index: 0,
+            },
+            Change::Page {
+                index: 0,
+                before: Some(replacement.clone()),
+                after: Some(replacement),
+            },
+        ],
+    };
+    replace_cmd.apply(&mut doc, true);
+    assert!(doc.validate().is_ok());
+    assert!(doc.pages[0].order.is_empty());
 }

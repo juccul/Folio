@@ -96,6 +96,7 @@ struct WindowInvalidatorInner {
     pub dirty: bool,
     pub draw_phase: DrawPhase,
     pub dirty_views: FxHashSet<EntityId>,
+    pub frame_notifier: Option<Rc<dyn Fn()>>,
 }
 
 #[derive(Clone)]
@@ -104,26 +105,45 @@ pub(crate) struct WindowInvalidator {
 }
 
 impl WindowInvalidator {
-    pub fn new() -> Self {
+    pub fn new(frame_notifier: Option<Rc<dyn Fn()>>) -> Self {
         WindowInvalidator {
             inner: Rc::new(RefCell::new(WindowInvalidatorInner {
                 dirty: true,
                 draw_phase: DrawPhase::None,
                 dirty_views: FxHashSet::default(),
+                frame_notifier,
             })),
         }
     }
 
-    pub fn invalidate_view(&self, entity: EntityId, cx: &mut App) -> bool {
-        let mut inner = self.inner.borrow_mut();
-        inner.dirty_views.insert(entity);
-        if inner.draw_phase == DrawPhase::None {
-            inner.dirty = true;
-            cx.push_effect(Effect::Notify { emitter: entity });
-            true
-        } else {
-            false
+    pub fn notify_frame(&self) {
+        let notifier = self.inner.borrow().frame_notifier.clone();
+        if let Some(notify) = notifier {
+            notify();
         }
+    }
+
+    pub fn invalidate_view(&self, entity: EntityId, cx: &mut App) -> bool {
+        let (notified, notifier) = {
+            let mut inner = self.inner.borrow_mut();
+            inner.dirty_views.insert(entity);
+            match inner.draw_phase {
+                DrawPhase::None => {
+                    inner.dirty = true;
+                    cx.push_effect(Effect::Notify { emitter: entity });
+                    (true, inner.frame_notifier.clone())
+                }
+                DrawPhase::Paint | DrawPhase::Focus => {
+                    inner.dirty = true;
+                    (false, inner.frame_notifier.clone())
+                }
+                DrawPhase::Prepaint => (false, None),
+            }
+        };
+        if let Some(notify) = notifier {
+            notify();
+        }
+        notified
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -131,7 +151,14 @@ impl WindowInvalidator {
     }
 
     pub fn set_dirty(&self, dirty: bool) {
-        self.inner.borrow_mut().dirty = dirty
+        let notifier = {
+            let mut inner = self.inner.borrow_mut();
+            inner.dirty = dirty;
+            dirty.then(|| inner.frame_notifier.clone()).flatten()
+        };
+        if let Some(notify) = notifier {
+            notify();
+        }
     }
 
     pub fn set_phase(&self, phase: DrawPhase) {
@@ -1009,7 +1036,7 @@ impl Window {
         let scale_factor = platform_window.scale_factor();
         let appearance = platform_window.appearance();
         let text_system = Arc::new(WindowTextSystem::new(cx.text_system().clone()));
-        let invalidator = WindowInvalidator::new();
+        let invalidator = WindowInvalidator::new(platform_window.frame_notifier());
         let active = Rc::new(Cell::new(platform_window.is_active()));
         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
         let needs_present = Rc::new(Cell::new(false));
@@ -1046,11 +1073,11 @@ impl Window {
             let next_frame_callbacks = next_frame_callbacks.clone();
             let last_input_timestamp = last_input_timestamp.clone();
             move |request_frame_options| {
-                let next_frame_callbacks = next_frame_callbacks.take();
-                if !next_frame_callbacks.is_empty() {
+                let pending_callbacks = next_frame_callbacks.take();
+                if !pending_callbacks.is_empty() {
                     handle
                         .update(&mut cx, |_, window, cx| {
-                            for callback in next_frame_callbacks {
+                            for callback in pending_callbacks {
                                 callback(window, cx);
                             }
                         })
@@ -1059,7 +1086,7 @@ impl Window {
 
                 // Keep presenting the current scene for 1 extra second since the
                 // last input to prevent the display from underclocking the refresh rate.
-                let needs_present = request_frame_options.require_presentation
+                let should_present = request_frame_options.require_presentation
                     || needs_present.get()
                     || (active.get()
                         && last_input_timestamp.get().elapsed() < Duration::from_secs(1));
@@ -1075,7 +1102,7 @@ impl Window {
                             })
                             .log_err();
                     })
-                } else if needs_present {
+                } else if should_present {
                     handle
                         .update(&mut cx, |_, window, _| window.present())
                         .log_err();
@@ -1086,6 +1113,15 @@ impl Window {
                         window.complete_frame();
                     })
                     .log_err();
+
+                let keep_pumping = invalidator.is_dirty()
+                    || !next_frame_callbacks.borrow().is_empty()
+                    || needs_present.get()
+                    || (active.get()
+                        && last_input_timestamp.get().elapsed() < Duration::from_secs(1));
+                if keep_pumping {
+                    invalidator.notify_frame();
+                }
             }
         }));
         platform_window.on_resize(Box::new({
@@ -1395,6 +1431,11 @@ impl Window {
         if self.invalidator.not_drawing() {
             self.refreshing = true;
             self.invalidator.set_dirty(true);
+        } else if matches!(
+            self.invalidator.inner.borrow().draw_phase,
+            DrawPhase::Paint | DrawPhase::Focus
+        ) {
+            self.invalidator.set_dirty(true);
         }
     }
 
@@ -1670,6 +1711,7 @@ impl Window {
     /// Schedule the given closure to be run directly after the current frame is rendered.
     pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
         RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
+        self.invalidator.notify_frame();
     }
 
     /// Whether mouse-wheel scrolling in scrollable elements eases toward its
@@ -1825,6 +1867,7 @@ impl Window {
         self.appearance_observers
             .clone()
             .retain(&(), |callback| callback(self, cx));
+        self.refresh();
     }
 
     /// Returns the appearance of the current window.
@@ -3473,18 +3516,22 @@ impl Window {
             frame_index,
         };
 
-        let tile = self
+        let shared_ephemeral = data.clone_ephemeral_shared(frame_index);
+        let Some(tile) = self
             .sprite_atlas
             .get_or_insert_with(&params.into(), &mut || {
-                Ok(Some((
-                    data.size(frame_index),
-                    Cow::Borrowed(
-                        data.as_bytes(frame_index)
-                            .expect("It's the caller's job to pass a valid frame index"),
-                    ),
-                )))
+                let bytes = if let Some(shared) = shared_ephemeral.as_ref() {
+                    data.clear_ephemeral();
+                    Some(Cow::Borrowed(shared.as_slice()))
+                } else {
+                    data.take_upload_bytes(frame_index)
+                };
+                Ok(bytes.map(|bytes| (data.size(frame_index), bytes)))
             })?
-            .expect("Callback above only returns Some");
+        else {
+            return Ok(());
+        };
+        drop(shared_ephemeral);
         let content_mask = self.content_mask().scale(scale_factor);
         let corner_radii = corner_radii.scale(scale_factor);
         let opacity = self.element_opacity();
@@ -3933,6 +3980,7 @@ impl Window {
         cx: &mut App,
     ) -> DispatchEventResult {
         self.last_input_timestamp.set(Instant::now());
+        self.invalidator.notify_frame();
         // Handlers may set this to false by calling `stop_propagation`.
         cx.propagate_event = true;
         // Handlers may set this to true by calling `prevent_default`.

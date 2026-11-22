@@ -6,8 +6,7 @@ For dual-licensed dependencies, select MIT where offered, otherwise Apache-2.0 w
 
 ## Bundled components and system tools
 
-- First-use recognition downloads pinned GLM-OCR Q8_0 weights and the llama.cpp b11457 Vulkan runtime separately from the application. Both upstream components declare MIT licenses. Retained model attribution/card and llama.cpp license are in [third_party/ocr](third_party/ocr); setup copies model notices into the downloaded pack and preserves the runtime archive LICENSE. Model inference is local; the SDK and layout detector are not included.
-- Optional Python recognition: GLM-OCR weights are declared MIT in the upstream model card. One local model handles text and math through native Transformers classes; no GLM SDK or layout-detector code is bundled. Setup retains the model card, attribution, pinned revision and file hashes. Python (PSF), PyTorch (BSD-3-Clause), torchvision (BSD-3-Clause), Transformers (Apache-2.0), NumPy (BSD-3-Clause) and Pillow (HPND) are optional separately installed components. The standard archive contains no model, Python wheel, CUDA runtime or dataset. Earlier ConvText inference modules remain as historical source under [third_party/htr-convtext](third_party/htr-convtext), with their GPL-3.0 license; current recognition does not load them.
+- Built-in offline stroke recognition (`folio-recognition`, `recognition/`): bundled pure-Rust INT8-quantized RoPE Conformer models (`math_v2.frec`, `htr_v2.frec`, `htr_lm.json.gz`) run directly on CPU with no external runtime or downloads. Dataset provenance and notices are in [recognition/NOTICE.txt](recognition/NOTICE.txt) (MathWriting CC-BY-4.0; Penpal MIT; DeepWriting CC BY-NC-SA 4.0; BRUSH research). Historical GLM-OCR and ConvText upstream notices remain preserved under [third_party/ocr](third_party/ocr) and [third_party/htr-convtext](third_party/htr-convtext); current recognition does not load them.
 - GPUI 0.2.2: Apache-2.0; local tablet/rendering patches are documented in [vendor/README.md](vendor/README.md). All upstream notices are retained.
 - xattr 0.2.3: MIT or Apache-2.0; local Linux ENODATA compatibility patch.
 - proc-macro-error2 2.0.1: MIT or Apache-2.0; local public proc_macro re-export compatibility patch.
@@ -549,7 +548,6 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [ttf-parser](https://github.com/RazrFalcon/ttf-parser) | 0.20.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/ttf-parser-0.20.0/) |
 | [ttf-parser](https://github.com/RazrFalcon/ttf-parser) | 0.21.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/ttf-parser-0.21.1/) |
 | [ttf-parser](https://github.com/harfbuzz/ttf-parser) | 0.25.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/ttf-parser-0.25.1/) |
-| [typed-path](https://github.com/chipsenkbeil/typed-path) | 0.12.3 | MIT OR Apache-2.0 | [notices](third_party/licenses/typed-path-0.12.3/) |
 | [typeid](https://github.com/dtolnay/typeid) | 1.0.3 | MIT OR Apache-2.0 | [notices](third_party/licenses/typeid-1.0.3/) |
 | [typenum](https://github.com/paholg/typenum) | 1.20.1 | MIT OR Apache-2.0 | [notices](third_party/licenses/typenum-1.20.1/) |
 | [unicase](https://github.com/seanmonstar/unicase) | 2.9.0 | MIT OR Apache-2.0 | [notices](third_party/licenses/unicase-2.9.0/) |
@@ -682,10 +680,8 @@ The ink/geometric algorithms are original implementations. No perfect-freehand, 
 | [zerotrie](https://github.com/unicode-org/icu4x) | 0.2.5 | Unicode-3.0 | [notices](third_party/licenses/zerotrie-0.2.5/) |
 | [zerovec](https://github.com/unicode-org/icu4x) | 0.11.8 | Unicode-3.0 | [notices](third_party/licenses/zerovec-0.11.8/) |
 | [zerovec-derive](https://github.com/unicode-org/icu4x) | 0.11.6 | Unicode-3.0 | [notices](third_party/licenses/zerovec-derive-0.11.6/) |
-| [zip](https://github.com/zip-rs/zip2) | 8.6.0 | MIT | [notices](third_party/licenses/zip-8.6.0/) |
 | [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs) | 0.6.8 | Zlib | [notices](third_party/licenses/zlib-rs-0.6.8/) |
 | [zmij](https://github.com/dtolnay/zmij) | 1.0.23 | MIT | [notices](third_party/licenses/zmij-1.0.23/) |
-| [zopfli](https://github.com/zopfli-rs/zopfli) | 0.8.3 | Apache-2.0 | [notices](third_party/licenses/zopfli-0.8.3/) |
 | [zune-core](https://github.com/etemesi254/zune-image) | 0.5.3 | MIT OR Apache-2.0 OR Zlib | [notices](third_party/licenses/zune-core-0.5.3/) |
 | [zune-inflate](https://crates.io/crates/zune-inflate/0.2.54) | 0.2.54 | MIT OR Apache-2.0 OR Zlib | [notices](third_party/licenses/zune-inflate-0.2.54/) |
 | [zune-jpeg](https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg) | 0.5.15 | MIT OR Apache-2.0 OR Zlib | [notices](third_party/licenses/zune-jpeg-0.5.15/) |

@@ -185,12 +185,13 @@ impl Controller {
                 let job = Job::ImportImage {
                     note,
                     page: self.page().id,
-                    path,
+                    path: path.clone(),
                     assets: self.assets.clone(),
                     position,
                     select: true,
                 };
                 if let Err(error) = self.workers.submit(job) {
+                    let _ = std::fs::remove_file(&path);
                     self.error = Some(error);
                 } else {
                     self.busy += 1;

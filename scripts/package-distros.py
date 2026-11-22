@@ -60,7 +60,7 @@ Homepage: https://github.com/juccul/Folio
 Depends: libc6 (>= {glibc}), libgcc-s1, libx11-6, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libxcb-xkb1, libwayland-client0, libvulkan1, libfontconfig1, python3 (>= 3.10), poppler-utils
 Description: Offline handwriting, notes and step-by-step math
  Pressure-sensitive vector notes, PDF annotations, editable text and LaTeX,
- with a bundled offline CPU math solver. Handwriting OCR is an optional pack.
+ with built-in offline handwriting/math stroke recognition and CPU math solver.
 ''')
         with tarfile.open(temp / 'control.tar.gz', 'w:gz', format=tarfile.GNU_FORMAT) as archive:
             archive.add(control / 'control', arcname='./control', filter=root_owned)
@@ -86,7 +86,7 @@ Requires: python3 >= 3.10, poppler-utils
 Requires: libX11.so.6()(64bit), libwayland-client.so.0()(64bit), libvulkan.so.1()(64bit), libfontconfig.so.1()(64bit)
 %description
 Pressure-sensitive vector notes and PDF annotations with editable text and LaTeX.
-Includes an offline CPU math solver. Handwriting OCR requires an optional pack.
+Includes built-in offline handwriting/math stroke recognition and a CPU math solver.
 %prep
 %build
 %install

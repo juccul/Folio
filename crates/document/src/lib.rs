@@ -17,6 +17,7 @@ pub fn now_ms() -> u64 {
 }
 
 mod command;
+mod compact;
 mod geometry;
 mod objects;
 mod page;
@@ -24,6 +25,7 @@ mod page;
 mod tests;
 mod validate;
 pub use command::*;
+pub use compact::*;
 pub use geometry::*;
 pub use objects::*;
 pub use page::*;

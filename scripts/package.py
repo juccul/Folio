@@ -51,7 +51,7 @@ def main():
     with tarfile.open(binary_archive, 'w:gz', compresslevel=6) as archive:
         add(archive, binary, f'{binary_name}/bin/folio-native')
         add(archive, ROOT / 'packaging/folio-launcher', f'{binary_name}/bin/folio')
-        for item in [*PROJECT_DOCUMENTS, 'LICENSE', 'third_party', 'packaging']:
+        for item in [*PROJECT_DOCUMENTS, 'LICENSE', 'recognition', 'third_party', 'packaging']:
             add(archive, ROOT / item, f'{binary_name}/{item}')
     with tempfile.TemporaryDirectory(prefix='folio-corresponding-source-') as temp:
         vendor = Path(temp) / 'source'
@@ -60,7 +60,7 @@ def main():
         config_path = Path(temp) / 'config.toml'
         config_path.write_text((ROOT / '.cargo/config.toml').read_text() + '\n' + config)
         with tarfile.open(source_archive, 'w:gz', compresslevel=6) as archive:
-            for item in ['Cargo.toml', 'Cargo.lock', 'apps', 'crates', 'vendor', 'scripts', 'packaging', 'third_party', '.github', '.gitignore', 'LICENSE']:
+            for item in ['Cargo.toml', 'Cargo.lock', 'apps', 'crates', 'vendor', 'scripts', 'packaging', 'recognition', 'third_party', '.github', '.gitignore', 'LICENSE']:
                 add(archive, ROOT / item, f'{source_name}/{item}')
             for item in ['AGENTS.md', *PROJECT_DOCUMENTS]:
                 add(archive, ROOT / item, f'{source_name}/{item}')

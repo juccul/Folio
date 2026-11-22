@@ -22,8 +22,50 @@ struct PanelOpacity {
     font: f32,
 }
 
+fn window_title_for(library_open: bool, note_title: &str) -> String {
+    if library_open {
+        return "Folio".into();
+    }
+    let trimmed = note_title.trim();
+    if trimmed.is_empty() {
+        "Folio".into()
+    } else {
+        format!("{trimmed} — Folio")
+    }
+}
+
+impl NotesView {
+    fn sync_window_title(&mut self, window: &mut Window) {
+        let note_title = if self.library_open {
+            ""
+        } else if self.controller.loading_note()
+            && let Some(note) = self
+                .controller
+                .notes
+                .iter()
+                .find(|n| n.id == self.controller.requested_note())
+        {
+            note.title.trim()
+        } else {
+            self.controller.session().document.metadata.title.trim()
+        };
+        let unchanged = if self.library_open || note_title.is_empty() {
+            self.window_title == "Folio"
+        } else {
+            self.window_title
+                .strip_suffix(" — Folio")
+                .is_some_and(|prefix| prefix == note_title)
+        };
+        if !unchanged {
+            self.window_title = window_title_for(self.library_open, note_title);
+            window.set_window_title(&self.window_title);
+        }
+    }
+}
+
 impl Render for NotesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_window_title(window);
         self.release_hidden_resources(window, cx);
         self.controller.refresh_default_ink();
         self.apply_equation_result(window, cx);
@@ -89,7 +131,7 @@ impl Render for NotesView {
             .glass_fill_from_edge(theme, theme.chrome, true)
             .child(self.document_tabs(window, cx));
         self.store_workspace();
-        if self.controller.recognition_pending && !self.controller.recognition_setup_needed() {
+        if self.controller.recognition_pending {
             top = top.child(self.recognition_notice(cx));
         }
         if let Some(error) = self.controller.save_error.clone() {
@@ -342,36 +384,43 @@ impl NotesView {
             // The library does not paint the editor. Release its GPU images,
             // decoded PDFs and page geometry until the canvas is shown again.
             self.painter.clear(window, cx);
+        } else {
+            self.controller.clear_library_previews();
+            if !self.pages_open {
+                self.thumbnails.clear(window);
+            }
         }
     }
     /// Close the equation dialog once its submitted LaTeX has rendered, or
     /// show the rendering error.
     fn apply_equation_result(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.equation_draft.is_some()
-            && let Some(result) = self.controller.equation_result.take()
-        {
-            match result {
-                Ok(()) => {
-                    let submitted = self.equation_draft.take().unwrap();
-                    if self
-                        .modal
-                        .as_ref()
-                        .is_some_and(|(_, field)| field.read(cx).content == submitted)
-                    {
-                        self.close_modal(window, cx);
-                    } else {
-                        self.modal_error = Some(
-                            "The submitted equation was saved. Your newer draft is still here."
-                                .into(),
-                        );
-                    }
+        if self.equation_draft.is_none() {
+            return;
+        }
+        let Some(result) = self.controller.equation_result.take() else {
+            return;
+        };
+        let Some(submitted) = self.equation_draft.take() else {
+            return;
+        };
+        match result {
+            Ok(()) => {
+                if self
+                    .modal
+                    .as_ref()
+                    .is_some_and(|(_, field)| field.read(cx).content == submitted)
+                {
+                    self.close_modal(window, cx);
+                } else {
+                    self.modal_error = Some(
+                        "The submitted equation was saved. Your newer draft is still here.".into(),
+                    );
                 }
-                Err(error) => {
-                    self.equation_draft = None;
-                    self.modal_error = Some(error);
-                    if let Some((_, field)) = &self.modal {
-                        field.read(cx).focus.focus(window);
-                    }
+            }
+            Err(error) => {
+                self.modal_error = Some(error);
+                if let Some((_, field)) = &self.modal {
+                    field.read(cx).focus.focus(window);
                 }
             }
         }
@@ -1322,15 +1371,6 @@ impl NotesView {
                     .overlay("help", alpha.help, panel),
             );
         }
-        if self.controller.recognition_setup_needed() && self.controller.error.is_none() {
-            self.building_overlay = true;
-            self.accessibility.begin();
-            body = body.child(self.ocr_setup_panel(cx));
-            if !self.attention_setup {
-                self.accessibility.focus_control("ocr-download", window);
-            }
-        }
-        self.attention_setup = self.controller.recognition_setup_needed();
         if let Some(error) = self.controller.error.clone()
             && self.controller.interaction.is_none()
         {
@@ -1387,4 +1427,18 @@ fn notice_bar() -> Div {
 /// A notice bar with a message; actions can be added as further children.
 fn notice_row(message: impl Into<SharedString>) -> Div {
     notice_bar().child(div().flex_1().text_sm().child(message.into()))
+}
+
+#[cfg(test)]
+mod window_title_tests {
+    use super::window_title_for;
+
+    #[::core::prelude::v1::test]
+    fn window_title_tracks_library_and_active_note() {
+        assert_eq!(window_title_for(true, "Lecture 1"), "Folio");
+        assert_eq!(window_title_for(false, "Lecture 1"), "Lecture 1 — Folio");
+        assert_eq!(window_title_for(false, "  Lecture 1  "), "Lecture 1 — Folio");
+        assert_eq!(window_title_for(false, "   "), "Folio");
+        assert_eq!(window_title_for(false, ""), "Folio");
+    }
 }

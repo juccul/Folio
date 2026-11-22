@@ -82,25 +82,25 @@ impl Motion {
         let now = Instant::now();
         // Keep hover keys separate so drawing each control can use a borrowed
         // lookup, without allocating a prefixed String every frame.
-        if !self.hovers.contains_key(key) {
+        let target = if hovered { 1. } else { 0. };
+        if let Some(entry) = self.hovers.get_mut(key) {
+            entry.tween.retarget(target, reduced, now);
+        } else {
+            let mut tween = Tween {
+                from: 0.,
+                to: 0.,
+                started: now,
+                duration: HOVER_DURATION,
+            };
+            tween.retarget(target, reduced, now);
             self.hovers.insert(
                 key.into(),
                 Hover {
-                    tween: Tween {
-                        from: 0.,
-                        to: 0.,
-                        started: now,
-                        duration: HOVER_DURATION,
-                    },
+                    tween,
                     drawn: self.frame,
                 },
             );
         }
-        self.hovers.get_mut(key).unwrap().tween.retarget(
-            if hovered { 1. } else { 0. },
-            reduced,
-            now,
-        );
     }
     /// The hover amount of a control being drawn in the current frame.
     pub fn hover_value(&mut self, key: &str) -> f32 {

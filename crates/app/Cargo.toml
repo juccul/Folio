@@ -16,14 +16,12 @@ folio-gestures = { path = "../gestures" }
 folio-math = { path = "../math" }
 folio-pdf = { path = "../pdf" }
 folio-export = { path = "../export" }
+folio-recognition = { path = "../recognition" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 folio-platform = { path = "../platform" }
 image.workspace = true
-base64 = "0.22"
 flate2 = "1"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
 sha2 = "0.10"
 tar = "0.4"
-zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }

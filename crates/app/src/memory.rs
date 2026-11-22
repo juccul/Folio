@@ -12,10 +12,16 @@ impl Usage {
     fn add(&mut self, bytes: usize) {
         self.bytes = self.bytes.saturating_add(bytes);
     }
-    fn buffer<T>(&mut self, buffer: &Arc<Vec<T>>) {
+    fn raw_buffer(&mut self, buffer: &Arc<RawSamples>) {
         if self.buffers.insert(Arc::as_ptr(buffer) as usize) {
-            self.add(size_of::<Vec<T>>() + 2 * size_of::<usize>());
-            self.add(buffer.capacity().saturating_mul(size_of::<T>()));
+            self.add(size_of::<RawSamples>() + 2 * size_of::<usize>());
+            self.add(buffer.byte_len());
+        }
+    }
+    fn path_buffer(&mut self, buffer: &Arc<PathSamples>) {
+        if self.buffers.insert(Arc::as_ptr(buffer) as usize) {
+            self.add(size_of::<PathSamples>() + 2 * size_of::<usize>());
+            self.add(buffer.byte_len());
         }
     }
     fn object(&mut self, object: &Arc<Object>) {
@@ -25,8 +31,8 @@ impl Usage {
         self.add(size_of::<Object>() + 2 * size_of::<usize>());
         match object.as_ref() {
             Object::Stroke(stroke) => {
-                self.buffer(&stroke.raw);
-                self.buffer(&stroke.path);
+                self.raw_buffer(&stroke.raw);
+                self.path_buffer(&stroke.path);
                 for path in [&stroke.fragment_path, &stroke.refined_path]
                     .into_iter()
                     .flatten()
@@ -47,6 +53,7 @@ impl Usage {
                         + equation.source_strokes.capacity() * size_of::<Id>(),
                 );
                 if let Some(link) = &equation.math_link {
+                    self.add(size_of::<MathLink>());
                     for value in [
                         &link.expression,
                         &link.operation,
@@ -170,6 +177,8 @@ impl Session {
         usage.bytes
     }
 }
+pub(crate) const MAX_SESSIONS: usize = 4;
+
 impl Controller {
     /// Release a closed tab after its document and journal are durable. Deferred
     /// edits and background imports retain their session until it is safe.
@@ -179,6 +188,7 @@ impl Controller {
             self.pending_navigation = None;
         }
         self.closed_sessions.insert(id);
+        self.needs_memory_trim = true;
         self.trim_caches();
     }
     pub(super) fn can_release_session(&self, id: Id) -> bool {
@@ -217,6 +227,7 @@ impl Controller {
         self.preview_pending.retain(|(note, _, _), _| *note != id);
         self.preview_failed.retain(|(note, _, _), _| *note != id);
         self.preview_errors.retain(|(note, _), _| *note != id);
+        self.needs_memory_trim = true;
     }
 }
 impl Controller {
@@ -251,7 +262,7 @@ impl Controller {
                 .filter(|(id, _)| **id != self.active)
                 .map(|(_, session)| session.memory_bytes())
                 .sum::<usize>();
-            while self.settings.autosave && (self.sessions.len() > 8 || bytes > budget) {
+            while self.settings.autosave && (self.sessions.len() > MAX_SESSIONS || bytes > budget) {
                 let victim = self.session_recency.iter().copied().find(|id| {
                     *id != self.active
                         && Some(*id) != self.pending_note
@@ -265,9 +276,13 @@ impl Controller {
             }
         }
     }
+    pub fn request_memory_trim(&mut self) {
+        self.needs_memory_trim = true;
+    }
     pub(crate) fn trim_caches(&mut self) {
-        self.trim_sessions(96 * 1024 * 1024);
-        const BUDGET: usize = 128 * 1024 * 1024;
+        self.trim_sessions(32 * 1024 * 1024);
+        const BUDGET: usize = 24 * 1024 * 1024;
+        let before_previews = self.previews.len();
         if self.previews.values().map(|p| p.bgra.len()).sum::<usize>() > BUDGET {
             let note = self.active;
             let page = self.page().id;
@@ -275,10 +290,12 @@ impl Controller {
                 .retain(|(n, p, _), _| *n == note && *p == page);
             let mut bytes = self.previews.values().map(|p| p.bgra.len()).sum::<usize>();
             if bytes > BUDGET {
+                let width = self.view_size.x.max(1920.);
+                let height = self.view_size.y.max(1200.);
                 let visible = self
                     .session()
                     .index
-                    .query(self.session().viewport.visible(1920., 1200.));
+                    .query(self.session().viewport.visible(width, height));
                 self.previews.retain(|(_, _, id), p| {
                     let keep = visible.contains(id) || bytes <= BUDGET;
                     if !keep {
@@ -304,6 +321,13 @@ impl Controller {
                     bytes = bytes.saturating_sub(preview.bgra.len());
                 }
             }
+        }
+        if self.previews.len() != before_previews {
+            self.needs_memory_trim = true;
+        }
+        if self.needs_memory_trim && self.busy == 0 && self.interaction.is_none() {
+            self.needs_memory_trim = false;
+            folio_platform::release_unused_memory();
         }
     }
 }

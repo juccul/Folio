@@ -149,7 +149,10 @@ impl Controller {
                 note,
                 updated,
                 result,
-            } => self.library_preview_finished(note, updated, result),
+            } => {
+                self.library_preview_finished(note, updated, result);
+                self.needs_memory_trim = true;
+            }
             Finished::Search {
                 generation,
                 results,
@@ -209,6 +212,7 @@ impl Controller {
                         width,
                         height,
                         bgra: Arc::new(bgra),
+                        token: Arc::new(()),
                     },
                 );
             }

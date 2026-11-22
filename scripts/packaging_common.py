@@ -56,6 +56,18 @@ print(json.dumps(result))
               "timeout_seconds": 8, "sympy": "1.14.0", "mpmath": "1.3.0",
               "engine": "folio-math-1"}
     (math_pack / "pack.json").write_text(json.dumps(config, indent=2) + "\n")
+    stage_recognition(prefix)
+
+
+def stage_recognition(prefix):
+    """Bundle Folio's built-in offline stroke-sequence recognition models."""
+    source = ROOT / "recognition"
+    required = ("pack.json", "math_v2.frec", "htr_v2.frec", "htr_lm.json.gz", "NOTICE.txt")
+    for name in required:
+        path = source / name
+        if not path.is_file():
+            raise ValueError(f"Missing bundled recognition asset: {path}")
+        copy(path, prefix / "recognition" / name)
 
 
 def stage_metadata(prefix):
@@ -66,7 +78,7 @@ def stage_metadata(prefix):
         (ROOT / "LICENSE", "share/doc/folio/LICENSE"),
         (ROOT / "LICENSES.md", "share/doc/folio/LICENSES.md"),
         (ROOT / "UPDATES.md", "share/doc/folio/UPDATES.md"),
+        (ROOT / "recognition/NOTICE.txt", "share/doc/folio/RECOGNITION-NOTICE.txt"),
     ):
         copy(source, prefix / destination)
     shutil.copytree(ROOT / "third_party/licenses", prefix / "share/doc/folio/third_party")
-    shutil.copytree(ROOT / "third_party/ocr", prefix / "share/doc/folio/ocr")

@@ -101,6 +101,18 @@ def stage_python_packages(archives, destination):
                     target.writestr(entry, source.read(entry), compress_type=zipfile.ZIP_STORED)
 
 
+def stage_recognition(destination):
+    """Bundle Folio's built-in offline stroke-sequence recognition models."""
+    source = ROOT / 'recognition'
+    target = destination / 'recognition'
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ('pack.json', 'math_v2.frec', 'htr_v2.frec', 'htr_lm.json.gz', 'NOTICE.txt'):
+        path = source / name
+        if not path.is_file():
+            raise ValueError(f'Missing bundled recognition asset: {path}')
+        shutil.copy2(path, target / name)
+
+
 def stage_notices(destination):
     """Retain full notices and exact originals without thousands of disk writes."""
     source = ROOT / 'third_party/licenses'
@@ -203,8 +215,8 @@ def main():
             shutil.copy2(ROOT / 'scripts' / file, stage / 'tools' / file)
         for file in ('LICENSE', 'LICENSES.md', 'README.md', 'WINDOWS.md', 'UPDATES.md'):
             shutil.copy2(ROOT / file, stage / file)
+        stage_recognition(stage)
         stage_notices(stage)
-        shutil.copytree(ROOT / 'third_party/ocr', stage / 'third_party/ocr')
         manifest = {'version': version, 'target': 'x86_64-pc-windows-msvc', 'runtime_only': args.runtime_only,
                     'assets': assets, 'cargo_lock_sha256': sha256(ROOT / 'Cargo.lock')}
         if not args.runtime_only:

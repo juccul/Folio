@@ -21,15 +21,15 @@ Run the packaging script in Python 3.11 or newer on Windows or Linux:
 python scripts/package-windows.py --binary target/x86_64-pc-windows-msvc/release/folio.exe
 ```
 
-It creates a ZIP under `artifacts/dist`, containing `bin/folio.exe`, embedded Python, the pinned offline math worker/dependencies, PDF preview tools, and notices. Downloads use the exact SHA-256 values in `packaging/windows/runtime-assets.json`; setup does not need pip. To prepare just the tools before an executable exists, use `--runtime-only --output artifacts/windows-tools`. `--installer` also builds a per-user installer if Inno Setup 6 is available.
+It creates a ZIP under `artifacts/dist`, containing `bin/folio.exe`, bundled offline stroke-recognition models (`recognition/`), embedded Python, the pinned offline math worker/dependencies, PDF preview tools, and notices. Downloads use the exact SHA-256 values in `packaging/windows/runtime-assets.json`; setup does not need pip. To prepare just the tools before an executable exists, use `--runtime-only --output artifacts/windows-tools`. `--installer` also builds a per-user installer if Inno Setup 6 is available.
 
-Extract the entire ZIP into a writable folder and launch `bin/folio.exe`. Keep the sibling `python`, `math-solver`, and `pdf` directories together. Moving the complete folder preserves worker paths. Packaging on Windows automatically includes the matching x64 Visual C++ redistributable DLLs from the installed build tools. When packaging on Linux, pass those DLLs with repeated `--extra-dll PATH` arguments. The release package includes them beside `folio.exe`.
+Extract the entire ZIP into a writable folder and launch `bin/folio.exe`. Keep the sibling `recognition`, `python`, `math-solver`, and `pdf` directories together. Moving the complete folder preserves worker paths. Packaging on Windows automatically includes the matching x64 Visual C++ redistributable DLLs from the installed build tools. When packaging on Linux, pass those DLLs with repeated `--extra-dll PATH` arguments. The release package includes them beside `folio.exe`.
 
-Notes and downloaded OCR assets live under `%LOCALAPPDATA%\Folio`. `--data-dir PATH` and `FOLIO_DATA_DIR` override this. Launching Folio again for the same directory, including from a shortcut or the taskbar, activates the running window (restoring it if minimized) through a per-library local named pipe instead of opening a second instance. The installer keeps this data when uninstalled.
+Notes and preferences live under `%LOCALAPPDATA%\Folio`. `--data-dir PATH` and `FOLIO_DATA_DIR` override this. Launching Folio again for the same directory, including from a shortcut or the taskbar, activates the running window (restoring it if minimized) through a per-library local named pipe instead of opening a second instance. The installer keeps this data when uninstalled.
 
-## Optional OCR
+## Offline handwriting and math recognition
 
-The first recognition request downloads the pinned GLM-OCR Q8 model/vision files and llama.cpp b11457 Windows Vulkan runtime (about 1.47 GB total). Downloads are resumable and checksummed. When full GPU recognition cannot load, Folio tries placing language layers in system RAM while keeping image encoding on the GPU, then GPU image encoding alone, before falling back to CPU-only recognition. CPU fallback also works when a suitable Vulkan GPU is unavailable; a VirtualBox graphics adapter generally does not provide a usable OCR Vulkan device. Subsequent recognition works offline. Notes, PDFs, and handwriting are processed locally.
+Handwriting and math recognition models (`recognition/math_v2.frec`, `recognition/htr_v2.frec`, and `recognition/htr_lm.json.gz`, ~38 MiB total) are bundled directly in the package and execute on CPU in pure Rust via `folio-recognition`. No model download, external inference server, or Vulkan GPU driver is required. Ink strokes are recognized directly as stroke sequences; raster image and PDF crop OCR are not used. Notes and handwriting stay local.
 
 ## Validation
 

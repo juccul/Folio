@@ -5,6 +5,7 @@ use folio_ui::NotesView;
 use gpui::*;
 use std::{path::PathBuf, time::Duration};
 fn main() -> anyhow::Result<()> {
+    folio_platform::tune_allocator();
     let startup = std::time::Instant::now();
     let profile_startup = std::env::var_os("FOLIO_PROFILE_STARTUP").is_some();
     let mark = move |stage: &str| {
@@ -103,9 +104,10 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
-    // Fixtures, recovery and update restarts always start their own process.
-    let single_instance = !(smoke || titlebar_smoke || recover || restart_after_update);
-    if single_instance && activate_running_instance(&data_dir) {
+    // Fixtures and recovery stay isolated; update restarts skip activating the
+    // exiting parent process, but still listen for future launches once running.
+    let listen_single_instance = !(smoke || titlebar_smoke || recover);
+    if listen_single_instance && !restart_after_update && activate_running_instance(&data_dir) {
         return Ok(());
     }
     let open_editor =
@@ -148,6 +150,11 @@ fn main() -> anyhow::Result<()> {
                             size(px(900.), px(600.)),
                             cx,
                         ))),
+                        app_id: Some("io.github.folio.Notes".into()),
+                        titlebar: Some(TitlebarOptions {
+                            title: Some("Folio — Recovery".into()),
+                            ..Default::default()
+                        }),
                         ..Default::default()
                     },
                     |window, cx| {
@@ -185,7 +192,7 @@ fn main() -> anyhow::Result<()> {
         let window = cx.open_window(WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             app_id: Some("io.github.folio.Notes".into()),
-            titlebar: Some(TitlebarOptions {title:Some("Folio - Notes".into()), appears_transparent: true, ..Default::default()}),
+            titlebar: Some(TitlebarOptions {title:Some("Folio".into()), appears_transparent: true, ..Default::default()}),
             window_decorations: Some(WindowDecorations::Client),
             window_min_size: Some(size(px(1000.), px(620.))),
             ..Default::default()
@@ -205,7 +212,7 @@ fn main() -> anyhow::Result<()> {
         mark("window_ready");
         cx.on_window_closed(|cx|cx.quit()).detach();
         cx.activate(true);
-        if single_instance {
+        if listen_single_instance {
             let (requests, mut received) = futures::channel::mpsc::unbounded::<(Option<String>, std::sync::mpsc::Sender<()>)>();
             let listening = folio_platform::listen_for_activation(&data_dir, move |token| {
                 let (done, activated) = std::sync::mpsc::channel();

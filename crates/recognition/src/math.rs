@@ -1,0 +1,451 @@
+//! Math v2: 10-feature ink preprocessing + RoPE Conformer Encoder + KV-cached Decoder -> LaTeX.
+use crate::{
+    frec::FrecFile,
+    ops::{RopeTable, conformer_block, conv1d, gelu, layer_norm, linear, softmax_inplace},
+};
+
+const FEATURE_DIM: usize = 10;
+const MAX_POINTS: usize = 576;
+const PAD_ID: usize = 0;
+const BOS_ID: usize = 1;
+const EOS_ID: usize = 2;
+
+pub struct MathModel {
+    frec: FrecFile,
+    rope: RopeTable,
+    sin_pe: Vec<f32>,
+}
+
+fn resample_stroke(pts: &[[f32; 2]], step: f32) -> Vec<[f32; 2]> {
+    if pts.len() <= 1 {
+        let p = pts.first().copied().unwrap_or([0.0, 0.0]);
+        return vec![p, p, p];
+    }
+    let mut seg_lens = Vec::with_capacity(pts.len() - 1);
+    let mut total = 0.0_f32;
+    for i in 0..pts.len() - 1 {
+        let l = (pts[i + 1][0] - pts[i][0]).hypot(pts[i + 1][1] - pts[i][1]);
+        seg_lens.push(l);
+        total += l;
+    }
+    if total < 1e-5 {
+        return vec![pts[0], pts[0], pts[0]];
+    }
+    let num_out = ((total / step).ceil() as usize + 1).max(3);
+    let mut cum_k = Vec::with_capacity(pts.len());
+    let mut pts_k = Vec::with_capacity(pts.len());
+    cum_k.push(0.0_f32);
+    pts_k.push(pts[0]);
+    let mut acc = 0.0_f32;
+    for (i, &l) in seg_lens.iter().enumerate() {
+        acc += l;
+        if l > 1e-7 {
+            cum_k.push(acc);
+            pts_k.push(pts[i + 1]);
+        }
+    }
+    if pts_k.len() < 2 {
+        return vec![pts[0], pts[0], pts[0]];
+    }
+    let last_c = *cum_k.last().unwrap();
+    let mut out = Vec::with_capacity(num_out);
+    let mut j = 0usize;
+    for i in 0..num_out {
+        let target = if num_out == 1 {
+            0.0
+        } else {
+            last_c * (i as f32) / ((num_out - 1) as f32)
+        };
+        while j + 1 < cum_k.len() - 1 && cum_k[j + 1] < target {
+            j += 1;
+        }
+        let c0 = cum_k[j];
+        let c1 = cum_k[j + 1];
+        let alpha = if c1 > c0 { ((target - c0) / (c1 - c0)).clamp(0.0, 1.0) } else { 0.0 };
+        out.push([
+            pts_k[j][0] + alpha * (pts_k[j + 1][0] - pts_k[j][0]),
+            pts_k[j][1] + alpha * (pts_k[j + 1][1] - pts_k[j][1]),
+        ]);
+    }
+    out
+}
+
+pub fn strokes_to_features(strokes: &[Vec<[f32; 2]>]) -> (Vec<f32>, usize) {
+    let valid: Vec<&Vec<[f32; 2]>> = strokes.iter().filter(|s| !s.is_empty()).collect();
+    if valid.is_empty() {
+        return (vec![0.0; 4 * FEATURE_DIM], 4);
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for s in &valid {
+        for &[x, y] in s.iter() {
+            if x.is_finite() && y.is_finite() {
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    if !x0.is_finite() {
+        return (vec![0.0; 4 * FEATURE_DIM], 4);
+    }
+    let w = (x1 - x0).max(1e-4);
+    let h = (y1 - y0).max(1e-4);
+    let cx = 0.5 * (x0 + x1);
+    let cy = 0.5 * (y0 + y1);
+    let scale = h.max(w * 0.16).max(1e-4);
+
+    let norm_strokes: Vec<Vec<[f32; 2]>> = valid
+        .iter()
+        .map(|s| {
+            s.iter()
+                .filter(|p| p[0].is_finite() && p[1].is_finite())
+                .map(|&[x, y]| [(x - cx) / scale, (y - cy) / scale])
+                .collect()
+        })
+        .filter(|s: &Vec<[f32; 2]>| !s.is_empty())
+        .collect();
+
+    let mut total_len = 0.0_f32;
+    for s in &norm_strokes {
+        for i in 0..s.len().saturating_sub(1) {
+            total_len += (s[i + 1][0] - s[i][0]).hypot(s[i + 1][1] - s[i][1]);
+        }
+    }
+    let budget = (MAX_POINTS as isize - 3 * norm_strokes.len() as isize).max(48) as f32;
+    let base_step = 0.05_f32;
+    let step = if total_len > 0.0 {
+        base_step.max(total_len / budget)
+    } else {
+        base_step
+    };
+    let mut resampled: Vec<Vec<[f32; 2]>> = norm_strokes.iter().map(|s| resample_stroke(s, step)).collect();
+    let mut total_pts: usize = resampled.iter().map(Vec::len).sum();
+    if total_pts > MAX_POINTS {
+        let step2 = step * (total_pts as f32 / (MAX_POINTS as f32 * 0.90));
+        resampled = norm_strokes.iter().map(|s| resample_stroke(s, step2)).collect();
+        total_pts = resampled.iter().map(Vec::len).sum();
+    }
+
+    let t_raw = total_pts.min(MAX_POINTS).max(4);
+    let t_pad = ((t_raw + 3) / 4) * 4;
+    let mut feats = vec![0.0_f32; t_pad * FEATURE_DIM];
+    let n_strokes = resampled.len();
+    let denom = (n_strokes.saturating_sub(1)).max(1) as f32;
+    let mut pos = 0usize;
+    let mut prev_xy: Option<[f32; 2]> = None;
+
+    for (si, s) in resampled.iter().enumerate() {
+        if pos >= MAX_POINTS {
+            break;
+        }
+        let k = s.len().min(MAX_POINTS - pos);
+        let s_pos_val = si as f32 / denom;
+        for i in 0..k {
+            let row = &mut feats[(pos + i) * FEATURE_DIM..(pos + i + 1) * FEATURE_DIM];
+            row[0] = s[i][0].clamp(-10.0, 10.0);
+            row[1] = s[i][1].clamp(-5.0, 5.0);
+            if i == 0 {
+                if let Some(prev) = prev_xy {
+                    let jdx = (s[0][0] - prev[0]).clamp(-5.0, 5.0);
+                    let jdy = (s[0][1] - prev[1]).clamp(-5.0, 5.0);
+                    row[2] = jdx;
+                    row[3] = jdy;
+                    row[6] = jdx.hypot(jdy).ln_1p();
+                }
+                row[8] = 1.0;
+            } else {
+                let dx = (s[i][0] - s[i - 1][0]).clamp(-3.0, 3.0);
+                let dy = (s[i][1] - s[i - 1][1]).clamp(-3.0, 3.0);
+                let norm = dx.hypot(dy);
+                let safe = norm.max(1e-5);
+                row[2] = dx * 4.0;
+                row[3] = dy * 4.0;
+                row[4] = dx / safe;
+                row[5] = dy / safe;
+                row[6] = (norm * 4.0).ln_1p();
+            }
+            row[7] = if i + 1 == k { 0.0 } else { 1.0 };
+            row[9] = s_pos_val;
+        }
+        prev_xy = Some(s[k - 1]);
+        pos += k;
+    }
+    (feats, t_pad)
+}
+
+fn detokenize_latex(tokens: &[&str]) -> String {
+    let mut out = String::new();
+    let mut prev_cmd_alpha = false;
+    for &tok in tokens {
+        if prev_cmd_alpha && tok.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+            out.push(' ');
+        }
+        out.push_str(tok);
+        prev_cmd_alpha = tok.starts_with('\\')
+            && tok.len() > 1
+            && tok[1..].bytes().all(|b| b.is_ascii_alphabetic());
+    }
+    out
+}
+
+fn build_sinusoidal_pe(max_len: usize, d_model: usize) -> Vec<f32> {
+    let mut pe = vec![0.0_f32; max_len * d_model];
+    let half = d_model / 2;
+    let mut div = vec![0.0_f32; half];
+    for i in 0..half {
+        div[i] = (-((2 * i) as f32) * (10000.0_f32.ln()) / d_model as f32).exp();
+    }
+    for pos in 0..max_len {
+        let p = pos as f32;
+        for i in 0..half {
+            let ang = p * div[i];
+            pe[pos * d_model + 2 * i] = ang.sin() * 0.25;
+            pe[pos * d_model + 2 * i + 1] = ang.cos() * 0.25;
+        }
+    }
+    pe
+}
+
+impl MathModel {
+    pub fn load(frec: FrecFile) -> Result<Self, String> {
+        if frec.header.kind != "math_conformer_v2" {
+            return Err(format!("Expected math_conformer_v2 model, got {}", frec.header.kind));
+        }
+        let d = frec.header.config.d_model;
+        let hd = d / frec.header.config.nhead;
+        let rope = RopeTable::new(hd, 2048);
+        let sin_pe = build_sinusoidal_pe(1024, d);
+        Ok(Self { frec, rope, sin_pe })
+    }
+
+    pub fn recognize(&self, strokes: &[Vec<[f32; 2]>], max_len: usize) -> Result<String, String> {
+        let cfg = &self.frec.header.config;
+        let d = cfg.d_model;
+        let nhead = cfg.nhead;
+        let hd = d / nhead;
+        let dim_ff = cfg.dim_ff;
+        let vocab_size = cfg.vocab_size;
+
+        let (feats, t_in) = strokes_to_features(strokes);
+
+        // 4x Conv1d stem
+        let (w0, _) = self.frec.f32_slice("stem.0.weight")?;
+        let (b0, _) = self.frec.f32_slice("stem.0.bias")?;
+        let (h0, t1) = conv1d(&feats, t_in, cfg.in_features, w0, b0, d / 2, 5, 2, 2, true);
+        let (w2, _) = self.frec.f32_slice("stem.2.weight")?;
+        let (b2, _) = self.frec.f32_slice("stem.2.bias")?;
+        let (h1, s_len) = conv1d(&h0, t1, d / 2, w2, b2, d, 5, 2, 2, true);
+
+        let mut memory = vec![0.0_f32; s_len * d];
+        let (in_w, _) = self.frec.f32_slice("enc_in_norm.weight")?;
+        let (in_b, _) = self.frec.f32_slice("enc_in_norm.bias")?;
+        layer_norm(&h1, s_len, d, in_w, in_b, &mut memory);
+
+        for l in 0..cfg.num_encoder_layers {
+            conformer_block(
+                &self.frec,
+                &format!("encoder_layers.{l}"),
+                false,
+                &mut memory,
+                s_len,
+                d,
+                nhead,
+                dim_ff,
+                cfg.conv_kernel,
+                &self.rope,
+            )?;
+        }
+
+        let (out_w, _) = self.frec.f32_slice("enc_out_norm.weight")?;
+        let (out_b, _) = self.frec.f32_slice("enc_out_norm.bias")?;
+        let mut mem_normed = vec![0.0_f32; s_len * d];
+        layer_norm(&memory, s_len, d, out_w, out_b, &mut mem_normed);
+
+        // Precompute cross-attention K/V once per decoder layer: [nhead, s_len, hd]
+        let n_dec = cfg.num_decoder_layers;
+        let mut cross_ks: Vec<Vec<f32>> = Vec::with_capacity(n_dec);
+        let mut cross_vs: Vec<Vec<f32>> = Vec::with_capacity(n_dec);
+        let mut ckv_buf = vec![0.0_f32; s_len * 2 * d];
+        for l in 0..n_dec {
+            let w = self.frec.linear(&format!("decoder_layers.{l}.cross_kv.weight"))?;
+            let b = self.frec.opt_f32(&format!("decoder_layers.{l}.cross_kv.bias"));
+            linear(&mem_normed, s_len, &w, b, &mut ckv_buf);
+            let mut ck = vec![0.0_f32; nhead * s_len * hd];
+            let mut cv = vec![0.0_f32; nhead * s_len * hd];
+            for pos in 0..s_len {
+                let base = pos * 2 * d;
+                for h in 0..nhead {
+                    let dst = (h * s_len + pos) * hd;
+                    ck[dst..dst + hd].copy_from_slice(&ckv_buf[base + h * hd..base + (h + 1) * hd]);
+                    cv[dst..dst + hd].copy_from_slice(&ckv_buf[base + d + h * hd..base + d + (h + 1) * hd]);
+                }
+            }
+            cross_ks.push(ck);
+            cross_vs.push(cv);
+        }
+
+        // Autoregressive KV-cached greedy decoding
+        let (tok_emb, _) = self.frec.f32_slice("tok_emb.weight")?;
+        let (dec_out_w, _) = self.frec.f32_slice("dec_out_norm.weight")?;
+        let (dec_out_b, _) = self.frec.f32_slice("dec_out_norm.bias")?;
+        let lm_head_w = self.frec.linear("lm_head.weight")?;
+
+        // Self-attention KV caches per layer: [nhead][step * hd]
+        let mut self_k: Vec<Vec<Vec<f32>>> = (0..n_dec)
+            .map(|_| (0..nhead).map(|_| Vec::with_capacity(max_len * hd)).collect())
+            .collect();
+        let mut self_v: Vec<Vec<Vec<f32>>> = (0..n_dec)
+            .map(|_| (0..nhead).map(|_| Vec::with_capacity(max_len * hd)).collect())
+            .collect();
+
+        let scale = 1.0 / (hd as f32).sqrt();
+        let mut cur_tok = BOS_ID;
+        let mut out_ids = Vec::with_capacity(64);
+        let mut x = vec![0.0_f32; d];
+        let mut norm_buf = vec![0.0_f32; d];
+        let mut qkv = vec![0.0_f32; 3 * d];
+        let mut cq = vec![0.0_f32; d];
+        let mut attn_cat = vec![0.0_f32; d];
+        let mut proj_buf = vec![0.0_f32; d];
+        let mut ff_mid = vec![0.0_f32; dim_ff];
+        let mut logits = vec![0.0_f32; vocab_size];
+        let mut scores = Vec::with_capacity(s_len.max(max_len));
+
+        for step in 0..max_len {
+            let emb_row = &tok_emb[cur_tok * d..(cur_tok + 1) * d];
+            let pe_row = &self.sin_pe[step * d..(step + 1) * d];
+            for i in 0..d {
+                x[i] = emb_row[i] + pe_row[i];
+            }
+
+            for l in 0..n_dec {
+                let pfx = format!("decoder_layers.{l}");
+                // 1. Causal self-attention with KV cache
+                let (w, _) = self.frec.f32_slice(&format!("{pfx}.norm1.weight"))?;
+                let (b, _) = self.frec.f32_slice(&format!("{pfx}.norm1.bias"))?;
+                layer_norm(&x, 1, d, w, b, &mut norm_buf);
+                let wqkv = self.frec.linear(&format!("{pfx}.self_qkv.weight"))?;
+                let bqkv = self.frec.opt_f32(&format!("{pfx}.self_qkv.bias"));
+                linear(&norm_buf, 1, &wqkv, bqkv, &mut qkv);
+
+                let past_len = step + 1;
+                scores.resize(past_len, 0.0);
+                for h in 0..nhead {
+                    let qh = &qkv[h * hd..(h + 1) * hd];
+                    let kh_new = &qkv[d + h * hd..d + (h + 1) * hd];
+                    let vh_new = &qkv[2 * d + h * hd..2 * d + (h + 1) * hd];
+                    self_k[l][h].extend_from_slice(kh_new);
+                    self_v[l][h].extend_from_slice(vh_new);
+                    let kh_all = &self_k[l][h];
+                    let vh_all = &self_v[l][h];
+                    for p in 0..past_len {
+                        let kp = &kh_all[p * hd..(p + 1) * hd];
+                        let mut dot = 0.0_f32;
+                        for k in 0..hd {
+                            dot += qh[k] * kp[k];
+                        }
+                        scores[p] = dot * scale;
+                    }
+                    softmax_inplace(&mut scores[..past_len]);
+                    let oh = &mut attn_cat[h * hd..(h + 1) * hd];
+                    oh.fill(0.0);
+                    for p in 0..past_len {
+                        let wp = scores[p];
+                        let vp = &vh_all[p * hd..(p + 1) * hd];
+                        for k in 0..hd {
+                            oh[k] += wp * vp[k];
+                        }
+                    }
+                }
+                let wproj = self.frec.linear(&format!("{pfx}.self_proj.weight"))?;
+                let bproj = self.frec.opt_f32(&format!("{pfx}.self_proj.bias"));
+                linear(&attn_cat, 1, &wproj, bproj, &mut proj_buf);
+                for i in 0..d {
+                    x[i] += proj_buf[i];
+                }
+
+                // 2. Cross-attention against precomputed K/V
+                let (w, _) = self.frec.f32_slice(&format!("{pfx}.norm2.weight"))?;
+                let (b, _) = self.frec.f32_slice(&format!("{pfx}.norm2.bias"))?;
+                layer_norm(&x, 1, d, w, b, &mut norm_buf);
+                let wcq = self.frec.linear(&format!("{pfx}.cross_q.weight"))?;
+                let bcq = self.frec.opt_f32(&format!("{pfx}.cross_q.bias"));
+                linear(&norm_buf, 1, &wcq, bcq, &mut cq);
+
+                scores.resize(s_len, 0.0);
+                for h in 0..nhead {
+                    let qh = &cq[h * hd..(h + 1) * hd];
+                    let ck = &cross_ks[l][h * s_len * hd..(h + 1) * s_len * hd];
+                    let cv = &cross_vs[l][h * s_len * hd..(h + 1) * s_len * hd];
+                    for p in 0..s_len {
+                        let kp = &ck[p * hd..(p + 1) * hd];
+                        let mut dot = 0.0_f32;
+                        for k in 0..hd {
+                            dot += qh[k] * kp[k];
+                        }
+                        scores[p] = dot * scale;
+                    }
+                    softmax_inplace(&mut scores[..s_len]);
+                    let oh = &mut attn_cat[h * hd..(h + 1) * hd];
+                    oh.fill(0.0);
+                    for p in 0..s_len {
+                        let wp = scores[p];
+                        let vp = &cv[p * hd..(p + 1) * hd];
+                        for k in 0..hd {
+                            oh[k] += wp * vp[k];
+                        }
+                    }
+                }
+                let wcproj = self.frec.linear(&format!("{pfx}.cross_proj.weight"))?;
+                let bcproj = self.frec.opt_f32(&format!("{pfx}.cross_proj.bias"));
+                linear(&attn_cat, 1, &wcproj, bcproj, &mut proj_buf);
+                for i in 0..d {
+                    x[i] += proj_buf[i];
+                }
+
+                // 3. FFN (GELU)
+                let (w, _) = self.frec.f32_slice(&format!("{pfx}.norm3.weight"))?;
+                let (b, _) = self.frec.f32_slice(&format!("{pfx}.norm3.bias"))?;
+                layer_norm(&x, 1, d, w, b, &mut norm_buf);
+                let wff1 = self.frec.linear(&format!("{pfx}.ff.0.weight"))?;
+                let bff1 = self.frec.opt_f32(&format!("{pfx}.ff.0.bias"));
+                linear(&norm_buf, 1, &wff1, bff1, &mut ff_mid);
+                for v in &mut ff_mid {
+                    *v = gelu(*v);
+                }
+                let wff2 = self.frec.linear(&format!("{pfx}.ff.3.weight"))?;
+                let bff2 = self.frec.opt_f32(&format!("{pfx}.ff.3.bias"));
+                linear(&ff_mid, 1, &wff2, bff2, &mut proj_buf);
+                for i in 0..d {
+                    x[i] += proj_buf[i];
+                }
+            }
+
+            layer_norm(&x, 1, d, dec_out_w, dec_out_b, &mut norm_buf);
+            linear(&norm_buf, 1, &lm_head_w, None, &mut logits);
+
+            let mut best_id = 0usize;
+            let mut best_v = f32::NEG_INFINITY;
+            for (i, &v) in logits.iter().enumerate() {
+                if v > best_v {
+                    best_v = v;
+                    best_id = i;
+                }
+            }
+            if best_id == EOS_ID {
+                break;
+            }
+            out_ids.push(best_id);
+            cur_tok = best_id;
+        }
+
+        let vocab = &self.frec.header.vocab;
+        let toks: Vec<&str> = out_ids
+            .iter()
+            .filter(|&&id| id != PAD_ID && id != BOS_ID && id != EOS_ID && id < vocab.len())
+            .map(|&id| vocab[id].as_str())
+            .collect();
+        Ok(detokenize_latex(&toks))
+    }
+}

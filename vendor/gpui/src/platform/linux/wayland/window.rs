@@ -117,6 +117,9 @@ pub struct WaylandWindowState {
     in_progress_configure: Option<InProgressConfigure>,
     pending_configure: Option<(u32, InProgressConfigure)>,
     resize_throttle: bool,
+    frame_callback_pending: bool,
+    in_frame: bool,
+    frame_requested_during_frame: bool,
     in_progress_window_controls: Option<WindowControls>,
     window_controls: WindowControls,
     client_inset: Option<Pixels>,
@@ -191,6 +194,9 @@ impl WaylandWindowState {
             in_progress_configure: None,
             pending_configure: None,
             resize_throttle: false,
+            frame_callback_pending: false,
+            in_frame: false,
+            frame_requested_during_frame: false,
             client,
             appearance,
             handle,
@@ -297,6 +303,15 @@ impl WaylandWindow {
             .get_xdg_surface(&surface, &globals.qh, surface.id());
         let toplevel = xdg_surface.get_toplevel(&globals.qh, surface.id());
 
+        if let Some(title) = params
+            .titlebar
+            .as_ref()
+            .and_then(|titlebar| titlebar.title.as_ref())
+            .filter(|title| !title.is_empty())
+        {
+            toplevel.set_title(title.to_string());
+        }
+
         if params.kind == WindowKind::Floating {
             toplevel.set_parent(parent.as_ref());
         }
@@ -363,21 +378,53 @@ impl WaylandWindowStatePtr {
         Rc::ptr_eq(&self.state, &other.state)
     }
 
+    pub fn request_frame_callback(&self) {
+        let Ok(mut state) = self.state.try_borrow_mut() else {
+            return;
+        };
+        if !state.acknowledged_first_configure {
+            return;
+        }
+        if state.in_frame {
+            state.frame_requested_during_frame = true;
+            return;
+        }
+        if state.frame_callback_pending {
+            return;
+        }
+        state.frame_callback_pending = true;
+        state.surface.frame(&state.globals.qh, state.surface.id());
+        state.surface.commit();
+    }
+
     pub fn frame(&self) {
-        let mut state = self.state.borrow_mut();
-        state.resize_throttle = false;
-        let pending_configure = state.pending_configure.take();
-        drop(state);
+        let pending_configure = {
+            let mut state = self.state.borrow_mut();
+            state.frame_callback_pending = false;
+            state.in_frame = true;
+            state.frame_requested_during_frame = false;
+            state.resize_throttle = false;
+            state.pending_configure.take()
+        };
         if let Some((serial, configure)) = pending_configure {
             self.apply_configure(serial, Some(configure));
         }
-        let state = self.state.borrow();
-        state.surface.frame(&state.globals.qh, state.surface.id());
-        drop(state);
 
         let mut cb = self.callbacks.borrow_mut();
         if let Some(fun) = cb.request_frame.as_mut() {
             fun(Default::default());
+        }
+        drop(cb);
+
+        let needs_next_frame = {
+            let mut state = self.state.borrow_mut();
+            state.in_frame = false;
+            let requested = state.frame_requested_during_frame;
+            state.frame_requested_during_frame = false;
+            requested || state.resize_throttle || state.pending_configure.is_some()
+        };
+        if needs_next_frame {
+            self.request_frame_callback();
         }
     }
 
@@ -472,10 +519,18 @@ impl WaylandWindowStatePtr {
         );
 
         let request_frame_callback = !state.acknowledged_first_configure;
+        let needs_frame = state.resize_throttle
+            || state.pending_configure.is_some()
+            || state.drawable_size_dirty;
         if request_frame_callback {
             state.acknowledged_first_configure = true;
             drop(state);
             self.frame();
+        } else if needs_frame {
+            drop(state);
+            self.request_frame_callback();
+        } else if !state.in_frame {
+            state.surface.commit();
         }
     }
 
@@ -788,6 +843,7 @@ impl WaylandWindowStatePtr {
     }
 
     pub fn set_hovered(&self, focus: bool) {
+        self.state.borrow_mut().hovered = focus;
         if let Some(ref mut fun) = self.callbacks.borrow_mut().hover_status_change {
             fun(focus);
         }
@@ -1070,6 +1126,11 @@ impl PlatformWindow for WaylandWindow {
 
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {
         self.0.callbacks.borrow_mut().appearance_changed = Some(callback);
+    }
+
+    fn frame_notifier(&self) -> Option<Rc<dyn Fn()>> {
+        let ptr = self.0.clone();
+        Some(Rc::new(move || ptr.request_frame_callback()))
     }
 
     fn draw(&self, scene: &Scene) {

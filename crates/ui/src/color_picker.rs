@@ -121,16 +121,18 @@ fn paint_picker_texture(
         if let Some(previous) = texture.take() {
             let _ = window.drop_image(previous.image);
         }
-        let buffer = image::RgbaImage::from_raw(key.width, key.height, picker_pixels(key)).unwrap();
+        let Some(image) = RenderImage::from_ephemeral_bgra(key.width, key.height, picker_pixels(key))
+        else {
+            return;
+        };
         *texture = Some(PickerTexture {
             key,
-            image: Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
-                buffer
-            )])),
+            image: Arc::new(image),
         });
     }
-    let image = texture.as_ref().unwrap().image.clone();
-    let _ = window.paint_image(bounds, Corners::default(), image, 0, false);
+    if let Some(texture) = texture.as_ref() {
+        let _ = window.paint_image(bounds, Corners::default(), texture.image.clone(), 0, false);
+    }
 }
 
 fn marker(bounds: Bounds<Pixels>, window: &mut Window) {
@@ -190,13 +192,17 @@ impl NotesView {
                 }
                 state.hsv
             }
-            _ => {
+            existing => {
                 let hsv = Hsv::from_color(color, 0.);
-                self.color_picker = Some(PickerState {
+                let textures = existing
+                    .as_ref()
+                    .map(|state| state.textures.clone())
+                    .unwrap_or_else(|| Rc::new(RefCell::new([None, None])));
+                *existing = Some(PickerState {
                     field: field.entity_id(),
                     color,
                     hsv,
-                    textures: Rc::new(RefCell::new([None, None])),
+                    textures,
                 });
                 hsv
             }
@@ -216,13 +222,17 @@ impl NotesView {
                 state.color = color;
                 state.hsv = hsv;
             }
-            _ => {
-                self.color_picker = Some(PickerState {
+            existing => {
+                let textures = existing
+                    .as_ref()
+                    .map(|state| state.textures.clone())
+                    .unwrap_or_else(|| Rc::new(RefCell::new([None, None])));
+                *existing = Some(PickerState {
                     field: field.entity_id(),
                     color,
                     hsv,
-                    textures: Rc::new(RefCell::new([None, None])),
-                })
+                    textures,
+                });
             }
         }
         field.update(cx, |f, cx| f.set_content(color.hex(), cx));

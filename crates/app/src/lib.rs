@@ -221,6 +221,7 @@ pub struct Controller {
     pdf_preview_pending: HashSet<String>,
     pdf_preview_failed: HashSet<String>,
     last_cache_trim: Instant,
+    needs_memory_trim: bool,
 
     // Search. Results from older generations are discarded.
     pending_search: Option<(String, u64)>,
@@ -313,11 +314,8 @@ impl Controller {
         };
         let active = document.metadata.id;
         let mut sessions = HashMap::new();
-        let mut session = Session::new(document);
+        let mut session = Session::with_page(document, settings.remembered_page(active));
         session.history = history;
-        if let Some(page) = settings.remembered_page(active) {
-            session.show_page(page);
-        }
         let initial_tool = if session.document.metadata.trashed {
             Tool::Hand
         } else {
@@ -358,6 +356,7 @@ impl Controller {
             closed_sessions: HashSet::new(),
             last_draft: Instant::now(),
             last_cache_trim: Instant::now(),
+            needs_memory_trim: true,
             pending_actions: HashMap::new(),
             library_undo: Vec::new(),
             pending_imports: HashMap::new(),
@@ -447,13 +446,43 @@ impl Controller {
     pub fn has_background_work(&self) -> bool {
         self.busy > 0 || self.pending_search.is_some()
     }
+    pub fn set_wakeup(&self, wakeup: folio_storage::Wakeup) {
+        self.workers.set_wakeup(wakeup.clone());
+        self.persistence.set_wakeup(wakeup.clone());
+        self.math_service.set_wakeup(wakeup.clone());
+        self.recognition_service.set_wakeup(wakeup);
+    }
+    /// Next time-based maintenance deadline when no fast polling is active.
+    /// Returns `None` when completely idle so the UI can sleep at 0 Hz.
+    pub fn next_idle_wake(&self) -> Option<Duration> {
+        let mut next: Option<Duration> = None;
+        let mut consider = |delay: Duration| {
+            next = Some(match next {
+                Some(current) => current.min(delay),
+                None => delay,
+            });
+        };
+        if self.needs_memory_trim && self.busy == 0 && self.interaction.is_none() {
+            consider(Duration::from_millis(250).saturating_sub(self.last_cache_trim.elapsed()));
+        }
+        if self.settings.autosave && !self.dirty_notes.is_empty() && self.interaction.is_none() {
+            consider(Duration::from_secs(2).saturating_sub(self.last_retry.elapsed()));
+        }
+        if let Some(delay) = self.math_ink_poll_delay() {
+            consider(delay);
+        }
+        if self.pending_pdf_password.is_none() && !self.pdf_password_queue.is_empty() {
+            consider(Duration::from_millis(16));
+        }
+        next
+    }
     /// Work that benefits from frame-rate completion polling. Failed saves and
     /// OCR awaiting a download choice can use the slower idle maintenance tick.
     pub fn needs_fast_poll(&self) -> bool {
         self.interaction.is_some()
             || self.has_background_work()
             || !self.save_notes.is_empty()
-            || (self.recognition_pending && !self.recognition_setup_needed())
+            || self.recognition_pending
             || self.equation_pending
             || self.math_session.as_ref().is_some_and(|s| s.pending)
             || !self.math_live_pending.is_empty()

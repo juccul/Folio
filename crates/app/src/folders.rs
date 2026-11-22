@@ -257,22 +257,24 @@ impl Controller {
         Ok(id)
     }
     pub fn rename_notebook(&mut self, id: Id, name: String) -> Result<(), String> {
-        let parent = self
+        let index = self
             .notebooks
             .iter()
-            .find(|n| n.id == id)
-            .ok_or("Folder no longer exists")?
-            .parent;
+            .position(|n| n.id == id)
+            .ok_or("Folder no longer exists")?;
+        let parent = self.notebooks[index].parent;
         let name = self.validate_folder_name(&name, parent, Some(id))?;
-        let n = self.notebooks.iter_mut().find(|n| n.id == id).unwrap();
+        let n = &mut self.notebooks[index];
         n.name = name;
         self.persistence.notebook(n.clone());
         Ok(())
     }
     pub fn validate_folder_move(&self, id: Id, parent: Option<Id>) -> Result<(), String> {
-        if !self.notebooks.iter().any(|n| n.id == id) {
-            return Err("Folder no longer exists".into());
-        }
+        let folder = self
+            .notebooks
+            .iter()
+            .find(|n| n.id == id)
+            .ok_or("Folder no longer exists")?;
         let mut cursor = parent;
         let mut visited = HashSet::new();
         while let Some(next) = cursor {
@@ -286,15 +288,16 @@ impl Controller {
                 .ok_or("Destination folder no longer exists")?
                 .parent;
         }
-        let name = &self.notebooks.iter().find(|n| n.id == id).unwrap().name;
-        self.validate_folder_name(name, parent, Some(id))?;
+        self.validate_folder_name(&folder.name, parent, Some(id))?;
         Ok(())
     }
     pub fn move_notebook(&mut self, id: Id, parent: Option<Id>) -> Result<(), String> {
         self.validate_folder_move(id, parent)?;
-        let name = &self.notebooks.iter().find(|n| n.id == id).unwrap().name;
-        self.validate_folder_name(name, parent, Some(id))?;
-        let n = self.notebooks.iter_mut().find(|n| n.id == id).unwrap();
+        let n = self
+            .notebooks
+            .iter_mut()
+            .find(|n| n.id == id)
+            .ok_or("Folder no longer exists")?;
         n.parent = parent;
         self.persistence.notebook(n.clone());
         Ok(())

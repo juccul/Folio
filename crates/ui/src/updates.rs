@@ -89,7 +89,9 @@ impl NotesView {
             return;
         }
         let data = self.controller.data_dir.clone();
-        let version = self.updater.state.version().unwrap().to_owned();
+        let Some(version) = self.updater.state.version().map(str::to_owned) else {
+            return;
+        };
         let unique = folio_document::Id::new_v4();
         let backup = data.join(format!("before-update-{version}-{unique}.foliobackup"));
         self.update_preparing = true;
@@ -102,8 +104,7 @@ impl NotesView {
                 this.update_preparing = false;
                 match result {
                     Ok(data) => {
-                        this.updater.restart(data);
-                        this.update_preparing = true;
+                        this.update_preparing = this.updater.restart(data);
                     }
                     Err(error) => {
                         this.controller.error = Some(format!(
@@ -152,8 +153,9 @@ impl NotesView {
         );
         let status = if supported {
             self.settings_row("Status", &description)
-                .child(self.settings_action("update-check", "Check now", cx, |this, _, _| {
-                    this.updater.check()
+                .child(self.settings_action("update-check", "Check now", cx, |this, _, cx| {
+                    this.updater.check();
+                    cx.notify();
                 }))
                 .when(
                     self.updater.state.can_download() || self.updater.state.can_restart(),

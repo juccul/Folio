@@ -35,7 +35,7 @@ fn main() {
         builder.push(StrokePoint::new(p.position, 0.7, i as u64 * 8));
     }
     let mut stroke = builder.finish().unwrap();
-    stroke.path = path.clone().into();
+    stroke.path = std::sync::Arc::new(PathSamples::from_slice(&path));
     measure("outline/10k", || folio_ink::outline(black_box(&path)));
     measure("refine/10k", || folio_ink::refine(black_box(&mut stroke)));
     measure("cut/miss/10k", || {

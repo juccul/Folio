@@ -1,0 +1,29 @@
+Folio Bundled Offline Stroke Recognition Models (folio-stroke-v2)
+=================================================================
+
+This directory contains Folio's built-in offline stroke-sequence recognition
+models, executed directly on CPU in pure Rust by `folio-recognition`:
+
+  - math_v2.frec    : Math v2 RoPE Conformer Encoder + Decoder (18.58M params,
+                      per-channel INT8 symmetric quantization)
+  - htr_v2.frec     : Handwriting v2 RoPE Conformer-CTC (16.63M params,
+                      per-channel INT8 symmetric quantization)
+  - htr_lm.json.gz  : Compact English unigram/bigram + character 4-gram lexicon
+                      for CTC prefix beam search
+  - pack.json       : Pack manifest (`backend: "folio-stroke-v2"`)
+
+Training Dataset Provenance & Notices
+-------------------------------------
+1. Math v2 (`math_v2.frec`)
+   - Trained on Google Research's MathWriting dataset (CC-BY-4.0).
+     https://github.com/google-research/google-research/tree/master/mathwriting
+
+2. Handwriting v2 (`htr_v2.frec`) & Lexicon (`htr_lm.json.gz`)
+   - Trained on a combined online stroke corpus consisting of:
+     * Penpal handwriting stroke dataset (MIT License)
+     * DeepWriting dataset (ETH Zurich — CC BY-NC-SA 4.0; non-commercial research/personal use)
+     * BRUSH online handwriting dataset (research use)
+     * English word list & n-gram statistics built strictly from training texts
+       and standard system English dictionaries.
+
+For full project and third-party dependency notices, see `LICENSES.md`.

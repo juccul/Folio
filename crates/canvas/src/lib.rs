@@ -146,14 +146,17 @@ impl PageStack {
         viewport.pan.y = (viewport.pan.y - offset).clamp(minimum, 36.) + offset;
     }
 }
-/// Uniform-grid broad phase. Oversize objects have a separate bucket so malformed
-/// or enormous imported geometry cannot create an unbounded allocation.
+/// Uniform-grid broad phase indexed by dense `u32` handles. Oversize objects
+/// use a separate bucket so malformed or enormous geometry cannot create an
+/// unbounded allocation.
 #[derive(Default)]
 pub struct SpatialIndex {
-    cells: HashMap<(i32, i32), Vec<Id>>,
+    cells: HashMap<(i32, i32), Vec<u32>>,
     cell_references: usize,
-    oversize: Vec<Id>,
-    bounds: HashMap<Id, Rect>,
+    oversize: Vec<u32>,
+    entries: Vec<Option<(Id, Rect)>>,
+    slots: HashMap<Id, u32>,
+    free_slots: Vec<u32>,
     sources: HashMap<Id, Vec<Id>>,
     hidden: HashMap<Id, usize>,
     generation: u64,
@@ -195,15 +198,19 @@ impl SpatialIndex {
         }
     }
     pub fn remove(&mut self, id: Id) {
-        if let Some(r) = self.bounds.remove(&id) {
+        if let Some(slot) = self.slots.remove(&id)
+            && let Some((_, r)) = self.entries[slot as usize].take()
+        {
+            self.free_slots.push(slot);
             self.generation = self.generation.wrapping_add(1);
             let (x0, y0, x1, y1) = Self::cells(r);
             if Self::bounded((x0, y0, x1, y1)) {
                 for x in x0..=x1 {
                     for y in y0..=y1 {
                         if let Some(ids) = self.cells.get_mut(&(x, y)) {
-                            ids.retain(|v| *v != id);
-                            self.cell_references -= 1;
+                            let before = ids.len();
+                            ids.retain(|v| *v != slot);
+                            self.cell_references -= before - ids.len();
                             if ids.is_empty() {
                                 self.cells.remove(&(x, y));
                             }
@@ -211,41 +218,51 @@ impl SpatialIndex {
                     }
                 }
             } else {
-                self.oversize.retain(|v| *v != id);
+                self.oversize.retain(|v| *v != slot);
             }
         }
     }
     pub fn insert(&mut self, id: Id, r: Rect) {
-        if self.bounds.get(&id) == Some(&r) {
-            return;
-        }
-        // Small transforms often leave cell membership unchanged. Update the
-        // exact bounds and invalidate culling without removing/readding buckets.
-        if Self::valid(r)
-            && self.bounds.get(&id).is_some_and(|old| {
-                let cells = Self::cells(*old);
-                let new_cells = Self::cells(r);
-                cells == new_cells || (!Self::bounded(cells) && !Self::bounded(new_cells))
-            })
+        if let Some(&slot) = self.slots.get(&id)
+            && let Some((_, old)) = self.entries[slot as usize]
         {
-            self.bounds.insert(id, r);
-            self.generation = self.generation.wrapping_add(1);
-            return;
+            if old == r {
+                return;
+            }
+            // Small transforms often leave cell membership unchanged. Update the
+            // exact bounds and invalidate culling without removing/readding buckets.
+            if Self::valid(r) {
+                let cells = Self::cells(old);
+                let new_cells = Self::cells(r);
+                if cells == new_cells || (!Self::bounded(cells) && !Self::bounded(new_cells)) {
+                    self.entries[slot as usize] = Some((id, r));
+                    self.generation = self.generation.wrapping_add(1);
+                    return;
+                }
+            }
         }
         self.remove(id);
         if !Self::valid(r) {
             return;
         }
         self.generation = self.generation.wrapping_add(1);
-        self.bounds.insert(id, r);
+        let slot = if let Some(slot) = self.free_slots.pop() {
+            self.entries[slot as usize] = Some((id, r));
+            slot
+        } else {
+            let slot = u32::try_from(self.entries.len()).expect("spatial index exceeds u32::MAX");
+            self.entries.push(Some((id, r)));
+            slot
+        };
+        self.slots.insert(id, slot);
         let (x0, y0, x1, y1) = Self::cells(r);
         if !Self::bounded((x0, y0, x1, y1)) {
-            self.oversize.push(id);
+            self.oversize.push(slot);
             return;
         }
         for x in x0..=x1 {
             for y in y0..=y1 {
-                self.cells.entry((x, y)).or_default().push(id);
+                self.cells.entry((x, y)).or_default().push(slot);
                 self.cell_references += 1;
             }
         }
@@ -254,7 +271,9 @@ impl SpatialIndex {
         self.cells.clear();
         self.cell_references = 0;
         self.oversize.clear();
-        self.bounds.clear();
+        self.entries.clear();
+        self.slots.clear();
+        self.free_slots.clear();
         self.sources.clear();
         self.hidden.clear();
         self.generation = self.generation.wrapping_add(1);
@@ -267,10 +286,21 @@ impl SpatialIndex {
                 }
             }
         }
+        let visible_estimate = page.objects.len().saturating_sub(self.hidden.len());
+        self.entries.reserve(visible_estimate);
+        self.slots.reserve(visible_estimate);
         for o in page.objects.values() {
             if !self.hidden.contains_key(&o.id()) {
                 self.insert(o.id(), o.bounds());
             }
+        }
+        self.entries.shrink_to_fit();
+        self.slots.shrink_to_fit();
+        self.free_slots.shrink_to_fit();
+        self.oversize.shrink_to_fit();
+        self.cells.shrink_to_fit();
+        for bucket in self.cells.values_mut() {
+            bucket.shrink_to_fit();
         }
     }
     /// Touch only changed objects and their derived-object sources.
@@ -297,18 +327,19 @@ impl SpatialIndex {
         // Bulk edits in dense cells otherwise repeatedly retain the same bucket
         // for every removed/moved object. Rebuild once when a substantial part
         // of the page changes, while retaining incremental work for small edits.
-        if changed.len() > 64 && changed.len() > self.bounds.len() / 4 {
+        if changed.len() > 64 && changed.len() > self.slots.len() / 4 {
             // Rendered text can extend beyond its nominal frame. Keep those
             // measured bounds for unchanged objects when taking this shortcut.
             let retained = self
-                .bounds
+                .entries
                 .iter()
+                .flatten()
                 .filter(|(id, _)| !changed.contains(id))
-                .map(|(id, bounds)| (*id, *bounds))
+                .copied()
                 .collect::<Vec<_>>();
             self.rebuild(page);
             for (id, bounds) in retained {
-                if self.bounds.contains_key(&id) {
+                if self.slots.contains_key(&id) {
                     self.insert(id, bounds);
                 }
             }
@@ -367,19 +398,19 @@ impl SpatialIndex {
             return;
         }
         let mut candidates = self.oversize.len();
-        let budget = self.bounds.len().saturating_mul(2);
-        // Decide on the dense-object fallback before hashing any references;
+        let budget = self.slots.len().saturating_mul(2);
+        // Decide on the dense-object fallback before inspecting buckets;
         // otherwise a query does most of a grid search before scanning bounds.
         // Sparse indexes cannot exceed the budget even if every cell is
         // visited, so they keep their single-pass grid lookup.
         if self.cell_references.saturating_add(self.oversize.len()) > budget {
             for x in x0..=x1 {
                 for y in y0..=y1 {
-                    if let Some(ids) = self.cells.get(&(x, y)) {
-                        candidates = candidates.saturating_add(ids.len());
+                    if let Some(slots) = self.cells.get(&(x, y)) {
+                        candidates = candidates.saturating_add(slots.len());
                         if candidates > budget {
                             // For dense multi-cell objects, inspecting each object's
-                            // bounds once is cheaper than hashing repeated references.
+                            // bounds once is cheaper than scanning repeated references.
                             self.query_bounds(r, out);
                             return;
                         }
@@ -389,22 +420,31 @@ impl SpatialIndex {
         }
         for x in x0..=x1 {
             for y in y0..=y1 {
-                if let Some(ids) = self.cells.get(&(x, y)) {
-                    out.extend(ids.iter().copied());
+                if let Some(slots) = self.cells.get(&(x, y)) {
+                    for &slot in slots {
+                        if let Some((id, bounds)) = self.entries[slot as usize]
+                            && bounds.intersects(r)
+                        {
+                            out.insert(id);
+                        }
+                    }
                 }
             }
         }
-        out.extend(self.oversize.iter().copied());
-        // An object may occupy thousands of cells; test its actual bounds once.
-        out.retain(|id| self.bounds[id].intersects(r));
+        for &slot in &self.oversize {
+            if let Some((id, bounds)) = self.entries[slot as usize]
+                && bounds.intersects(r)
+            {
+                out.insert(id);
+            }
+        }
     }
     fn query_bounds(&self, r: Rect, out: &mut HashSet<Id>) {
-        out.extend(
-            self.bounds
-                .iter()
-                .filter(|(_, b)| b.intersects(r))
-                .map(|(id, _)| *id),
-        );
+        for &(id, bounds) in self.entries.iter().flatten() {
+            if bounds.intersects(r) {
+                out.insert(id);
+            }
+        }
     }
 }
 #[cfg(test)]
@@ -623,7 +663,7 @@ mod robustness_tests {
         // Oversize-to-oversize moves also keep membership but update bounds.
         index.insert(id, Rect::new(10000., 10000., 20000., 20000.));
         index.insert(id, Rect::new(-40000., -40000., 20000., 20000.));
-        assert_eq!(index.oversize, vec![id]);
+        assert_eq!(index.oversize, vec![index.slots[&id]]);
         assert!(index.query(Rect::new(10000., 10000., 10., 10.)).is_empty());
         assert_eq!(
             index.query(Rect::new(-40000., -40000., 10., 10.)),
@@ -632,7 +672,7 @@ mod robustness_tests {
         // Invalid replacements remove the previous membership.
         index.insert(id, Rect::new(f32::NAN, 0., 1., 1.));
         assert!(index.oversize.is_empty());
-        assert!(index.bounds.is_empty());
+        assert!(index.slots.is_empty());
         assert_eq!(index.cell_references, 0);
     }
 

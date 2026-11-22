@@ -8,18 +8,19 @@ impl Controller {
                 .cover_page
                 .and_then(|id| session.document.page(id))
                 .unwrap_or(&session.document.pages[0]);
-            if session
+            let cover = if let Some(cover) = session
                 .library_cover
                 .as_ref()
-                .is_none_or(|cover| cover.id != page.id || cover.revision != page.revision)
+                .filter(|cover| cover.id == page.id && cover.revision == page.revision)
             {
-                session.library_cover = Some(Arc::new(page.clone()));
+                cover.clone()
+            } else {
+                let cover = Arc::new(page.clone());
+                session.library_cover = Some(cover.clone());
                 session.memory_usage.set(None);
-            }
-            return Some((
-                session.library_cover.as_ref().unwrap().clone(),
-                session.document.pages.len(),
-            ));
+                cover
+            };
+            return Some((cover, session.document.pages.len()));
         }
         let metadata = self.notes.iter().find(|n| n.id == note)?;
         if let Some((updated, page, count)) = self.library_previews.get(&note)
@@ -62,11 +63,30 @@ impl Controller {
         self.library_preview_recency.push_back(note);
         self.library_previews
             .insert(note, (updated, Arc::new(page), count));
-        while self.library_previews.len() > 48 {
+        while self.library_previews.len() > 24 {
             if let Some(id) = self.library_preview_recency.pop_front() {
                 self.library_previews.remove(&id);
             } else {
                 break;
+            }
+        }
+    }
+    pub fn release_library_preview(&mut self, note: Id) {
+        if self.library_previews.remove(&note).is_some() {
+            self.library_preview_recency.retain(|id| *id != note);
+            self.needs_memory_trim = true;
+        }
+    }
+    pub fn clear_library_previews(&mut self) {
+        if !self.library_previews.is_empty() {
+            self.library_previews.clear();
+            self.library_preview_recency.clear();
+            self.needs_memory_trim = true;
+        }
+        for session in self.sessions.values_mut() {
+            if session.library_cover.take().is_some() {
+                session.memory_usage.set(None);
+                self.needs_memory_trim = true;
             }
         }
     }

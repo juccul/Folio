@@ -70,12 +70,12 @@ impl Default for PenStyle {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StrokePoint {
+    pub timestamp: u64,
     pub x: f32,
     pub y: f32,
     pub pressure: f32,
     pub tilt_x: f32,
     pub tilt_y: f32,
-    pub timestamp: u64,
     pub buttons: u32,
 }
 impl StrokePoint {
@@ -110,8 +110,8 @@ pub struct PathPoint {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InkStroke {
     pub id: Id,
-    pub raw: Arc<Vec<StrokePoint>>,
-    pub path: Arc<Vec<PathPoint>>,
+    pub raw: Arc<RawSamples>,
+    pub path: Arc<PathSamples>,
     pub style: PenStyle,
     pub transform: Transform,
     pub created_at: u64,
@@ -123,21 +123,53 @@ pub struct InkStroke {
 }
 impl InkStroke {
     pub fn bounds(&self) -> Rect {
+        if self.fragment_path.is_none()
+            && !(self.refinement_enabled && self.refined_path.is_some())
+            && !self.path.is_empty()
+            && self.transform.a == 1.
+            && self.transform.b == 0.
+            && self.transform.c == 0.
+            && self.transform.d == 1.
+        {
+            let local = self.path.local_bounds();
+            let bounds = Rect {
+                min: self.transform.apply(local.min),
+                max: self.transform.apply(local.max),
+            };
+            return expand_brush_bounds(bounds, self.path.max_radius(), self.transform);
+        }
         let mut radius = 0.0_f32;
-        let bounds = Rect::from_points(self.display_path().iter().map(|point| {
+        let path = self.display_path();
+        let bounds = Rect::from_points(path.iter().map(|point| {
             radius = radius.max(point.radius);
             self.transform.apply(point.position)
         }));
         expand_brush_bounds(bounds, radius, self.transform)
     }
-    pub fn display_path(&self) -> &[PathPoint] {
-        if self.refinement_enabled {
-            self.refined_path
-                .as_deref()
-                .unwrap_or_else(|| self.fragment_path.as_deref().unwrap_or(&self.path))
-        } else {
-            self.fragment_path.as_deref().unwrap_or(&self.path)
+    pub fn display_path(&self) -> std::borrow::Cow<'_, [PathPoint]> {
+        if self.refinement_enabled
+            && let Some(refined) = self.refined_path.as_deref()
+        {
+            return std::borrow::Cow::Borrowed(refined);
         }
+        if let Some(fragment) = self.fragment_path.as_deref() {
+            return std::borrow::Cow::Borrowed(fragment);
+        }
+        std::borrow::Cow::Owned(self.path.to_vec())
+    }
+    /// Borrow the active display path, decoding `self.path` into a caller-owned
+    /// scratch buffer when neither refined nor fragment geometry overrides it.
+    pub fn decode_display_path<'a>(&'a self, scratch: &'a mut Vec<PathPoint>) -> &'a [PathPoint] {
+        if self.refinement_enabled
+            && let Some(refined) = self.refined_path.as_deref()
+        {
+            return refined;
+        }
+        if let Some(fragment) = self.fragment_path.as_deref() {
+            return fragment;
+        }
+        self.path.decode_into(scratch);
+        scratch.as_slice()
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -283,7 +315,7 @@ pub struct Equation {
     pub source_strokes: Vec<Id>,
     pub transform: Transform,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub math_link: Option<MathLink>,
+    pub math_link: Option<Box<MathLink>>,
 }
 // Pages and commands store objects behind Arc. Boxing the largest variant
 // would add a second allocation and indirection to each equation object.

@@ -8,6 +8,25 @@ use std::{
 };
 mod instance;
 pub use instance::{activate_running_instance, listen_for_activation};
+
+/// Configure the process allocator for low steady-state RAM across worker threads.
+pub fn tune_allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        // Limit per-thread glibc malloc arenas and return large/freed blocks promptly.
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 128 * 1024);
+        libc::mallopt(libc::M_TRIM_THRESHOLD, 128 * 1024);
+    }
+}
+
+/// Ask the platform allocator to return unused free heap pages to the OS.
+pub fn release_unused_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
 pub fn data_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("FOLIO_DATA_DIR") {
         return PathBuf::from(p);

@@ -504,6 +504,12 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
     fn draw(&self, scene: &Scene);
     fn completed_frame(&self) {}
+    /// Optional callback that schedules the next compositor frame when the window
+    /// becomes dirty, allowing on-demand backends (such as Wayland) to sleep at
+    /// 0 Hz while idle.
+    fn frame_notifier(&self) -> Option<Rc<dyn Fn()>> {
+        None
+    }
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
 
     // macOS specific methods

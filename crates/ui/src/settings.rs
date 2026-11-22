@@ -596,9 +596,9 @@ impl NotesView {
             self.settings_row(
                 "Handwriting recognition",
                 if self.controller.recognition_ready() {
-                    "Ready offline."
+                    "Built-in offline stroke models ready."
                 } else {
-                    "Offers setup when you first use it."
+                    "Bundled recognition models unavailable."
                 },
             ),
         ];

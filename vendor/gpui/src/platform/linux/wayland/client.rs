@@ -47,6 +47,10 @@ use wayland_protocols::wp::cursor_shape::v1::client::{
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
 };
+#[cfg(target_os = "linux")]
+use wayland_protocols::wp::linux_dmabuf::zv1::client::{
+    zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_v1,
+};
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::{
     self, ZwpPrimarySelectionOfferV1,
 };
@@ -211,6 +215,7 @@ pub(crate) struct WaylandClientState {
     tablet_pad_controls:HashMap<ObjectId,PadControl>,
     _tablet_seat: Option<zwp_tablet_seat_v2::ZwpTabletSeatV2>,
     serial_tracker: SerialTracker,
+    conn: Connection,
     globals: Globals,
     gpu_context: BladeContext,
     wl_seat: wl_seat::WlSeat, // TODO: Multi seat support
@@ -482,6 +487,56 @@ fn wl_output_version(version: u32) -> u32 {
     version.clamp(WL_OUTPUT_MIN_VERSION, WL_OUTPUT_MAX_VERSION)
 }
 
+#[cfg(target_os = "linux")]
+fn dmabuf_main_device_pci_id(conn: &Connection, globals: &GlobalList) -> Option<u32> {
+    struct DmabufProbe {
+        main_device: Option<u64>,
+    }
+    impl Dispatch<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, ()> for DmabufProbe {
+        fn event(
+            _: &mut Self,
+            _: &zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
+            _: zwp_linux_dmabuf_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for DmabufProbe {
+        fn event(
+            state: &mut Self,
+            _: &zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
+            event: zwp_linux_dmabuf_feedback_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let zwp_linux_dmabuf_feedback_v1::Event::MainDevice { device } = event
+                && let Ok(bytes) = <[u8; 8]>::try_from(device.as_slice())
+            {
+                state.main_device = Some(u64::from_ne_bytes(bytes));
+            }
+        }
+    }
+
+    let mut queue = conn.new_event_queue::<DmabufProbe>();
+    let qh = queue.handle();
+    let dmabuf: zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1 = globals.bind(&qh, 4..=4, ()).ok()?;
+    let feedback = dmabuf.get_default_feedback(&qh, ());
+    let mut probe = DmabufProbe { main_device: None };
+    let _ = queue.roundtrip(&mut probe);
+    feedback.destroy();
+    dmabuf.destroy();
+    let dev = probe.main_device?;
+    crate::platform::blade::pci_id_from_drm_dev(dev)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn dmabuf_main_device_pci_id(_conn: &Connection, _globals: &GlobalList) -> Option<u32> {
+    None
+}
+
 impl WaylandClient {
     pub(crate) fn new() -> Self {
         let conn = Connection::connect_to_env().unwrap();
@@ -536,7 +591,9 @@ impl WaylandClient {
             })
             .unwrap();
 
-        let gpu_context = BladeContext::new().expect("Unable to init GPU context");
+        let preferred_gpu = dmabuf_main_device_pci_id(&conn, &globals);
+        let gpu_context =
+            BladeContext::new_with_preferred_gpu(preferred_gpu).expect("Unable to init GPU context");
 
         let seat = seat.unwrap();
         let globals = Globals::new(
@@ -599,6 +656,7 @@ impl WaylandClient {
             tablet_pads:HashMap::default(),tablet_pad_groups:HashMap::default(),tablet_pad_controls:HashMap::default(),
             _tablet_seat: tablet_seat,
             serial_tracker: SerialTracker::new(),
+            conn: conn.clone(),
             globals,
             gpu_context,
             wl_seat: seat,
@@ -841,7 +899,16 @@ impl LinuxClient for WaylandClient {
             .run(
                 None,
                 &mut WaylandClientStatePtr(Rc::downgrade(&self.0)),
-                |_| {},
+                |state| {
+                    if let Some(client) = state.0.upgrade() {
+                        let client = client.borrow();
+                        if let Some(err) = client.conn.protocol_error() {
+                            log::error!("Wayland compositor protocol error; exiting: {err}");
+                            eprintln!("Wayland compositor protocol error; exiting: {err}");
+                            client.common.signal.stop();
+                        }
+                    }
+                },
             )
             .log_err();
     }

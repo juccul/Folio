@@ -28,8 +28,8 @@ impl LinuxDispatcher {
     pub fn new(main_sender: Sender<Runnable>) -> Self {
         let (background_sender, background_receiver) = flume::unbounded::<Runnable>();
         let thread_count = std::thread::available_parallelism()
-            .map(|i| i.get())
-            .unwrap_or(1);
+            .map(|i| i.get().clamp(2, 4))
+            .unwrap_or(2);
 
         let mut background_threads = (0..thread_count)
             .map(|i| {

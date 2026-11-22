@@ -1837,7 +1837,7 @@ impl NotesView {
             editor = editor.child(self.problem_card(&problem_text, report.as_ref(), false, cx));
         }
         if source_open {
-            let mut sources = div()
+            let sources = div()
                 .flex()
                 .flex_wrap()
                 .gap_1()
@@ -1864,22 +1864,6 @@ impl NotesView {
                         cx.notify();
                     },
                 ));
-            if self.controller.page().properties.pdf.is_some() {
-                sources = sources.child(self.button(
-                    "math-pdf-region",
-                    "Read PDF region",
-                    false,
-                    cx,
-                    |this, window, cx| this.start_pdf_region(window, cx),
-                ));
-                sources = sources.child(self.button(
-                    "math-read-pdf-coordinates",
-                    "PDF region coordinates…",
-                    false,
-                    cx,
-                    |this, window, cx| this.modal(Modal::MathPdfRegion, window, cx),
-                ));
-            }
             editor = editor.child(sources);
         }
         match mode {

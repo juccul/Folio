@@ -272,7 +272,7 @@ pub(super) fn maintain_index(document: &Document, changes: &mut Vec<Change>) {
             };
             let changed = edits.iter().any(|(id,(before,after))| {
                 if includes(id) {
-                    !matches!((before.as_deref(), after.as_deref()),(Some(Object::Stroke(a)),Some(Object::Stroke(b))) if (Arc::ptr_eq(&a.raw,&b.raw) || a.raw == b.raw) && (std::ptr::eq(a.display_path(), b.display_path()) || a.display_path() == b.display_path()))
+                    !matches!((before.as_deref(), after.as_deref()),(Some(Object::Stroke(a)),Some(Object::Stroke(b))) if (Arc::ptr_eq(&a.raw,&b.raw) || a.raw == b.raw) && ((a.fragment_path.is_none() && b.fragment_path.is_none() && !a.refinement_enabled && !b.refinement_enabled && Arc::ptr_eq(&a.path, &b.path)) || a.display_path() == b.display_path()))
                 } else if let Some(object) = after {
                     match object.as_ref() {
                         Object::Shape(shape) => shape.source_strokes.iter().any(&includes),

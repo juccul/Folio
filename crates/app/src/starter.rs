@@ -61,7 +61,7 @@ Select ink, then drag it or use its resize and rotation handles.",
                 "Write a short sentence below, then use Lasso to select it.
 Choose Recognize text. Review and correct the result.
 Copy text keeps the writing; Replace writing inserts editable text and supports undo.
-Recognition asks before downloading its optional 1.47 GB model pack; your pages stay local.",
+Recognition runs offline using built-in stroke models; no download is needed and your pages stay local.",
             ),
             (
                 "Solve a problem",

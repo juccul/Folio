@@ -27,6 +27,7 @@ fn preview(object: Arc<Object>) -> RasterPreview {
         width: 2,
         height: 2,
         bgra: Arc::new(vec![0; 16]),
+        token: Arc::new(()),
     }
 }
 #[test]
@@ -475,7 +476,7 @@ fn linked_math_index_tracks_edits_undo_redo_and_page_changes() {
         rect: Rect::new(0., 0., 180., 64.),
         source_strokes: vec![],
         transform: Transform::default(),
-        math_link: Some(MathLink {
+        math_link: Some(Box::new(MathLink {
             last_error: None,
             expression: "a:=5".into(),
             operation: "assign".into(),
@@ -488,7 +489,7 @@ fn linked_math_index_tracks_edits_undo_redo_and_page_changes() {
             live: false,
             sources: vec![],
             ink_region: None,
-        }),
+        })),
     });
     let id = equation.id();
     app.commit(

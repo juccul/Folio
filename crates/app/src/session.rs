@@ -30,12 +30,18 @@ pub struct Session {
 }
 impl Session {
     pub(crate) fn new(document: Document) -> Self {
+        Self::with_page(document, None)
+    }
+    pub(crate) fn with_page(document: Document, initial_page: Option<Id>) -> Self {
+        let page = initial_page
+            .and_then(|id| document.pages.iter().position(|p| p.id == id))
+            .unwrap_or(0);
         let mut session = Self {
-            indexed_page: document.pages[0].id,
+            indexed_page: document.pages[page].id,
             document,
             linked_math: HashSet::new(),
             history: History::default(),
-            page: 0,
+            page,
             viewport: Viewport::default(),
             selection: HashSet::new(),
             index: SpatialIndex::default(),
@@ -78,7 +84,11 @@ impl Session {
         }
         let mut cached = self.page_stack.borrow_mut();
         if cached.as_ref().is_none_or(|stack| {
-            self.page < stack.pages[0].0 || self.page > stack.pages.last().unwrap().0
+            stack
+                .pages
+                .first()
+                .zip(stack.pages.last())
+                .is_none_or(|(first, last)| self.page < first.0 || self.page > last.0)
         }) {
             *cached = PageStack::new(&self.document.pages, self.page).map(Arc::new);
         }

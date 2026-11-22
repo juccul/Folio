@@ -32,33 +32,27 @@ pub struct RecognitionReview {
     pub(super) sources: Vec<Arc<Object>>,
     pub(super) pdf_source: Option<PdfBackground>,
 }
+
 #[derive(Deserialize)]
 struct Pack {
     python: PathBuf,
     worker: PathBuf,
 }
+
 #[derive(Serialize)]
 struct Request {
     kind: RecognitionKind,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     strokes: Vec<Vec<[f32; 2]>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    image_path: Option<PathBuf>,
 }
+
 #[derive(Deserialize)]
 struct Response {
     text: Option<String>,
     error: Option<String>,
     restart: Option<bool>,
 }
-struct TemporaryImage(Option<PathBuf>);
-impl Drop for TemporaryImage {
-    fn drop(&mut self) {
-        if let Some(path) = &self.0 {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-}
+
 #[derive(Clone)]
 struct Task {
     submitted: Instant,
@@ -66,14 +60,8 @@ struct Task {
     generation: u64,
     pack: PathBuf,
     review: RecognitionReview,
-    image: Option<ImageSource>,
-    auto_setup: bool,
 }
-#[derive(Clone)]
-enum ImageSource {
-    Object(Arc<Object>, PathBuf),
-    Pdf(PdfBackground, PathBuf, Rect),
-}
+
 struct ResultMessage {
     generation: u64,
     review: RecognitionReview,
@@ -83,85 +71,86 @@ struct ResultMessage {
 
 enum Work {
     Recognize(Task),
-    Warmup(PathBuf, u64),
+    Warmup(PathBuf),
 }
+
 struct StatusMessage {
     generation: u64,
     text: String,
 }
+
 pub(super) struct Service {
     sender: Option<mpsc::SyncSender<Work>>,
-    deferred: Option<Task>,
-    last_task: Option<Task>,
+    tx: mpsc::Sender<ResultMessage>,
+    progress: mpsc::Sender<StatusMessage>,
+    wakeup: folio_storage::WakeupSignal,
+    idle_timeout: Duration,
     results: mpsc::Receiver<ResultMessage>,
     status: mpsc::Receiver<StatusMessage>,
     process: Arc<Mutex<Option<Child>>>,
     generation: Arc<AtomicU64>,
-    startup_process: Arc<Mutex<Option<Child>>>,
-    shutdown: Arc<AtomicU64>,
-    warm_cancel: Arc<AtomicU64>,
     warming: Arc<AtomicBool>,
     last_intent: Option<u64>,
 }
+
 struct Client {
     input: ChildStdin,
     output: mpsc::Receiver<Result<String, String>>,
     pack: PathBuf,
 }
+
 impl Service {
-    pub fn new(startup_pack: PathBuf) -> Self {
-        Self::with_idle_timeout(startup_pack, Duration::from_secs(5 * 60))
+    pub fn set_wakeup(&self, wakeup: folio_storage::Wakeup) {
+        self.wakeup.set(wakeup);
     }
-    fn with_idle_timeout(startup_pack: PathBuf, idle_timeout: Duration) -> Self {
-        Self::with_preparation(startup_pack, idle_timeout, native::Cache::default())
+    pub fn new(_startup_pack: PathBuf) -> Self {
+        Self::with_idle_timeout(Duration::from_secs(5 * 60))
     }
-    fn with_preparation(
-        startup_pack: PathBuf,
-        idle_timeout: Duration,
-        mut preparation: native::Cache,
-    ) -> Self {
-        // A speculative load and one real request can coexist; real requests are never
-        // rejected just because selection-triggered preparation occupied the queue.
-        let (sender, jobs) = mpsc::sync_channel::<Work>(2);
+    fn with_idle_timeout(idle_timeout: Duration) -> Self {
         let (tx, results) = mpsc::channel();
         let (progress, status) = mpsc::channel();
-        let process: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
-        let generation = Arc::new(AtomicU64::new(0));
-        let startup_process = Arc::new(Mutex::new(None));
-        let shutdown = Arc::new(AtomicU64::new(0));
-        let warm_cancel = Arc::new(AtomicU64::new(0));
-        let warming = Arc::new(AtomicBool::new(false));
-        let worker_process = process.clone();
-        let worker_generation = generation.clone();
-        let worker_startup_process = startup_process.clone();
-        let worker_shutdown = shutdown.clone();
-        let worker_warm_cancel = warm_cancel.clone();
-        let worker_warming = warming.clone();
+        Self {
+            sender: None,
+            tx,
+            progress,
+            wakeup: folio_storage::WakeupSignal::default(),
+            idle_timeout,
+            results,
+            status,
+            process: Arc::new(Mutex::new(None)),
+            generation: Arc::new(AtomicU64::new(0)),
+            warming: Arc::new(AtomicBool::new(false)),
+            last_intent: None,
+        }
+    }
+    fn ensure_started(&mut self) -> Option<&mpsc::SyncSender<Work>> {
+        if self.sender.is_some() {
+            return self.sender.as_ref();
+        }
+        // A speculative prewarm and one real request can coexist.
+        let (sender, jobs) = mpsc::sync_channel::<Work>(2);
+        let tx = self.tx.clone();
+        let progress = self.progress.clone();
+        let wakeup = self.wakeup.clone();
+        let idle_timeout = self.idle_timeout;
+        let worker_process = self.process.clone();
+        let worker_generation = self.generation.clone();
+        let worker_warming = self.warming.clone();
         std::thread::Builder::new()
             .name("folio-recognition".into())
             .spawn(move || {
                 let mut client: Option<Client> = None;
-                let mut native_client: Option<native::Native> = None;
+                let mut stroke_engine: Option<(PathBuf, folio_recognition::Engine)> = None;
                 let mut cached = cache::Results::default();
                 let mut last_model_use = Instant::now();
-                let startup_context = native::Context {
-                    generation: 0,
-                    current: &worker_shutdown,
-                    process: &worker_startup_process,
-                    progress: &|_| {},
-                };
-                if let Err(error) = preparation.prepare_existing(&startup_pack, &startup_context) {
-                    eprintln!("Folio OCR startup preparation: {error}");
-                }
-                stop_process(&worker_startup_process);
                 loop {
-                    let resident = client.is_some() || native_client.is_some();
+                    let resident = client.is_some() || stroke_engine.is_some();
                     if resident && last_model_use.elapsed() >= idle_timeout {
                         stop_process(&worker_process);
                         client = None;
-                        native_client = None;
+                        stroke_engine = None;
                     }
-                    let work = if client.is_some() || native_client.is_some() {
+                    let work = if client.is_some() || stroke_engine.is_some() {
                         match jobs
                             .recv_timeout(idle_timeout.saturating_sub(last_model_use.elapsed()))
                         {
@@ -177,43 +166,17 @@ impl Service {
                     };
                     let task = match work {
                         Work::Recognize(task) => task,
-                        Work::Warmup(pack, epoch) => {
-                            let context = native::Context {
-                                generation: epoch,
-                                current: &worker_warm_cancel,
-                                process: &worker_process,
-                                progress: &|_| {},
-                            };
-                            let alive = worker_process
-                                .lock()
-                                .unwrap()
-                                .as_mut()
-                                .is_some_and(|process| matches!(process.try_wait(), Ok(None)));
-                            // A normal request does not cancel useful loading. Only Cancel/Drop
-                            // advances this independent epoch. Prewarming never installs assets.
-                            if context.check().is_ok()
-                                && (native_client
+                        Work::Warmup(pack) => {
+                            if folio_recognition::Engine::pack_ready(&pack)
+                                && stroke_engine
                                     .as_ref()
-                                    .is_none_or(|client| client.pack != pack)
-                                    || !alive)
+                                    .is_none_or(|(loaded_pack, _)| loaded_pack != &pack)
                             {
-                                stop_process(&worker_process);
-                                client = None;
-                                if preparation.prepare_existing(&pack, &context).is_err()
-                                    || !preparation.is_prepared(&pack)
-                                {
-                                    worker_warming.store(false, Ordering::Release);
-                                    continue;
-                                }
-                                match native::Native::load(&pack, &mut preparation, &context) {
-                                    Ok(loaded) => {
-                                        native_client = Some(loaded);
-                                        last_model_use = Instant::now();
-                                    }
-                                    Err(_) => {
-                                        stop_process(&worker_process);
-                                        native_client = None;
-                                    }
+                                if let Ok(mut engine) = folio_recognition::Engine::open(&pack) {
+                                    let _ = engine.ensure_math();
+                                    let _ = engine.ensure_htr();
+                                    stroke_engine = Some((pack, engine));
+                                    last_model_use = Instant::now();
                                 }
                             }
                             worker_warming.store(false, Ordering::Release);
@@ -225,105 +188,97 @@ impl Service {
                     }
                     let mut timing = RecognitionTiming::new(&task);
                     let report_progress = |text: String| {
-                        let _ = progress.send(StatusMessage {
-                            generation: task.generation,
-                            text,
-                        });
-                    };
-                    let context = native::Context {
-                        generation: task.generation,
-                        current: &worker_generation,
-                        process: &worker_process,
-                        progress: &report_progress,
+                        if progress
+                            .send(StatusMessage {
+                                generation: task.generation,
+                                text,
+                            })
+                            .is_ok()
+                        {
+                            wakeup.notify();
+                        }
                     };
                     let pack_bytes = std::fs::read(&task.pack).unwrap_or_default();
                     let key = cache::Identity::new(&task, &pack_bytes);
                     let cache_hit = key.as_ref().and_then(|key| cached.get(key));
-                    let native_pack = serde_json::from_slice::<serde_json::Value>(&pack_bytes)
-                        .ok()
-                        .is_some_and(|config| config["backend"] == "llama-vulkan");
-                    let use_native =
-                        native_pack || (task.auto_setup && !legacy_pack_available(&task.pack));
+                    let use_stroke = folio_recognition::Engine::pack_ready(&task.pack);
                     let mut restart = false;
                     let result = if let Some(text) = cache_hit {
                         timing.cache_hit = true;
                         Ok(text)
                     } else {
                         (|| {
-                            if use_native {
-                                let prepared_at = Instant::now();
-                                let input = native::Input::prepare(&task)?;
-                                timing.preparation_ms +=
-                                    prepared_at.elapsed().as_secs_f64() * 1000.;
-                                context.check()?;
+                            report_progress("Recognizing writing…".into());
+                            if use_stroke {
                                 if client.take().is_some() {
                                     stop_process(&worker_process);
                                 }
-                                let alive =
-                                    worker_process.lock().unwrap().as_mut().is_some_and(
-                                        |process| matches!(process.try_wait(), Ok(None)),
-                                    );
-                                if native_client
+                                let prepared_at = Instant::now();
+                                let strokes = request_strokes(&task);
+                                timing.preparation_ms +=
+                                    prepared_at.elapsed().as_secs_f64() * 1000.;
+                                if strokes.is_empty() {
+                                    return Err("Select handwriting first".into());
+                                }
+                                if task.generation != worker_generation.load(Ordering::Acquire) {
+                                    return Err("Recognition cancelled".into());
+                                }
+                                if stroke_engine
                                     .as_ref()
-                                    .is_none_or(|client| client.pack != task.pack)
-                                    || !alive
+                                    .is_none_or(|(loaded_pack, _)| loaded_pack != &task.pack)
                                 {
-                                    restart = true;
                                     let loaded_at = Instant::now();
-                                    stop_process(&worker_process);
-                                    native_client = Some(native::Native::load(
-                                        &task.pack,
-                                        &mut preparation,
-                                        &context,
-                                    )?);
+                                    let engine = folio_recognition::Engine::open(&task.pack)?;
+                                    stroke_engine = Some((task.pack.clone(), engine));
                                     timing.model_load_ms +=
                                         loaded_at.elapsed().as_secs_f64() * 1000.;
                                 }
-                                let loaded_before_inference = timing.model_load_ms;
+                                let engine = &mut stroke_engine.as_mut().unwrap().1;
+                                let load_at = Instant::now();
+                                match task.review.kind {
+                                    RecognitionKind::Text => {
+                                        engine.ensure_htr()?;
+                                    }
+                                    RecognitionKind::Math => {
+                                        engine.ensure_math()?;
+                                    }
+                                }
+                                timing.model_load_ms += load_at.elapsed().as_secs_f64() * 1000.;
+                                if task.generation != worker_generation.load(Ordering::Acquire) {
+                                    return Err("Recognition cancelled".into());
+                                }
                                 let inference_at = Instant::now();
-                                let mut result = native_client
-                                    .as_ref()
-                                    .unwrap()
-                                    .recognize_prepared(&input, &context, Some(&mut timing));
-                                while result.as_ref().is_err_and(|error| error.restart)
-                                    && native_client.as_ref().unwrap().is_gpu()
-                                    && context.check().is_ok()
-                                {
-                                    report_progress(
-                                        "GPU OCR failed; reducing GPU memory use…".into(),
-                                    );
-                                    restart = true;
-                                    let loaded_at = Instant::now();
-                                    stop_process(&worker_process);
-                                    native_client = Some(
-                                        native_client
-                                            .as_ref()
-                                            .unwrap()
-                                            .load_fallback(&mut preparation, &context)?,
-                                    );
-                                    timing.model_load_ms +=
-                                        loaded_at.elapsed().as_secs_f64() * 1000.;
-                                    result = native_client.as_ref().unwrap().recognize_prepared(
-                                        &input,
-                                        &context,
-                                        Some(&mut timing),
+                                let text = match task.review.kind {
+                                    RecognitionKind::Text => engine.recognize_text(&strokes)?,
+                                    RecognitionKind::Math => engine.recognize_math(&strokes)?,
+                                };
+                                timing.inference_ms +=
+                                    inference_at.elapsed().as_secs_f64() * 1000.;
+                                last_model_use = Instant::now();
+                                if text.trim().is_empty() {
+                                    return Err(
+                                        "No text recognized; select a clearer line of writing"
+                                            .into(),
                                     );
                                 }
-                                // This wall span includes fallback startup; subtract it from inference.
-                                timing.inference_ms += (inference_at.elapsed().as_secs_f64()
-                                    * 1000.
-                                    - (timing.model_load_ms - loaded_before_inference))
-                                    .max(0.);
-                                last_model_use = Instant::now();
-                                restart = result.as_ref().is_err_and(|error| error.restart);
-                                return result.map_err(|error| error.message);
+                                if text.len() > 32_768 {
+                                    return Err("Recognized text is too long".into());
+                                }
+                                return Ok(text);
                             }
-                            if native_client.take().is_some() {
-                                stop_process(&worker_process);
+
+                            stroke_engine = None;
+                            if !legacy_pack_available(&task.pack) {
+                                return Err(format!(
+                                    "Offline handwriting recognition models are missing ({})",
+                                    task.pack.display()
+                                ));
                             }
-                            report_progress("Recognizing writing…".into());
                             let prepared_at = Instant::now();
-                            let (request, temporary_image) = prepare_request(&task)?;
+                            let request = Request {
+                                kind: task.review.kind,
+                                strokes: request_strokes(&task),
+                            };
                             timing.preparation_ms += prepared_at.elapsed().as_secs_f64() * 1000.;
                             let alive = worker_process
                                 .lock()
@@ -409,22 +364,19 @@ impl Service {
                                 .write_all(b"\n")
                                 .and_then(|_| c.input.flush())
                                 .map_err(|e| e.to_string())?;
-                            let line_result = c
+                            let line = c
                                 .output
                                 .recv_timeout(Duration::from_secs(180))
                                 .map_err(|_| {
                                     "Recognition timed out or stopped; try a smaller selection"
                                         .to_string()
-                                });
-                            drop(temporary_image);
-                            let line = line_result??;
+                                })??;
                             let response: Response = serde_json::from_str(&line)
                                 .map_err(|e| format!("Invalid recognition response: {e}"))?;
                             timing.inference_ms += inference_at.elapsed().as_secs_f64() * 1000.;
                             last_model_use = Instant::now();
                             restart = false;
                             if let Some(error) = response.error {
-                                // Older external Python packs do not classify failures.
                                 restart = response.restart.unwrap_or(true);
                                 return Err(error);
                             }
@@ -444,7 +396,6 @@ impl Service {
                     if restart {
                         stop_process(&worker_process);
                         client = None;
-                        native_client = None;
                     }
                     if let (Some(key), Ok(text)) = (key, &result)
                         && !timing.cache_hit
@@ -468,57 +419,27 @@ impl Service {
                     {
                         break;
                     }
+                    wakeup.notify();
                 }
                 stop_process(&worker_process);
             })
             .expect("recognition worker thread");
-        Self {
-            sender: Some(sender),
-            deferred: None,
-            last_task: None,
-            results,
-            status,
-            process,
-            generation,
-            startup_process,
-            shutdown,
-            warm_cancel,
-            warming,
-            last_intent: None,
-        }
+        self.sender = Some(sender);
+        self.sender.as_ref()
     }
-    fn submit(&mut self, mut task: Task, download_allowed: bool) -> Result<(), String> {
-        let native = std::fs::read(&task.pack)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .is_some_and(|v| v["backend"] == "llama-vulkan");
-        if (task.auto_setup || native)
-            && !download_allowed
-            && !legacy_pack_available(&task.pack)
-            && !native::installed(&task.pack)
-        {
-            self.deferred = Some(task);
-            return Ok(());
-        }
+    fn submit(&mut self, mut task: Task) -> Result<(), String> {
         task.queued = Instant::now();
-        self.sender
-            .as_ref()
+        self.ensure_started()
             .ok_or("Recognition worker stopped")?
-            .try_send(Work::Recognize(task.clone()))
+            .try_send(Work::Recognize(task))
             .map_err(|_| "Recognition worker is busy; try again".to_string())?;
-        self.last_task = Some(task);
         Ok(())
     }
     fn prewarm(&mut self, pack: PathBuf, intent: u64) {
         if self.last_intent == Some(intent) || self.warming.load(Ordering::Acquire) {
             return;
         }
-        // Only an already installed native pack is eligible. No first-use choice is bypassed.
-        if !std::fs::read(&pack)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .is_some_and(|config| config["backend"] == "llama-vulkan")
-        {
+        if !folio_recognition::Engine::pack_ready(&pack) {
             self.last_intent = Some(intent);
             return;
         }
@@ -529,11 +450,9 @@ impl Service {
         {
             return;
         }
-        let work = Work::Warmup(pack, self.warm_cancel.load(Ordering::Acquire));
         if self
-            .sender
-            .as_ref()
-            .is_some_and(|sender| sender.try_send(work).is_ok())
+            .ensure_started()
+            .is_some_and(|sender| sender.try_send(Work::Warmup(pack)).is_ok())
         {
             self.last_intent = Some(intent);
         } else {
@@ -542,10 +461,10 @@ impl Service {
     }
     fn cancel(&self, generation: u64) {
         self.generation.store(generation, Ordering::Release);
-        self.warm_cancel.fetch_add(1, Ordering::AcqRel);
         stop_process(&self.process);
     }
 }
+
 /// Repair a numeric handwriting line only when its ink can be aligned to every digit.
 /// Wide gaps remain separators; uncertain layouts retain the model's suggestion.
 fn normalize_digit_spacing(text: String, sources: &[Arc<Object>]) -> String {
@@ -610,9 +529,6 @@ fn normalize_digit_spacing(text: String, sources: &[Arc<Object>]) -> String {
         .iter()
         .map(|b| b.height())
         .fold(f32::INFINITY, f32::min);
-    // A tall 1 and shorter rounded digits need not share half the whole line's
-    // height. Compare their common band with the shortest digit instead, while
-    // excluding tiny marks that might be punctuation mistaken for a digit.
     if !height.is_finite()
         || height <= 0.
         || shortest < height * 0.4
@@ -635,6 +551,7 @@ fn normalize_digit_spacing(text: String, sources: &[Arc<Object>]) -> String {
     }
     result
 }
+
 fn request_strokes(task: &Task) -> Vec<Vec<[f32; 2]>> {
     task.review
         .sources
@@ -656,63 +573,6 @@ fn request_strokes(task: &Task) -> Vec<Vec<[f32; 2]>> {
         })
         .collect()
 }
-fn prepare_image(source: &ImageSource) -> Result<image::DynamicImage, String> {
-    match source {
-        ImageSource::Object(object, assets) => {
-            let (_, pixels) = folio_export::raster_object_limited(object, assets, 1_400_000)
-                .map_err(|error| error.to_string())?;
-            let image = image::RgbaImage::from_raw(
-                pixels.width(),
-                pixels.height(),
-                pixels.take_demultiplied(),
-            )
-            .ok_or("Invalid recognition image")?;
-            Ok(image::DynamicImage::ImageRgba8(image))
-        }
-        ImageSource::Pdf(background, assets, bounds) => {
-            folio_pdf::render_preview(background, assets).map_err(|error| error.to_string())?;
-            let source = folio_export::asset_path(
-                assets,
-                background
-                    .preview_asset
-                    .as_deref()
-                    .ok_or("PDF preview missing")?,
-            )
-            .map_err(|error| error.to_string())?;
-            let image = image::open(source).map_err(|error| error.to_string())?;
-            let (width, height) = (image.width(), image.height());
-            let x = ((bounds.min.x * width as f32).floor() as u32).min(width.saturating_sub(1));
-            let y = ((bounds.min.y * height as f32).floor() as u32).min(height.saturating_sub(1));
-            let w = ((bounds.width() * width as f32).ceil() as u32)
-                .min(width - x)
-                .max(1);
-            let h = ((bounds.height() * height as f32).ceil() as u32)
-                .min(height - y)
-                .max(1);
-            Ok(image
-                .crop_imm(x, y, w, h)
-                .resize(1400, 1000, image::imageops::FilterType::Lanczos3))
-        }
-    }
-}
-fn prepare_request(task: &Task) -> Result<(Request, TemporaryImage), String> {
-    let mut temporary_image = TemporaryImage(None);
-    if let Some(source) = &task.image {
-        let path = std::env::temp_dir().join(format!("folio-ocr-{}.png", Id::new_v4()));
-        temporary_image.0 = Some(path.clone());
-        prepare_image(source)?
-            .save(&path)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok((
-        Request {
-            kind: task.review.kind,
-            strokes: request_strokes(task),
-            image_path: temporary_image.0.clone(),
-        },
-        temporary_image,
-    ))
-}
 
 fn legacy_pack_available(path: &std::path::Path) -> bool {
     let Some(config) = std::fs::read(path)
@@ -725,24 +585,29 @@ fn legacy_pack_available(path: &std::path::Path) -> bool {
     let resolve = |key: &str| config[key].as_str().map(|value| root.join(value));
     resolve("python").is_some_and(|p| p.is_file())
         && resolve("worker").is_some_and(|p| p.is_file())
-        && resolve("ocr_model").is_none_or(|p| p.join("model.safetensors").is_file())
 }
+
+fn pack_usable(path: &std::path::Path) -> bool {
+    folio_recognition::Engine::pack_ready(path) || legacy_pack_available(path)
+}
+
 fn stop_process(process: &Mutex<Option<Child>>) {
-    if let Some(mut child) = process.lock().unwrap().take() {
+    let mut guard = process.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(mut child) = guard.take() {
         let _ = child.kill();
         let _ = child.wait();
     }
 }
+
 impl Drop for Service {
     fn drop(&mut self) {
-        self.shutdown.store(1, Ordering::Release);
-        stop_process(&self.startup_process);
         self.cancel(u64::MAX);
         self.sender.take();
     }
 }
+
 impl Controller {
-    /// Prepare an installed native model on explicit OCR-control hover.
+    /// Preload the bundled offline stroke models on hover over a recognition button.
     pub fn prepare_recognition(&mut self) {
         use std::hash::{Hash, Hasher};
         if self.recognition_pending
@@ -757,14 +622,12 @@ impl Controller {
         let mut count = 0;
         let mut points = 0usize;
         for object in self.selected_objects().take(4097) {
-            if let Object::Stroke(stroke) = object.as_ref() {
-                points = points.saturating_add(stroke.display_path().len());
-                if points > 250_000 {
-                    return;
-                }
-            }
-            if !matches!(object.as_ref(), Object::Stroke(_) | Object::Image(_)) {
+            let Object::Stroke(stroke) = object.as_ref() else {
                 continue;
+            };
+            points = points.saturating_add(stroke.display_path().len());
+            if points > 250_000 {
+                return;
             }
             (object.id(), Arc::as_ptr(object) as usize).hash(&mut hash);
             count += 1;
@@ -793,43 +656,8 @@ impl Controller {
             timing.trace("frame-complete");
         }
     }
-
     pub fn recognition_ready(&self) -> bool {
-        let pack = self.recognition_pack();
-        legacy_pack_available(&pack) || native::installed(&pack)
-    }
-    pub fn recognition_setup_needed(&self) -> bool {
-        self.recognition_service.deferred.is_some()
-    }
-    pub fn accept_recognition_setup(&mut self) -> Result<(), String> {
-        let Some(mut task) = self.recognition_service.deferred.take() else {
-            return Ok(());
-        };
-        if !self.recognition_is_current(&task.review) {
-            self.cancel_recognition();
-            return Err("The source changed. Select it and request recognition again.".into());
-        }
-        self.settings.ocr_download_allowed = true;
-        self.store_settings();
-        self.recognition_generation = self.recognition_generation.wrapping_add(1);
-        self.recognition_timing = None;
-        task.generation = self.recognition_generation;
-        task.submitted = Instant::now();
-        self.recognition_service
-            .generation
-            .store(self.recognition_generation, Ordering::Release);
-        self.recognition_service.submit(task, true)?;
-        self.recognition_pending = true;
-        self.recognition_status = "Preparing OCR download…".into();
-        Ok(())
-    }
-    pub fn pause_recognition_setup(&mut self) {
-        let task = self.recognition_service.last_task.take();
-        let for_index = self.recognition_for_index;
-        self.cancel_recognition();
-        self.recognition_for_index = for_index;
-        self.recognition_service.deferred = task;
-        self.recognition_status = "OCR download paused. Partial downloads are retained.".into();
+        pack_usable(&self.recognition_pack())
     }
     fn recognition_pack(&self) -> PathBuf {
         pack_path(&self.data_dir)
@@ -844,20 +672,26 @@ pub(super) fn pack_path(data_dir: &std::path::Path) -> PathBuf {
     if local.is_file() {
         return local;
     }
-    if let Some(root) = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent()?.parent().map(PathBuf::from))
-    {
-        let pack = root.join("recognition/pack.json");
-        if pack.is_file()
-            && (legacy_pack_available(&pack)
-                || std::fs::read(&pack)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                    .is_some_and(|config| config["backend"] == "llama-vulkan"))
-        {
-            return pack;
+    if let Ok(exe) = std::env::current_exe() {
+        // Linux tarball / Flatpak / distro layout: <prefix>/bin/folio -> <prefix>/recognition/pack.json
+        if let Some(root) = exe.parent().and_then(|p| p.parent()) {
+            let pack = root.join("recognition/pack.json");
+            if pack_usable(&pack) {
+                return pack;
+            }
         }
+        // Windows portable / installer layout: <prefix>/folio.exe -> <prefix>/recognition/pack.json
+        if let Some(dir) = exe.parent() {
+            let pack = dir.join("recognition/pack.json");
+            if pack_usable(&pack) {
+                return pack;
+            }
+        }
+    }
+    // Workspace checkout fallback for `cargo run` / `cargo test`.
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../recognition/pack.json");
+    if pack_usable(&workspace) {
+        return workspace;
     }
     local
 }
@@ -920,32 +754,20 @@ impl Controller {
         self.recognition_service
             .generation
             .store(self.recognition_generation, Ordering::Release);
-        self.recognition_service.submit(
-            Task {
-                submitted,
-                queued: Instant::now(),
-                generation: self.recognition_generation,
-                auto_setup: std::env::var_os("FOLIO_RECOGNITION_CONFIG").is_none(),
-                pack,
-                review,
-                image: None,
-            },
-            self.settings.ocr_download_allowed,
-        )?;
+        self.recognition_service.submit(Task {
+            submitted,
+            queued: Instant::now(),
+            generation: self.recognition_generation,
+            pack,
+            review,
+        })?;
         self.recognition_review = None;
         self.recognition_pending = true;
-        self.recognition_status = if self.recognition_setup_needed() {
-            "OCR setup needs your download choice"
-        } else {
-            "Preparing recognition…"
-        }
-        .into();
+        self.recognition_status = "Recognizing writing…".into();
         Ok(())
     }
     pub fn cancel_recognition(&mut self) {
         self.recognition_service.last_intent = None;
-        self.recognition_service.deferred = None;
-        self.recognition_service.last_task = None;
         self.recognition_for_index = false;
         self.recognition_generation = self.recognition_generation.wrapping_add(1);
         self.recognition_timing = None;
@@ -954,129 +776,6 @@ impl Controller {
         self.recognition_status.clear();
         self.recognition_replacing = false;
         self.recognition_review = None;
-    }
-    pub fn recognize_math_image(&mut self, kind: RecognitionKind) -> Result<(), String> {
-        let submitted = Instant::now();
-        if self.recognition_pending {
-            return Err("Recognition is already running".into());
-        }
-        let sources: Vec<_> = self.selected_objects().cloned().collect();
-        if sources.len() != 1 || !matches!(sources[0].as_ref(), Object::Image(_)) {
-            return Err("Select one image; use its crop tool to isolate a problem".into());
-        }
-        let review = RecognitionReview {
-            kind,
-            text: String::new(),
-            note: self.active,
-            page: self.page().id,
-            bounds: sources[0].bounds(),
-            sources: sources.clone(),
-            pdf_source: None,
-        };
-        self.recognition_generation = self.recognition_generation.wrapping_add(1);
-        self.recognition_timing = None;
-        self.recognition_service
-            .generation
-            .store(self.recognition_generation, Ordering::Release);
-        self.recognition_service.submit(
-            Task {
-                submitted,
-                queued: Instant::now(),
-                generation: self.recognition_generation,
-                auto_setup: std::env::var_os("FOLIO_RECOGNITION_CONFIG").is_none(),
-                pack: self.recognition_pack(),
-                review,
-                image: Some(ImageSource::Object(sources[0].clone(), self.assets.clone())),
-            },
-            self.settings.ocr_download_allowed,
-        )?;
-        self.recognition_review = None;
-        self.recognition_pending = true;
-        self.recognition_status = if self.recognition_setup_needed() {
-            "OCR setup needs your download choice"
-        } else {
-            "Preparing recognition…"
-        }
-        .into();
-        Ok(())
-    }
-    pub fn recognize_pdf_math_region(
-        &mut self,
-        fractions: Rect,
-        kind: RecognitionKind,
-    ) -> Result<(), String> {
-        let submitted = Instant::now();
-        if self.recognition_pending {
-            return Err("Recognition is already running".into());
-        }
-        if ![
-            fractions.min.x,
-            fractions.min.y,
-            fractions.max.x,
-            fractions.max.y,
-        ]
-        .iter()
-        .all(|v| v.is_finite())
-            || fractions.min.x < 0.
-            || fractions.min.y < 0.
-            || fractions.max.x > 1.
-            || fractions.max.y > 1.
-            || fractions.width() <= 0.
-            || fractions.height() <= 0.
-        {
-            return Err(
-                "Choose left, top, width and height inside the page, as fractions from 0 to 1"
-                    .into(),
-            );
-        }
-        let background = self
-            .page()
-            .properties
-            .pdf
-            .clone()
-            .ok_or("Open a PDF page first")?;
-        let properties = &self.page().properties;
-        let bounds = Rect::new(
-            fractions.min.x * properties.width,
-            fractions.min.y * properties.height,
-            fractions.width() * properties.width,
-            fractions.height() * properties.height,
-        );
-        let review = RecognitionReview {
-            kind,
-            text: String::new(),
-            note: self.active,
-            page: self.page().id,
-            bounds,
-            sources: Vec::new(),
-            pdf_source: Some(background.clone()),
-        };
-        self.recognition_generation = self.recognition_generation.wrapping_add(1);
-        self.recognition_timing = None;
-        self.recognition_service
-            .generation
-            .store(self.recognition_generation, Ordering::Release);
-        self.recognition_service.submit(
-            Task {
-                submitted,
-                queued: Instant::now(),
-                generation: self.recognition_generation,
-                auto_setup: std::env::var_os("FOLIO_RECOGNITION_CONFIG").is_none(),
-                pack: self.recognition_pack(),
-                review,
-                image: Some(ImageSource::Pdf(background, self.assets.clone(), fractions)),
-            },
-            self.settings.ocr_download_allowed,
-        )?;
-        self.recognition_review = None;
-        self.recognition_pending = true;
-        self.recognition_status = if self.recognition_setup_needed() {
-            "OCR setup needs your download choice"
-        } else {
-            "Preparing recognition…"
-        }
-        .into();
-        Ok(())
     }
     pub(super) fn recognize_math_sources(
         &mut self,
@@ -1113,25 +812,16 @@ impl Controller {
         self.recognition_service
             .generation
             .store(self.recognition_generation, Ordering::Release);
-        self.recognition_service.submit(
-            Task {
-                submitted,
-                queued: Instant::now(),
-                generation: self.recognition_generation,
-                auto_setup: std::env::var_os("FOLIO_RECOGNITION_CONFIG").is_none(),
-                pack: self.recognition_pack(),
-                review,
-                image: None,
-            },
-            self.settings.ocr_download_allowed,
-        )?;
+        self.recognition_service.submit(Task {
+            submitted,
+            queued: Instant::now(),
+            generation: self.recognition_generation,
+            pack: self.recognition_pack(),
+            review,
+        })?;
+        self.recognition_for_index = false;
         self.recognition_pending = true;
-        self.recognition_status = if self.recognition_setup_needed() {
-            "OCR setup needs your download choice"
-        } else {
-            "Preparing recognition…"
-        }
-        .into();
+        self.recognition_status = "Recognizing writing…".into();
         self.recognition_review = None;
         Ok(())
     }
@@ -1166,7 +856,6 @@ impl Controller {
             }
             changed = true;
             self.recognition_pending = false;
-            self.recognition_service.last_task = None;
             if !self.recognition_is_current(&message.review) {
                 message.timing.trace("stale-result");
                 self.error = Some("Writing changed or another page opened; select the writing and recognize again".into());
@@ -1183,7 +872,10 @@ impl Controller {
                         ..message.review
                     })
                 }
-                Err(error) => self.error = Some(error),
+                Err(error) => {
+                    self.recognition_for_index = false;
+                    self.error = Some(error);
+                }
             }
         }
         changed
@@ -1208,10 +900,7 @@ impl Controller {
             .any(|o| !matches!(o.as_ref(), Object::Stroke(_)))
             || review.sources.is_empty()
         {
-            return Err(
-                "Image and PDF recognition can be solved or copied; replacement is for handwriting"
-                    .into(),
-            );
+            return Err("Replacement is only supported for handwritten ink".into());
         }
         if text.trim().is_empty() || text.len() > 32_768 {
             return Err("Enter 1–32768 bytes of text".into());
@@ -1226,12 +915,7 @@ impl Controller {
             })?;
             self.busy += 1;
             self.recognition_pending = true;
-            self.recognition_status = if self.recognition_setup_needed() {
-                "OCR setup needs your download choice"
-            } else {
-                "Preparing recognition…"
-            }
-            .into();
+            self.recognition_status = "Rendering equation…".into();
             self.recognition_replacing = true;
             self.recognition_review = None;
             return Ok(());
@@ -1247,7 +931,6 @@ impl Controller {
             .unwrap_or(self.style.color);
         let lines = text.lines().count().max(1) as f32;
         let font_size = (bounds.height() / (lines * 1.4)).clamp(12., 32.);
-        // Leave room for corrected output; existing text wrapping/edit tools remain usable.
         let width = bounds.width().max(160.).max(
             text.lines().map(|l| l.chars().count()).max().unwrap_or(1) as f32 * font_size * 0.6,
         );
@@ -1333,6 +1016,5 @@ impl Controller {
     }
 }
 
-mod native;
 #[cfg(test)]
 mod tests;

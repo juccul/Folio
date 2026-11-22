@@ -464,7 +464,15 @@ fn continuous_scroll_rebases_and_writing_targets_the_clicked_page() {
     let Object::Stroke(stroke) = a.page().ordered_objects().next().unwrap().as_ref() else {
         panic!("expected ink");
     };
-    assert!(stroke.path[0].position.distance(Point::new(100., 100.)) < 0.01);
+    assert!(
+        stroke
+            .path
+            .first()
+            .unwrap()
+            .position
+            .distance(Point::new(100., 100.))
+            < 0.01
+    );
     a.undo();
     assert!(a.page().objects.is_empty());
     a.redo();

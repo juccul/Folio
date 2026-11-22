@@ -8,6 +8,7 @@ pub struct RasterPreview {
     pub width: u32,
     pub height: u32,
     pub bgra: Arc<Vec<u8>>,
+    pub token: Arc<()>,
 }
 
 impl Controller {
@@ -155,7 +156,17 @@ impl Controller {
             session.index.insert(id, preview.bounds);
         }
         self.previews.insert((note, page, id), preview);
+        self.needs_memory_trim = true;
         true
+    }
+    pub fn release_preview_pixels(&mut self, page: Id, id: Id, token: &Arc<()>) {
+        if let Some(preview) = self.previews.get_mut(&(self.active, page, id))
+            && Arc::ptr_eq(&preview.token, token)
+            && !preview.bgra.is_empty()
+        {
+            preview.bgra = Arc::new(Vec::new());
+            self.needs_memory_trim = true;
+        }
     }
     pub fn request_previews(&mut self, visible: &HashSet<Id>) {
         self.request_page_previews(self.session().page, visible);
@@ -172,8 +183,9 @@ impl Controller {
             .filter(|o| !matches!(o.as_ref(), Object::Stroke(_) | Object::Shape(_)))
             .cloned()
             .collect::<Vec<_>>();
+        // Keep total BGRA bytes (4 bytes/pixel) aligned with `trim_caches`'s 24 MiB budget.
         let maximum =
-            (24 * 1024 * 1024_u32 / (objects.len().max(1) as u32)).clamp(1, 4 * 1024 * 1024);
+            (6 * 1024 * 1024_u32 / (objects.len().max(1) as u32)).clamp(1, 4 * 1024 * 1024);
         let pixels_budget = 1 << (31 - maximum.leading_zeros());
         for object in objects {
             let key = (self.active, page, object.id());

@@ -103,7 +103,10 @@ pub fn recover(root: &Path) -> Result<RecoveryReport> {
                     let mut objects =
                         original.prepare("SELECT id,data FROM objects WHERE page_id=?1")?;
                     for row in objects.query_map([header.id.to_string()], |r| {
-                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, rusqlite::types::Value>(1)?,
+                        ))
                     })? {
                         let (id, data) = match row {
                             Ok(value) => value,
@@ -112,7 +115,7 @@ pub fn recover(root: &Path) -> Result<RecoveryReport> {
                                 continue;
                             }
                         };
-                        match serde_json::from_str::<Object>(&data) {
+                        match crate::binary::decode_object_value(data) {
                             Ok(object) => {
                                 let object = Arc::new(object);
                                 let isolated = Page {
@@ -279,8 +282,8 @@ pub fn quarantine_orphans(root: &Path) -> Result<usize> {
             continue;
         }
         let mut history = store.connection.prepare("SELECT command FROM history")?;
-        for row in history.query_map([], |r| r.get::<_, String>(0))? {
-            let command: Command = serde_json::from_str(&row?)?;
+        for row in history.query_map([], |r| r.get::<_, rusqlite::types::Value>(0))? {
+            let command = crate::binary::decode_command_value(row?)?;
             for change in command.changes {
                 match change {
                     Change::Object { before, after, .. } => {

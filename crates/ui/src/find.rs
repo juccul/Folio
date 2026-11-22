@@ -71,8 +71,9 @@ impl NotesView {
                 _subscriptions: [subscription, submitted],
             });
         }
-        let find = self.find.as_ref().unwrap();
-        let field = find.field.clone();
+        let Some(field) = self.find.as_ref().map(|find| find.field.clone()) else {
+            return;
+        };
         let theme = Theme::new(&self.controller.settings);
         field.update(cx, |field, cx| {
             field.theme = theme;

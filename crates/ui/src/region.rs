@@ -4,7 +4,6 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(super) enum Kind {
     Image(Arc<Object>),
-    Pdf(folio_document::PdfBackground),
 }
 pub(super) struct Selection {
     note: Id,
@@ -279,7 +278,6 @@ impl NotesView {
                     Object::Image(image) => Some(CropBox::new(image.rect)),
                     _ => None,
                 },
-                Kind::Pdf(_) => None,
             },
             kind,
             start: None,
@@ -349,13 +347,6 @@ impl NotesView {
         }
         cx.notify();
     }
-    pub(super) fn start_pdf_region(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(pdf) = self.controller.page().properties.pdf.clone() {
-            self.start_region(Kind::Pdf(pdf), window, cx);
-        } else {
-            self.controller.error = Some("Open a PDF page before reading a region".into());
-        }
-    }
     pub(super) fn region_input(
         &mut self,
         phase: Phase,
@@ -421,20 +412,6 @@ impl NotesView {
                             )
                         } else {
                             Err("Select an image".into())
-                        }
-                    }
-                    Kind::Pdf(expected) => {
-                        if self.controller.page().properties.pdf.as_ref() != Some(expected) {
-                            Err("PDF page changed; select a region again".into())
-                        } else {
-                            let page = &self.controller.page().properties;
-                            normalized_crop(
-                                rect,
-                                Rect::new(0., 0., page.width, page.height),
-                                folio_document::Transform::default(),
-                                None,
-                            )
-                            .and_then(|rect| self.controller.read_pdf_math(rect))
                         }
                     }
                 };

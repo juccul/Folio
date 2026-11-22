@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result};
 
 use futures::{AsyncReadExt, Future};
 use image::{
-    AnimationDecoder, DynamicImage, Frame, ImageBuffer, ImageError, ImageFormat, Rgba,
+    AnimationDecoder, DynamicImage, ImageError, ImageFormat, Rgba,
     codecs::{gif::GifDecoder, webp::WebPDecoder},
 };
 use smallvec::SmallVec;
@@ -26,6 +26,48 @@ use thiserror::Error;
 use util::ResultExt;
 
 use super::{Stateful, StatefulInteractiveElement};
+
+/// Serialize large synchronous image decodes so concurrent PDF/photo loads do
+/// not spike peak process memory (`VmHWM`) with multiple uncompressed buffers.
+static LARGE_DECODE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+fn dynamic_image_to_bgra(image: DynamicImage) -> (u32, u32, Vec<u8>) {
+    match image {
+        DynamicImage::ImageRgba8(mut rgba) => {
+            let (width, height) = rgba.dimensions();
+            for pixel in rgba.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+            (width, height, rgba.into_raw())
+        }
+        DynamicImage::ImageRgb8(rgb) => {
+            let (width, height) = rgb.dimensions();
+            let raw = rgb.into_raw();
+            let mut bgra = Vec::with_capacity((width as usize) * (height as usize) * 4);
+            for pixel in raw.chunks_exact(3) {
+                bgra.extend_from_slice(&[pixel[2], pixel[1], pixel[0], 255]);
+            }
+            (width, height, bgra)
+        }
+        DynamicImage::ImageLuma8(gray) => {
+            let (width, height) = gray.dimensions();
+            let raw = gray.into_raw();
+            let mut bgra = Vec::with_capacity((width as usize) * (height as usize) * 4);
+            for &l in &raw {
+                bgra.extend_from_slice(&[l, l, l, 255]);
+            }
+            (width, height, bgra)
+        }
+        other => {
+            let mut rgba = other.into_rgba8();
+            let (width, height) = rgba.dimensions();
+            for pixel in rgba.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+            (width, height, rgba.into_raw())
+        }
+    }
+}
 
 /// The delay before showing the loading state.
 pub const LOADING_DELAY: Duration = Duration::from_millis(200);
@@ -671,26 +713,25 @@ impl Asset for ImageAssetLoader {
 
                             frames
                         } else {
-                            let mut data = DynamicImage::from_decoder(decoder)?.into_rgba8();
-
-                            // Convert from RGBA to BGRA.
-                            for pixel in data.chunks_exact_mut(4) {
-                                pixel.swap(0, 2);
-                            }
-
-                            SmallVec::from_elem(Frame::new(data), 1)
+                            let _guard = (bytes.len() >= 16 * 1024).then(|| LARGE_DECODE_LOCK.lock());
+                            let decoded = DynamicImage::from_decoder(decoder)?;
+                            drop(bytes);
+                            let (width, height, bgra) = dynamic_image_to_bgra(decoded);
+                            return Ok(Arc::new(
+                                RenderImage::from_ephemeral_bgra(width, height, bgra)
+                                    .context("invalid decoded image dimensions")?,
+                            ));
                         }
                     }
                     _ => {
-                        let mut data =
-                            image::load_from_memory_with_format(&bytes, format)?.into_rgba8();
-
-                        // Convert from RGBA to BGRA.
-                        for pixel in data.chunks_exact_mut(4) {
-                            pixel.swap(0, 2);
-                        }
-
-                        SmallVec::from_elem(Frame::new(data), 1)
+                        let _guard = (bytes.len() >= 16 * 1024).then(|| LARGE_DECODE_LOCK.lock());
+                        let decoded = image::load_from_memory_with_format(&bytes, format)?;
+                        drop(bytes);
+                        let (width, height, bgra) = dynamic_image_to_bgra(decoded);
+                        return Ok(Arc::new(
+                            RenderImage::from_ephemeral_bgra(width, height, bgra)
+                                .context("invalid decoded image dimensions")?,
+                        ));
                     }
                 };
 
@@ -699,15 +740,26 @@ impl Asset for ImageAssetLoader {
                 let pixmap =
                     // TODO: Can we make svgs always rescale?
                     svg_renderer.render_pixmap(&bytes, SvgSize::ScaleFactor(SMOOTH_SVG_SCALE_FACTOR))?;
+                drop(bytes);
 
-                let mut buffer =
-                    ImageBuffer::from_raw(pixmap.width(), pixmap.height(), pixmap.take()).unwrap();
+                let width = pixmap.width();
+                let height = pixmap.height();
+                let mut pixels = pixmap.take();
 
-                for pixel in buffer.chunks_exact_mut(4) {
+                for pixel in pixels.chunks_exact_mut(4) {
                     swap_rgba_pa_to_bgra(pixel);
                 }
 
-                let mut image = RenderImage::new(SmallVec::from_elem(Frame::new(buffer), 1));
+                // Retain CPU bytes for tiny UI icons (<= 64 KiB) so global asset-cache
+                // reuse across windows or atlas resets stays lossless; large SVGs free
+                // CPU pixels on upload.
+                let mut image = if pixels.len() <= 64 * 1024 {
+                    RenderImage::from_shared_bgra(width, height, Arc::new(pixels))
+                        .context("invalid rendered SVG dimensions")?
+                } else {
+                    RenderImage::from_ephemeral_bgra(width, height, pixels)
+                        .context("invalid rendered SVG dimensions")?
+                };
                 image.scale_factor = SMOOTH_SVG_SCALE_FACTOR;
                 image
             };

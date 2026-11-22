@@ -75,7 +75,7 @@ fn prepare_visible_frame(
     };
     let preview_ids = objects
         .iter()
-        .filter(|object| !matches!(object.as_ref(), Object::Stroke(_) | Object::Shape(_)))
+        .filter(|object| matches!(object.as_ref(), Object::Image(_) | Object::Equation(_)))
         .map(|object| object.id())
         .collect();
     *cached = Some(Arc::new(VisibleFrame {
@@ -95,6 +95,7 @@ struct InkPlan {
     excluded: HashSet<Id>,
     theme: CanvasTheme,
     density: f32,
+    clip: Option<Rect>,
     batches: Arc<Vec<(std::ops::Range<usize>, super::ink_layers::InkBatch)>>,
 }
 #[derive(PartialEq)]
@@ -124,6 +125,7 @@ struct ActivePathKey {
 struct ActivePathCache {
     key: Option<ActivePathKey>,
     path: Option<Path<Pixels>>,
+    scratch: folio_ink::OutlineScratch,
 }
 impl ActivePathCache {
     fn path(&mut self, id: Id, points: &[PathPoint]) -> Option<&Path<Pixels>> {
@@ -135,7 +137,7 @@ impl ActivePathCache {
             last: points.last().copied(),
         };
         if self.key != Some(key) {
-            self.path = ink_path(&folio_ink::outline(points));
+            self.path = ink_path_from_points(points, &mut self.scratch);
             self.key = Some(key);
         }
         self.path.as_ref()
@@ -158,7 +160,7 @@ struct CachedInkLayer {
 #[derive(Clone)]
 struct RasterRequest {
     page: Id,
-    data: Arc<Vec<u8>>,
+    token: Arc<()>,
     appearance: Option<RasterAppearance>,
 }
 #[derive(Clone, Copy, PartialEq)]
@@ -169,12 +171,12 @@ enum RasterAppearance {
 impl RasterRequest {
     fn matches(&self, other: &Self) -> bool {
         self.page == other.page
-            && Arc::ptr_eq(&self.data, &other.data)
+            && Arc::ptr_eq(&self.token, &other.token)
             && self.appearance == other.appearance
     }
 }
 struct CachedRaster {
-    data: Arc<Vec<u8>>,
+    token: Arc<()>,
     image: Arc<RenderImage>,
     appearance: Option<RasterAppearance>,
     /// The object and bounds the raster was made for. After an edit that
@@ -215,6 +217,8 @@ pub struct Painter {
     active_id: Option<Id>,
     active_chunks: Vec<Path<Pixels>>,
     active_path: ActivePathCache,
+    outline_scratch: folio_ink::OutlineScratch,
+    path_buf: Vec<PathPoint>,
     appearance: Option<CanvasTheme>,
     graph_palette: Option<graph::Palette>,
     colors: HashMap<u32, u32>,
@@ -227,8 +231,6 @@ pub struct Painter {
     /// Whether the view is moving, so uncached ink is tessellated within
     /// [`TESSELLATION_BUDGET`].
     limit_tessellation: bool,
-    /// Prepare the page's ink images near the viewport without painting it.
-    prefetch: bool,
 }
 /// How long the zoom must rest before ink is rasterized at the new scale.
 const ZOOM_SETTLE: std::time::Duration = std::time::Duration::from_millis(140);
@@ -256,6 +258,15 @@ fn fill_path(points: &[DocPoint]) -> Option<Path<Pixels>> {
     b.close();
     b.build().ok()
 }
+fn push_contour(builder: &mut PathBuilder, points: &[DocPoint]) {
+    if let Some(first) = points.first() {
+        builder.move_to(point_px(*first));
+        for p in points.iter().skip(1) {
+            builder.line_to(point_px(*p));
+        }
+        builder.close();
+    }
+}
 fn ink_path(contours: &[Vec<DocPoint>]) -> Option<Path<Pixels>> {
     if contours.is_empty() {
         return None;
@@ -264,16 +275,30 @@ fn ink_path(contours: &[Vec<DocPoint>]) -> Option<Path<Pixels>> {
         FillOptions::default().with_fill_rule(FillRule::NonZero),
     ));
     for points in contours {
-        if let Some(first) = points.first() {
-            b.move_to(point_px(*first));
-            for p in points.iter().skip(1) {
-                b.line_to(point_px(*p));
-            }
-            b.close();
-        }
+        push_contour(&mut b, points);
     }
     b.build().ok()
 }
+fn ink_path_from_points(
+    points: &[PathPoint],
+    scratch: &mut folio_ink::OutlineScratch,
+) -> Option<Path<Pixels>> {
+    if points.is_empty() {
+        return None;
+    }
+    let mut b = PathBuilder::fill().with_style(PathStyle::Fill(
+        FillOptions::default().with_fill_rule(FillRule::NonZero),
+    ));
+    let mut any = false;
+    folio_ink::visit_outline(points, scratch, |contour| {
+        if !contour.is_empty() {
+            any = true;
+            push_contour(&mut b, contour);
+        }
+    });
+    any.then(|| b.build().ok()).flatten()
+}
+#[cfg(test)]
 fn shape_contours(points: &[DocPoint], width: f32) -> Vec<Vec<DocPoint>> {
     let centerline = points
         .iter()
@@ -285,7 +310,15 @@ fn shape_contours(points: &[DocPoint], width: f32) -> Vec<Vec<DocPoint>> {
     folio_ink::outline(&centerline)
 }
 pub(super) fn shape_path(points: &[DocPoint], width: f32) -> Option<Path<Pixels>> {
-    ink_path(&shape_contours(points, width))
+    let centerline = points
+        .iter()
+        .map(|&position| PathPoint {
+            position,
+            radius: width / 2.,
+        })
+        .collect::<Vec<_>>();
+    let mut scratch = folio_ink::OutlineScratch::default();
+    ink_path_from_points(&centerline, &mut scratch)
 }
 fn line_path(points: &[DocPoint], width: f32, dashed: bool) -> Option<Path<Pixels>> {
     let first = points.first()?;
@@ -452,25 +485,6 @@ impl Painter {
             .iter()
             .map(|(i, _)| controller.session().document.pages[*i].id)
             .collect::<HashSet<_>>();
-        // Prepare ink images for the pages next to the visible ones, so
-        // scrolling into a busy page shows cached ink immediately.
-        let neighbors = stack
-            .as_ref()
-            .map(|stack| {
-                let first = frames.iter().map(|(i, _)| *i).min().unwrap_or(active);
-                let last = frames.iter().map(|(i, _)| *i).max().unwrap_or(active);
-                [first.checked_sub(1), last.checked_add(1)]
-                    .into_iter()
-                    .flatten()
-                    .filter(|index| stack.pages.iter().any(|(i, _)| i == index))
-                    .map(|index| (index, stack.viewport(viewport, active, index)))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let prefetched = neighbors
-            .iter()
-            .map(|(i, _)| controller.session().document.pages[*i].id)
-            .collect::<HashSet<_>>();
         let view = (
             controller.active,
             session.page().id,
@@ -532,29 +546,31 @@ impl Painter {
             })
             .detach();
         }
-        // Prepare visible PDFs first, then three neighbors on either side. Waiting
+        // Prepare visible PDFs first, then one neighbor on either side. Waiting
         // until a page is painted starts both Poppler and PNG decoding too late
-        // for continuous scrolling; the paper flashes empty in the meantime.
+        // for continuous scrolling; keeping only immediate neighbors bounded
+        // prevents multi-page PDF sessions from holding excessive decoded PNGs.
         let mut nearby = frames.iter().map(|(index, _)| *index).collect::<Vec<_>>();
-        if let Some(stack) = &stack {
+        if let Some(stack) = &stack
+            && let (Some((first_page, _)), Some((last_page, _))) =
+                (stack.pages.first(), stack.pages.last())
+        {
             let first = nearby.iter().copied().min().unwrap_or(active);
             let last = nearby.iter().copied().max().unwrap_or(active);
-            for distance in 1..=3 {
-                for index in [last.checked_add(distance), first.checked_sub(distance)]
-                    .into_iter()
-                    .flatten()
-                {
-                    if index >= stack.pages[0].0
-                        && index <= stack.pages.last().unwrap().0
-                        && !nearby.contains(&index)
-                    {
-                        nearby.push(index);
-                    }
+            for index in [last.checked_add(1), first.checked_sub(1)]
+                .into_iter()
+                .flatten()
+            {
+                if index >= *first_page && index <= *last_page && !nearby.contains(&index) {
+                    nearby.push(index);
                 }
             }
         }
         let mut warm_assets = HashSet::new();
+        let mut visible_decoding = false;
         for index in nearby {
+            let page_id = controller.session().document.pages[index].id;
+            let visible_page = ids.contains(&page_id);
             let Some(pdf) = controller.session().document.pages[index]
                 .properties
                 .pdf
@@ -563,26 +579,56 @@ impl Painter {
                 continue;
             };
             controller.request_pdf_scroll_preview(pdf.clone());
-            if settled && ids.contains(&controller.session().document.pages[index].id) {
+            if settled && visible_page {
                 controller.request_pdf_background(pdf.clone());
             }
-            for asset in pdf
+            let full_asset = pdf
                 .preview_asset
-                .iter()
-                .cloned()
-                .chain(Controller::pdf_scroll_preview_asset(&pdf))
-            {
-                warm_assets.insert(asset.clone());
-                if let Some(path) = controller.asset_path(&asset)
-                    && path.is_file()
-                {
-                    let source = self
-                        .backgrounds
-                        .entry(asset)
-                        .or_insert_with(|| ImageSource::from(path));
-                    // Decode off-thread through GPUI's shared asset loader and
-                    // request a repaint when it completes, even off screen.
-                    let _ = source.use_render_image(window, cx);
+                .as_ref()
+                .and_then(|asset| controller.asset_path(asset).filter(|p| p.is_file()).map(|p| (asset, p)));
+            let scroll_asset = Controller::pdf_scroll_preview_asset(&pdf)
+                .filter(|asset| controller.asset_path(asset).is_some_and(|p| p.is_file()));
+
+            let mut full_ready = false;
+            if visible_page && let Some((asset, path)) = &full_asset {
+                warm_assets.insert((*asset).clone());
+                let source = self
+                    .backgrounds
+                    .entry((*asset).clone())
+                    .or_insert_with(|| ImageSource::from(path.clone()));
+                full_ready = source.use_render_image(window, cx).is_some();
+                if !full_ready {
+                    visible_decoding = true;
+                }
+            }
+            // Keep the lightweight scroll preview warm while full-res is still
+            // decoding (preventing a blank-page flash) and for neighboring pages
+            // once visible full-res pages finish decoding.
+            if !full_ready {
+                if visible_page && full_asset.is_some() {
+                    if let Some(asset) = scroll_asset.as_deref()
+                        && self.backgrounds.contains_key(asset)
+                    {
+                        warm_assets.insert(asset.to_owned());
+                    }
+                } else if !visible_decoding {
+                    let fallback = if visible_page {
+                        scroll_asset.as_deref()
+                    } else {
+                        scroll_asset
+                            .as_deref()
+                            .or(full_asset.map(|(asset, _)| asset.as_str()))
+                    };
+                    if let Some(asset) = fallback
+                        && let Some(path) = controller.asset_path(asset)
+                    {
+                        warm_assets.insert(asset.to_owned());
+                        let source = self
+                            .backgrounds
+                            .entry(asset.to_owned())
+                            .or_insert_with(|| ImageSource::from(path));
+                        let _ = source.use_render_image(window, cx);
+                    }
                 }
             }
         }
@@ -599,13 +645,14 @@ impl Painter {
         // Retain only visible pages, so scrolling a long document cannot grow
         // native path/image caches without bound.
         self.pages.retain(|id, painter| {
-            if ids.contains(id) || prefetched.contains(id) {
+            if ids.contains(id) {
                 true
             } else {
                 painter.clear_page(window);
                 false
             }
         });
+        let backgrounds = &mut self.backgrounds;
         for (index, viewport) in frames {
             let id = controller.session().document.pages[index].id;
             let painter = self.pages.entry(id).or_default();
@@ -613,16 +660,16 @@ impl Painter {
             painter.hide_selection = self.hide_selection;
             painter.layer_zoom = self.layer_zoom;
             painter.limit_tessellation = !settled;
-            painter.prefetch = false;
-            painter.paint_page(controller, index, viewport, bounds, editing, window, cx);
-        }
-        for (index, viewport) in neighbors {
-            let id = controller.session().document.pages[index].id;
-            let painter = self.pages.entry(id).or_default();
-            painter.ink_layer_override = self.ink_layer_override;
-            painter.layer_zoom = self.layer_zoom;
-            painter.prefetch = true;
-            painter.paint_page(controller, index, viewport, bounds, editing, window, cx);
+            painter.paint_page(
+                controller,
+                index,
+                viewport,
+                bounds,
+                editing,
+                backgrounds,
+                window,
+                cx,
+            );
         }
     }
     // GPUI painting needs both window/context and the complete page/viewport state.
@@ -634,6 +681,7 @@ impl Painter {
         viewport: Viewport,
         bounds: Bounds<Pixels>,
         editing: Option<Id>,
+        backgrounds: &mut HashMap<String, ImageSource>,
         window: &mut Window,
         cx: &mut Context<NotesView>,
     ) {
@@ -645,13 +693,9 @@ impl Painter {
         }
         let page_id = controller.session().document.pages[page_index].id;
         self.page = Some(page_id);
-        let mut visible =
+        let visible =
             viewport.visible(f32::from(bounds.size.width), f32::from(bounds.size.height));
         let page = &controller.session().document.pages[page_index];
-        if self.prefetch {
-            // The screen's worth of the page nearest the viewport.
-            visible = visible.expand(visible.height().max(visible.width()));
-        }
         if !active && self.index_revision != Some(page.revision) {
             self.index.rebuild(page);
             self.index_revision = Some(page.revision);
@@ -692,24 +736,17 @@ impl Painter {
             positions,
             visible,
             viewport.zoom,
-        ) {
-            let ids = &self.frame.as_ref().unwrap().ids;
-            let trim_paths = self.paths.len() > 2048;
+        ) && let Some(frame) = &self.frame
+        {
+            let ids = &frame.ids;
+            let trim_paths = self.paths.len() > 512;
             self.paths
                 .retain(|id, _| page.objects.contains_key(id) && (!trim_paths || ids.contains(id)));
             self.text_layouts.retain(|id, _| ids.contains(id));
         }
-        let frame = self.frame.as_ref().unwrap().clone();
-        if editing.is_some_and(|id| frame.preview_ids.contains(&id)) {
-            let mut preview_ids = frame.preview_ids.clone();
-            preview_ids.remove(&editing.unwrap());
-            controller.request_page_previews(page_index, &preview_ids);
-        } else {
-            controller.request_page_previews(page_index, &frame.preview_ids);
-        }
-        let properties = controller.session().document.pages[page_index]
-            .properties
-            .clone();
+        let Some(frame) = self.frame.clone() else {
+            return;
+        };
         let visible_ids = &frame.ids;
         self.retain_rasters(
             |id, cache| {
@@ -717,7 +754,7 @@ impl Painter {
                     && (controller
                         .previews
                         .get(&(controller.active, page_id, id))
-                        .is_some_and(|preview| Arc::ptr_eq(&preview.bgra, &cache.data))
+                        .is_some_and(|preview| Arc::ptr_eq(&preview.token, &cache.token))
                         || controller.session().document.pages[page_index]
                             .objects
                             .get(&id)
@@ -729,6 +766,30 @@ impl Painter {
                 let _ = window.drop_image(image);
             },
         );
+        // If an image raster was evicted after its CPU pixels were released,
+        // drop the empty preview shell so `request_page_previews` reloads it.
+        for &id in &frame.preview_ids {
+            if !self.rasters.contains_key(&id)
+                && controller
+                    .previews
+                    .get(&(controller.active, page_id, id))
+                    .is_some_and(|preview| preview.bgra.is_empty())
+            {
+                controller.previews.remove(&(controller.active, page_id, id));
+            }
+        }
+        if let Some(editing_id) = editing
+            && frame.preview_ids.contains(&editing_id)
+        {
+            let mut preview_ids = frame.preview_ids.clone();
+            preview_ids.remove(&editing_id);
+            controller.request_page_previews(page_index, &preview_ids);
+        } else {
+            controller.request_page_previews(page_index, &frame.preview_ids);
+        }
+        let properties = controller.session().document.pages[page_index]
+            .properties
+            .clone();
         let world = Transform::translate(f32::from(bounds.origin.x), f32::from(bounds.origin.y))
             .compose(viewport.transform());
         let theme = Theme::new(&controller.settings);
@@ -766,12 +827,14 @@ impl Painter {
         let ink_batches = if self.ink_layer_override.unwrap_or(true) {
             let mut excluded = selection.union(erasing).copied().collect::<HashSet<_>>();
             excluded.extend(editing);
-            let density = self.layer_zoom * window.scale_factor();
+            let density = ((self.layer_zoom * window.scale_factor()) * 2.).ceil() / 2.;
+            let clip = super::ink_layers::high_zoom_clip(visible, density);
             if !self.ink_plan.as_ref().is_some_and(|plan| {
                 Arc::ptr_eq(&plan.frame, &frame)
                     && plan.excluded == excluded
                     && plan.theme == canvas_theme
                     && plan.density == density
+                    && plan.clip == clip
             }) {
                 let batches = Arc::new(self.ink_planner.batches(
                     &controller.session().document.pages[page_index],
@@ -780,47 +843,48 @@ impl Painter {
                     &excluded,
                     canvas_theme,
                     density,
+                    clip,
                 ));
                 self.ink_plan = Some(InkPlan {
                     frame: frame.clone(),
                     excluded,
                     theme: canvas_theme,
                     density,
-                    batches,
+                    clip,
+                    batches: batches.clone(),
                 });
                 ink_plan_changed = true;
+                batches
+            } else if let Some(plan) = &self.ink_plan {
+                plan.batches.clone()
+            } else {
+                Arc::new(Vec::new())
             }
-            self.ink_plan.as_ref().unwrap().batches.clone()
         } else {
             ink_plan_changed = self.ink_plan.take().is_some();
             Arc::new(Vec::new())
         };
         self.prepare_ink_layers(&ink_batches, ink_plan_changed, page_id, window, cx);
-        if self.prefetch {
-            return;
-        }
         let mut batch_iter = ink_batches.iter().peekable();
         let mut skip_until = 0;
+        let mut pending_batch_until = 0;
         let frame_start = std::time::Instant::now();
         let mut deferred = false;
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            self.paper(&properties, visible, world, window, cx, controller);
+            self.paper(&properties, visible, world, backgrounds, window, cx, controller);
             for (index, object) in frame.objects.iter().enumerate() {
                 if index < skip_until {
                     continue;
                 }
-                if batch_iter
-                    .peek()
-                    .is_some_and(|(range, _)| range.start == index)
+                if let Some((range, batch)) = batch_iter.next_if(|(range, _)| range.start == index)
                 {
-                    let (range, batch) = batch_iter.next().unwrap();
                     if let Some(layer) = self.ink_layers.get(&batch.id()).or_else(|| {
-                        self.ink_stale
-                            .get(&batch.id())
-                            .filter(|layer| layer.batch.same_ink(batch))
+                        self.ink_stale.get(&batch.id()).filter(|layer| {
+                            layer.batch.same_ink(batch) && layer.batch.bounds == batch.bounds
+                        })
                     }) && window
                         .paint_image_transformed(
-                            gpui_bounds(batch.bounds),
+                            gpui_bounds(layer.batch.bounds),
                             Default::default(),
                             layer.image.clone(),
                             0,
@@ -832,6 +896,39 @@ impl Painter {
                         skip_until = range.end;
                         continue;
                     }
+                    if self.ink_desired.contains_key(&batch.id())
+                        && !self.ink_failed.contains_key(&batch.id())
+                    {
+                        pending_batch_until = range.end;
+                    }
+                    if let Some(layer) = self
+                        .ink_stale
+                        .get(&batch.id())
+                        .filter(|layer| layer.batch.is_prefix_of(batch))
+                        && window
+                            .paint_image_transformed(
+                                gpui_bounds(layer.batch.bounds),
+                                Default::default(),
+                                layer.image.clone(),
+                                0,
+                                false,
+                                gpu_transform(world),
+                            )
+                            .is_ok()
+                    {
+                        let mut covered = range.start;
+                        let mut li = 0;
+                        while covered < range.end && li < layer.batch.objects.len() {
+                            if Arc::ptr_eq(&frame.objects[covered], &layer.batch.objects[li]) {
+                                covered += 1;
+                            }
+                            li += 1;
+                        }
+                        skip_until = covered;
+                        if index < skip_until {
+                            continue;
+                        }
+                    }
                 }
                 if editing == Some(object.id()) {
                     continue;
@@ -842,7 +939,10 @@ impl Painter {
                     {
                         for part in parts {
                             let color = self.display_color(part.style.color.rgb(), canvas_theme);
-                            if let Some(path) = ink_path(&folio_ink::outline(part.display_path())) {
+                            let points = part.decode_display_path(&mut self.path_buf);
+                            if let Some(path) =
+                                ink_path_from_points(points, &mut self.outline_scratch)
+                            {
                                 window.paint_path(
                                     path.transformed(coefficients(world.compose(part.transform))),
                                     alpha(color, part.style.opacity),
@@ -865,6 +965,7 @@ impl Painter {
                             .paths
                             .get(&s.id)
                             .is_some_and(|cache| Arc::ptr_eq(&cache.object, object));
+                        let awaiting_layer = index < pending_batch_until;
                         if !valid
                             && self.limit_tessellation
                             && frame_start.elapsed() > TESSELLATION_BUDGET
@@ -881,22 +982,42 @@ impl Painter {
                         {
                             continue;
                         }
-                        if !valid
-                            && let Some(path) = ink_path(&folio_ink::outline(s.display_path()))
-                        {
-                            self.paths.insert(
-                                s.id,
-                                CachedPath {
-                                    object: object.clone(),
-                                    path,
-                                },
-                            );
-                        }
-                        if let Some(path) = self.paths.get(&s.id) {
-                            window.paint_path(
-                                path.path.clone().transformed(coefficients(transform)),
-                                alpha(color, s.style.opacity),
-                            );
+                        if valid {
+                            if let Some(path) = self.paths.get(&s.id) {
+                                window.paint_path(
+                                    path.path.clone().transformed(coefficients(transform)),
+                                    alpha(color, s.style.opacity),
+                                );
+                            }
+                        } else if awaiting_layer {
+                            // A raster layer for this batch is already rendering;
+                            // paint transiently without retaining tessellated paths.
+                            let points = s.decode_display_path(&mut self.path_buf);
+                            if let Some(path) =
+                                ink_path_from_points(points, &mut self.outline_scratch)
+                            {
+                                window.paint_path(
+                                    path.transformed(coefficients(transform)),
+                                    alpha(color, s.style.opacity),
+                                );
+                            }
+                        } else {
+                            let points = s.decode_display_path(&mut self.path_buf);
+                            if let Some(path) =
+                                ink_path_from_points(points, &mut self.outline_scratch)
+                            {
+                                window.paint_path(
+                                    path.clone().transformed(coefficients(transform)),
+                                    alpha(color, s.style.opacity),
+                                );
+                                self.paths.insert(
+                                    s.id,
+                                    CachedPath {
+                                        object: object.clone(),
+                                        path,
+                                    },
+                                );
+                            }
                         }
                     }
                     Object::Text(text) => {
@@ -990,10 +1111,10 @@ impl Painter {
                             .filter(|preview| Arc::ptr_eq(&preview.object, object));
                         if let Some(preview) = preview {
                             let valid = self.rasters.get(&object.id()).is_some_and(|cache| {
-                                Arc::ptr_eq(&cache.data, &preview.bgra)
+                                Arc::ptr_eq(&cache.token, &preview.token)
                                     && cache.appearance == appearance
                             });
-                            if !valid {
+                            if !valid && !preview.bgra.is_empty() {
                                 self.request_raster(object.id(), page_id, preview, appearance, cx);
                             }
                         }
@@ -1004,7 +1125,7 @@ impl Painter {
                             .get(&object.id())
                             .filter(|image| image.appearance == appearance)
                             .and_then(|image| match preview {
-                                Some(preview) if Arc::ptr_eq(&image.data, &preview.bgra) => {
+                                Some(preview) if Arc::ptr_eq(&image.token, &preview.token) => {
                                     Some((image, preview.bounds, Transform::default()))
                                 }
                                 _ => folio_app::relative_transform(&image.object, object)
@@ -1290,10 +1411,13 @@ impl Painter {
             let mut offscreen = 0;
             stale.retain(|id, layer| {
                 let keep = match desired.get(id) {
-                    Some(batch) => batch.same_ink(&layer.batch),
+                    Some(batch) => {
+                        (batch.same_ink(&layer.batch) && batch.bounds == layer.batch.bounds)
+                            || layer.batch.is_prefix_of(batch)
+                    }
                     None => {
                         offscreen += layer.batch.pixels;
-                        offscreen <= super::ink_layers::PIXEL_BUDGET / 2
+                        offscreen <= super::ink_layers::PIXEL_BUDGET / 4
                     }
                 };
                 if !keep {
@@ -1311,7 +1435,7 @@ impl Painter {
         // recognition and other background work.
         let parallel = std::thread::available_parallelism()
             .map_or(2, |n| n.get() / 2)
-            .clamp(2, 6);
+            .clamp(2, 4);
         for (_, batch) in batches {
             let id = batch.id();
             if self.ink_pending.len() >= parallel {
@@ -1353,6 +1477,10 @@ impl Painter {
                             for object in &request.objects {
                                 painter.paths.remove(&object.id());
                             }
+                            if painter.paths.capacity() > painter.paths.len().saturating_mul(2) + 64
+                            {
+                                painter.paths.shrink_to_fit();
+                            }
                             if let Some(stale) = painter.ink_stale.remove(&id) {
                                 cx.drop_image(stale.image, None);
                             }
@@ -1366,6 +1494,31 @@ impl Painter {
                         } else {
                             painter.ink_failed.insert(id, request);
                         }
+                    } else if let Some(image) = image
+                        && painter
+                            .ink_desired
+                            .get(&id)
+                            .is_some_and(|batch| request.is_prefix_of(batch))
+                        && painter
+                            .ink_stale
+                            .get(&id)
+                            .is_none_or(|existing| existing.batch.objects.len() < request.objects.len())
+                    {
+                        for object in &request.objects {
+                            painter.paths.remove(&object.id());
+                        }
+                        if let Some(previous) = painter.ink_stale.insert(
+                            id,
+                            CachedInkLayer {
+                                batch: request,
+                                image,
+                            },
+                        ) {
+                            cx.drop_image(previous.image, None);
+                        }
+                    }
+                    if painter.ink_pending.is_empty() {
+                        view.controller.request_memory_trim();
                     }
                     cx.notify();
                 });
@@ -1388,12 +1541,12 @@ impl Painter {
         }
         let request = RasterRequest {
             page,
-            data: preview.bgra.clone(),
+            token: preview.token.clone(),
             appearance,
         };
         self.raster_pending.insert(id, request.clone());
         let (width, height) = (preview.width, preview.height);
-        let data = request.data.clone();
+        let data = preview.bgra.clone();
         let object = preview.object.clone();
         let (source, bounds) = (preview.object.clone(), preview.bounds);
         let task = cx.background_executor().spawn(async move {
@@ -1431,7 +1584,7 @@ impl Painter {
                     .controller
                     .previews
                     .get(&(view.controller.active, page, id))
-                    .is_some_and(|preview| Arc::ptr_eq(&preview.bgra, &request.data));
+                    .is_some_and(|preview| Arc::ptr_eq(&preview.token, &request.token));
                 if painter.page == Some(page)
                     && current
                     && request
@@ -1444,10 +1597,11 @@ impl Painter {
                         })
                     && let Some(image) = image
                 {
+                    let token = request.token;
                     if let Some(previous) = painter.rasters.insert(
                         id,
                         CachedRaster {
-                            data: request.data,
+                            token: token.clone(),
                             image,
                             appearance,
                             object: source,
@@ -1458,17 +1612,24 @@ impl Painter {
                         // all windows are available through the app context.
                         cx.drop_image(previous.image, None);
                     }
+                    // Plain image rasters never need theme re-adaptation; free
+                    // their CPU BGRA buffer once the GPU image is ready.
+                    if appearance.is_none() {
+                        view.controller.release_preview_pixels(page, id, &token);
+                    }
                 }
                 cx.notify();
             });
         })
         .detach();
     }
+    #[allow(clippy::too_many_arguments)]
     fn paper(
         &mut self,
         properties: &PageProperties,
         visible: Rect,
         world: Transform,
+        backgrounds: &mut HashMap<String, ImageSource>,
         window: &mut Window,
         cx: &mut Context<NotesView>,
         controller: &Controller,
@@ -1482,9 +1643,14 @@ impl Painter {
             Rect::new(0., 0., properties.width, properties.height)
         };
         if let Some(bounds) = axis_aligned_bounds(page, world) {
-            let mut rectangles = Vec::new();
+            let scale = window.scale_factor();
+            let mut paint_rect = |rect: Rect, color: Rgba| {
+                visit_pixel_rectangles(rect, color, scale, |bounds, color| {
+                    window.paint_quad(fill(gpui_bounds(bounds), color));
+                });
+            };
             if !properties.infinite {
-                pixel_rectangles(
+                paint_rect(
                     Rect::new(
                         bounds.min.x + 2.,
                         bounds.min.y + 3.,
@@ -1492,38 +1658,24 @@ impl Painter {
                         bounds.height(),
                     ),
                     alpha(0x000000, if theme.dark { 0.45 } else { 0.08 }),
-                    window.scale_factor(),
-                    &mut rectangles,
                 );
                 // A hairline keeps the page edge visible against the
                 // workspace: light on dark paper, a faint shade on light.
-                {
-                    pixel_rectangles(
-                        Rect::new(
-                            bounds.min.x - 1.,
-                            bounds.min.y - 1.,
-                            bounds.width() + 2.,
-                            bounds.height() + 2.,
-                        ),
-                        if theme.dark {
-                            alpha(0xffffff, 0.2)
-                        } else {
-                            alpha(0x000000, 0.1)
-                        },
-                        window.scale_factor(),
-                        &mut rectangles,
-                    );
-                }
+                paint_rect(
+                    Rect::new(
+                        bounds.min.x - 1.,
+                        bounds.min.y - 1.,
+                        bounds.width() + 2.,
+                        bounds.height() + 2.,
+                    ),
+                    if theme.dark {
+                        alpha(0xffffff, 0.2)
+                    } else {
+                        alpha(0x000000, 0.1)
+                    },
+                );
             }
-            pixel_rectangles(
-                bounds,
-                rgb(paper_color),
-                window.scale_factor(),
-                &mut rectangles,
-            );
-            for (bounds, color) in rectangles {
-                window.paint_quad(fill(gpui_bounds(bounds), color));
-            }
+            paint_rect(bounds, rgb(paper_color));
         } else {
             let points = rect_points(page).map(|p| world.apply(p));
             if !properties.infinite {
@@ -1550,13 +1702,9 @@ impl Painter {
                 .cloned()
                 .chain(Controller::pdf_scroll_preview_asset(pdf))
             {
-                let Some(path) = controller.asset_path(&asset).filter(|path| path.is_file()) else {
+                let Some(source) = backgrounds.get(&asset) else {
                     continue;
                 };
-                let source = self
-                    .backgrounds
-                    .entry(asset.clone())
-                    .or_insert_with(|| ImageSource::from(path));
                 if let Some(image) = source.use_render_image(window, cx) {
                     let _ = window.paint_image_transformed(
                         gpui_bounds(page),
@@ -1581,12 +1729,12 @@ impl Painter {
             world,
             canvas: canvas_theme,
         };
-        if self
+        let scale = window.scale_factor();
+        let needs_rebuild = self
             .paper_cache
             .as_ref()
-            .is_none_or(|cached| cached.key != key || cached.scale != window.scale_factor())
-        {
-            let scale = window.scale_factor();
+            .is_none_or(|cached| cached.key != key || cached.scale != scale);
+        if needs_rebuild {
             let geometry = paper_rectangles(&key, scale)
                 .map(PaperGeometry::Rectangles)
                 .unwrap_or_else(|| PaperGeometry::Paths(paper_paths(&key)));
@@ -1596,7 +1744,10 @@ impl Painter {
                 geometry,
             });
         }
-        match &self.paper_cache.as_ref().unwrap().geometry {
+        let Some(cache) = &self.paper_cache else {
+            return;
+        };
+        match &cache.geometry {
             PaperGeometry::Rectangles(rectangles) => {
                 for (bounds, color) in rectangles {
                     window.paint_quad(fill(gpui_bounds(*bounds), *color));
@@ -1617,16 +1768,20 @@ fn preview_image(
     data: Arc<Vec<u8>>,
     appearance: Option<RasterAppearance>,
 ) -> Option<Arc<RenderImage>> {
-    let pixels = match appearance {
+    match appearance {
+        None => RenderImage::from_ephemeral_shared_bgra(width, height, data).map(Arc::new),
         Some(RasterAppearance::Ink(theme)) if theme.adapt_ink => {
             match theme.preview_pixels(&data) {
-                std::borrow::Cow::Borrowed(_) => data,
-                std::borrow::Cow::Owned(pixels) => Arc::new(pixels),
+                std::borrow::Cow::Borrowed(_) => {
+                    RenderImage::from_shared_bgra(width, height, data).map(Arc::new)
+                }
+                std::borrow::Cow::Owned(pixels) => {
+                    RenderImage::from_ephemeral_bgra(width, height, pixels).map(Arc::new)
+                }
             }
         }
-        _ => data,
-    };
-    RenderImage::from_shared_bgra(width, height, pixels).map(Arc::new)
+        _ => RenderImage::from_shared_bgra(width, height, data).map(Arc::new),
+    }
 }
 
 fn paper_spacing(zoom: f32) -> f32 {
@@ -1683,16 +1838,27 @@ fn pixel_bands(min: f32, max: f32, scale: f32) -> smallvec::SmallVec<[(f32, f32,
     bands
 }
 
-fn pixel_rectangles(rect: Rect, color: Rgba, scale: f32, rectangles: &mut Vec<(Rect, Rgba)>) {
+fn visit_pixel_rectangles(
+    rect: Rect,
+    color: Rgba,
+    scale: f32,
+    mut emit: impl FnMut(Rect, Rgba),
+) {
     // Quads have hard rectangular edges. Split fractional device pixels into
     // weighted edge strips so thin ruling retains its coverage during resizing.
     for (x0, x1, x_alpha) in pixel_bands(rect.min.x, rect.max.x, scale) {
         for (y0, y1, y_alpha) in pixel_bands(rect.min.y, rect.max.y, scale) {
             let mut color = color;
             color.a *= x_alpha * y_alpha;
-            rectangles.push((Rect::new(x0, y0, x1 - x0, y1 - y0), color));
+            emit(Rect::new(x0, y0, x1 - x0, y1 - y0), color);
         }
     }
+}
+
+fn pixel_rectangles(rect: Rect, color: Rgba, scale: f32, rectangles: &mut Vec<(Rect, Rgba)>) {
+    visit_pixel_rectangles(rect, color, scale, |bounds, color| {
+        rectangles.push((bounds, color));
+    });
 }
 
 fn paper_clip(page: Rect, visible: Rect) -> Rect {
@@ -1972,7 +2138,7 @@ mod tests {
         let offscreen = Id::new_v4();
         let mut atlas = HashSet::new();
         let mut images = Vec::new();
-        let data = Arc::new(vec![0; 4]);
+        let token = Arc::new(());
         for id in [visible, stale, offscreen] {
             let image = graph::image(1, 1, vec![0; 4]);
             images.push(Arc::downgrade(&image));
@@ -1980,10 +2146,10 @@ mod tests {
             painter.rasters.insert(
                 id,
                 CachedRaster {
-                    data: if id == stale {
-                        Arc::new(vec![0; 4])
+                    token: if id == stale {
+                        Arc::new(())
                     } else {
-                        data.clone()
+                        token.clone()
                     },
                     image,
                     appearance: None,
@@ -1999,7 +2165,7 @@ mod tests {
             );
         }
         painter.retain_rasters(
-            |id, raster| id != offscreen && Arc::ptr_eq(&raster.data, &data),
+            |id, raster| id != offscreen && Arc::ptr_eq(&raster.token, &token),
             |image| assert!(atlas.remove(&image.id)),
         );
         assert_eq!(
@@ -2046,7 +2212,7 @@ mod tests {
                     let Object::Stroke(s) = o.as_ref() else {
                         unreachable!()
                     };
-                    ink_path(&folio_ink::outline(s.display_path())).unwrap()
+                    ink_path(&folio_ink::outline(&s.display_path())).unwrap()
                 })
                 .collect::<Vec<_>>();
             let batches = super::super::ink_layers::batches(&objects, &HashSet::new(), theme, 1.);
@@ -2119,6 +2285,7 @@ mod tests {
                             &HashSet::new(),
                             theme,
                             1.,
+                            None,
                         ));
                     }
                     std::hint::black_box(cached.as_ref().unwrap());
@@ -2481,9 +2648,12 @@ mod tests {
         let data = Arc::new(vec![0, 0, 0, 255, 12, 34, 56, 128]);
         let weak = Arc::downgrade(&data);
         let image = preview_image(2, 1, data.clone(), None).unwrap();
-        assert_eq!(image.as_bytes(0).unwrap().as_ptr(), data.as_ptr());
-        assert_eq!(image.as_bytes(0).unwrap(), data.as_slice());
-        assert!(image.as_bytes(1).is_none());
+        image.with_bytes(0, |bytes| {
+            let bytes = bytes.unwrap();
+            assert_eq!(bytes.as_ptr(), data.as_ptr());
+            assert_eq!(bytes, data.as_slice());
+        });
+        assert!(image.with_bytes(1, |bytes| bytes.is_none()));
         assert_eq!(image.size(0), size(2.into(), 1.into()));
         assert_eq!(image.frame_count(), 1);
         assert_eq!(image.delay(0), image::Delay::from_numer_denom_ms(0, 1));
@@ -2503,11 +2673,11 @@ mod tests {
         theme.adapt_ink = true;
         let adapted =
             preview_image(2, 1, data.clone(), Some(RasterAppearance::Ink(theme))).unwrap();
-        assert_eq!(
-            adapted.as_bytes(0).unwrap(),
-            theme.preview_pixels(&data).as_ref()
-        );
-        assert_ne!(adapted.as_bytes(0).unwrap().as_ptr(), data.as_ptr());
+        adapted.with_bytes(0, |bytes| {
+            let bytes = bytes.unwrap();
+            assert_eq!(bytes, theme.preview_pixels(&data).as_ref());
+            assert_ne!(bytes.as_ptr(), data.as_ptr());
+        });
         assert_eq!(data.as_slice(), &[0, 0, 0, 255, 12, 34, 56, 128]);
         assert!(preview_image(2, 2, data.clone(), None).is_none());
         assert!(preview_image(u32::MAX, u32::MAX, data.clone(), None).is_none());
@@ -2543,7 +2713,7 @@ mod tests {
 
         let request = RasterRequest {
             page: Id::new_v4(),
-            data: Arc::new(vec![0; 16]),
+            token: Arc::new(()),
             appearance: Some(RasterAppearance::Ink(
                 Theme::new(&folio_app::Settings::default()).canvas,
             )),
@@ -2553,7 +2723,7 @@ mod tests {
         changed.page = Id::new_v4();
         assert!(!request.matches(&changed));
         let mut changed = request.clone();
-        changed.data = Arc::new(request.data.as_ref().clone());
+        changed.token = Arc::new(());
         assert!(!request.matches(&changed));
         let mut changed = request.clone();
         changed.appearance = None;

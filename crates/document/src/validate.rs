@@ -193,8 +193,8 @@ impl Document {
                         || s.path.is_empty()
                         || s.path
                             .iter()
-                            .chain(s.fragment_path.iter().flatten())
-                            .chain(s.refined_path.iter().flatten())
+                            .chain(s.fragment_path.iter().flatten().copied())
+                            .chain(s.refined_path.iter().flatten().copied())
                             .any(|p| {
                                 !p.position.x.is_finite()
                                     || !p.position.y.is_finite()

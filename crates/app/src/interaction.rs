@@ -573,7 +573,8 @@ impl Controller {
     }
     /// Objects crossed out by a scratch gesture, or nothing if `stroke` is not one.
     fn scratch_erase_targets(&self, stroke: &InkStroke) -> HashSet<Id> {
-        let Some(gesture) = folio_gestures::scratch(&stroke.raw) else {
+        let raw = stroke.raw.to_vec();
+        let Some(gesture) = folio_gestures::scratch(&raw) else {
             return HashSet::new();
         };
         let page = self.page();

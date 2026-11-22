@@ -40,6 +40,7 @@ mod settings;
 mod templates;
 mod text_render;
 mod theme;
+mod thumbnails;
 mod titlebar;
 mod tool_wheel;
 mod toolbar_menu;
@@ -154,7 +155,6 @@ enum Modal {
     TextColor,
     Equation,
     EditEquation(Id),
-    MathPdfRegion,
     /// Closing the window with edits that autosave-off has not saved.
     UnsavedChanges,
     Confirm(Confirm),
@@ -222,7 +222,6 @@ impl Modal {
             Self::PageSize => "Custom page size",
             Self::FontSize => "Font size",
             Self::EditEquation(_) => "Edit LaTeX equation",
-            Self::MathPdfRegion => "PDF region: left, top, width, height",
             Self::Equation => "Insert LaTeX equation",
             Self::UnsavedChanges => "Save changes before closing?",
             Self::Confirm(Confirm::DeletePermanently(_)) => "Delete permanently?",
@@ -230,12 +229,20 @@ impl Modal {
         }
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PollMode {
+    Fast,
+    Deferred,
+    Stopped,
+}
+
 pub struct NotesView {
     updater: folio_update::Updater,
     titlebar_smoke: bool,
     update_preparing: bool,
     poll_task: Option<Task<()>>,
-    poll_idle: bool,
+    /// Scheduled polling cadence: None when sleeping at 0 Hz, or whether fast (16 ms) vs deferred idle wake.
+    poll_mode: PollMode,
     canvas_ease: CanvasEase,
     /// A document tab being pressed or dragged along the tab bar.
     tab_drag: Option<navigation::TabDrag>,
@@ -264,6 +271,7 @@ pub struct NotesView {
     inline_text: Option<inline_text::Editor>,
     subscriptions: Vec<Subscription>,
     _appearance_subscription: Subscription,
+    _poll_subscription: Subscription,
     motion: std::cell::RefCell<motion::Motion>,
     transitions: std::cell::RefCell<transitions::Transitions>,
     building_overlay: bool,
@@ -298,7 +306,6 @@ pub struct NotesView {
     /// Which toolbar control the Document actions popover opens from.
     more_anchor: String,
     attention_error: Option<String>,
-    attention_setup: bool,
     pen_settings: bool,
     pen_menu_section: pen_menu::Section,
     pen_preset_target: Option<Id>,
@@ -344,7 +351,7 @@ pub struct NotesView {
     tool_wheel: Option<tool_wheel::ToolWheel>,
     /// W is held down; its key repeats must not toggle the wheel.
     wheel_key_held: bool,
-    thumbnails: workspace::Thumbnails,
+    thumbnails: thumbnails::Thumbnails,
     writing_style: Option<folio_document::PenStyle>,
     timestamps: TimestampExtender,
     last_tablet: Option<Instant>,
@@ -354,6 +361,7 @@ pub struct NotesView {
     gesture_start: Option<folio_canvas::Viewport>,
     mouse_pan: bool,
     start: Instant,
+    window_title: String,
     painter: painting::Painter,
     accessibility: std::rc::Rc<accessibility::Accessibility>,
 }
@@ -429,6 +437,13 @@ impl NotesView {
             workspace.open_tabs.clear();
             workspace.library_open = true;
         }
+        let poll_subscription = cx.observe_self(|view, cx| {
+            // Input and background render notifications resume maintenance from
+            // 0 Hz idle sleep so newly started work/animations run immediately.
+            if view.poll_mode == PollMode::Stopped {
+                view.schedule_poll(Duration::from_millis(16), cx);
+            }
+        });
         let (accessibility, mut accessibility_requests) = accessibility::Accessibility::new(window);
         let mut view = Self {
             updater: if titlebar_smoke {
@@ -439,7 +454,7 @@ impl NotesView {
             titlebar_smoke,
             update_preparing: false,
             poll_task: None,
-            poll_idle: false,
+            poll_mode: PollMode::Stopped,
             canvas_ease: CanvasEase::default(),
             tab_drag: None,
             tab_bounds: Default::default(),
@@ -463,6 +478,7 @@ impl NotesView {
             inline_text: None,
             subscriptions: vec![],
             _appearance_subscription: appearance_subscription,
+            _poll_subscription: poll_subscription,
             motion: Default::default(),
             transitions: Default::default(),
             building_overlay: false,
@@ -485,7 +501,6 @@ impl NotesView {
             lost_focus: None,
             more_anchor: "more".into(),
             attention_error: None,
-            attention_setup: false,
             pen_settings: false,
             pen_menu_section: pen_menu::Section::default(),
             pen_preset_target: None,
@@ -523,7 +538,7 @@ impl NotesView {
             tool_wheel: None,
             wheel_key_held: false,
             canvas_menu: None,
-            thumbnails: workspace::Thumbnails::default(),
+            thumbnails: thumbnails::Thumbnails::default(),
             writing_style: None,
             timestamps: TimestampExtender::default(),
             last_tablet: None,
@@ -532,6 +547,7 @@ impl NotesView {
             gesture_start: None,
             mouse_pan: false,
             start: Instant::now(),
+            window_title: "Folio".into(),
             painter: painting::Painter::default(),
             accessibility: std::rc::Rc::new(accessibility),
         };
@@ -549,13 +565,34 @@ impl NotesView {
             }
         })
         .detach();
-        view.subscriptions.push(cx.observe_self(|view, cx| {
-            // Input and background render notifications cancel the idle timer,
-            // so newly started animations/work never wait for the idle interval.
-            if view.poll_idle {
-                view.schedule_poll(Duration::from_millis(16), cx);
+        let (wake_tx, mut wake_rx) = futures::channel::mpsc::channel::<()>(1);
+        let wake_tx = std::sync::Arc::new(std::sync::Mutex::new(wake_tx));
+        let make_wake = || {
+            let wake_tx = wake_tx.clone();
+            std::sync::Arc::new(move || {
+                if let Ok(mut tx) = wake_tx.lock() {
+                    let _ = tx.try_send(());
+                }
+            })
+        };
+        view.controller.set_wakeup(make_wake());
+        view.updater.set_wakeup(make_wake());
+        cx.spawn(async move |view, cx| {
+            use futures::StreamExt;
+            while wake_rx.next().await.is_some() {
+                if view
+                    .update(cx, |view, cx| {
+                        if view.poll_mode != PollMode::Fast {
+                            view.schedule_poll(Duration::ZERO, cx);
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
-        }));
+        })
+        .detach();
         view.schedule_poll(Duration::from_millis(16), cx);
         view
     }
@@ -633,11 +670,17 @@ impl NotesView {
         }
     }
     fn schedule_poll(&mut self, delay: Duration, cx: &mut Context<Self>) {
-        self.poll_idle = delay > Duration::from_millis(16);
+        self.poll_mode = if delay > Duration::from_millis(16) {
+            PollMode::Deferred
+        } else {
+            PollMode::Fast
+        };
         // Replacing the handle cancels the previous timer rather than creating
         // a second poll loop. The weak entity stops polling when the view closes.
         self.poll_task = Some(cx.spawn(async move |view, cx| {
-            cx.background_executor().timer(delay).await;
+            if !delay.is_zero() {
+                cx.background_executor().timer(delay).await;
+            }
             let _ = view.update(cx, |view, cx| {
                 if let Some(task) = view.poll_task.take() {
                     task.detach();
@@ -649,7 +692,13 @@ impl NotesView {
                     cx.quit();
                     return;
                 }
-                if matches!(view.updater.state, folio_update::State::Failed { .. }) {
+                if view.update_preparing
+                    && update_changed
+                    && !matches!(
+                        view.updater.state,
+                        folio_update::State::Preparing { .. } | folio_update::State::Exit
+                    )
+                {
                     view.update_preparing = false;
                 }
                 let motion_changed =
@@ -660,12 +709,14 @@ impl NotesView {
                     || view.motion.borrow().needs_frame()
                     || view.updater.state.busy()
                     || view.updater.state == folio_update::State::Checking;
-                let delay = Duration::from_millis(if fast { 16 } else { 250 });
-                let delay = view
-                    .controller
-                    .math_ink_poll_delay()
-                    .map_or(delay, |deadline| delay.min(deadline));
-                view.schedule_poll(delay, cx);
+                if fast {
+                    view.schedule_poll(Duration::from_millis(16), cx);
+                } else if let Some(next) = view.controller.next_idle_wake() {
+                    view.schedule_poll(next.max(Duration::from_millis(16)), cx);
+                } else {
+                    // Truly idle: sleep at 0 Hz until user input or a worker wakeup.
+                    view.poll_mode = PollMode::Stopped;
+                }
                 if notify {
                     cx.notify();
                 }
@@ -674,13 +725,21 @@ impl NotesView {
     }
     fn resume_poll(&mut self, cx: &mut Context<Self>) {
         // Rendering/layout can start work after the latest maintenance tick
-        // has selected the idle interval, without another entity notification.
-        if self.poll_idle
-            && (self.controller.needs_fast_poll()
-                || self.motion.borrow().needs_frame()
-                || self.transitions.borrow().animating())
-        {
+        // has entered idle sleep, without another entity notification.
+        if self.poll_mode == PollMode::Fast {
+            return;
+        }
+        let needs_fast = self.controller.needs_fast_poll()
+            || self.motion.borrow().needs_frame()
+            || self.transitions.borrow().animating()
+            || self.updater.state.busy()
+            || self.updater.state == folio_update::State::Checking;
+        if needs_fast {
             self.schedule_poll(Duration::from_millis(16), cx);
+        } else if self.poll_mode == PollMode::Stopped
+            && let Some(next) = self.controller.next_idle_wake()
+        {
+            self.schedule_poll(next.max(Duration::from_millis(16)), cx);
         }
     }
     pub fn bindings(cx: &mut App) {
@@ -769,7 +828,6 @@ impl NotesView {
     fn blocking_overlay(&self) -> bool {
         self.update_preparing
             || self.modal.is_some()
-            || self.controller.recognition_setup_needed()
             || self.document_menu.is_some()
             || self.folder_menu.is_some()
             || self.canvas_menu.is_some()
@@ -1097,26 +1155,6 @@ impl NotesView {
                     return;
                 }
             },
-            Modal::MathPdfRegion => {
-                let values = content
-                    .split(',')
-                    .map(str::trim)
-                    .map(str::parse::<f32>)
-                    .collect::<Result<Vec<_>, _>>();
-                let result = values
-                    .map_err(|_| "Enter four comma-separated fractions".to_string())
-                    .and_then(|values| {
-                        if values.len() != 4 {
-                            return Err("Enter left, top, width and height".into());
-                        }
-                        this_region(&mut self.controller, &values)
-                    });
-                if let Err(error) = result {
-                    self.modal_error = Some(error);
-                    cx.notify();
-                    return;
-                }
-            }
             Modal::PageBookmark => self.controller.bookmark_page(content),
             Modal::MovePage => {
                 let Some(destination) = self.move_page_destination else {
@@ -2844,7 +2882,10 @@ impl NotesView {
                 }
             })
             .ok_or("Tablet dispatch produced no ink")?;
-        if stroke.raw.len() != 80 || stroke.raw[0].tilt_x != 12. || stroke.raw[79].pressure < 0.88 {
+        if stroke.raw.len() != 80
+            || stroke.raw.first().is_none_or(|p| p.tilt_x != 12.)
+            || stroke.raw.get(79).is_none_or(|p| p.pressure < 0.88)
+        {
             return Err("Rich tablet samples were lost".into());
         }
         if self.controller.page().objects.len() != 1
@@ -2880,11 +2921,6 @@ impl NotesView {
         self.painter.ink_layer_override = enabled;
         self.painter.ink_layer_counts()
     }
-}
-fn this_region(controller: &mut Controller, values: &[f32]) -> Result<(), String> {
-    controller.read_pdf_math(folio_document::Rect::new(
-        values[0], values[1], values[2], values[3],
-    ))
 }
 
 /// A keyboard key, as shown in hints.
