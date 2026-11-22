@@ -575,7 +575,11 @@ pub enum Item {
         rect: [f32; 4],
         width: u32,
         height: u32,
-        rgba: Vec<u8>,
+        /// The run's pixels; `None` when last frame's run with the same
+        /// `fingerprint` is reused without rasterizing it again.
+        rgba: Option<Vec<u8>>,
+        /// What the run paints, for runs made only of solid-colour paths.
+        fingerprint: Option<u64>,
     },
     /// Polylines in the shape's own points, drawn opaque and faded as one
     /// layer, so overlapping segments of translucent ink blend once.
@@ -727,6 +731,8 @@ pub struct Raster {
     items: Vec<Item>,
     run: Vec<(Op, Option<sk::Rect>)>,
     run_bounds: Option<sk::Rect>,
+    /// Fingerprints of the runs this canvas drew last frame.
+    previous: std::collections::HashSet<u64>,
 }
 impl Raster {
     pub fn new(width: u32, height: u32, scale: f32, origin: Point<Pixels>) -> Option<Self> {
@@ -740,6 +746,7 @@ impl Raster {
             items: Vec::new(),
             run: Vec::new(),
             run_bounds: None,
+            previous: Default::default(),
         })
     }
     fn full(&self) -> sk::Rect {
@@ -793,6 +800,20 @@ impl Raster {
             return;
         }
         let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
+        let s = self.scale;
+        let rect = [x0 / s, y0 / s, (x1 - x0) / s, (y1 - y0) / s];
+        let fingerprint = run_fingerprint(&ops, [x0, y0, x1, y1]);
+        // Each of last frame's runs is reused once; an identical second run is painted.
+        if let Some(fingerprint) = fingerprint.filter(|f| self.previous.remove(f)) {
+            self.items.push(Item::Run {
+                rect,
+                width: w,
+                height: h,
+                rgba: None,
+                fingerprint: Some(fingerprint),
+            });
+            return;
+        }
         let Some(mut pixmap) = sk::Pixmap::new(w, h) else {
             return;
         };
@@ -866,12 +887,12 @@ impl Raster {
         }
         let mut rgba = pixmap.take();
         crate::graph::unpremultiply(&mut rgba);
-        let s = self.scale;
         self.items.push(Item::Run {
-            rect: [x0 / s, y0 / s, (x1 - x0) / s, (y1 - y0) / s],
+            rect,
             width: w,
             height: h,
-            rgba,
+            rgba: Some(rgba),
+            fingerprint,
         });
     }
     /// Everything painted, in order.
@@ -1400,7 +1421,91 @@ pub fn canvas_rect(key: &str) -> Option<[f32; 4]> {
 struct RunSlot {
     pixels: rune::Pixels,
     size: (u32, u32),
-    rgba: Vec<u8>,
+    /// The fingerprint of what the slot shows, or, for a run that has none,
+    /// its pixels, so an unchanged run is not uploaded again.
+    content: RunContent,
+}
+#[derive(PartialEq)]
+enum RunContent {
+    Fingerprint(u64),
+    Pixels(Vec<u8>),
+}
+
+/// A hash of what a run of solid-colour fills and strokes paints, or `None`
+/// when it holds images, SVG, gradients or dashes (which are compared by
+/// their pixels instead).
+fn run_fingerprint(ops: &[(Op, Option<sk::Rect>)], bounds: [f32; 4]) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let floats = |h: &mut std::collections::hash_map::DefaultHasher, values: &[f32]| {
+        for v in values {
+            v.to_bits().hash(h);
+        }
+    };
+    let transform = |h: &mut std::collections::hash_map::DefaultHasher, t: &sk::Transform| {
+        floats(h, &[t.sx, t.kx, t.ky, t.sy, t.tx, t.ty]);
+    };
+    let path = |h: &mut std::collections::hash_map::DefaultHasher, path: &sk::Path| {
+        for p in path.points() {
+            floats(h, &[p.x, p.y]);
+        }
+        for verb in path.verbs() {
+            (*verb as u8).hash(h);
+        }
+    };
+    let paint = |h: &mut std::collections::hash_map::DefaultHasher, paint: &sk::Paint| {
+        let sk::Shader::SolidColor(color) = paint.shader else {
+            return false;
+        };
+        floats(
+            h,
+            &[color.red(), color.green(), color.blue(), color.alpha()],
+        );
+        (paint.anti_alias, paint.blend_mode as u8).hash(h);
+        true
+    };
+    floats(&mut h, &bounds);
+    for (op, clip) in ops {
+        if let Some(c) = clip {
+            floats(&mut h, &[c.left(), c.top(), c.right(), c.bottom()]);
+        }
+        match op {
+            Op::Fill {
+                path: p,
+                paint: q,
+                rule,
+                transform: t,
+            } => {
+                0u8.hash(&mut h);
+                path(&mut h, p);
+                if !paint(&mut h, q) {
+                    return None;
+                }
+                (*rule as u8).hash(&mut h);
+                transform(&mut h, t);
+            }
+            Op::Stroke {
+                path: p,
+                paint: q,
+                stroke,
+                transform: t,
+            } => {
+                if stroke.dash.is_some() {
+                    return None;
+                }
+                1u8.hash(&mut h);
+                path(&mut h, p);
+                if !paint(&mut h, q) {
+                    return None;
+                }
+                floats(&mut h, &[stroke.width, stroke.miter_limit]);
+                (stroke.line_cap as u8, stroke.line_join as u8).hash(&mut h);
+                transform(&mut h, t);
+            }
+            Op::Image { .. } | Op::Svg { .. } => return None,
+        }
+    }
+    Some(h.finish())
 }
 
 /// Paints a canvas of window rect `[x, y, w, h]` and returns its elements,
@@ -1422,9 +1527,28 @@ fn paint_canvas(
         scale,
         bounds.origin,
     );
+    if let Some(raster) = &mut window.raster {
+        raster.previous = CANVAS_RUNS.with(|runs| {
+            runs.borrow()
+                .get(key)
+                .into_iter()
+                .flatten()
+                .filter_map(|slot| match slot.content {
+                    RunContent::Fingerprint(f) => Some(f),
+                    RunContent::Pixels(_) => None,
+                })
+                .collect()
+        });
+    }
     paint(bounds, window);
     let items = window.raster.take()?.finish();
     Some(display_list(key, items))
+}
+
+/// Whether `FOLIO_PROFILE_CANVAS` asks for canvas and view build timings, read once.
+pub(crate) fn profiling() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("FOLIO_PROFILE_CANVAS").is_some())
 }
 
 /// Rune elements for a canvas's items, in paint order.
@@ -1435,6 +1559,9 @@ fn display_list(key: &str, items: Vec<Item>) -> rune::El {
     CANVAS_RUNS.with(|slots| {
         let mut slots = slots.borrow_mut();
         let slots = slots.entry(key.to_owned()).or_default();
+        let mut previous: Vec<Option<RunSlot>> =
+            std::mem::take(slots).into_iter().map(Some).collect();
+        let mut kept_slots = Vec::with_capacity(previous.len());
         for item in items {
             match item {
                 Item::Quad {
@@ -1508,20 +1635,48 @@ fn display_list(key: &str, items: Vec<Item>) -> rune::El {
                     width,
                     height,
                     rgba,
+                    fingerprint,
                 } => {
-                    if slots.len() <= runs {
-                        slots.push(RunSlot {
-                            pixels: rune::Pixels::new(),
-                            size: (0, 0),
-                            rgba: Vec::new(),
-                        });
-                    }
-                    let slot = &mut slots[runs];
-                    if slot.size != (width, height) || slot.rgba != rgba {
-                        slot.pixels.set(width, height, rgba.clone());
-                        slot.size = (width, height);
-                        slot.rgba = rgba;
-                    }
+                    let size = (width, height);
+                    // A run painted as last frame keeps its slot and image.
+                    let kept = fingerprint.and_then(|f| {
+                        previous.iter().position(|slot| {
+                            slot.as_ref().is_some_and(|slot| {
+                                slot.size == size && slot.content == RunContent::Fingerprint(f)
+                            })
+                        })
+                    });
+                    let slot = match (kept, rgba) {
+                        (Some(i), _) => previous[i].take().expect("kept run slot"),
+                        (None, Some(rgba)) => {
+                            let mut slot = previous
+                                .get_mut(runs)
+                                .and_then(Option::take)
+                                .unwrap_or_else(|| RunSlot {
+                                    pixels: rune::Pixels::new(),
+                                    size: (0, 0),
+                                    content: RunContent::Pixels(Vec::new()),
+                                });
+                            match fingerprint {
+                                Some(f) => {
+                                    slot.pixels.set(width, height, rgba);
+                                    slot.content = RunContent::Fingerprint(f);
+                                }
+                                None => {
+                                    let unchanged = slot.size == size
+                                        && matches!(&slot.content, RunContent::Pixels(p) if *p == rgba);
+                                    if !unchanged {
+                                        slot.pixels.set(width, height, rgba.clone());
+                                        slot.content = RunContent::Pixels(rgba);
+                                    }
+                                }
+                            }
+                            slot.size = size;
+                            slot
+                        }
+                        // Reused, but its slot is gone: nothing to show.
+                        (None, None) => continue,
+                    };
                     children.push(
                         rune::el()
                             .key(format!("r{runs}"))
@@ -1529,11 +1684,12 @@ fn display_list(key: &str, items: Vec<Item>) -> rune::El {
                             .size(rect[2], rect[3])
                             .pixels(&slot.pixels),
                     );
+                    kept_slots.push(slot);
                     runs += 1;
                 }
             }
         }
-        slots.truncate(runs);
+        *slots = kept_slots;
     });
     rune::el()
         .pin(Some(0.), Some(0.), Some(0.), Some(0.))
@@ -1667,7 +1823,7 @@ pub fn view_canvas(
                 paint(bcx.view, bounds, window, bcx.cx);
                 painted = started.elapsed();
             });
-            if std::env::var_os("FOLIO_PROFILE_CANVAS").is_some() {
+            if profiling() {
                 eprintln!(
                     "FOLIO_CANVAS {key}: paint {:.2} ms, total {:.2} ms",
                     painted.as_secs_f64() * 1000.,
@@ -1684,4 +1840,40 @@ pub fn view_canvas(
                 });
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Paints a disc of `color` and returns the canvas's runs as
+    /// `(has pixels, fingerprint)`, after last frame's `previous` runs.
+    fn runs(color: u32, previous: &[u64]) -> Vec<(bool, Option<u64>)> {
+        let mut raster = Raster::new(64, 64, 1., point(px(0.), px(0.))).unwrap();
+        raster.previous = previous.iter().copied().collect();
+        let disc = Arc::new(sk::PathBuilder::from_circle(32., 32., 10.).unwrap());
+        raster.fill_path(&disc, rgb(color), FillRule::NonZero, raster.transform);
+        raster
+            .finish()
+            .into_iter()
+            .filter_map(|item| match item {
+                Item::Run {
+                    rgba, fingerprint, ..
+                } => Some((rgba.is_some(), fingerprint)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn unchanged_runs_are_reused_without_rasterizing() {
+        let first = runs(0x336699, &[]);
+        let [(true, Some(fingerprint))] = first[..] else {
+            panic!("{first:?}")
+        };
+        assert_eq!(runs(0x336699, &[fingerprint]), [(false, Some(fingerprint))]);
+        // A different colour paints again.
+        let changed = runs(0x993366, &[fingerprint]);
+        assert!(changed[0].0 && changed[0].1 != Some(fingerprint));
+    }
 }

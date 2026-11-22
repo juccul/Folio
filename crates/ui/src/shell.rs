@@ -75,6 +75,7 @@ fn view_fn(s: &AppState, cx: &mut rune::Cx<AppState>) -> rune::El {
     paint::begin_frame(view.scale);
     compat::begin_drops();
     compat::begin_anchors();
+    let started = std::time::Instant::now();
     let mut window = Window::render(&view);
     let mut context = Context::fresh();
     let element = div()
@@ -97,6 +98,12 @@ fn view_fn(s: &AppState, cx: &mut rune::Cx<AppState>) -> rune::El {
     };
     view.deferred.extend(window.effects);
     view.deferred.extend(context.effects);
+    if paint::profiling() {
+        eprintln!(
+            "FOLIO_VIEW build {:.2} ms",
+            started.elapsed().as_secs_f64() * 1000.
+        );
+    }
     built
         .instant_changes()
         .on_layout(|s: &mut AppState, r: [f32; 4]| {

@@ -588,22 +588,37 @@ impl NotesView {
         {
             self.update_preparing = false;
         }
-        let (tasks, finished) = executor::poll(self);
+        let polled = executor::poll(self);
+        let finished = polled.finished;
         let motion_changed =
             self.motion.borrow_mut().advance() || self.transitions.borrow().animating();
         let easing = self.canvas_ease.last.is_some();
-        let painting = self.painter.busy();
-        let notify = changed || update_changed || motion_changed || easing || painting || finished;
+        // Ink and image rasters notify when they finish (`finished`); the
+        // view need not rebuild every frame while they run.
+        let notify = changed || update_changed || motion_changed || easing || finished;
+        // Waiting futures need a poll only at their timer's deadline; finished
+        // background work wakes the window itself.
         let fast = notify
-            || tasks
             || self.controller.needs_fast_poll()
             || self.motion.borrow().needs_frame()
             || self.updater.state.busy()
             || self.updater.state == folio_update::State::Checking;
+        let timer = polled
+            .deadline
+            .map(|at| at.saturating_duration_since(Instant::now()));
         if fast {
             tx.wake_after(Duration::from_millis(16));
-        } else if let Some(next) = self.controller.next_idle_wake() {
-            tx.wake_after(next.max(Duration::from_millis(16)));
+        } else if let Some(next) = [
+            self.controller
+                .next_idle_wake()
+                .map(|next| next.max(Duration::from_millis(16))),
+            timer.map(|next| next.max(Duration::from_millis(1))),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        {
+            tx.wake_after(next);
         }
         let deferred = std::mem::take(&mut self.deferred);
         compat::apply(deferred, tx);

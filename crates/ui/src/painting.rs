@@ -519,11 +519,6 @@ fn visible_page_range(
 }
 impl Painter {
     /// Whether rasterization started for the visible pages is still running.
-    pub(super) fn busy(&self) -> bool {
-        self.pages
-            .values()
-            .any(|p| !p.ink_pending.is_empty() || !p.raster_pending.is_empty())
-    }
     pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<NotesView>) {
         for source in self.backgrounds.values() {
             Self::release_background(source, window, cx);

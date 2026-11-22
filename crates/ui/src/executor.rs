@@ -18,6 +18,8 @@ thread_local! {
     static LOCAL: RefCell<Vec<LocalFuture>> = const { RefCell::new(Vec::new()) };
     static SPAWNED: RefCell<Vec<LocalFuture>> = const { RefCell::new(Vec::new()) };
     static VIEW: Cell<*mut NotesView> = const { Cell::new(std::ptr::null_mut()) };
+    /// The earliest deadline of a timer still waiting, found while polling.
+    static DEADLINE: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
 }
 static WAKER: OnceLock<rune::Waker> = OnceLock::new();
 
@@ -38,11 +40,21 @@ impl Wake for WindowWaker {
     }
 }
 
+/// What polling the UI-thread futures came to.
+pub struct Polled {
+    /// Some future finished (and may have changed the view, or a future
+    /// awaiting it can continue on the next poll).
+    pub finished: bool,
+    /// The earliest timer deadline a waiting future needs a poll at. Futures
+    /// awaiting background work need none: finished work wakes the window.
+    pub deadline: Option<std::time::Instant>,
+}
+
 /// Polls the UI-thread futures once, with `view` reachable through
-/// [`WeakView::update`]. Returns whether any are still waiting, and whether
-/// any finished (and may have changed the view).
-pub fn poll(view: &mut NotesView) -> (bool, bool) {
+/// [`WeakView::update`].
+pub fn poll(view: &mut NotesView) -> Polled {
     VIEW.with(|v| v.set(view as *mut NotesView));
+    DEADLINE.with(|d| d.set(None));
     let waker = std::task::Waker::from(Arc::new(WindowWaker));
     let mut context = std::task::Context::from_waker(&waker);
     let mut futures = LOCAL.with(|l| std::mem::take(&mut *l.borrow_mut()));
@@ -57,9 +69,12 @@ pub fn poll(view: &mut NotesView) -> (bool, bool) {
         *l = futures;
     });
     VIEW.with(|v| v.set(std::ptr::null_mut()));
-    let pending =
-        LOCAL.with(|l| !l.borrow().is_empty()) || SPAWNED.with(|s| !s.borrow().is_empty());
-    (pending, finished)
+    // Futures spawned during this poll have not run yet.
+    let spawned = SPAWNED.with(|s| !s.borrow().is_empty());
+    Polled {
+        finished: finished || spawned,
+        deadline: DEADLINE.with(Cell::get),
+    }
 }
 
 /// A task's result, for awaiting; dropping or detaching it lets it finish.
@@ -182,6 +197,7 @@ impl Future for Timer {
         if std::time::Instant::now() >= self.0 {
             Poll::Ready(())
         } else {
+            DEADLINE.with(|d| d.set(Some(d.get().map_or(self.0, |e| e.min(self.0)))));
             Poll::Pending
         }
     }
