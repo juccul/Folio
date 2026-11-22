@@ -5,10 +5,46 @@ use crate::{
 };
 use flate2::read::GzDecoder;
 use serde::Deserialize;
-use std::{collections::HashMap, fs::File, io::BufReader, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    io::BufReader,
+    path::Path,
+};
 
 const FEATURE_DIM: usize = 8;
 const MAX_POINTS: usize = 1024;
+const DEL1_BUCKET_CAP: usize = 16;
+
+/// Common multi-character handwriting visual confusions (ligatures, splits, strokes).
+const MULTI_CHAR_CONFUSIONS: &[(&str, &str)] = &[
+    ("rn", "m"),
+    ("m", "rn"),
+    ("nn", "m"),
+    ("m", "nn"),
+    ("cl", "d"),
+    ("d", "cl"),
+    ("vv", "w"),
+    ("w", "vv"),
+    ("ri", "n"),
+    ("n", "ri"),
+    ("ii", "u"),
+    ("u", "ii"),
+    ("ll", "tt"),
+    ("tt", "ll"),
+    ("ll", "tl"),
+    ("in", "m"),
+    ("m", "in"),
+    ("ni", "m"),
+    ("m", "ni"),
+    ("ce", "nce"),
+    ("e", "ce"),
+    ("st", "sc"),
+    ("sc", "st"),
+    ("ci", "oo"),
+    ("ol", "d"),
+    ("d", "ol"),
+];
 
 #[derive(Deserialize)]
 struct LmStatsRaw {
@@ -26,9 +62,15 @@ struct LmStatsRaw {
 pub struct BigramLexiconLm {
     word_lp: HashMap<String, f32>,
     lower_lp: HashMap<String, f32>,
+    lower_counts: HashMap<String, u32>,
     bigram_lp: HashMap<String, f32>,
     char4: HashMap<String, u32>,
     char3: HashMap<String, u32>,
+    log_tot: f32,
+    /// Corpus-attested lowercase words sorted by descending frequency (id -> (word, count)).
+    lex_words: Vec<(String, u32)>,
+    /// SymSpell 1-delete inverted index mapping delete-key -> top word ids in `lex_words`.
+    del1: HashMap<String, Vec<u32>>,
 }
 
 impl BigramLexiconLm {
@@ -37,6 +79,10 @@ impl BigramLexiconLm {
         let reader = BufReader::new(GzDecoder::new(file));
         let raw: LmStatsRaw =
             serde_json::from_reader(reader).map_err(|e| format!("Invalid LM {}: {e}", path.display()))?;
+        Ok(Self::from_raw(raw))
+    }
+
+    fn from_raw(raw: LmStatsRaw) -> Self {
         let log_tot = ((raw.total_words.max(1) as f64) + 20000.0).ln() as f32;
         let word_lp: HashMap<String, f32> = raw
             .words
@@ -57,13 +103,50 @@ impl BigramLexiconLm {
                 (bg, (((c as f32) + 0.5) / denom).ln())
             })
             .collect();
-        Ok(Self {
+
+        // Build compact SymSpell 1-delete index over corpus-attested words (count >= 3).
+        let mut lex_words: Vec<(String, u32)> = lower_counts
+            .iter()
+            .filter(|(w, c)| {
+                **c >= 3
+                    && w.len() >= 2
+                    && w.len() <= 20
+                    && w.bytes().all(|b| b.is_ascii_alphabetic() || b == b'\'')
+            })
+            .map(|(w, &c)| (w.clone(), c))
+            .collect();
+        lex_words.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        let mut del1: HashMap<String, Vec<u32>> = HashMap::with_capacity(lex_words.len() * 4);
+        let mut key_buf = String::with_capacity(20);
+        for (idx, (w, _)) in lex_words.iter().enumerate() {
+            let wid = idx as u32;
+            let bytes = w.as_bytes();
+            for i in 0..bytes.len() {
+                key_buf.clear();
+                key_buf.push_str(&w[..i]);
+                key_buf.push_str(&w[i + 1..]);
+                if let Some(bucket) = del1.get_mut(&key_buf) {
+                    if bucket.len() < DEL1_BUCKET_CAP && *bucket.last().unwrap() != wid {
+                        bucket.push(wid);
+                    }
+                } else {
+                    del1.insert(key_buf.clone(), vec![wid]);
+                }
+            }
+        }
+
+        Self {
             word_lp,
             lower_lp,
+            lower_counts,
             bigram_lp,
             char4: raw.char4,
             char3: raw.char3,
-        })
+            log_tot,
+            lex_words,
+            del1,
+        }
     }
 
     fn strip_word_core(word: &str) -> Option<&str> {
@@ -79,6 +162,128 @@ impl BigramLexiconLm {
         } else {
             None
         }
+    }
+
+    fn split_word_affixes(word: &str) -> Option<(&str, &str, &str)> {
+        let bytes = word.as_bytes();
+        let start = bytes.iter().position(|b| b.is_ascii_alphabetic())?;
+        let end = bytes.iter().rposition(|b| b.is_ascii_alphabetic())? + 1;
+        let core = &word[start..end];
+        if !core
+            .bytes()
+            .all(|b| b.is_ascii_alphabetic() || b == b'\'')
+        {
+            return None;
+        }
+        Some((&word[..start], core, &word[end..]))
+    }
+
+    fn lower_count(&self, w_low: &str) -> u32 {
+        self.lower_counts.get(w_low).copied().unwrap_or(0)
+    }
+
+    fn rescore_unigram(&self, w_low: &str, oov_pen: f32) -> f32 {
+        let c = self.lower_count(w_low);
+        if c == 0 {
+            -oov_pen
+        } else {
+            let bonus = if c <= 2 { 10.3 } else { 11.2 };
+            ((c as f32) + 1.0).ln() - self.log_tot + bonus
+        }
+    }
+
+    fn rescore_bigram(&self, prev_low: &str, next_low: &str) -> f32 {
+        let key = format!("{prev_low} {next_low}");
+        self.bigram_lp
+            .get(&key)
+            .map_or(0.0, |&lp| (lp + 7.5).max(0.0))
+    }
+
+    /// Generate up to `max_cands` corpus-attested edit-distance 1–2 & visual-confusion candidates.
+    fn generate_candidates<'a>(&'a self, w_low: &str, allow_ed2: bool, max_cands: usize) -> Vec<&'a str> {
+        let mut seen: HashSet<&'a str> = HashSet::with_capacity(64);
+        let insert_if_attested = |cand: &str, set: &mut HashSet<&'a str>| {
+            if let Some((w, &c)) = self.lower_counts.get_key_value(cand)
+                && c >= 3
+            {
+                set.insert(w.as_str());
+            }
+        };
+        if let Some(bucket) = self.del1.get(w_low) {
+            for &wid in bucket {
+                seen.insert(self.lex_words[wid as usize].0.as_str());
+            }
+        }
+        let bytes = w_low.as_bytes();
+        let mut d1_buf = String::with_capacity(w_low.len());
+        let mut d2_buf = String::with_capacity(w_low.len());
+        let mut seen_d1: HashSet<String> = HashSet::new();
+
+        for i in 0..bytes.len() {
+            d1_buf.clear();
+            d1_buf.push_str(&w_low[..i]);
+            d1_buf.push_str(&w_low[i + 1..]);
+            insert_if_attested(&d1_buf, &mut seen);
+            if let Some(bucket) = self.del1.get(&d1_buf) {
+                for &wid in bucket {
+                    seen.insert(self.lex_words[wid as usize].0.as_str());
+                }
+            }
+            if allow_ed2 && bytes.len() >= 4 && seen_d1.insert(d1_buf.clone()) {
+                let d1_len = d1_buf.len();
+                for j in i..d1_len {
+                    d2_buf.clear();
+                    d2_buf.push_str(&d1_buf[..j]);
+                    d2_buf.push_str(&d1_buf[j + 1..]);
+                    insert_if_attested(&d2_buf, &mut seen);
+                    if let Some(bucket) = self.del1.get(&d2_buf) {
+                        for &wid in bucket {
+                            seen.insert(self.lex_words[wid as usize].0.as_str());
+                        }
+                    }
+                }
+            }
+        }
+
+        if allow_ed2 && bytes.len() >= 4 {
+            for &(from, to) in MULTI_CHAR_CONFUSIONS {
+                let mut pos = 0usize;
+                while let Some(rel) = w_low[pos..].find(from) {
+                    let idx = pos + rel;
+                    let mut alt = String::with_capacity(w_low.len() + 2);
+                    alt.push_str(&w_low[..idx]);
+                    alt.push_str(to);
+                    alt.push_str(&w_low[idx + from.len()..]);
+                    insert_if_attested(&alt, &mut seen);
+                    if let Some(bucket) = self.del1.get(&alt) {
+                        for &wid in bucket {
+                            seen.insert(self.lex_words[wid as usize].0.as_str());
+                        }
+                    }
+                    for k in 0..alt.len() {
+                        d1_buf.clear();
+                        d1_buf.push_str(&alt[..k]);
+                        d1_buf.push_str(&alt[k + 1..]);
+                        if let Some(bucket) = self.del1.get(&d1_buf) {
+                            for &wid in bucket {
+                                seen.insert(self.lex_words[wid as usize].0.as_str());
+                            }
+                        }
+                    }
+                    pos = idx + 1;
+                }
+            }
+        }
+
+        seen.remove(w_low);
+        let mut out: Vec<(&str, u32)> = seen
+            .into_iter()
+            .filter(|c| c.len().abs_diff(w_low.len()) <= 2)
+            .map(|c| (c, self.lower_count(c)))
+            .collect();
+        out.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        out.truncate(max_cands);
+        out.into_iter().map(|(w, _)| w).collect()
     }
 
     pub fn score_word(&self, word: &str, prev_word: Option<&str>) -> f32 {
@@ -655,10 +860,362 @@ fn ctc_beam_decode(
     best_pref.trim().to_string()
 }
 
+fn ascii_edit_distance(a: &str, b: &str) -> usize {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    let mut dp: Vec<usize> = (0..=bb.len()).collect();
+    for (i, &ca) in ab.iter().enumerate() {
+        let mut prev = dp[0];
+        dp[0] = i + 1;
+        for (j, &cb) in bb.iter().enumerate() {
+            let tmp = dp[j + 1];
+            let cost = usize::from(ca != cb);
+            dp[j + 1] = (dp[j + 1] + 1).min(dp[j] + 1).min(prev + cost);
+            prev = tmp;
+        }
+    }
+    dp[bb.len()]
+}
+
+fn match_word_case(orig: &str, cand_low: &str) -> String {
+    if orig.len() > 1 && orig.bytes().all(|b| !b.is_ascii_lowercase()) {
+        return cand_low.to_ascii_uppercase();
+    }
+    if orig.as_bytes().first().is_some_and(u8::is_ascii_uppercase) {
+        let mut out = String::with_capacity(cand_low.len());
+        let mut chars = cand_low.chars();
+        if let Some(first) = chars.next() {
+            out.push(first.to_ascii_uppercase());
+            out.push_str(chars.as_str());
+        }
+        return out;
+    }
+    cand_low.to_string()
+}
+
+/// Exact CTC forward log-probability `log P(token_ids | lp[t0..t1])`.
+fn ctc_forward_score(lp: &[f32], v: usize, t0: usize, t1: usize, token_ids: &[usize]) -> f32 {
+    if t1 <= t0 {
+        return f32::NEG_INFINITY;
+    }
+    let l = token_ids.len();
+    if l == 0 {
+        let mut s = 0.0_f32;
+        for t in t0..t1 {
+            s += lp[t * v];
+        }
+        return s;
+    }
+    let s_len = 2 * l + 1;
+    let mut ext = vec![0usize; s_len];
+    for (i, &tid) in token_ids.iter().enumerate() {
+        ext[2 * i + 1] = tid;
+    }
+    let mut alpha = vec![f32::NEG_INFINITY; s_len];
+    let mut next = vec![f32::NEG_INFINITY; s_len];
+    let row0 = &lp[t0 * v..(t0 + 1) * v];
+    alpha[0] = row0[0];
+    if s_len > 1 {
+        alpha[1] = row0[ext[1]];
+    }
+    for t in (t0 + 1)..t1 {
+        let row = &lp[t * v..(t + 1) * v];
+        for s in 0..s_len {
+            let mut acc = alpha[s];
+            if s > 0 {
+                acc = logsumexp2(acc, alpha[s - 1]);
+            }
+            if s > 1 && ext[s] != 0 && ext[s] != ext[s - 2] {
+                acc = logsumexp2(acc, alpha[s - 2]);
+            }
+            next[s] = acc + row[ext[s]];
+        }
+        std::mem::swap(&mut alpha, &mut next);
+    }
+    logsumexp2(alpha[s_len - 1], alpha[s_len - 2])
+}
+
+/// Forced CTC Viterbi alignment mapping each whitespace-delimited token to `[t0, t1)`.
+fn ctc_viterbi_word_spans(
+    lp: &[f32],
+    t_len: usize,
+    v: usize,
+    text: &str,
+    char_to_id: &HashMap<char, usize>,
+) -> Vec<(String, usize, usize)> {
+    let chars: Vec<char> = text.chars().filter(|c| char_to_id.contains_key(c)).collect();
+    if chars.is_empty() || t_len == 0 {
+        return Vec::new();
+    }
+    let l = chars.len();
+    let s_len = 2 * l + 1;
+    let mut ext = vec![0usize; s_len];
+    for (i, &ch) in chars.iter().enumerate() {
+        ext[2 * i + 1] = char_to_id[&ch];
+    }
+
+    let mut dp = vec![f32::NEG_INFINITY; t_len * s_len];
+    let mut bp = vec![0u32; t_len * s_len];
+    dp[0] = lp[0];
+    if s_len > 1 {
+        dp[1] = lp[ext[1]];
+    }
+    for t in 1..t_len {
+        let row = &lp[t * v..(t + 1) * v];
+        let prev_off = (t - 1) * s_len;
+        let cur_off = t * s_len;
+        for s in 0..s_len {
+            let mut best_v = dp[prev_off + s];
+            let mut best_p = s;
+            if s > 0 && dp[prev_off + s - 1] > best_v {
+                best_v = dp[prev_off + s - 1];
+                best_p = s - 1;
+            }
+            if s > 1 && ext[s] != 0 && ext[s] != ext[s - 2] && dp[prev_off + s - 2] > best_v {
+                best_v = dp[prev_off + s - 2];
+                best_p = s - 2;
+            }
+            dp[cur_off + s] = best_v + row[ext[s]];
+            bp[cur_off + s] = best_p as u32;
+        }
+    }
+
+    let last_off = (t_len - 1) * s_len;
+    let mut cur = if dp[last_off + s_len - 1] >= dp[last_off + s_len - 2] {
+        s_len - 1
+    } else {
+        s_len - 2
+    };
+    let mut c_start = vec![t_len; l];
+    let mut c_end = vec![0usize; l];
+    let mut c_seen = vec![false; l];
+    for t in (0..t_len).rev() {
+        if cur % 2 == 1 {
+            let ci = cur / 2;
+            if t < c_start[ci] {
+                c_start[ci] = t;
+            }
+            if !c_seen[ci] || t > c_end[ci] {
+                c_end[ci] = t;
+            }
+            c_seen[ci] = true;
+        }
+        cur = bp[t * s_len + cur] as usize;
+    }
+
+    let mut words = Vec::new();
+    let mut i = 0usize;
+    while i < l {
+        if chars[i] == ' ' {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < l && chars[j] != ' ' {
+            j += 1;
+        }
+        let w: String = chars[i..j].iter().collect();
+        let mut t0 = t_len;
+        let mut t1 = 0usize;
+        let mut any = false;
+        for ci in i..j {
+            if c_seen[ci] {
+                t0 = t0.min(c_start[ci]);
+                t1 = t1.max(c_end[ci] + 1);
+                any = true;
+            }
+        }
+        if any {
+            let prev_end = if i > 0 && c_seen[i - 1] {
+                c_end[i - 1] + 1
+            } else {
+                0
+            };
+            let next_start = if j < l && c_seen[j] {
+                c_start[j]
+            } else {
+                t_len
+            };
+            t0 = t0.saturating_sub(2).max(prev_end);
+            t1 = (t1 + 2).min(next_start);
+            if t1 > t0 {
+                words.push((w, t0, t1));
+            }
+        }
+        i = j;
+    }
+    words
+}
+
+/// Acoustic-anchored OOV word rescorer using exact CTC forward log-probabilities.
+/// Fixes 1–2 letter handwriting near-misses ("estaped"->"escaped", "assistece"->"assistance")
+/// without overriding real names/acronyms whose strokes do not match dictionary candidates.
+fn rescore_oov_words(
+    logits: &[f32],
+    t_len: usize,
+    v: usize,
+    beam_text: &str,
+    lm: &BigramLexiconLm,
+    char_to_id: &HashMap<char, usize>,
+) -> String {
+    if beam_text.is_empty() || t_len == 0 {
+        return beam_text.to_string();
+    }
+    // Fast path: skip Viterbi + CTC forward completely if every alphabetic word is already attested.
+    let needs_rescore = beam_text.split_whitespace().any(|w| {
+        BigramLexiconLm::split_word_affixes(w).is_some_and(|(_, core, _)| {
+            let len = core.len();
+            let all_upper = core.bytes().all(|b| b.is_ascii_uppercase());
+            len >= 3 && !(all_upper && len <= 5) && lm.lower_count(&core.to_ascii_lowercase()) == 0
+        })
+    });
+    if !needs_rescore {
+        return beam_text.to_string();
+    }
+
+    // Calibrated log-probabilities for CTC forward scoring (softens overconfident CTC spikes).
+    let temp = 1.80_f32;
+    let mut lp = vec![0.0_f32; t_len * v];
+    for t in 0..t_len {
+        let src = &logits[t * v..(t + 1) * v];
+        let dst = &mut lp[t * v..(t + 1) * v];
+        let mut max_v = f32::NEG_INFINITY;
+        for &val in src {
+            let s = val / temp;
+            if s > max_v {
+                max_v = s;
+            }
+        }
+        let mut sum_e = 0.0_f32;
+        for i in 0..v {
+            let e = (src[i] / temp - max_v).exp();
+            dst[i] = e;
+            sum_e += e;
+        }
+        let log_z = max_v + sum_e.max(1e-12).ln();
+        for i in 0..v {
+            dst[i] = src[i] / temp - log_z;
+        }
+    }
+
+    let spans = ctc_viterbi_word_spans(&lp, t_len, v, beam_text, char_to_id);
+    if spans.is_empty() {
+        return beam_text.to_string();
+    }
+
+    let mut out_words: Vec<String> = spans.iter().map(|(w, _, _)| w.clone()).collect();
+    let alpha_uni = 1.20_f32;
+    let alpha_bi = 0.75_f32;
+    let oov_pen = 3.00_f32;
+    let mut orig_ids = Vec::with_capacity(32);
+    let mut cand_ids = Vec::with_capacity(32);
+
+    for (idx, (w, t0, t1)) in spans.iter().enumerate() {
+        let Some((pfx, core, sfx)) = BigramLexiconLm::split_word_affixes(w) else {
+            continue;
+        };
+        if core.len() < 3 {
+            continue;
+        }
+        if core.bytes().all(|b| b.is_ascii_uppercase()) && core.len() <= 5 {
+            continue;
+        }
+        let w_low = core.to_ascii_lowercase();
+        if lm.lower_count(&w_low) > 0 {
+            continue;
+        }
+        let mid_sentence_proper =
+            idx > 0 && core.as_bytes()[0].is_ascii_uppercase() && core.bytes().skip(1).any(|b| b.is_ascii_lowercase());
+
+        let prev_low = if idx > 0 {
+            BigramLexiconLm::strip_word_core(&out_words[idx - 1])
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_else(|| "<s>".to_string())
+        } else {
+            "<s>".to_string()
+        };
+        let next_low = if idx + 1 < spans.len() {
+            BigramLexiconLm::strip_word_core(&spans[idx + 1].0)
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_else(|| "</s>".to_string())
+        } else {
+            "</s>".to_string()
+        };
+
+        orig_ids.clear();
+        for ch in w.chars() {
+            if let Some(&cid) = char_to_id.get(&ch) {
+                orig_ids.push(cid);
+            }
+        }
+        let orig_ctc = ctc_forward_score(&lp, v, *t0, *t1, &orig_ids);
+        let orig_score = orig_ctc
+            + alpha_uni * lm.rescore_unigram(&w_low, oov_pen)
+            + alpha_bi * (lm.rescore_bigram(&prev_low, &w_low) + lm.rescore_bigram(&w_low, &next_low));
+
+        let cands = lm.generate_candidates(&w_low, !mid_sentence_proper, 64);
+        let mut best_w = w.clone();
+        let mut best_score = orig_score + if mid_sentence_proper { 0.90 } else { 0.45 };
+
+        for cand_low in cands {
+            let d = ascii_edit_distance(&w_low, cand_low);
+            if d == 0 || d > 2 {
+                continue;
+            }
+            if mid_sentence_proper && d > 1 {
+                continue;
+            }
+            let cand_core = match_word_case(core, cand_low);
+            let mut cand_full = String::with_capacity(pfx.len() + cand_core.len() + sfx.len());
+            cand_full.push_str(pfx);
+            cand_full.push_str(&cand_core);
+            cand_full.push_str(sfx);
+
+            cand_ids.clear();
+            let mut ok = true;
+            for ch in cand_full.chars() {
+                if let Some(&cid) = char_to_id.get(&ch) {
+                    cand_ids.push(cid);
+                } else {
+                    ok = false;
+                    break;
+                }
+            }
+            if !ok {
+                continue;
+            }
+
+            let ctc_s = ctc_forward_score(&lp, v, *t0, *t1, &cand_ids);
+            let max_drop = if mid_sentence_proper {
+                4.2
+            } else if d == 1 {
+                6.8
+            } else {
+                5.2
+            };
+            if orig_ctc - ctc_s > max_drop {
+                continue;
+            }
+            let ed_pen = if d == 2 { 1.35 } else { 0.0 };
+            let sc = ctc_s
+                + alpha_uni * lm.rescore_unigram(cand_low, oov_pen)
+                + alpha_bi * (lm.rescore_bigram(&prev_low, cand_low) + lm.rescore_bigram(cand_low, &next_low))
+                - ed_pen;
+            if sc > best_score {
+                best_score = sc;
+                best_w = cand_full;
+            }
+        }
+        out_words[idx] = best_w;
+    }
+    out_words.join(" ")
+}
+
 pub struct HtrModel {
     frec: FrecFile,
     rope: RopeTable,
     lm: Option<BigramLexiconLm>,
+    char_to_id: HashMap<char, usize>,
 }
 
 impl HtrModel {
@@ -669,7 +1226,21 @@ impl HtrModel {
         let d = frec.header.config.d_model;
         let hd = d / frec.header.config.nhead;
         let rope = RopeTable::new(hd, 2048);
-        Ok(Self { frec, rope, lm })
+        let mut char_to_id = HashMap::with_capacity(frec.header.vocab.len());
+        for (idx, s) in frec.header.vocab.iter().enumerate() {
+            if idx > 0 {
+                let mut chars = s.chars();
+                if let (Some(c), None) = (chars.next(), chars.next()) {
+                    char_to_id.insert(c, idx);
+                }
+            }
+        }
+        Ok(Self {
+            frec,
+            rope,
+            lm,
+            char_to_id,
+        })
     }
 
     pub fn recognize_line(&self, strokes: &[Vec<[f32; 2]>]) -> Result<String, String> {
@@ -713,7 +1284,7 @@ impl HtrModel {
         linear(&x, t_enc, &head_w, head_b, &mut logits);
 
         let valid_out = ((t_raw + 3) / 4).min(t_enc);
-        Ok(ctc_beam_decode(
+        let beam = ctc_beam_decode(
             &logits,
             valid_out,
             vocab,
@@ -721,7 +1292,19 @@ impl HtrModel {
             20,
             0.70,
             1.25,
-        ))
+        );
+        if let Some(lm) = self.lm.as_ref() {
+            Ok(rescore_oov_words(
+                &logits,
+                valid_out,
+                vocab.len(),
+                &beam,
+                lm,
+                &self.char_to_id,
+            ))
+        } else {
+            Ok(beam)
+        }
     }
 
     pub fn recognize_strokes(&self, strokes: &[Vec<[f32; 2]>]) -> Result<String, String> {
@@ -737,5 +1320,83 @@ impl HtrModel {
             }
         }
         Ok(out.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_lm() -> BigramLexiconLm {
+        let mut words = HashMap::new();
+        let mut words_lower = HashMap::new();
+        for &(w, c) in &[
+            ("the", 50_000u32),
+            ("escaped", 800),
+            ("assistance", 600),
+            ("extend", 500),
+            ("prisoner", 400),
+            ("quickly", 700),
+            ("famous", 900),
+        ] {
+            words.insert(w.to_string(), c);
+            words_lower.insert(w.to_string(), c);
+        }
+        let mut bigrams = HashMap::new();
+        bigrams.insert("the prisoner".to_string(), 120);
+        bigrams.insert("prisoner escaped".to_string(), 80);
+        BigramLexiconLm::from_raw(LmStatsRaw {
+            total_words: 500_000,
+            words,
+            words_lower,
+            bigrams,
+            char4: HashMap::new(),
+            char3: HashMap::new(),
+        })
+    }
+
+    #[test]
+    fn rescorer_fixes_near_miss_when_acoustics_support_candidate_and_preserves_true_oov() {
+        let lm = test_lm();
+        let mut vocab = vec!["<blank>".to_string(), " ".to_string()];
+        for ch in 'a'..='z' {
+            vocab.push(ch.to_string());
+        }
+        let mut char_to_id = HashMap::new();
+        for (i, s) in vocab.iter().enumerate().skip(1) {
+            char_to_id.insert(s.chars().next().unwrap(), i);
+        }
+        let v = vocab.len();
+
+        // Synthesize CTC logits for "estaped" where the 't' frame also has strong 'c' logit (near-miss).
+        let text = "estaped";
+        let t_len = text.len() * 2 + 1;
+        let mut logits = vec![-6.0_f32; t_len * v];
+        for (ci, ch) in text.chars().enumerate() {
+            let blank_t = ci * 2;
+            logits[blank_t * v] = 5.0;
+            let char_t = ci * 2 + 1;
+            let cid = char_to_id[&ch];
+            logits[char_t * v + cid] = 5.0;
+            if ch == 't' {
+                logits[char_t * v + char_to_id[&'c']] = 4.1;
+            }
+        }
+        logits[(t_len - 1) * v] = 5.0;
+
+        let fixed = rescore_oov_words(&logits, t_len, v, "estaped", &lm, &char_to_id);
+        assert_eq!(fixed, "escaped", "expected near-miss OOV word to snap to acoustically supported 'escaped'");
+
+        // Now synthesize sharp unambiguous logits for a genuine unknown name "zxqvkj" -> must NOT be corrupted.
+        let oov = "zxqvkj";
+        let t2 = oov.len() * 2 + 1;
+        let mut logits2 = vec![-12.0_f32; t2 * v];
+        for (ci, ch) in oov.chars().enumerate() {
+            logits2[(ci * 2) * v] = 8.0;
+            logits2[(ci * 2 + 1) * v + char_to_id[&ch]] = 8.0;
+        }
+        logits2[(t2 - 1) * v] = 8.0;
+        let kept = rescore_oov_words(&logits2, t2, v, oov, &lm, &char_to_id);
+        assert_eq!(kept, oov, "genuine OOV token must stay untouched");
     }
 }

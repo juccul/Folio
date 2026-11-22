@@ -285,23 +285,90 @@ impl MathModel {
             cross_vs.push(cv);
         }
 
-        // Autoregressive KV-cached greedy decoding
+        // Autoregressive KV-cached beam search decoding (width = 3)
         let (tok_emb, _) = self.frec.f32_slice("tok_emb.weight")?;
         let (dec_out_w, _) = self.frec.f32_slice("dec_out_norm.weight")?;
         let (dec_out_b, _) = self.frec.f32_slice("dec_out_norm.bias")?;
         let lm_head_w = self.frec.linear("lm_head.weight")?;
 
-        // Self-attention KV caches per layer: [nhead][step * hd]
-        let mut self_k: Vec<Vec<Vec<f32>>> = (0..n_dec)
-            .map(|_| (0..nhead).map(|_| Vec::with_capacity(max_len * hd)).collect())
-            .collect();
-        let mut self_v: Vec<Vec<Vec<f32>>> = (0..n_dec)
-            .map(|_| (0..nhead).map(|_| Vec::with_capacity(max_len * hd)).collect())
-            .collect();
+        // Pre-resolve decoder layer weights once outside the decoding loop.
+        struct DecLayerWeights<'a> {
+            norm1_w: &'a [f32],
+            norm1_b: &'a [f32],
+            self_qkv_w: crate::frec::WeightMatrix<'a>,
+            self_qkv_b: Option<&'a [f32]>,
+            self_proj_w: crate::frec::WeightMatrix<'a>,
+            self_proj_b: Option<&'a [f32]>,
+            norm2_w: &'a [f32],
+            norm2_b: &'a [f32],
+            cross_q_w: crate::frec::WeightMatrix<'a>,
+            cross_q_b: Option<&'a [f32]>,
+            cross_proj_w: crate::frec::WeightMatrix<'a>,
+            cross_proj_b: Option<&'a [f32]>,
+            norm3_w: &'a [f32],
+            norm3_b: &'a [f32],
+            ff1_w: crate::frec::WeightMatrix<'a>,
+            ff1_b: Option<&'a [f32]>,
+            ff2_w: crate::frec::WeightMatrix<'a>,
+            ff2_b: Option<&'a [f32]>,
+        }
+        let mut dec_layers = Vec::with_capacity(n_dec);
+        for l in 0..n_dec {
+            let pfx = format!("decoder_layers.{l}");
+            let (norm1_w, _) = self.frec.f32_slice(&format!("{pfx}.norm1.weight"))?;
+            let (norm1_b, _) = self.frec.f32_slice(&format!("{pfx}.norm1.bias"))?;
+            let (norm2_w, _) = self.frec.f32_slice(&format!("{pfx}.norm2.weight"))?;
+            let (norm2_b, _) = self.frec.f32_slice(&format!("{pfx}.norm2.bias"))?;
+            let (norm3_w, _) = self.frec.f32_slice(&format!("{pfx}.norm3.weight"))?;
+            let (norm3_b, _) = self.frec.f32_slice(&format!("{pfx}.norm3.bias"))?;
+            dec_layers.push(DecLayerWeights {
+                norm1_w,
+                norm1_b,
+                self_qkv_w: self.frec.linear(&format!("{pfx}.self_qkv.weight"))?,
+                self_qkv_b: self.frec.opt_f32(&format!("{pfx}.self_qkv.bias")),
+                self_proj_w: self.frec.linear(&format!("{pfx}.self_proj.weight"))?,
+                self_proj_b: self.frec.opt_f32(&format!("{pfx}.self_proj.bias")),
+                norm2_w,
+                norm2_b,
+                cross_q_w: self.frec.linear(&format!("{pfx}.cross_q.weight"))?,
+                cross_q_b: self.frec.opt_f32(&format!("{pfx}.cross_q.bias")),
+                cross_proj_w: self.frec.linear(&format!("{pfx}.cross_proj.weight"))?,
+                cross_proj_b: self.frec.opt_f32(&format!("{pfx}.cross_proj.bias")),
+                norm3_w,
+                norm3_b,
+                ff1_w: self.frec.linear(&format!("{pfx}.ff.0.weight"))?,
+                ff1_b: self.frec.opt_f32(&format!("{pfx}.ff.0.bias")),
+                ff2_w: self.frec.linear(&format!("{pfx}.ff.3.weight"))?,
+                ff2_b: self.frec.opt_f32(&format!("{pfx}.ff.3.bias")),
+            });
+        }
+
+        const BEAM_WIDTH: usize = 3;
+        #[derive(Clone)]
+        struct Beam {
+            tokens: Vec<usize>,
+            cur_tok: usize,
+            score: f32,
+            finished: bool,
+            // [layer][head][step * hd]
+            self_k: Vec<Vec<Vec<f32>>>,
+            self_v: Vec<Vec<Vec<f32>>>,
+        }
+
+        let mut beams = vec![Beam {
+            tokens: Vec::with_capacity(64),
+            cur_tok: BOS_ID,
+            score: 0.0,
+            finished: false,
+            self_k: (0..n_dec)
+                .map(|_| (0..nhead).map(|_| Vec::with_capacity(32 * hd)).collect())
+                .collect(),
+            self_v: (0..n_dec)
+                .map(|_| (0..nhead).map(|_| Vec::with_capacity(32 * hd)).collect())
+                .collect(),
+        }];
 
         let scale = 1.0 / (hd as f32).sqrt();
-        let mut cur_tok = BOS_ID;
-        let mut out_ids = Vec::with_capacity(64);
         let mut x = vec![0.0_f32; d];
         let mut norm_buf = vec![0.0_f32; d];
         let mut qkv = vec![0.0_f32; 3 * d];
@@ -313,132 +380,183 @@ impl MathModel {
         let mut scores = Vec::with_capacity(s_len.max(max_len));
 
         for step in 0..max_len {
-            let emb_row = &tok_emb[cur_tok * d..(cur_tok + 1) * d];
-            let pe_row = &self.sin_pe[step * d..(step + 1) * d];
-            for i in 0..d {
-                x[i] = emb_row[i] + pe_row[i];
-            }
-
-            for l in 0..n_dec {
-                let pfx = format!("decoder_layers.{l}");
-                // 1. Causal self-attention with KV cache
-                let (w, _) = self.frec.f32_slice(&format!("{pfx}.norm1.weight"))?;
-                let (b, _) = self.frec.f32_slice(&format!("{pfx}.norm1.bias"))?;
-                layer_norm(&x, 1, d, w, b, &mut norm_buf);
-                let wqkv = self.frec.linear(&format!("{pfx}.self_qkv.weight"))?;
-                let bqkv = self.frec.opt_f32(&format!("{pfx}.self_qkv.bias"));
-                linear(&norm_buf, 1, &wqkv, bqkv, &mut qkv);
-
-                let past_len = step + 1;
-                scores.resize(past_len, 0.0);
-                for h in 0..nhead {
-                    let qh = &qkv[h * hd..(h + 1) * hd];
-                    let kh_new = &qkv[d + h * hd..d + (h + 1) * hd];
-                    let vh_new = &qkv[2 * d + h * hd..2 * d + (h + 1) * hd];
-                    self_k[l][h].extend_from_slice(kh_new);
-                    self_v[l][h].extend_from_slice(vh_new);
-                    let kh_all = &self_k[l][h];
-                    let vh_all = &self_v[l][h];
-                    for p in 0..past_len {
-                        let kp = &kh_all[p * hd..(p + 1) * hd];
-                        let mut dot = 0.0_f32;
-                        for k in 0..hd {
-                            dot += qh[k] * kp[k];
-                        }
-                        scores[p] = dot * scale;
-                    }
-                    softmax_inplace(&mut scores[..past_len]);
-                    let oh = &mut attn_cat[h * hd..(h + 1) * hd];
-                    oh.fill(0.0);
-                    for p in 0..past_len {
-                        let wp = scores[p];
-                        let vp = &vh_all[p * hd..(p + 1) * hd];
-                        for k in 0..hd {
-                            oh[k] += wp * vp[k];
-                        }
-                    }
-                }
-                let wproj = self.frec.linear(&format!("{pfx}.self_proj.weight"))?;
-                let bproj = self.frec.opt_f32(&format!("{pfx}.self_proj.bias"));
-                linear(&attn_cat, 1, &wproj, bproj, &mut proj_buf);
-                for i in 0..d {
-                    x[i] += proj_buf[i];
-                }
-
-                // 2. Cross-attention against precomputed K/V
-                let (w, _) = self.frec.f32_slice(&format!("{pfx}.norm2.weight"))?;
-                let (b, _) = self.frec.f32_slice(&format!("{pfx}.norm2.bias"))?;
-                layer_norm(&x, 1, d, w, b, &mut norm_buf);
-                let wcq = self.frec.linear(&format!("{pfx}.cross_q.weight"))?;
-                let bcq = self.frec.opt_f32(&format!("{pfx}.cross_q.bias"));
-                linear(&norm_buf, 1, &wcq, bcq, &mut cq);
-
-                scores.resize(s_len, 0.0);
-                for h in 0..nhead {
-                    let qh = &cq[h * hd..(h + 1) * hd];
-                    let ck = &cross_ks[l][h * s_len * hd..(h + 1) * s_len * hd];
-                    let cv = &cross_vs[l][h * s_len * hd..(h + 1) * s_len * hd];
-                    for p in 0..s_len {
-                        let kp = &ck[p * hd..(p + 1) * hd];
-                        let mut dot = 0.0_f32;
-                        for k in 0..hd {
-                            dot += qh[k] * kp[k];
-                        }
-                        scores[p] = dot * scale;
-                    }
-                    softmax_inplace(&mut scores[..s_len]);
-                    let oh = &mut attn_cat[h * hd..(h + 1) * hd];
-                    oh.fill(0.0);
-                    for p in 0..s_len {
-                        let wp = scores[p];
-                        let vp = &cv[p * hd..(p + 1) * hd];
-                        for k in 0..hd {
-                            oh[k] += wp * vp[k];
-                        }
-                    }
-                }
-                let wcproj = self.frec.linear(&format!("{pfx}.cross_proj.weight"))?;
-                let bcproj = self.frec.opt_f32(&format!("{pfx}.cross_proj.bias"));
-                linear(&attn_cat, 1, &wcproj, bcproj, &mut proj_buf);
-                for i in 0..d {
-                    x[i] += proj_buf[i];
-                }
-
-                // 3. FFN (GELU)
-                let (w, _) = self.frec.f32_slice(&format!("{pfx}.norm3.weight"))?;
-                let (b, _) = self.frec.f32_slice(&format!("{pfx}.norm3.bias"))?;
-                layer_norm(&x, 1, d, w, b, &mut norm_buf);
-                let wff1 = self.frec.linear(&format!("{pfx}.ff.0.weight"))?;
-                let bff1 = self.frec.opt_f32(&format!("{pfx}.ff.0.bias"));
-                linear(&norm_buf, 1, &wff1, bff1, &mut ff_mid);
-                for v in &mut ff_mid {
-                    *v = gelu(*v);
-                }
-                let wff2 = self.frec.linear(&format!("{pfx}.ff.3.weight"))?;
-                let bff2 = self.frec.opt_f32(&format!("{pfx}.ff.3.bias"));
-                linear(&ff_mid, 1, &wff2, bff2, &mut proj_buf);
-                for i in 0..d {
-                    x[i] += proj_buf[i];
-                }
-            }
-
-            layer_norm(&x, 1, d, dec_out_w, dec_out_b, &mut norm_buf);
-            linear(&norm_buf, 1, &lm_head_w, None, &mut logits);
-
-            let mut best_id = 0usize;
-            let mut best_v = f32::NEG_INFINITY;
-            for (i, &v) in logits.iter().enumerate() {
-                if v > best_v {
-                    best_v = v;
-                    best_id = i;
-                }
-            }
-            if best_id == EOS_ID {
+            if beams.iter().all(|b| b.finished) {
                 break;
             }
-            out_ids.push(best_id);
-            cur_tok = best_id;
+            // Candidates: (beam_idx, next_tok, new_score)
+            let active_beams = beams.len();
+            let mut candidates: Vec<(usize, usize, f32)> = Vec::with_capacity(active_beams * (BEAM_WIDTH + 1));
+
+            for (bi, beam) in beams.iter_mut().enumerate() {
+                if beam.finished {
+                    candidates.push((bi, EOS_ID, beam.score));
+                    continue;
+                }
+                let emb_row = &tok_emb[beam.cur_tok * d..(beam.cur_tok + 1) * d];
+                let pe_row = &self.sin_pe[step * d..(step + 1) * d];
+                for i in 0..d {
+                    x[i] = emb_row[i] + pe_row[i];
+                }
+
+                let past_len = step + 1;
+                for (l, lw) in dec_layers.iter().enumerate() {
+                    // 1. Causal self-attention with KV cache
+                    layer_norm(&x, 1, d, lw.norm1_w, lw.norm1_b, &mut norm_buf);
+                    linear(&norm_buf, 1, &lw.self_qkv_w, lw.self_qkv_b, &mut qkv);
+
+                    scores.resize(past_len, 0.0);
+                    for h in 0..nhead {
+                        let qh = &qkv[h * hd..(h + 1) * hd];
+                        let kh_new = &qkv[d + h * hd..d + (h + 1) * hd];
+                        let vh_new = &qkv[2 * d + h * hd..2 * d + (h + 1) * hd];
+                        beam.self_k[l][h].extend_from_slice(kh_new);
+                        beam.self_v[l][h].extend_from_slice(vh_new);
+                        let kh_all = &beam.self_k[l][h];
+                        let vh_all = &beam.self_v[l][h];
+                        for p in 0..past_len {
+                            let kp = &kh_all[p * hd..(p + 1) * hd];
+                            let mut dot = 0.0_f32;
+                            for k in 0..hd {
+                                dot += qh[k] * kp[k];
+                            }
+                            scores[p] = dot * scale;
+                        }
+                        softmax_inplace(&mut scores[..past_len]);
+                        let oh = &mut attn_cat[h * hd..(h + 1) * hd];
+                        oh.fill(0.0);
+                        for p in 0..past_len {
+                            let wp = scores[p];
+                            let vp = &vh_all[p * hd..(p + 1) * hd];
+                            for k in 0..hd {
+                                oh[k] += wp * vp[k];
+                            }
+                        }
+                    }
+                    linear(&attn_cat, 1, &lw.self_proj_w, lw.self_proj_b, &mut proj_buf);
+                    for i in 0..d {
+                        x[i] += proj_buf[i];
+                    }
+
+                    // 2. Cross-attention against precomputed K/V
+                    layer_norm(&x, 1, d, lw.norm2_w, lw.norm2_b, &mut norm_buf);
+                    linear(&norm_buf, 1, &lw.cross_q_w, lw.cross_q_b, &mut cq);
+
+                    scores.resize(s_len, 0.0);
+                    for h in 0..nhead {
+                        let qh = &cq[h * hd..(h + 1) * hd];
+                        let ck = &cross_ks[l][h * s_len * hd..(h + 1) * s_len * hd];
+                        let cv = &cross_vs[l][h * s_len * hd..(h + 1) * s_len * hd];
+                        for p in 0..s_len {
+                            let kp = &ck[p * hd..(p + 1) * hd];
+                            let mut dot = 0.0_f32;
+                            for k in 0..hd {
+                                dot += qh[k] * kp[k];
+                            }
+                            scores[p] = dot * scale;
+                        }
+                        softmax_inplace(&mut scores[..s_len]);
+                        let oh = &mut attn_cat[h * hd..(h + 1) * hd];
+                        oh.fill(0.0);
+                        for p in 0..s_len {
+                            let wp = scores[p];
+                            let vp = &cv[p * hd..(p + 1) * hd];
+                            for k in 0..hd {
+                                oh[k] += wp * vp[k];
+                            }
+                        }
+                    }
+                    linear(&attn_cat, 1, &lw.cross_proj_w, lw.cross_proj_b, &mut proj_buf);
+                    for i in 0..d {
+                        x[i] += proj_buf[i];
+                    }
+
+                    // 3. FFN (GELU)
+                    layer_norm(&x, 1, d, lw.norm3_w, lw.norm3_b, &mut norm_buf);
+                    linear(&norm_buf, 1, &lw.ff1_w, lw.ff1_b, &mut ff_mid);
+                    for v in &mut ff_mid {
+                        *v = gelu(*v);
+                    }
+                    linear(&ff_mid, 1, &lw.ff2_w, lw.ff2_b, &mut proj_buf);
+                    for i in 0..d {
+                        x[i] += proj_buf[i];
+                    }
+                }
+
+                layer_norm(&x, 1, d, dec_out_w, dec_out_b, &mut norm_buf);
+                linear(&norm_buf, 1, &lm_head_w, None, &mut logits);
+
+                // Log-softmax + top-BEAM_WIDTH extraction
+                let mut max_v = f32::NEG_INFINITY;
+                for &v in &logits {
+                    if v > max_v {
+                        max_v = v;
+                    }
+                }
+                let mut sum_exp = 0.0_f32;
+                for &v in &logits {
+                    sum_exp += (v - max_v).exp();
+                }
+                let log_z = max_v + sum_exp.max(1e-12).ln();
+
+                // Pick top BEAM_WIDTH tokens (skipping PAD/BOS)
+                let mut top = [(0usize, f32::NEG_INFINITY); BEAM_WIDTH];
+                for (tid, &val) in logits.iter().enumerate() {
+                    if tid == PAD_ID || tid == BOS_ID {
+                        continue;
+                    }
+                    let lp = val - log_z;
+                    if lp > top[BEAM_WIDTH - 1].1 {
+                        top[BEAM_WIDTH - 1] = (tid, lp);
+                        let mut k = BEAM_WIDTH - 1;
+                        while k > 0 && top[k].1 > top[k - 1].1 {
+                            top.swap(k, k - 1);
+                            k -= 1;
+                        }
+                    }
+                }
+                // Confidence-gated fast path: if top-1 has >97% probability and there is only 1 active beam,
+                // avoid unnecessary beam branching on completely unambiguous tokens.
+                let expand = if active_beams == 1 && top[0].1 > -0.03 {
+                    1
+                } else {
+                    BEAM_WIDTH
+                };
+                for &(tid, lp) in &top[..expand] {
+                    if lp.is_finite() {
+                        candidates.push((bi, tid, beam.score + lp));
+                    }
+                }
+            }
+
+            candidates.sort_by(|a, b| b.2.total_cmp(&a.2));
+            candidates.truncate(BEAM_WIDTH);
+
+            let mut next_beams = Vec::with_capacity(candidates.len());
+            for (bi, tid, sc) in candidates {
+                let mut nb = beams[bi].clone();
+                nb.score = sc;
+                if !nb.finished {
+                    if tid == EOS_ID {
+                        nb.finished = true;
+                    } else {
+                        nb.tokens.push(tid);
+                        nb.cur_tok = tid;
+                    }
+                }
+                next_beams.push(nb);
+            }
+            beams = next_beams;
         }
+
+        let best = beams
+            .into_iter()
+            .max_by(|a, b| {
+                let sa = a.score / (((a.tokens.len() + 1) as f32).powf(0.6));
+                let sb = b.score / (((b.tokens.len() + 1) as f32).powf(0.6));
+                sa.total_cmp(&sb)
+            })
+            .unwrap();
+        let out_ids = best.tokens;
 
         let vocab = &self.frec.header.vocab;
         let toks: Vec<&str> = out_ids
