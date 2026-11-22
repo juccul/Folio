@@ -115,12 +115,31 @@ impl Entity<Field> {
     pub fn render(&self) -> Div {
         let field = self.0.borrow();
         let theme = field.theme;
-        let style = TextStyle::new(14., 400.).lh(22.);
+        // Text edited on the canvas draws as the canvas draws it: at its
+        // size, weight and color under the page's zoom.
+        let style = match &field.inline {
+            Some(inline) => {
+                let t = inline.transform;
+                let zoom = (t.a * t.a + t.b * t.b).sqrt().max(0.01);
+                let size = inline.text.font_size * zoom;
+                let mut style = TextStyle::new(size, if inline.text.bold { 700. } else { 400. })
+                    .lh(size * 1.4);
+                if inline.text.italic {
+                    style = style.italic();
+                }
+                style
+            }
+            None => TextStyle::new(14., 400.).lh(22.),
+        };
+        let ink = match &field.inline {
+            Some(inline) => rgb(inline.color).color(),
+            None => rgb(theme.ink).color(),
+        };
         let shared = self.0.clone();
         let mut input = rune::text_input(&field.edit, style)
             .key(field.key.clone())
-            .color(rgb(theme.ink).color())
-            .caret(rgb(theme.ink).color(), rgba((theme.accent << 8) | 0x40).color())
+            .color(ink)
+            .caret(ink, rgba((theme.accent << 8) | 0x40).color())
             // SAFETY: the view is single-threaded and Rune calls this accessor
             // only between frames, while no borrow of the field is held.
             .on_edit(move |_: &mut crate::AppState| unsafe { &mut (*shared.as_ptr()).edit })
@@ -134,8 +153,15 @@ impl Entity<Field> {
         if !field.multiline {
             input = input.single_line();
         }
-        if field.multiline {
+        if field.multiline && field.inline.is_none() {
             input = input.min_h(field.height.unwrap_or(110.));
+        }
+        if let Some(inline) = &field.inline {
+            input = input.align(match inline.text.alignment {
+                folio_document::Alignment::Left => rune::Align::Start,
+                folio_document::Alignment::Center => rune::Align::Center,
+                folio_document::Alignment::Right => rune::Align::End,
+            });
         }
         let submit = field.on_submit.clone();
         let multiline = field.multiline;
@@ -179,14 +205,19 @@ impl Entity<Field> {
         drop(field);
         div()
             .w_full()
-            .bg(theme.raised())
+            .when(!inline, |s| {
+                s.bg(theme.raised())
+                    .border_1()
+                    .border_color(theme.input)
+                    .rounded(px(theme.radius))
+            })
             .text_color(rgb(theme.ink))
-            .border_1()
-            .border_color(theme.input)
-            .rounded(px(theme.radius))
             .when(!compact && !inline, |s| s.p_3())
             .when(compact, |s| s.px_2().py_1())
-            .when(inline, |s| s.bg(transparent_black()).p_0())
+            .when(!inline, |s| {
+                let ring = rgb(theme.ring).color();
+                s.el(move |e| e.focus_within_ring(1., -1., ring))
+            })
             .child(input)
     }
 }

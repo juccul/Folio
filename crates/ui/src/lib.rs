@@ -567,12 +567,13 @@ impl NotesView {
         {
             self.update_preparing = false;
         }
-        let tasks = executor::poll(self);
+        let (tasks, finished) = executor::poll(self);
         let motion_changed =
             self.motion.borrow_mut().advance() || self.transitions.borrow().animating();
         let easing = self.canvas_ease.last.is_some();
         let painting = self.painter.busy();
-        let notify = changed || update_changed || motion_changed || easing || painting;
+        let notify =
+            changed || update_changed || motion_changed || easing || painting || finished;
         let fast = notify
             || tasks
             || self.controller.needs_fast_poll()
@@ -2070,7 +2071,10 @@ impl NotesView {
                         // follows it, collapsing the field.
                         div()
                             .id("modal-panel")
-                            .flex_1()
+                            // Rune's grown children have no basis in an
+                            // auto-height column; bound the scroll area by
+                            // what the dialog leaves after padding and footer.
+                            .max_h(px((max_height - 140.).max(120.)))
                             .min_h_0()
                             .flex()
                             .flex_col()

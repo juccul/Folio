@@ -36,6 +36,19 @@ fn view_fn(s: &AppState, cx: &mut rune::Cx<AppState>) -> rune::El {
     }
     let theme = Theme::new(&view.controller.settings);
     cx.foreground(rgb(theme.ink).color());
+    // Tooltips as Folio's hints drew them: ink fill, surface text.
+    cx.help_look(
+        rune::HelpLook::system(theme.dark)
+            .fill(rgb(theme.ink).color())
+            .ink(rgb(theme.surface).color())
+            .radius(theme.radius)
+            .padding(12., 8.)
+            .font(rune::TextStyle::new(12., 400.).lh(19.))
+            .shadows([
+                rune::Shadow { x: 0., y: 4., blur: 6., spread: -1., color: rgba(0x0000001a).color(), inset: false },
+                rune::Shadow { x: 0., y: 2., blur: 4., spread: -2., color: rgba(0x0000001a).color(), inset: false },
+            ]),
+    );
     if view.controller.settings.reduce_motion {
         cx.reduced_motion(true);
     }
@@ -81,7 +94,6 @@ fn view_fn(s: &AppState, cx: &mut rune::Cx<AppState>) -> rune::El {
                 tx.live_only();
             }
         })
-        .on_key(|s: &mut AppState, key: &rune::KeyEvent, tx: &mut rune::Tx| on_key(s, key, tx))
         .on_window_focus(|s: &mut AppState, focused: bool, _tx: &mut rune::Tx| {
             s.view.get_mut().window_hovered = focused;
         })
@@ -162,6 +174,7 @@ pub fn run(
     let spec = rune::AppSpec::<AppState> {
         poll: Some(poll),
         setup: Some(setup),
+        on_key: Some(on_key),
         min_size: Some((1000., 620.)),
         families: (FONT_FAMILY_LIST, "monospace"),
         ..rune::AppSpec::new("Folio", (1320., 860.), no_init, view_fn)

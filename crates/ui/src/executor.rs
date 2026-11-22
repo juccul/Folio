@@ -39,14 +39,17 @@ impl Wake for WindowWaker {
 }
 
 /// Polls the UI-thread futures once, with `view` reachable through
-/// [`WeakView::update`]. Returns whether any are still waiting.
-pub fn poll(view: &mut NotesView) -> bool {
+/// [`WeakView::update`]. Returns whether any are still waiting, and whether
+/// any finished (and may have changed the view).
+pub fn poll(view: &mut NotesView) -> (bool, bool) {
     VIEW.with(|v| v.set(view as *mut NotesView));
     let waker = std::task::Waker::from(Arc::new(WindowWaker));
     let mut context = std::task::Context::from_waker(&waker);
     let mut futures = LOCAL.with(|l| std::mem::take(&mut *l.borrow_mut()));
     futures.extend(SPAWNED.with(|s| std::mem::take(&mut *s.borrow_mut())));
+    let before = futures.len();
     futures.retain_mut(|f| f.as_mut().poll(&mut context).is_pending());
+    let finished = futures.len() < before;
     // Futures spawned while polling run from the next poll.
     LOCAL.with(|l| {
         let mut l = l.borrow_mut();
@@ -54,7 +57,9 @@ pub fn poll(view: &mut NotesView) -> bool {
         *l = futures;
     });
     VIEW.with(|v| v.set(std::ptr::null_mut()));
-    LOCAL.with(|l| !l.borrow().is_empty()) || SPAWNED.with(|s| !s.borrow().is_empty())
+    let pending =
+        LOCAL.with(|l| !l.borrow().is_empty()) || SPAWNED.with(|s| !s.borrow().is_empty());
+    (pending, finished)
 }
 
 /// A task's result, for awaiting; dropping or detaching it lets it finish.

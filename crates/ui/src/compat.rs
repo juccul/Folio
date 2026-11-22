@@ -1835,7 +1835,7 @@ pub struct Deferred(pub RefCell<Vec<Effect>>);
 pub fn apply(effects: Vec<Effect>, tx: &mut Tx) {
     for effect in effects {
         match effect {
-            Effect::Focus(key) => tx.focus(key, false),
+            Effect::Focus(key) => tx.focus_when_shown(key, false),
             Effect::Blur => tx.blur(),
             Effect::Copy(text) => tx.copy(text),
             Effect::Title(title) => tx.set_title(title),

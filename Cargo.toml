@@ -32,6 +32,19 @@ proc-macro-error2 = { path = "vendor/proc-macro-error2" }
 
 [profile.dev]
 debug = 0
+# The canvas is rasterized on the CPU; keep its rasterizer fast in debug builds.
+[profile.dev.package.tiny-skia]
+opt-level = 3
+[profile.dev.package.tiny-skia-path]
+opt-level = 3
+[profile.dev.package.resvg]
+opt-level = 3
+[profile.dev.package.usvg]
+opt-level = 3
+[profile.dev.package.folio-ink]
+opt-level = 3
+[profile.dev.package.folio-export]
+opt-level = 3
 [profile.test]
 debug = 0
 [profile.release]
