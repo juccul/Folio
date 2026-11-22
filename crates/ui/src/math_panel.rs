@@ -856,9 +856,7 @@ impl NotesView {
                             FillRule::NonZero
                         };
                         let mut path = PathBuilder::fill().with_style(PathStyle::Fill(
-                            FillOptions::default()
-                                .with_fill_rule(rule)
-                                ,
+                            FillOptions::default().with_fill_rule(rule),
                         ));
                         let p = |[x, y]: [f32; 2]| point(px(x), px(y));
                         for command in &outline.commands {
@@ -912,7 +910,11 @@ impl NotesView {
             .graph_preview
             .as_ref()
             .filter(|preview| preview.key == key);
-        let mut element = div().w_full().rounded(px(Theme::new(&self.controller.settings).radius)).bg(rgb(palette.paper)).p_2();
+        let mut element = div()
+            .w_full()
+            .rounded(px(Theme::new(&self.controller.settings).radius))
+            .bg(rgb(palette.paper))
+            .p_2();
         if let Some(cached) = cached {
             return if let Some(image) = &cached.image {
                 element.child(

@@ -254,18 +254,16 @@ impl NotesView {
                 _ => "Math and handwriting".into(),
             };
             menu = menu
-                .child(
-                    self.menu_row(
-                        "more-back",
-                        "‹ Document actions".into(),
-                        div().font_weight(FontWeight::SEMIBOLD).child(title),
-                        Icon::Back,
-                        theme.muted,
-                        None,
-                        cx,
-                        |this, _, _| this.more_section = MoreSection::Document,
-                    ),
-                )
+                .child(self.menu_row(
+                    "more-back",
+                    "‹ Document actions".into(),
+                    div().font_weight(FontWeight::SEMIBOLD).child(title),
+                    Icon::Back,
+                    theme.muted,
+                    None,
+                    cx,
+                    |this, _, _| this.more_section = MoreSection::Document,
+                ))
                 .child(separator(theme));
         }
         let trashed = self.controller.session().document.metadata.trashed;
@@ -298,11 +296,10 @@ impl NotesView {
                         matches!(action, A::DeletePage) || (action == A::ToggleTrash && !trashed);
                     let label: SharedString = match action {
                         A::Export => "Export document ›".into(),
-                        A::ToggleInfinite => format!(
-                            "{text}: {}",
-                            if properties.infinite { "On" } else { "Off" }
-                        )
-                        .into(),
+                        A::ToggleInfinite => {
+                            format!("{text}: {}", if properties.infinite { "On" } else { "Off" })
+                                .into()
+                        }
                         _ => text.into(),
                     };
                     let trailing = match action {

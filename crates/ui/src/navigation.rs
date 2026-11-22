@@ -26,11 +26,15 @@ impl TabDrag {
         let (_, left, width) = self.slots[from];
         let first = self.slots[0].1;
         let (_, last_left, last_width) = *self.slots.last()?;
-        let left = (left + self.pointer - self.start).clamp(first, (last_left + last_width - width).max(first));
+        let left = (left + self.pointer - self.start)
+            .clamp(first, (last_left + last_width - width).max(first));
         // A neighbor moves aside once the dragged tab's leading edge passes
         // its middle.
         let center = |(_, l, w): &(Id, f32, f32)| l + w / 2.;
-        let passed_left = self.slots[..from].iter().filter(|s| center(s) > left).count();
+        let passed_left = self.slots[..from]
+            .iter()
+            .filter(|s| center(s) > left)
+            .count();
         let passed_right = self.slots[from + 1..]
             .iter()
             .filter(|s| center(s) < left + width)
@@ -187,7 +191,11 @@ impl NotesView {
             return;
         };
         let complete = drag.slots.len() == self.open_tabs.len()
-            && drag.slots.iter().zip(&self.open_tabs).all(|((id, _, _), tab)| id == tab);
+            && drag
+                .slots
+                .iter()
+                .zip(&self.open_tabs)
+                .all(|((id, _, _), tab)| id == tab);
         if drag.moving
             && complete
             && let (Some((target, left)), Some(landing)) = (drag.target(), drag.landing())
@@ -197,7 +205,12 @@ impl NotesView {
             for (id, _) in drag.offsets() {
                 motion.jump(&format!("tab-offset-{id}"), 0.);
             }
-            motion.slide(&format!("tab-offset-{}", drag.id), left - landing, 0., reduced);
+            motion.slide(
+                &format!("tab-offset-{}", drag.id),
+                left - landing,
+                0.,
+                reduced,
+            );
             drop(motion);
             move_tab(&mut self.open_tabs, drag.id, target);
         }
@@ -553,8 +566,7 @@ impl NotesView {
     }
 }
 
-impl NotesView {
-}
+impl NotesView {}
 
 #[cfg(test)]
 mod tests {

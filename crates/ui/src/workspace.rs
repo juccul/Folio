@@ -230,9 +230,7 @@ impl NotesView {
         } else {
             self.motion.borrow_mut().hover_value(id)
         }))
-        .when(self.toolbar_hints_enabled(), |button| {
-            button.tooltip(hint)
-        })
+        .when(self.toolbar_hints_enabled(), |button| button.tooltip(hint))
     }
     /// A drawing tool. The current tool is filled with the primary color so
     /// it stands apart from neutral toggles such as Favorite.
@@ -280,9 +278,7 @@ impl NotesView {
         } else {
             theme.tint(self.motion.borrow_mut().hover_value(id))
         })
-        .when(self.toolbar_hints_enabled(), |button| {
-            button.tooltip(hint)
-        })
+        .when(self.toolbar_hints_enabled(), |button| button.tooltip(hint))
     }
     fn editor_separator(&self) -> Div {
         let theme = Theme::new(&self.controller.settings);
@@ -468,7 +464,8 @@ impl NotesView {
                 .bg(theme.tint(if active { 1. } else { 0. }))
                 .hover(move |s| s.bg(theme.tint(1.)))
                 .when(filter == NoteFilter::All, |s| {
-                    self.folder_drop_target(s, None, cx).tooltip("Drop here to remove from its folder")
+                    self.folder_drop_target(s, None, cx)
+                        .tooltip("Drop here to remove from its folder")
                 }),
             );
         }
@@ -890,9 +887,7 @@ impl NotesView {
                             .bg(transparent_black())
                             .hover(|s| s.bg(transparent_black()))
                             .on_mouse_down(MouseButton::Right, context_menu)
-                            .when(!n.trashed, |s| {
-                                s.on_drag(drag, ())
-                            }),
+                            .when(!n.trashed, |s| s.on_drag(drag, ())),
                         )
                         .child(favorite)
                         .child(menu)
@@ -1020,9 +1015,7 @@ impl NotesView {
                             .bg(transparent_black())
                             .hover(|s| s.bg(transparent_black()))
                             .on_mouse_down(MouseButton::Right, context_menu)
-                            .when(!n.trashed, |s| {
-                                s.on_drag(drag, ())
-                            }),
+                            .when(!n.trashed, |s| s.on_drag(drag, ())),
                         )
                         .child(
                             div()
@@ -1557,34 +1550,34 @@ impl NotesView {
             .gap_1();
         // Home stays pinned at the start of the bar while the tabs scroll.
         let home = div()
-                .flex_shrink_0()
-                .relative()
-                .h_full()
-                .flex()
-                .items_center()
-                // Let the button register its click before stopping the press at
-                // this wrapper. Windows' native move loop otherwise steals release.
-                .occlude()
-                .occlude()
-                .child(
-                    self.icon_button(
-                        "tab-library",
-                        "Library · Ctrl+Shift+L",
-                        Icon::Library,
-                        self.library_open,
-                        cx,
-                        |this, _, _| this.show_library(),
-                    )
-                    .w(rems(2.25))
-                    .p_0()
-                    .h(rems(1.75))
-                    .min_h_0()
-                    .border_0()
-                    .rounded(rems(theme.radius / 16.))
-                    .bg(theme.tint(if self.library_open { 1. } else { 0. }))
-                    .focus(move |s| s.bg(theme.tint(1.)))
-                    .hover(move |s| s.bg(theme.tint(1.))),
-                );
+            .flex_shrink_0()
+            .relative()
+            .h_full()
+            .flex()
+            .items_center()
+            // Let the button register its click before stopping the press at
+            // this wrapper. Windows' native move loop otherwise steals release.
+            .occlude()
+            .occlude()
+            .child(
+                self.icon_button(
+                    "tab-library",
+                    "Library · Ctrl+Shift+L",
+                    Icon::Library,
+                    self.library_open,
+                    cx,
+                    |this, _, _| this.show_library(),
+                )
+                .w(rems(2.25))
+                .p_0()
+                .h(rems(1.75))
+                .min_h_0()
+                .border_0()
+                .rounded(rems(theme.radius / 16.))
+                .bg(theme.tint(if self.library_open { 1. } else { 0. }))
+                .focus(move |s| s.bg(theme.tint(1.)))
+                .hover(move |s| s.bg(theme.tint(1.))),
+            );
         // While a tab is dragged it follows the pointer and the others slide
         // out of its way.
         let dragging = self.tab_drag.as_ref().filter(|drag| drag.moving);
@@ -1645,111 +1638,111 @@ impl NotesView {
                 format!("Open {}", n.title)
             };
             let surface = div()
-                    .id(SharedString::from(format!("tab-surface-{id}")))
-                    .relative()
-                    .left(px(offset))
-                    .h(rems(1.75))
-                    .rounded(rems(theme.radius / 16.))
-                    .hover(move |s| s.bg(theme.tint(1.)))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .bg(theme.tint(if selected { 1. } else { 0. }))
-                    .child(
-                        canvas(
-                            move |layout, _, _| {
-                                bounds.borrow_mut().insert(
-                                    id,
-                                    (
-                                        f32::from(layout.origin.x) - offset,
-                                        f32::from(layout.size.width),
-                                    ),
-                                );
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .inset_0(),
-                    )
-                    // The outer tab consumes presses after its child controls
-                    // have registered clicks and tab drags.
-                    .occlude()
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, w, cx| {
-                            this.open_document_menu(id, event.position, true, false, w, cx);
-                            cx.stop_propagation();
-                        }),
-                    )
-                    // Middle-click closes a tab, as in browsers and editors.
-                    .occlude()
-                    .on_mouse_up(
-                        MouseButton::Middle,
-                        cx.listener(move |this, _, w, cx| {
-                            this.close_document_tab(id, w, cx);
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .child(
-                        self.control(
-                            format!("tab-{id}"),
-                            tab_label,
-                            content.into_any_element(),
-                            selected,
-                            cx,
-                            move |this, _, _| {
-                                // A completed drag reorders tabs without also
-                                // activating the tab as a normal click.
-                                if this.tab_drag.as_ref().is_none_or(|drag| !drag.moving) {
-                                    this.open_note(id);
-                                }
-                            },
-                        )
-                        .on_double_click(cx.listener(move |this, _, w, cx| {
-                            this.modal(Modal::RenameDocument(id), w, cx)
-                        }))
-                        .on_pointer_drag(cx.listener(move |this, event: &DragEvent, _, cx| {
-                            match event.phase {
-                                DragPhase::Down => this.press_tab(id, f32::from(event.position.x), cx),
-                                DragPhase::Move => this.drag_tab(
-                                    f32::from(event.position.x),
-                                    Some(MouseButton::Left),
-                                    cx,
+                .id(SharedString::from(format!("tab-surface-{id}")))
+                .relative()
+                .left(px(offset))
+                .h(rems(1.75))
+                .rounded(rems(theme.radius / 16.))
+                .hover(move |s| s.bg(theme.tint(1.)))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .bg(theme.tint(if selected { 1. } else { 0. }))
+                .child(
+                    canvas(
+                        move |layout, _, _| {
+                            bounds.borrow_mut().insert(
+                                id,
+                                (
+                                    f32::from(layout.origin.x) - offset,
+                                    f32::from(layout.size.width),
                                 ),
-                                DragPhase::Up => this.drop_tab(cx),
-                            }
-                        }))
-                        .h(rems(1.75))
-                        .min_h_0()
-                        .pl_2()
-                        .pr_1()
-                        .py_0()
-                        .border_0()
-                        .rounded(rems(theme.radius / 16.))
-                        .bg(transparent_black())
-                        .text_color(rgb(theme.ink))
-                        .focus(move |s| s.bg(theme.tint(1.)))
-                        .hover(|s| s.bg(transparent_black())),
+                            );
+                        },
+                        |_, _, _, _| {},
                     )
-                    .child(
-                        self.control(
-                            format!("close-tab-{id}"),
-                            format!("Close {}", n.title),
-                            icon(Icon::Close, theme.muted).into_any_element(),
-                            false,
-                            cx,
-                            move |this, w, cx| this.close_document_tab(id, w, cx),
-                        )
-                        .size(rems(1.5))
-                        .min_h_0()
-                        .p_0()
-                        .mr_1()
-                        .border_0()
-                        .rounded(rems(theme.radius / 16.))
-                        .bg(transparent_black())
-                        .focus(move |s| s.bg(theme.tint(1.)))
-                        .hover(|s| s.bg(transparent_black())),
-                    );
+                    .absolute()
+                    .inset_0(),
+                )
+                // The outer tab consumes presses after its child controls
+                // have registered clicks and tab drags.
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, w, cx| {
+                        this.open_document_menu(id, event.position, true, false, w, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                // Middle-click closes a tab, as in browsers and editors.
+                .occlude()
+                .on_mouse_up(
+                    MouseButton::Middle,
+                    cx.listener(move |this, _, w, cx| {
+                        this.close_document_tab(id, w, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(
+                    self.control(
+                        format!("tab-{id}"),
+                        tab_label,
+                        content.into_any_element(),
+                        selected,
+                        cx,
+                        move |this, _, _| {
+                            // A completed drag reorders tabs without also
+                            // activating the tab as a normal click.
+                            if this.tab_drag.as_ref().is_none_or(|drag| !drag.moving) {
+                                this.open_note(id);
+                            }
+                        },
+                    )
+                    .on_double_click(cx.listener(move |this, _, w, cx| {
+                        this.modal(Modal::RenameDocument(id), w, cx)
+                    }))
+                    .on_pointer_drag(cx.listener(move |this, event: &DragEvent, _, cx| {
+                        match event.phase {
+                            DragPhase::Down => this.press_tab(id, f32::from(event.position.x), cx),
+                            DragPhase::Move => this.drag_tab(
+                                f32::from(event.position.x),
+                                Some(MouseButton::Left),
+                                cx,
+                            ),
+                            DragPhase::Up => this.drop_tab(cx),
+                        }
+                    }))
+                    .h(rems(1.75))
+                    .min_h_0()
+                    .pl_2()
+                    .pr_1()
+                    .py_0()
+                    .border_0()
+                    .rounded(rems(theme.radius / 16.))
+                    .bg(transparent_black())
+                    .text_color(rgb(theme.ink))
+                    .focus(move |s| s.bg(theme.tint(1.)))
+                    .hover(|s| s.bg(transparent_black())),
+                )
+                .child(
+                    self.control(
+                        format!("close-tab-{id}"),
+                        format!("Close {}", n.title),
+                        icon(Icon::Close, theme.muted).into_any_element(),
+                        false,
+                        cx,
+                        move |this, w, cx| this.close_document_tab(id, w, cx),
+                    )
+                    .size(rems(1.5))
+                    .min_h_0()
+                    .p_0()
+                    .mr_1()
+                    .border_0()
+                    .rounded(rems(theme.radius / 16.))
+                    .bg(transparent_black())
+                    .focus(move |s| s.bg(theme.tint(1.)))
+                    .hover(|s| s.bg(transparent_black())),
+                );
             tabs = if dragged == Some(id) {
                 // Lifted above its neighbors while it moves.
                 // Raised in place, so the element keeps the press it is dragged by.

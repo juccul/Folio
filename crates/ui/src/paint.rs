@@ -192,10 +192,7 @@ impl PathBuilder {
         let h = ((r * r - d2).max(0.)).sqrt();
         let len = d2.sqrt().max(1e-6);
         let sign = if large_arc != sweep { 1. } else { -1. };
-        let (cx, cy) = (
-            x0 + dx - sign * h * dy / len,
-            y0 + dy + sign * h * dx / len,
-        );
+        let (cx, cy) = (x0 + dx - sign * h * dy / len, y0 + dy + sign * h * dx / len);
         let a0 = (y0 - cy).atan2(x0 - cx);
         let mut a1 = (y1 - cy).atan2(x1 - cx);
         if sweep && a1 < a0 {
@@ -335,7 +332,14 @@ pub fn quad(
     }
 }
 pub fn outline(bounds: Bounds<Pixels>, color: Rgba, style: BorderStyle) -> PaintQuad {
-    quad(bounds, Corners::default(), Rgba::default(), px(1.), color, style)
+    quad(
+        bounds,
+        Corners::default(),
+        Rgba::default(),
+        px(1.),
+        color,
+        style,
+    )
 }
 
 pub enum QuadFill {
@@ -392,7 +396,11 @@ impl RenderImage {
         }
     }
     fn from_bgra_straight(width: u32, height: u32, data: &[u8]) -> Option<Self> {
-        if (width as u64).checked_mul(height as u64).and_then(|n| n.checked_mul(4)) != Some(data.len() as u64) {
+        if (width as u64)
+            .checked_mul(height as u64)
+            .and_then(|n| n.checked_mul(4))
+            != Some(data.len() as u64)
+        {
             return None;
         }
         let mut pixmap = sk::Pixmap::new(width, height)?;
@@ -409,7 +417,11 @@ impl RenderImage {
     pub fn from_ephemeral_bgra(width: u32, height: u32, data: Vec<u8>) -> Option<Self> {
         Self::from_bgra_straight(width, height, &data)
     }
-    pub fn from_ephemeral_shared_bgra(width: u32, height: u32, data: impl AsRef<[u8]>) -> Option<Self> {
+    pub fn from_ephemeral_shared_bgra(
+        width: u32,
+        height: u32,
+        data: impl AsRef<[u8]>,
+    ) -> Option<Self> {
         Self::from_bgra_straight(width, height, data.as_ref())
     }
     pub fn from_shared_bgra(width: u32, height: u32, data: impl AsRef<[u8]>) -> Option<Self> {
@@ -417,7 +429,11 @@ impl RenderImage {
     }
     /// Straight-alpha RGBA, as image decoders give it.
     pub fn from_rgba(width: u32, height: u32, data: &[u8]) -> Option<Self> {
-        if (width as u64).checked_mul(height as u64).and_then(|n| n.checked_mul(4)) != Some(data.len() as u64) {
+        if (width as u64)
+            .checked_mul(height as u64)
+            .and_then(|n| n.checked_mul(4))
+            != Some(data.len() as u64)
+        {
             return None;
         }
         let mut pixmap = sk::Pixmap::new(width, height)?;
@@ -603,7 +619,13 @@ impl Raster {
         }
         self.mask.as_ref().map(|(_, m)| m)
     }
-    pub fn fill_path(&mut self, path: &sk::Path, color: Rgba, rule: FillRule, transform: sk::Transform) {
+    pub fn fill_path(
+        &mut self,
+        path: &sk::Path,
+        color: Rgba,
+        rule: FillRule,
+        transform: sk::Transform,
+    ) {
         let mut paint = sk::Paint::default();
         paint.set_color(color.skia());
         paint.anti_alias = true;
@@ -646,11 +668,14 @@ impl Raster {
             .and_then(|b| b.transform(transform));
         match self.clip_for(bounds) {
             Clip::Skip => {}
-            Clip::None => self.pixmap.stroke_path(path, &paint, &stroke, transform, None),
+            Clip::None => self
+                .pixmap
+                .stroke_path(path, &paint, &stroke, transform, None),
             Clip::Mask => {
                 self.clip_mask();
                 let mask = self.mask.as_ref().map(|(_, m)| m);
-                self.pixmap.stroke_path(path, &paint, &stroke, transform, mask);
+                self.pixmap
+                    .stroke_path(path, &paint, &stroke, transform, mask);
             }
         }
     }
@@ -662,10 +687,17 @@ impl Raster {
             bounds.size.height.0.max(0.),
         )
         .and_then(|r| r.transform(self.transform));
-        let full = sk::Rect::from_xywh(0., 0., self.pixmap.width() as f32, self.pixmap.height() as f32);
+        let full = sk::Rect::from_xywh(
+            0.,
+            0.,
+            self.pixmap.width() as f32,
+            self.pixmap.height() as f32,
+        );
         let parent = self.clips.last().copied().or(full);
         let clip = match (rect, parent) {
-            (Some(r), Some(p)) => r.intersect(&p).unwrap_or(sk::Rect::from_xywh(0., 0., 0.1, 0.1).unwrap()),
+            (Some(r), Some(p)) => r
+                .intersect(&p)
+                .unwrap_or(sk::Rect::from_xywh(0., 0., 0.1, 0.1).unwrap()),
             (Some(r), None) => r,
             (None, Some(p)) => p,
             (None, None) => return,
@@ -675,24 +707,35 @@ impl Raster {
     pub fn pop_clip(&mut self) {
         self.clips.pop();
     }
-    pub fn draw_image(&mut self, image: &sk::Pixmap, bounds: Bounds<Pixels>, transform: sk::Transform) {
+    pub fn draw_image(
+        &mut self,
+        image: &sk::Pixmap,
+        bounds: Bounds<Pixels>,
+        transform: sk::Transform,
+    ) {
         let (w, h) = (image.width() as f32, image.height() as f32);
         if w <= 0. || h <= 0. {
             return;
         }
         let sx = bounds.size.width.0 / w;
         let sy = bounds.size.height.0 / h;
-        let t = transform.pre_concat(
-            sk::Transform::from_row(sx, 0., 0., sy, bounds.origin.x.0, bounds.origin.y.0),
-        );
+        let t = transform.pre_concat(sk::Transform::from_row(
+            sx,
+            0.,
+            0.,
+            sy,
+            bounds.origin.x.0,
+            bounds.origin.y.0,
+        ));
         let Some(dest) = sk::Rect::from_xywh(0., 0., w, h).and_then(|r| r.transform(t)) else {
             return;
         };
-        let quality = if (t.sx - 1.).abs() < 1e-4 && (t.sy - 1.).abs() < 1e-4 && t.kx == 0. && t.ky == 0. {
-            sk::FilterQuality::Nearest
-        } else {
-            sk::FilterQuality::Bilinear
-        };
+        let quality =
+            if (t.sx - 1.).abs() < 1e-4 && (t.sy - 1.).abs() < 1e-4 && t.kx == 0. && t.ky == 0. {
+                sk::FilterQuality::Nearest
+            } else {
+                sk::FilterQuality::Bilinear
+            };
         let axis_aligned = t.kx == 0. && t.ky == 0.;
         if axis_aligned {
             // An axis-aligned image is a rectangle filled with its pattern,
@@ -705,17 +748,12 @@ impl Raster {
                 None => dest,
             };
             let paint = sk::Paint {
-                shader: sk::Pattern::new(
-                    image.as_ref(),
-                    sk::SpreadMode::Pad,
-                    quality,
-                    1.,
-                    t,
-                ),
+                shader: sk::Pattern::new(image.as_ref(), sk::SpreadMode::Pad, quality, 1., t),
                 anti_alias: false,
                 ..Default::default()
             };
-            self.pixmap.fill_rect(rect, &paint, sk::Transform::identity(), None);
+            self.pixmap
+                .fill_rect(rect, &paint, sk::Transform::identity(), None);
             return;
         }
         let paint = sk::PixmapPaint {
@@ -724,11 +762,14 @@ impl Raster {
         };
         match self.clip_for(Some(dest)) {
             Clip::Skip => {}
-            Clip::None => self.pixmap.draw_pixmap(0, 0, image.as_ref(), &paint, t, None),
+            Clip::None => self
+                .pixmap
+                .draw_pixmap(0, 0, image.as_ref(), &paint, t, None),
             Clip::Mask => {
                 self.clip_mask();
                 let mask = self.mask.as_ref().map(|(_, m)| m);
-                self.pixmap.draw_pixmap(0, 0, image.as_ref(), &paint, t, mask);
+                self.pixmap
+                    .draw_pixmap(0, 0, image.as_ref(), &paint, t, mask);
             }
         }
     }
@@ -740,8 +781,13 @@ fn rounded_rect(b: Bounds<Pixels>, r: Corners<Pixels>) -> Option<sk::Path> {
         return None;
     }
     let max = w.min(h) / 2.;
-    let [tl, tr, br, bl] = [r.top_left.0, r.top_right.0, r.bottom_right.0, r.bottom_left.0]
-        .map(|v| v.clamp(0., max));
+    let [tl, tr, br, bl] = [
+        r.top_left.0,
+        r.top_right.0,
+        r.bottom_right.0,
+        r.bottom_left.0,
+    ]
+    .map(|v| v.clamp(0., max));
     if tl == 0. && tr == 0. && br == 0. && bl == 0. {
         return Some(sk::PathBuilder::from_rect(sk::Rect::from_xywh(x, y, w, h)?));
     }
@@ -749,11 +795,32 @@ fn rounded_rect(b: Bounds<Pixels>, r: Corners<Pixels>) -> Option<sk::Path> {
     let mut p = sk::PathBuilder::new();
     p.move_to(x + tl, y);
     p.line_to(x + w - tr, y);
-    p.cubic_to(x + w - tr * (1. - K), y, x + w, y + tr * (1. - K), x + w, y + tr);
+    p.cubic_to(
+        x + w - tr * (1. - K),
+        y,
+        x + w,
+        y + tr * (1. - K),
+        x + w,
+        y + tr,
+    );
     p.line_to(x + w, y + h - br);
-    p.cubic_to(x + w, y + h - br * (1. - K), x + w - br * (1. - K), y + h, x + w - br, y + h);
+    p.cubic_to(
+        x + w,
+        y + h - br * (1. - K),
+        x + w - br * (1. - K),
+        y + h,
+        x + w - br,
+        y + h,
+    );
     p.line_to(x + bl, y + h);
-    p.cubic_to(x + bl * (1. - K), y + h, x, y + h - bl * (1. - K), x, y + h - bl);
+    p.cubic_to(
+        x + bl * (1. - K),
+        y + h,
+        x,
+        y + h - bl * (1. - K),
+        x,
+        y + h - bl,
+    );
     p.line_to(x, y + tl);
     p.cubic_to(x, y + tl * (1. - K), x + tl * (1. - K), y, x + tl, y);
     p.close();
@@ -790,7 +857,10 @@ impl Window {
         {
             // CSS angles: 0° points up, 90° right.
             let b = quad.bounds;
-            let (cx, cy) = (b.origin.x.0 + b.size.width.0 / 2., b.origin.y.0 + b.size.height.0 / 2.);
+            let (cx, cy) = (
+                b.origin.x.0 + b.size.width.0 / 2.,
+                b.origin.y.0 + b.size.height.0 / 2.,
+            );
             let a = g.angle.to_radians();
             let (dx, dy) = (a.sin(), -a.cos());
             let half = (b.size.width.0 * dx.abs() + b.size.height.0 * dy.abs()) / 2.;
@@ -812,7 +882,11 @@ impl Window {
                     ..Default::default()
                 };
                 raster.clip_mask();
-                let mask = raster.mask.as_ref().filter(|_| !raster.clips.is_empty()).map(|(_, m)| m);
+                let mask = raster
+                    .mask
+                    .as_ref()
+                    .filter(|_| !raster.clips.is_empty())
+                    .map(|(_, m)| m);
                 raster
                     .pixmap
                     .fill_path(&path, &paint, sk::FillRule::Winding, t, mask);
@@ -822,7 +896,10 @@ impl Window {
         if width > 0. && quad.border_color.a > 0. {
             let inset = width / 2.;
             let b = Bounds::new(
-                point(quad.bounds.origin.x + px(inset), quad.bounds.origin.y + px(inset)),
+                point(
+                    quad.bounds.origin.x + px(inset),
+                    quad.bounds.origin.y + px(inset),
+                ),
                 size(
                     quad.bounds.size.width - px(width),
                     quad.bounds.size.height - px(width),
@@ -862,7 +939,12 @@ impl Window {
         Ok(())
     }
     /// Paints a premultiplied pixmap (from a CPU renderer) at `bounds`.
-    pub fn paint_pixmap(&mut self, bounds: Bounds<Pixels>, pixmap: &sk::Pixmap, transform: Option<sk::Transform>) {
+    pub fn paint_pixmap(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        pixmap: &sk::Pixmap,
+        transform: Option<sk::Transform>,
+    ) {
         if let Some(raster) = self.raster.as_mut() {
             let t = match transform {
                 Some(extra) => raster.transform.pre_concat(extra),
@@ -936,7 +1018,12 @@ pub fn canvas<T: 'static>(
         *n
     });
     Canvas {
-        key: format!("canvas-{}-{}-{}-{n}", site.line(), site.column(), site.file().len()),
+        key: format!(
+            "canvas-{}-{}-{}-{n}",
+            site.line(),
+            site.column(),
+            site.file().len()
+        ),
         paint: Box::new(move |bounds, window, cx| {
             let state = prepaint(bounds, window, cx);
             paint(bounds, state, window, cx);
@@ -996,7 +1083,12 @@ impl Canvas {
             let scale = FRAME_SCALE.with(|s| s.get()).max(0.5);
             let bounds = Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
             let mut window = Window::paint(scale);
-            window.raster = Raster::new((w * scale).ceil() as u32, (h * scale).ceil() as u32, scale, bounds.origin);
+            window.raster = Raster::new(
+                (w * scale).ceil() as u32,
+                (h * scale).ceil() as u32,
+                scale,
+                bounds.origin,
+            );
             let mut cx = Context::fresh();
             (self.paint)(bounds, &mut window, &mut cx);
             if let Some(raster) = window.raster.take() {
@@ -1008,11 +1100,12 @@ impl Canvas {
         }
         let layout_key = key.clone();
         self.style.id(key).el(move |e| {
-            e.pixels(&pixels).on_layout(move |_: &mut crate::AppState, r: [f32; 4]| {
-                CANVAS_RECTS.with(|rects| {
-                    rects.borrow_mut().insert(layout_key.clone(), r);
-                });
-            })
+            e.pixels(&pixels)
+                .on_layout(move |_: &mut crate::AppState, r: [f32; 4]| {
+                    CANVAS_RECTS.with(|rects| {
+                        rects.borrow_mut().insert(layout_key.clone(), r);
+                    });
+                })
         })
     }
 }
@@ -1026,7 +1119,12 @@ impl IntoElement for Canvas {
 /// canvas's last laid-out bounds (window points) while the frame is built.
 pub fn view_canvas(
     key: &'static str,
-    paint: impl FnOnce(&mut crate::NotesView, Bounds<Pixels>, &mut Window, &mut Context<crate::NotesView>) + 'static,
+    paint: impl FnOnce(
+        &mut crate::NotesView,
+        Bounds<Pixels>,
+        &mut Window,
+        &mut Context<crate::NotesView>,
+    ) + 'static,
 ) -> Div {
     let pixels = CANVAS_PIXELS.with(|p| {
         p.borrow_mut()
@@ -1073,10 +1171,11 @@ pub fn view_canvas(
             AnyElement::Empty
         })))
         .el(move |e| {
-            e.pixels(&pixels).on_layout(move |_: &mut crate::AppState, r: [f32; 4]| {
-                CANVAS_RECTS.with(|rects| {
-                    rects.borrow_mut().insert(key.to_owned(), r);
-                });
-            })
+            e.pixels(&pixels)
+                .on_layout(move |_: &mut crate::AppState, r: [f32; 4]| {
+                    CANVAS_RECTS.with(|rects| {
+                        rects.borrow_mut().insert(key.to_owned(), r);
+                    });
+                })
         })
 }

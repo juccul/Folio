@@ -152,18 +152,26 @@ impl NotesView {
         );
         let status = if supported {
             self.settings_row("Status", &description)
-                .child(self.settings_action("update-check", "Check now", cx, |this, _, cx| {
-                    this.updater.check();
-                    cx.notify();
-                }))
+                .child(
+                    self.settings_action("update-check", "Check now", cx, |this, _, cx| {
+                        this.updater.check();
+                        cx.notify();
+                    }),
+                )
                 .when(
                     self.updater.state.can_download() || self.updater.state.can_restart(),
                     |row| {
                         row.child(
-                            self.button("update-settings-action", action, true, cx, |this, window, cx| {
-                                this.settings_open = false;
-                                this.update_action(window, cx);
-                            })
+                            self.button(
+                                "update-settings-action",
+                                action,
+                                true,
+                                cx,
+                                |this, window, cx| {
+                                    this.settings_open = false;
+                                    this.update_action(window, cx);
+                                },
+                            )
                             .flex_shrink_0()
                             .px_3()
                             .py_1(),

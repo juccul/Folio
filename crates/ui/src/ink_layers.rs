@@ -391,8 +391,16 @@ mod tests {
     #[test]
     fn identity_theme_density_and_geometry_invalidate_cached_batches() {
         let mut objects = fixture(32);
-        let original = batches(&objects, &HashSet::new(), theme(), 1.25).remove(0).1;
-        assert!(original.matches(&batches(&objects, &HashSet::new(), theme(), 1.25).remove(0).1));
+        let original = batches(&objects, &HashSet::new(), theme(), 1.25)
+            .remove(0)
+            .1;
+        assert!(
+            original.matches(
+                &batches(&objects, &HashSet::new(), theme(), 1.25)
+                    .remove(0)
+                    .1
+            )
+        );
         // Snapped bounds must match raster pixmap dimensions 1:1 with zero stretch.
         let image = raster(&original).unwrap();
         let size = image.size(0);
@@ -419,7 +427,13 @@ mod tests {
         assert!(!longer.is_prefix_of(&shorter));
 
         objects[7] = Arc::new(objects[7].as_ref().clone());
-        assert!(!original.matches(&batches(&objects, &HashSet::new(), theme(), 1.25).remove(0).1));
+        assert!(
+            !original.matches(
+                &batches(&objects, &HashSet::new(), theme(), 1.25)
+                    .remove(0)
+                    .1
+            )
+        );
         let mut changed = original.clone();
         changed.theme.adapt_ink = true;
         assert!(!original.matches(&changed));
@@ -427,7 +441,13 @@ mod tests {
         changed.density = 2.;
         assert!(!original.matches(&changed));
         objects.reverse();
-        assert!(!original.matches(&batches(&objects, &HashSet::new(), theme(), 1.25).remove(0).1));
+        assert!(
+            !original.matches(
+                &batches(&objects, &HashSet::new(), theme(), 1.25)
+                    .remove(0)
+                    .1
+            )
+        );
         assert!(raster(&original).is_some());
     }
     #[test]

@@ -50,8 +50,22 @@ fn view_fn(s: &AppState, cx: &mut rune::Cx<AppState>) -> rune::El {
             .padding(12., 8.)
             .font(rune::TextStyle::new(12., 400.).lh(19.))
             .shadows([
-                rune::Shadow { x: 0., y: 4., blur: 6., spread: -1., color: rgba(0x0000001a).color(), inset: false },
-                rune::Shadow { x: 0., y: 2., blur: 4., spread: -2., color: rgba(0x0000001a).color(), inset: false },
+                rune::Shadow {
+                    x: 0.,
+                    y: 4.,
+                    blur: 6.,
+                    spread: -1.,
+                    color: rgba(0x0000001a).color(),
+                    inset: false,
+                },
+                rune::Shadow {
+                    x: 0.,
+                    y: 2.,
+                    blur: 4.,
+                    spread: -2.,
+                    color: rgba(0x0000001a).color(),
+                    inset: false,
+                },
             ]),
     );
     if view.controller.settings.reduce_motion {
@@ -92,21 +106,25 @@ fn view_fn(s: &AppState, cx: &mut rune::Cx<AppState>) -> rune::El {
                 view.viewport = size;
             }
         })
-        .on_pointer_move_local(|s: &mut AppState, p: rune::PointerEvent, tx: &mut rune::Tx| {
-            let view = s.view.get_mut();
-            view.mouse_position = point(px(p.window_x), px(p.window_y));
-            view.window_hovered = true;
-            if !view.pointer_tracking() {
-                tx.live_only();
-            }
-        })
+        .on_pointer_move_local(
+            |s: &mut AppState, p: rune::PointerEvent, tx: &mut rune::Tx| {
+                let view = s.view.get_mut();
+                view.mouse_position = point(px(p.window_x), px(p.window_y));
+                view.window_hovered = true;
+                if !view.pointer_tracking() {
+                    tx.live_only();
+                }
+            },
+        )
         .on_window_focus(|s: &mut AppState, focused: bool, _tx: &mut rune::Tx| {
             s.view.get_mut().window_hovered = focused;
         })
-        .on_drop_files(|s: &mut AppState, files: &[std::path::PathBuf], tx: &mut rune::Tx| {
-            let files = files.to_vec();
-            dispatch(s, tx, |view, window, cx| view.drop_files(files, window, cx));
-        })
+        .on_drop_files(
+            |s: &mut AppState, files: &[std::path::PathBuf], tx: &mut rune::Tx| {
+                let files = files.to_vec();
+                dispatch(s, tx, |view, window, cx| view.drop_files(files, window, cx));
+            },
+        )
 }
 
 fn on_key(s: &mut AppState, key: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
@@ -190,13 +208,13 @@ pub fn run(
     ready(handle.clone());
     app.args(rune_args)
         .init(move || {
-        let mut app = AppState::new(view);
-        app.handle = Some(handle);
-        app
-    })
-    .keep_running()
-    .on_close(on_close)
-    .run();
+            let mut app = AppState::new(view);
+            app.handle = Some(handle);
+            app
+        })
+        .keep_running()
+        .on_close(on_close)
+        .run();
 }
 
 /// Families the interface asks for, in order of preference.

@@ -98,10 +98,7 @@ pub fn paint_label(label: &str, origin: Point<Pixels>, size: f32, color: u32, wi
         folio_export::escape(label)
     );
     if let Ok(tree) = usvg::Tree::from_str(&svg, &folio_export::system_svg_options()) {
-        let t = raster
-            .transform
-            .pre_translate(origin.x.0, origin.y.0);
+        let t = raster.transform.pre_translate(origin.x.0, origin.y.0);
         resvg::render(&tree, t, &mut raster.pixmap.as_mut());
     }
 }
-

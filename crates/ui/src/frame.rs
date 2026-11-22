@@ -64,7 +64,11 @@ impl NotesView {
 }
 
 impl NotesView {
-    pub(crate) fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    pub(crate) fn render(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         self.sync_window_title(window);
         self.release_hidden_resources(window, cx);
         self.controller.refresh_default_ink();
@@ -99,9 +103,9 @@ impl NotesView {
         let mut editor_top = None;
         if self.library_open {
             self.canvas_bounds = None;
-            body = body.child(self.library_sidebar(cx)).child(
-                self.library(window, cx).opacity(alpha.library),
-            );
+            body = body
+                .child(self.library_sidebar(cx))
+                .child(self.library(window, cx).opacity(alpha.library));
         } else {
             let (top, main) = self.editor_column(center, &alpha, window, cx);
             editor_top = Some(top);
@@ -452,31 +456,27 @@ impl NotesView {
     /// The visible document canvas area: measures it and routes pointer input.
     fn canvas_element(&mut self, _: &mut Context<Self>) -> Div {
         let hide_cursor = self.controller.cursor.is_some() && !self.canvas_input_blocked();
-        div()
-            .id("canvas-input")
-            .size_full()
-            .el(move |e| {
-                let e = e
-                    .drag_threshold(0.)
-                    .pointer_buttons([rune::PointerButton::Middle])
-                    .on_layout(|s: &mut AppState, r: [f32; 4]| {
-                        let view = s.view.get_mut();
-                        let mut window = Window::render(view);
-                        let mut cx = Context::fresh();
-                        view.sync_canvas_bounds(Bounds::from_rect(r), &mut cx);
-                        view.queue_effects(window.effects.drain(..).collect());
-                        view.queue_effects(cx.effects);
-                    })
-                    .on_drag(|s: &mut AppState, drag: &mut rune::Drag, tx: &mut rune::Tx| {
+        div().id("canvas-input").size_full().el(move |e| {
+            let e = e
+                .drag_threshold(0.)
+                .pointer_buttons([rune::PointerButton::Middle])
+                .on_layout(|s: &mut AppState, r: [f32; 4]| {
+                    let view = s.view.get_mut();
+                    let mut window = Window::render(view);
+                    let mut cx = Context::fresh();
+                    view.sync_canvas_bounds(Bounds::from_rect(r), &mut cx);
+                    view.queue_effects(window.effects.drain(..).collect());
+                    view.queue_effects(cx.effects);
+                })
+                .on_drag(
+                    |s: &mut AppState, drag: &mut rune::Drag, tx: &mut rune::Tx| {
                         let middle = tx.button() == rune::PointerButton::Middle;
                         dispatch(s, tx, |view, window, cx| {
                             let Some(bounds) = view.canvas_bounds else {
                                 return;
                             };
-                            let position = point(
-                                bounds.origin.x + px(drag.x),
-                                bounds.origin.y + px(drag.y),
-                            );
+                            let position =
+                                point(bounds.origin.x + px(drag.x), bounds.origin.y + px(drag.y));
                             view.mouse_position = position;
                             let phase = match drag.phase {
                                 rune::Phase::Down => Phase::Down,
@@ -491,8 +491,10 @@ impl NotesView {
                             };
                             view.mouse(position, phase, button, window, cx);
                         });
-                    })
-                    .on_pointer_move_local(|s: &mut AppState, p: rune::PointerEvent, tx: &mut rune::Tx| {
+                    },
+                )
+                .on_pointer_move_local(
+                    |s: &mut AppState, p: rune::PointerEvent, tx: &mut rune::Tx| {
                         let position = point(px(p.window_x), px(p.window_y));
                         dispatch(s, tx, |view, window, cx| {
                             view.mouse_position = position;
@@ -500,33 +502,38 @@ impl NotesView {
                                 view.mouse(position, Phase::Hover, MouseButton::Left, window, cx);
                             }
                         });
-                    })
-                    .on_hover_change(|s: &mut AppState, inside: bool, tx: &mut rune::Tx| {
-                        if !inside {
-                            let position = s.view.get_mut().mouse_position;
-                            dispatch(s, tx, |view, window, cx| {
-                                if view.controller.interaction.is_none() {
-                                    view.mouse(position, Phase::Leave, MouseButton::Left, window, cx);
-                                }
-                            });
-                        }
-                    })
-                    .on_secondary_press(|s: &mut AppState, press: rune::PointerPress, tx: &mut rune::Tx| {
+                    },
+                )
+                .on_hover_change(|s: &mut AppState, inside: bool, tx: &mut rune::Tx| {
+                    if !inside {
+                        let position = s.view.get_mut().mouse_position;
+                        dispatch(s, tx, |view, window, cx| {
+                            if view.controller.interaction.is_none() {
+                                view.mouse(position, Phase::Leave, MouseButton::Left, window, cx);
+                            }
+                        });
+                    }
+                })
+                .on_secondary_press(
+                    |s: &mut AppState, press: rune::PointerPress, tx: &mut rune::Tx| {
                         let position = point(px(press.x), px(press.y));
                         dispatch(s, tx, |view, window, cx| {
                             view.mouse_position = position;
                             view.open_canvas_menu(position, window, cx);
                         });
-                    })
-                    .on_wheel(|s: &mut AppState, w: rune::WheelEvent, tx: &mut rune::Tx| {
-                        let position = s.view.get_mut().mouse_position;
-                        let event = ScrollWheelEvent::from_rune(&w, position);
-                        dispatch(s, tx, |view, _, cx| view.scroll(&event, cx));
-                        true
-                    })
-                    .on_magnify(|s: &mut AppState, m: rune::MagnifyEvent, tx: &mut rune::Tx| {
+                    },
+                )
+                .on_wheel(|s: &mut AppState, w: rune::WheelEvent, tx: &mut rune::Tx| {
+                    let position = s.view.get_mut().mouse_position;
+                    let event = ScrollWheelEvent::from_rune(&w, position);
+                    dispatch(s, tx, |view, _, cx| view.scroll(&event, cx));
+                    true
+                })
+                .on_magnify(
+                    |s: &mut AppState, m: rune::MagnifyEvent, tx: &mut rune::Tx| {
                         dispatch(s, tx, |view, _, _| {
-                            if view.canvas_input_blocked() || view.controller.interaction.is_some() {
+                            if view.canvas_input_blocked() || view.controller.interaction.is_some()
+                            {
                                 return;
                             }
                             view.controller
@@ -536,13 +543,14 @@ impl NotesView {
                             view.synchronize_page_view();
                         });
                         true
-                    });
-                if hide_cursor {
-                    e.cursor(rune::Cursor::Hidden)
-                } else {
-                    e
-                }
-            })
+                    },
+                );
+            if hide_cursor {
+                e.cursor(rune::Cursor::Hidden)
+            } else {
+                e
+            }
+        })
     }
     /// Keep the page anchored when the canvas is laid out at a new size or
     /// position, and keep the inline text editor aligned with its text box.
@@ -1366,7 +1374,10 @@ mod window_title_tests {
     fn window_title_tracks_library_and_active_note() {
         assert_eq!(window_title_for(true, "Lecture 1"), "Folio");
         assert_eq!(window_title_for(false, "Lecture 1"), "Lecture 1 — Folio");
-        assert_eq!(window_title_for(false, "  Lecture 1  "), "Lecture 1 — Folio");
+        assert_eq!(
+            window_title_for(false, "  Lecture 1  "),
+            "Lecture 1 — Folio"
+        );
         assert_eq!(window_title_for(false, "   "), "Folio");
         assert_eq!(window_title_for(false, ""), "Folio");
     }

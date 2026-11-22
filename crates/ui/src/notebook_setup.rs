@@ -1,6 +1,6 @@
+use super::*;
 use super::{Field, NotesView, Submitted, Theme};
 use folio_document::{Color, PageProperties, Paper};
-use super::*;
 
 pub(super) struct Setup {
     pub properties: PageProperties,
@@ -32,11 +32,11 @@ impl NotesView {
             this.modal_error = None;
             cx.notify();
         }));
-        drop(cx.subscribe_in(
-            &color,
-            window,
-            |this, _, _: &Submitted, window, cx| this.submit_modal(window, cx),
-        ));
+        drop(
+            cx.subscribe_in(&color, window, |this, _, _: &Submitted, window, cx| {
+                this.submit_modal(window, cx)
+            }),
+        );
     }
 
     pub(super) fn create_configured_notebook(

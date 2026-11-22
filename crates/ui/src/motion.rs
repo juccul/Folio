@@ -167,9 +167,11 @@ impl Motion {
         self.value(key, 1., reduced, now)
     }
     pub fn settle(&mut self) {
-        for tween in self.values
+        for tween in self
+            .values
             .values_mut()
-            .chain(self.hovers.values_mut().map(|h| &mut h.tween)) {
+            .chain(self.hovers.values_mut().map(|h| &mut h.tween))
+        {
             tween.from = tween.to;
         }
     }
@@ -191,9 +193,11 @@ impl Motion {
     }
     fn advance_at(&mut self, now: Instant) -> bool {
         let mut changed = false;
-        for tween in self.values
+        for tween in self
+            .values
             .values_mut()
-            .chain(self.hovers.values_mut().map(|h| &mut h.tween)) {
+            .chain(self.hovers.values_mut().map(|h| &mut h.tween))
+        {
             if tween.from != tween.to {
                 changed = true;
                 if !tween.running(now) {

@@ -6,8 +6,8 @@ mod accessibility;
 mod diagnostics;
 mod document_actions;
 mod executor;
-pub use executor::{AsyncApp, BackgroundExecutor, Task, WeakView};
 use document_actions::MoreSection;
+pub use executor::{AsyncApp, BackgroundExecutor, Task, WeakView};
 mod input_check;
 mod recovery;
 pub use recovery::{RecoveryView, run_recovery};
@@ -15,6 +15,7 @@ mod appearance;
 mod canvas_menu;
 mod color_picker;
 mod controls;
+mod export_options;
 mod field;
 mod find;
 mod folder_menu;
@@ -23,7 +24,6 @@ mod frame;
 mod graph;
 mod help;
 mod icons;
-mod export_options;
 mod ink_layers;
 mod inline_text;
 mod library_sort;
@@ -410,9 +410,9 @@ impl ScrollHandle {
         self.request.set(Some(index));
     }
     pub fn offset(&self) -> Point<Pixels> {
-        self.position
-            .get()
-            .map_or_else(Point::default, |p| point(px(-p.offset[0]), px(-p.offset[1])))
+        self.position.get().map_or_else(Point::default, |p| {
+            point(px(-p.offset[0]), px(-p.offset[1]))
+        })
     }
     pub fn bounds(&self) -> Bounds<Pixels> {
         self.position.get().map_or_else(Bounds::default, |p| {
@@ -586,8 +586,7 @@ impl NotesView {
             self.motion.borrow_mut().advance() || self.transitions.borrow().animating();
         let easing = self.canvas_ease.last.is_some();
         let painting = self.painter.busy();
-        let notify =
-            changed || update_changed || motion_changed || easing || painting || finished;
+        let notify = changed || update_changed || motion_changed || easing || painting || finished;
         let fast = notify
             || tasks
             || self.controller.needs_fast_poll()
@@ -1323,10 +1322,13 @@ impl NotesView {
             let pointer = self.canvas_bounds.filter(|_| hovered).and_then(|bounds| {
                 let position = window.mouse_position();
                 bounds.contains(&position).then(|| {
-                    self.controller.session().viewport.to_document(DocPoint::new(
-                        f32::from(position.x - bounds.origin.x),
-                        f32::from(position.y - bounds.origin.y),
-                    ))
+                    self.controller
+                        .session()
+                        .viewport
+                        .to_document(DocPoint::new(
+                            f32::from(position.x - bounds.origin.x),
+                            f32::from(position.y - bounds.origin.y),
+                        ))
                 })
             });
             self.controller.cursor = pointer;
@@ -1352,7 +1354,8 @@ impl NotesView {
             let text = content.text();
             if !text.is_empty() {
                 if let Some(position) = position {
-                    this.controller.paste_text_or_objects_at(text.to_owned(), position);
+                    this.controller
+                        .paste_text_or_objects_at(text.to_owned(), position);
                 } else {
                     this.controller.paste_text_or_objects(text.to_owned());
                 }
@@ -1510,7 +1513,11 @@ impl NotesView {
                 bounds.origin.x + px(position.x),
                 bounds.origin.y + px(position.y),
             ),
-            pressure: if matches!(phase, Phase::Hover | Phase::Leave) { 0. } else { event.pressure },
+            pressure: if matches!(phase, Phase::Hover | Phase::Leave) {
+                0.
+            } else {
+                event.pressure
+            },
             tilt_x: 0.,
             tilt_y: 0.,
             buttons: 0,

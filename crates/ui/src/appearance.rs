@@ -239,17 +239,15 @@ impl NotesView {
             .child(self.settings_group(Some("Theme"), theme_rows))
             .child(self.settings_group(Some("Paper and ink"), paper_rows))
             .child(self.settings_group(Some("Interface styling"), styling))
-            .child(
-                div().flex().child(self.settings_action(
-                    "reset-appearance",
-                    "Reset appearance",
-                    cx,
-                    |this, _, _| {
-                        this.controller.settings.appearance = Appearance::default();
-                        this.controller.store_settings();
-                    },
-                )),
-            )
+            .child(div().flex().child(self.settings_action(
+                "reset-appearance",
+                "Reset appearance",
+                cx,
+                |this, _, _| {
+                    this.controller.settings.appearance = Appearance::default();
+                    this.controller.store_settings();
+                },
+            )))
     }
     pub(super) fn appearance_switch(
         &self,
@@ -301,7 +299,8 @@ pub(super) fn switch_track(theme: Theme, progress: f32) -> impl IntoElement {
             );
             let knob = Bounds::new(
                 point(
-                    bounds.origin.x + px(inset + (f32::from(bounds.size.width) - height) * progress),
+                    bounds.origin.x
+                        + px(inset + (f32::from(bounds.size.width) - height) * progress),
                     bounds.origin.y + px(inset),
                 ),
                 size(px(diameter), px(diameter)),

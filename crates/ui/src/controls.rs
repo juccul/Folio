@@ -149,7 +149,8 @@ impl NotesView {
                         return;
                     }
                     if matches!(event.keystroke.key.as_str(), "left" | "right")
-                        && let Some(id) = control_key.as_str()
+                        && let Some(id) = control_key
+                            .as_str()
                             .strip_prefix("folder-")
                             .and_then(|id| Id::parse_str(id).ok())
                     {
@@ -170,7 +171,8 @@ impl NotesView {
                             return;
                         }
                     }
-                    if let Some(id) = control_key.as_str()
+                    if let Some(id) = control_key
+                        .as_str()
                         .strip_prefix("folder-")
                         .and_then(|id| Id::parse_str(id).ok())
                         && this.navigate_folder_control(id, forward, window, cx)
@@ -238,9 +240,7 @@ impl NotesView {
             }))
             .active(move |s| {
                 if enabled {
-                    s.bg(theme.tint(1.))
-                        .border_color(theme.border)
-                        .opacity(0.8)
+                    s.bg(theme.tint(1.)).border_color(theme.border).opacity(0.8)
                 } else {
                     s
                 }
@@ -251,7 +251,10 @@ impl NotesView {
             .track_bounds(id_for_bounds)
             .role(accessibility::role(&role_key))
             .label(accessible_label)
-            .when(accessibility::toggles(&role_key) || accessibility::selects(&role_key), |s| s.checked(active))
+            .when(
+                accessibility::toggles(&role_key) || accessibility::selects(&role_key),
+                |s| s.checked(active),
+            )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if enabled {
                     this.pointer_activation = !event.is_keyboard();

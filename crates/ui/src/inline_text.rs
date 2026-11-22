@@ -1,3 +1,4 @@
+use super::*;
 use super::{
     NotesView, Theme,
     field::{Field, InlineStyle},
@@ -5,7 +6,6 @@ use super::{
 };
 use folio_app::Tool;
 use folio_document::{Id, Object, Point as DocPoint, Rect, Transform};
-use super::*;
 use std::sync::Arc;
 
 pub struct Editor {
@@ -689,8 +689,6 @@ trait WithHint {
 impl WithHint for Stateful<Div> {
     fn with_hint(self, hint: impl Into<SharedString>, _theme: Theme, show: bool) -> Self {
         let hint = hint.into();
-        self.when(show, |button| {
-            button.tooltip(hint.clone())
-        })
+        self.when(show, |button| button.tooltip(hint.clone()))
     }
 }

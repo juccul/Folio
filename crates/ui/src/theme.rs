@@ -1,9 +1,9 @@
 //! Shared semantic theme for native controls and display-only canvas colors.
+use crate::compat::{Rgba, rgba};
 use folio_app::{
     Settings,
     appearance::{ThemeColor, ThemeToken},
 };
-use crate::compat::{Rgba, rgba};
 use rune::{El, Shadow};
 use std::borrow::Cow;
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -321,11 +321,19 @@ impl Theme {
     /// Corner radius of cards and floating menus that contain controls, so
     /// the controls' corners stay concentric with theirs.
     pub fn corner_md(self) -> f32 {
-        if self.radius > 0. { self.radius + 2. } else { 0. }
+        if self.radius > 0. {
+            self.radius + 2.
+        } else {
+            0.
+        }
     }
     /// Corner radius of dialogs.
     pub fn corner_lg(self) -> f32 {
-        if self.radius > 0. { self.radius + 4. } else { 0. }
+        if self.radius > 0. {
+            self.radius + 4.
+        } else {
+            0.
+        }
     }
     /// Corner radius of small marks: swatches, hints and previews.
     pub fn corner_sm(self) -> f32 {
@@ -395,7 +403,6 @@ impl Theme {
     }
 }
 
-
 /// Frosted-glass surfaces: a translucent fill over a blurred backdrop.
 pub trait Glass: Sized {
     fn glass_fill(self, theme: Theme, base: u32) -> Self {
@@ -414,7 +421,11 @@ pub trait Glass: Sized {
     fn scrim(self, theme: Theme) -> Self;
     /// A floating glass surface, such as a menu, with a hairline edge and a soft shadow.
     fn glass(self, theme: Theme, base: u32) -> Self {
-        let base = if theme.dark { mix(base, 0xffffff, 0.05) } else { base };
+        let base = if theme.dark {
+            mix(base, 0xffffff, 0.05)
+        } else {
+            base
+        };
         let opacity = theme.glass_opacity + (1. - theme.glass_opacity) * 0.7;
         self.glass_fill_at(theme, base, opacity, theme.glass_blur)
             .glass_frame(theme)
@@ -424,7 +435,11 @@ pub trait Glass: Sized {
 impl Glass for El {
     fn glass_fill_at(self, theme: Theme, base: u32, opacity: f32, blur: f32) -> Self {
         let surface = self.fill(theme.at_opacity(base, opacity).color());
-        if blur > 0. { surface.backdrop_blur(blur * 0.5) } else { surface }
+        if blur > 0. {
+            surface.backdrop_blur(blur * 0.5)
+        } else {
+            surface
+        }
     }
     fn glass_fill_from_edge(self, theme: Theme, base: u32, from_top: bool) -> Self {
         let edge = theme.glass_opacity + (1. - theme.glass_opacity) * 0.75;
@@ -432,24 +447,54 @@ impl Glass for El {
             theme.at_opacity(base, edge).color(),
             theme.translucent(base).color(),
         );
-        let surface = if from_top { self.gradient(a, b) } else { self.gradient(b, a) };
-        if theme.glass_blur > 0. { surface.backdrop_blur(theme.glass_blur * 0.5) } else { surface }
+        let surface = if from_top {
+            self.gradient(a, b)
+        } else {
+            self.gradient(b, a)
+        };
+        if theme.glass_blur > 0. {
+            surface.backdrop_blur(theme.glass_blur * 0.5)
+        } else {
+            surface
+        }
     }
     fn scrim(self, theme: Theme) -> Self {
         let dim = self.fill(rgba(if theme.dark { 0x00000066 } else { 0x0000003d }).color());
-        if theme.glass_blur > 0. { dim.backdrop_blur(theme.glass_blur * 0.2) } else { dim }
+        if theme.glass_blur > 0. {
+            dim.backdrop_blur(theme.glass_blur * 0.2)
+        } else {
+            dim
+        }
     }
     fn glass_frame(self, theme: Theme) -> Self {
         let shadow: u32 = if theme.dark { 0x66 } else { 0x2e };
         self.border(1., theme.glass_edge().color())
-            .box_shadow(Shadow { x: 0., y: 12., blur: 32., spread: -4., color: rgba(shadow).color(), inset: false })
-            .box_shadow(Shadow { x: 0., y: 2., blur: 6., spread: 0., color: rgba(shadow / 2).color(), inset: false })
+            .box_shadow(Shadow {
+                x: 0.,
+                y: 12.,
+                blur: 32.,
+                spread: -4.,
+                color: rgba(shadow).color(),
+                inset: false,
+            })
+            .box_shadow(Shadow {
+                x: 0.,
+                y: 2.,
+                blur: 6.,
+                spread: 0.,
+                color: rgba(shadow / 2).color(),
+                inset: false,
+            })
     }
 }
 impl Glass for crate::compat::Div {
     fn glass_fill_at(self, theme: Theme, base: u32, opacity: f32, blur: f32) -> Self {
         let surface = self.bg(theme.at_opacity(base, opacity));
-        if blur > 0. { surface.el(move |e| e.backdrop_blur(blur * 0.5)) } else { surface }
+        if blur > 0. {
+            surface.el(move |e| e.backdrop_blur(blur * 0.5))
+        } else {
+            surface
+        }
     }
     fn glass_fill_from_edge(self, theme: Theme, base: u32, from_top: bool) -> Self {
         self.el(move |e| e.glass_fill_from_edge(theme, base, from_top))
@@ -459,10 +504,26 @@ impl Glass for crate::compat::Div {
     }
     fn glass_frame(self, theme: Theme) -> Self {
         let shadow: u32 = if theme.dark { 0x66 } else { 0x2e };
-        self.border_1().border_color(theme.glass_edge()).el(move |e| {
-            e.box_shadow(Shadow { x: 0., y: 12., blur: 32., spread: -4., color: rgba(shadow).color(), inset: false })
-                .box_shadow(Shadow { x: 0., y: 2., blur: 6., spread: 0., color: rgba(shadow / 2).color(), inset: false })
-        })
+        self.border_1()
+            .border_color(theme.glass_edge())
+            .el(move |e| {
+                e.box_shadow(Shadow {
+                    x: 0.,
+                    y: 12.,
+                    blur: 32.,
+                    spread: -4.,
+                    color: rgba(shadow).color(),
+                    inset: false,
+                })
+                .box_shadow(Shadow {
+                    x: 0.,
+                    y: 2.,
+                    blur: 6.,
+                    spread: 0.,
+                    color: rgba(shadow / 2).color(),
+                    inset: false,
+                })
+            })
     }
 }
 pub fn mix(a: u32, b: u32, amount: f32) -> u32 {
@@ -523,7 +584,9 @@ mod tests {
         }
         assert_eq!(cursor_colors(0xffffff), (0x000000, 0xffffff));
         assert_eq!(cursor_colors(0x1a3c8c).0, 0xe5c373);
-        for paper in [0xffffff, 0x000000, 0x808080, 0x7f7f7f, 0x1a3c8c, 0xe03030, 0x30c060] {
+        for paper in [
+            0xffffff, 0x000000, 0x808080, 0x7f7f7f, 0x1a3c8c, 0xe03030, 0x30c060,
+        ] {
             let (ring, halo) = cursor_colors(paper);
             assert!(contrast(ring, paper) >= 3., "{paper:06x}");
             assert!(contrast(ring, halo) >= 3., "{paper:06x}");

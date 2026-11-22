@@ -1,6 +1,7 @@
 //! The text formatting bar's font menu: a dropdown under the font button
 //! listing the default family, fonts already used in the document and every
 //! installed family, each shown in its own face. Typing filters the list.
+use super::*;
 use super::{
     Escape, NotesView, Theme,
     field::{Field, Navigate, Submitted},
@@ -8,7 +9,6 @@ use super::{
     theme::Glass,
 };
 use folio_document::Object;
-use super::*;
 use std::rc::Rc;
 
 /// The family text boxes use unless another is chosen. It resolves to the
@@ -50,7 +50,12 @@ impl NotesView {
                 let mut names = options
                     .fontdb
                     .faces()
-                    .flat_map(|face| face.families.iter().map(|f| f.0.clone()).collect::<Vec<_>>())
+                    .flat_map(|face| {
+                        face.families
+                            .iter()
+                            .map(|f| f.0.clone())
+                            .collect::<Vec<_>>()
+                    })
                     // Hidden and interface aliases are not choices.
                     .filter(|name| !name.starts_with('.') && name != DEFAULT_FAMILY)
                     .map(SharedString::from)

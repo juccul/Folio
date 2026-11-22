@@ -16,7 +16,10 @@ pub(super) struct PaintEffect {
 impl PaintEffect {
     pub const NONE: PaintEffect = PaintEffect {
         opacity: 1.,
-        offset: Point { x: Pixels(0.), y: Pixels(0.) },
+        offset: Point {
+            x: Pixels(0.),
+            y: Pixels(0.),
+        },
         scale: 1.,
         origin: Point { x: 0.5, y: 0.5 },
     };
@@ -31,7 +34,6 @@ impl PaintEffect {
         e
     }
 }
-
 
 /// How an overlay enters and leaves.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -53,7 +55,6 @@ pub(super) enum Style {
 const DIALOG_BOX: &str = "dialog-box";
 
 impl Style {
-
     /// The overlay's effect `t` (eased, 0 to 1) of the way through entering.
     pub(super) fn enter(self, t: f32) -> PaintEffect {
         let t = t.clamp(0., 1.);
@@ -87,8 +88,7 @@ impl Style {
             },
         }
     }
-
-    }
+}
 
 /// A dialog box's effect `t` of the way through entering: it rises a little
 /// and grows to full size.

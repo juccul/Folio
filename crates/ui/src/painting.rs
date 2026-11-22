@@ -1,3 +1,4 @@
+use super::*;
 use super::{NotesView, Theme};
 use super::{graph, theme::CanvasTheme};
 use folio_app::{Controller, Interaction, Tool};
@@ -5,7 +6,6 @@ use folio_canvas::{PageStack, SpatialIndex, Viewport};
 use folio_document::{
     Id, Object, Page, PageProperties, Paper, PathPoint, Point as DocPoint, Rect, Transform,
 };
-use super::*;
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -676,10 +676,12 @@ impl Painter {
             if settled && visible_page {
                 controller.request_pdf_background(pdf.clone());
             }
-            let full_asset = pdf
-                .preview_asset
-                .as_ref()
-                .and_then(|asset| controller.asset_path(asset).filter(|p| p.is_file()).map(|p| (asset, p)));
+            let full_asset = pdf.preview_asset.as_ref().and_then(|asset| {
+                controller
+                    .asset_path(asset)
+                    .filter(|p| p.is_file())
+                    .map(|p| (asset, p))
+            });
             let scroll_asset = Controller::pdf_scroll_preview_asset(&pdf)
                 .filter(|asset| controller.asset_path(asset).is_some_and(|p| p.is_file()));
 
@@ -795,8 +797,7 @@ impl Painter {
         }
         let page_id = controller.session().document.pages[page_index].id;
         self.page = Some(page_id);
-        let visible =
-            viewport.visible(f32::from(bounds.size.width), f32::from(bounds.size.height));
+        let visible = viewport.visible(f32::from(bounds.size.width), f32::from(bounds.size.height));
         let page = &controller.session().document.pages[page_index];
         if !active && self.index_revision != Some(page.revision) {
             self.index.rebuild(page);
@@ -877,7 +878,9 @@ impl Painter {
                     .get(&(controller.active, page_id, id))
                     .is_some_and(|preview| preview.bgra.is_empty())
             {
-                controller.previews.remove(&(controller.active, page_id, id));
+                controller
+                    .previews
+                    .remove(&(controller.active, page_id, id));
             }
         }
         if let Some(editing_id) = editing
@@ -1239,9 +1242,7 @@ impl Painter {
                     _ => {
                         let appearance = match object.as_ref() {
                             Object::Equation(e)
-                                if e.math_link
-                                    .as_ref()
-                                    .is_some_and(|l| l.operation == "graph") =>
+                                if e.math_link.as_ref().is_some_and(|l| l.operation == "graph") =>
                             {
                                 Some(RasterAppearance::Graph(graph_palette))
                             }
@@ -1632,10 +1633,9 @@ impl Painter {
                             .ink_desired
                             .get(&id)
                             .is_some_and(|batch| request.is_prefix_of(batch))
-                        && painter
-                            .ink_stale
-                            .get(&id)
-                            .is_none_or(|existing| existing.batch.objects.len() < request.objects.len())
+                        && painter.ink_stale.get(&id).is_none_or(|existing| {
+                            existing.batch.objects.len() < request.objects.len()
+                        })
                     {
                         for object in &request.objects {
                             painter.paths.remove(&object.id());
@@ -1867,7 +1867,11 @@ impl Painter {
             let tile_mask = if properties.infinite {
                 Some(None)
             } else {
-                axis_aligned_bounds(page, world).map(|b| Some(ContentMask { bounds: gpui_bounds(b) }))
+                axis_aligned_bounds(page, world).map(|b| {
+                    Some(ContentMask {
+                        bounds: gpui_bounds(b),
+                    })
+                })
             };
             let zoom = world.scale();
             let render_zoom = if self.layer_zoom > 0. {
@@ -1961,7 +1965,9 @@ fn preview_image(
     appearance: Option<RasterAppearance>,
 ) -> Option<Arc<RenderImage>> {
     match appearance {
-        None => RenderImage::from_ephemeral_shared_bgra(width, height, data.as_slice()).map(Arc::new),
+        None => {
+            RenderImage::from_ephemeral_shared_bgra(width, height, data.as_slice()).map(Arc::new)
+        }
         Some(RasterAppearance::Ink(theme)) if theme.adapt_ink => {
             match theme.preview_pixels(&data) {
                 std::borrow::Cow::Borrowed(_) => {
@@ -1998,7 +2004,12 @@ fn paper_dot_centers(clip: Rect, spacing: f32) -> impl Iterator<Item = DocPoint>
 /// Choose a repeating dot-grid tile sized ~256–512 logical px so panning and
 /// scrolling reuse one small GPU texture instead of rebuilding thousands of
 /// triangle-fan path vertices and running a fullscreen 4× MSAA path pass.
-fn dot_tile_spec(spacing: f32, render_zoom: f32, scale: f32, color: u32) -> Option<(DotTileKey, f32)> {
+fn dot_tile_spec(
+    spacing: f32,
+    render_zoom: f32,
+    scale: f32,
+    color: u32,
+) -> Option<(DotTileKey, f32)> {
     if !spacing.is_finite()
         || spacing <= 0.
         || !render_zoom.is_finite()
@@ -2141,12 +2152,7 @@ fn pixel_bands(min: f32, max: f32, scale: f32) -> smallvec::SmallVec<[(f32, f32,
     bands
 }
 
-fn visit_pixel_rectangles(
-    rect: Rect,
-    color: Rgba,
-    scale: f32,
-    mut emit: impl FnMut(Rect, Rgba),
-) {
+fn visit_pixel_rectangles(rect: Rect, color: Rgba, scale: f32, mut emit: impl FnMut(Rect, Rgba)) {
     // Quads have hard rectangular edges. Split fractional device pixels into
     // weighted edge strips so thin ruling retains its coverage during resizing.
     for (x0, x1, x_alpha) in pixel_bands(rect.min.x, rect.max.x, scale) {
@@ -3009,7 +3015,13 @@ mod tests {
         // round by one step.
         adapted.with_bytes(0, |bytes| {
             let expected = theme.preview_pixels(&data);
-            assert!(bytes.unwrap().iter().zip(expected.iter()).all(|(a, b)| a.abs_diff(*b) <= 1));
+            assert!(
+                bytes
+                    .unwrap()
+                    .iter()
+                    .zip(expected.iter())
+                    .all(|(a, b)| a.abs_diff(*b) <= 1)
+            );
         });
         assert_eq!(data.as_slice(), &[0, 0, 0, 255, 12, 34, 56, 128]);
         assert!(preview_image(2, 2, data.clone(), None).is_none());

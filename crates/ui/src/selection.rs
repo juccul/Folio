@@ -128,18 +128,15 @@ impl NotesView {
             .map(|b| (f32::from(b.size.width), f32::from(b.size.height)))
             .unwrap_or((1000., 700.));
         let origin = self.selection_toolbar_origin();
-        let dimensions = div()
-            .absolute()
-            .inset_0()
-            .el(|e| {
-                e.on_layout(|s: &mut AppState, r: [f32; 4]| {
-                    let view = s.view.get_mut();
-                    let size = size(px(r[2]), px(r[3]));
-                    if view.selection_toolbar_size != size {
-                        view.selection_toolbar_size = size;
-                    }
-                })
-            });
+        let dimensions = div().absolute().inset_0().el(|e| {
+            e.on_layout(|s: &mut AppState, r: [f32; 4]| {
+                let view = s.view.get_mut();
+                let size = size(px(r[2]), px(r[3]));
+                if view.selection_toolbar_size != size {
+                    view.selection_toolbar_size = size;
+                }
+            })
+        });
         let mut row = div()
             .occlude()
             .absolute()

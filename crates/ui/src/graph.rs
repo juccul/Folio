@@ -48,7 +48,11 @@ impl Palette {
 }
 
 /// Premultiplied RGBA (resvg's output) as an image.
-pub(super) fn image(width: u32, height: u32, pixels: Vec<u8>) -> std::sync::Arc<super::RenderImage> {
+pub(super) fn image(
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+) -> std::sync::Arc<super::RenderImage> {
     let size = resvg::tiny_skia::IntSize::from_wh(width.max(1), height.max(1)).expect("image size");
     let pixmap = resvg::tiny_skia::Pixmap::from_vec(pixels, size)
         .unwrap_or_else(|| resvg::tiny_skia::Pixmap::new(1, 1).expect("1×1 pixmap"));

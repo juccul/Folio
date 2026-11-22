@@ -122,8 +122,8 @@ impl Entity<Field> {
                 let t = inline.transform;
                 let zoom = (t.a * t.a + t.b * t.b).sqrt().max(0.01);
                 let size = inline.text.font_size * zoom;
-                let mut style = TextStyle::new(size, if inline.text.bold { 700. } else { 400. })
-                    .lh(size * 1.4);
+                let mut style =
+                    TextStyle::new(size, if inline.text.bold { 700. } else { 400. }).lh(size * 1.4);
                 if inline.text.italic {
                     style = style.italic();
                 }
@@ -180,8 +180,8 @@ impl Entity<Field> {
         }
         let navigate = field.on_navigate.clone();
         let escape = field.on_escape.clone();
-        input = input.on_input_key(move |s: &mut crate::AppState, key: &rune::KeyEvent, tx: &mut Tx| {
-            match key.key {
+        input = input.on_input_key(
+            move |s: &mut crate::AppState, key: &rune::KeyEvent, tx: &mut Tx| match key.key {
                 rune::Key::Up | rune::Key::Down if !multiline => {
                     if let Some(f) = navigate.clone() {
                         let forward = matches!(key.key, rune::Key::Down);
@@ -198,8 +198,8 @@ impl Entity<Field> {
                     false
                 }
                 _ => false,
-            }
-        });
+            },
+        );
         let compact = field.compact;
         let inline = field.inline.is_some();
         drop(field);
@@ -238,20 +238,37 @@ pub struct Submitted;
 pub struct Navigate(pub bool);
 pub struct FieldBoundsChanged;
 pub trait FieldEvent: Sized + 'static {
-    fn install(field: &mut Field, f: Rc<dyn Fn(&mut NotesView, &Self, &mut Window, &mut Context<NotesView>)>);
+    fn install(
+        field: &mut Field,
+        f: Rc<dyn Fn(&mut NotesView, &Self, &mut Window, &mut Context<NotesView>)>,
+    );
 }
 impl FieldEvent for Submitted {
-    fn install(field: &mut Field, f: Rc<dyn Fn(&mut NotesView, &Self, &mut Window, &mut Context<NotesView>)>) {
-        field.on_submit = Some(Rc::new(move |view, window, cx| f(view, &Submitted, window, cx)));
+    fn install(
+        field: &mut Field,
+        f: Rc<dyn Fn(&mut NotesView, &Self, &mut Window, &mut Context<NotesView>)>,
+    ) {
+        field.on_submit = Some(Rc::new(move |view, window, cx| {
+            f(view, &Submitted, window, cx)
+        }));
     }
 }
 impl FieldEvent for Navigate {
-    fn install(field: &mut Field, f: Rc<dyn Fn(&mut NotesView, &Self, &mut Window, &mut Context<NotesView>)>) {
-        field.on_navigate = Some(Rc::new(move |view, down, window, cx| f(view, &Navigate(down), window, cx)));
+    fn install(
+        field: &mut Field,
+        f: Rc<dyn Fn(&mut NotesView, &Self, &mut Window, &mut Context<NotesView>)>,
+    ) {
+        field.on_navigate = Some(Rc::new(move |view, down, window, cx| {
+            f(view, &Navigate(down), window, cx)
+        }));
     }
 }
 impl FieldEvent for FieldBoundsChanged {
-    fn install(_: &mut Field, _: Rc<dyn Fn(&mut NotesView, &Self, &mut Window, &mut Context<NotesView>)>) {}
+    fn install(
+        _: &mut Field,
+        _: Rc<dyn Fn(&mut NotesView, &Self, &mut Window, &mut Context<NotesView>)>,
+    ) {
+    }
 }
 impl<T> Context<T> {
     /// A new entity, as GPUI's `cx.new` makes one.
@@ -268,7 +285,8 @@ impl<T> Context<T> {
         f: impl Fn(&mut NotesView, Entity<Field>, &mut Context<NotesView>) + 'static,
     ) -> Subscription {
         let handle = entity.clone();
-        entity.0.borrow_mut().on_change = Some(Rc::new(move |view, _, cx| f(view, handle.clone(), cx)));
+        entity.0.borrow_mut().on_change =
+            Some(Rc::new(move |view, _, cx| f(view, handle.clone(), cx)));
         Subscription
     }
     pub fn subscribe<E: FieldEvent>(

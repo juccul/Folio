@@ -131,7 +131,6 @@ fn reached(distance: f32) -> bool {
     distance >= RING_INNER
 }
 
-
 /// Where the wheel is drawn for a pointer at `at`: there, unless that would
 /// put part of the wheel outside the window.
 fn placement(at: Point<Pixels>, window: Size<Pixels>, scale: f32) -> Point<Pixels> {

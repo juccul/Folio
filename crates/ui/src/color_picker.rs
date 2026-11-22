@@ -121,7 +121,8 @@ fn paint_picker_texture(
         if let Some(previous) = texture.take() {
             let _ = window.drop_image(previous.image);
         }
-        let Some(image) = RenderImage::from_ephemeral_bgra(key.width, key.height, picker_pixels(key))
+        let Some(image) =
+            RenderImage::from_ephemeral_bgra(key.width, key.height, picker_pixels(key))
         else {
             return;
         };
@@ -258,59 +259,57 @@ impl NotesView {
             let textures = textures.clone();
             let track = canvas(
                 move |b, _, _| measured.set(b),
-                move |b, _, window, _| {
-                    match channel {
-                        0 => {
-                            paint_picker_texture(
-                                b,
-                                Some(hsv.hue),
-                                &mut textures.borrow_mut()[0],
-                                window,
+                move |b, _, window, _| match channel {
+                    0 => {
+                        paint_picker_texture(
+                            b,
+                            Some(hsv.hue),
+                            &mut textures.borrow_mut()[0],
+                            window,
+                        );
+                        let center = b.origin
+                            + point(
+                                b.size.width * hsv.saturation,
+                                b.size.height * (1. - hsv.value),
                             );
-                            let center = b.origin
-                                + point(
-                                    b.size.width * hsv.saturation,
-                                    b.size.height * (1. - hsv.value),
-                                );
-                            marker(
-                                Bounds::new(center - point(px(7.), px(7.)), size(px(14.), px(14.))),
-                                window,
-                            );
-                        }
-                        1 => {
-                            paint_picker_texture(b, None, &mut textures.borrow_mut()[1], window);
-                            marker(
-                                Bounds::new(
-                                    point(
-                                        b.origin.x + (b.size.width - px(8.)) * hsv.hue,
-                                        b.origin.y + px(1.),
-                                    ),
-                                    size(px(8.), b.size.height - px(2.)),
+                        marker(
+                            Bounds::new(center - point(px(7.), px(7.)), size(px(14.), px(14.))),
+                            window,
+                        );
+                    }
+                    1 => {
+                        paint_picker_texture(b, None, &mut textures.borrow_mut()[1], window);
+                        marker(
+                            Bounds::new(
+                                point(
+                                    b.origin.x + (b.size.width - px(8.)) * hsv.hue,
+                                    b.origin.y + px(1.),
                                 ),
-                                window,
-                            );
-                        }
-                        _ => {
-                            checkerboard(b, window);
-                            window.paint_quad(fill(
-                                b,
-                                linear_gradient(
-                                    90.,
-                                    linear_color_stop(rgba(color.0 & !255), 0.),
-                                    linear_color_stop(rgba(color.0 | 255), 1.),
+                                size(px(8.), b.size.height - px(2.)),
+                            ),
+                            window,
+                        );
+                    }
+                    _ => {
+                        checkerboard(b, window);
+                        window.paint_quad(fill(
+                            b,
+                            linear_gradient(
+                                90.,
+                                linear_color_stop(rgba(color.0 & !255), 0.),
+                                linear_color_stop(rgba(color.0 | 255), 1.),
+                            ),
+                        ));
+                        marker(
+                            Bounds::new(
+                                point(
+                                    b.origin.x + (b.size.width - px(8.)) * color.alpha(),
+                                    b.origin.y + px(1.),
                                 ),
-                            ));
-                            marker(
-                                Bounds::new(
-                                    point(
-                                        b.origin.x + (b.size.width - px(8.)) * color.alpha(),
-                                        b.origin.y + px(1.),
-                                    ),
-                                    size(px(8.), b.size.height - px(2.)),
-                                ),
-                                window,
-                            );
-                        }
+                                size(px(8.), b.size.height - px(2.)),
+                            ),
+                            window,
+                        );
                     }
                 },
             )
@@ -444,8 +443,12 @@ impl NotesView {
                         .size(px(24.))
                         .rounded(px(theme.corner_sm()))
                         .bg(rgb(value))
-                        .when(selected, |swatch| swatch.border_2().border_color(rgb(theme.ring)))
-                        .when(!selected, |swatch| swatch.border_1().border_color(theme.border))
+                        .when(selected, |swatch| {
+                            swatch.border_2().border_color(rgb(theme.ring))
+                        })
+                        .when(!selected, |swatch| {
+                            swatch.border_1().border_color(theme.border)
+                        })
                         .into_any_element(),
                     selected,
                     cx,

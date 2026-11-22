@@ -88,7 +88,10 @@ fn main() -> anyhow::Result<()> {
             }
             value if RUNE_FLAGS.iter().any(|(name, _)| *name == value) => {
                 rune_args.push(value.to_owned());
-                if RUNE_FLAGS.iter().any(|(name, takes)| *name == value && *takes) {
+                if RUNE_FLAGS
+                    .iter()
+                    .any(|(name, takes)| *name == value && *takes)
+                {
                     rune_args.push(
                         args.next()
                             .ok_or_else(|| anyhow::anyhow!("{value} requires a value"))?

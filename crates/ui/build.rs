@@ -39,13 +39,22 @@ fn main() {
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(24.);
         let mut group = String::from("<g");
-        for key in ["fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin"] {
+        for key in [
+            "fill",
+            "stroke",
+            "stroke-width",
+            "stroke-linecap",
+            "stroke-linejoin",
+        ] {
             if let Some(value) = attribute(&tag, key) {
                 write!(group, " {key}=\"{value}\"").unwrap();
             }
         }
         group.push('>');
-        let body = format!("{group}{}</g>", body.split_whitespace().collect::<Vec<_>>().join(" "));
+        let body = format!(
+            "{group}{}</g>",
+            body.split_whitespace().collect::<Vec<_>>().join(" ")
+        );
         writeln!(
             out,
             "static {}: rune::Icon = rune::Icon {{ name: {:?}, view: {view:?}, body: {:?} }};",
@@ -56,18 +65,34 @@ fn main() {
         .unwrap();
         variants.push(name);
     }
-    writeln!(out, "#[allow(dead_code)]\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum Icon {{").unwrap();
+    writeln!(
+        out,
+        "#[allow(dead_code)]\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum Icon {{"
+    )
+    .unwrap();
     for v in &variants {
         writeln!(out, "    {v},").unwrap();
     }
-    writeln!(out, "}}\n#[allow(dead_code)]\nimpl Icon {{\n    pub const ALL: &'static [Icon] = &[").unwrap();
+    writeln!(
+        out,
+        "}}\n#[allow(dead_code)]\nimpl Icon {{\n    pub const ALL: &'static [Icon] = &["
+    )
+    .unwrap();
     for v in &variants {
         writeln!(out, "        Icon::{v},").unwrap();
     }
-    writeln!(out, "    ];\n    pub fn glyph(self) -> &'static rune::Icon {{\n        match self {{").unwrap();
+    writeln!(
+        out,
+        "    ];\n    pub fn glyph(self) -> &'static rune::Icon {{\n        match self {{"
+    )
+    .unwrap();
     for v in &variants {
         writeln!(out, "            Icon::{v} => &{},", v.to_uppercase()).unwrap();
     }
     writeln!(out, "        }}\n    }}\n}}").unwrap();
-    fs::write(Path::new(&std::env::var("OUT_DIR").unwrap()).join("icons.rs"), out).unwrap();
+    fs::write(
+        Path::new(&std::env::var("OUT_DIR").unwrap()).join("icons.rs"),
+        out,
+    )
+    .unwrap();
 }

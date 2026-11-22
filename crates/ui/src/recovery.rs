@@ -6,7 +6,9 @@ pub struct RecoveryView {
     root: PathBuf,
     message: String,
     running: bool,
-    result: std::sync::Arc<std::sync::Mutex<Option<Result<folio_storage::recovery::RecoveryReport, String>>>>,
+    result: std::sync::Arc<
+        std::sync::Mutex<Option<Result<folio_storage::recovery::RecoveryReport, String>>>,
+    >,
 }
 impl RecoveryView {
     pub fn new(root: PathBuf, error: String) -> Self {
@@ -70,7 +72,12 @@ fn poll(s: &mut RecoveryView, _: f64, tx: &mut rune::Tx) -> bool {
 fn view(s: &RecoveryView, _: &mut rune::Cx<RecoveryView>) -> rune::El {
     use rune::{TextStyle, col, text};
     let ink = crate::rgb(0x0a0a0a).color();
-    let body = |t: String| text(t).font(TextStyle::new(16., 400.).lh(26.)).color(ink).wrap();
+    let body = |t: String| {
+        text(t)
+            .font(TextStyle::new(16., 400.).lh(26.))
+            .color(ink)
+            .wrap()
+    };
     col()
         .w_full()
         .h_full()

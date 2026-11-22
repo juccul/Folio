@@ -81,7 +81,8 @@ impl NotesView {
             .bg(theme.card())
             .overflow_hidden();
         for (index, row) in rows.into_iter().enumerate() {
-            card = card.child(row.when(index > 0, |row| row.border_t_1().border_color(theme.border)));
+            card =
+                card.child(row.when(index > 0, |row| row.border_t_1().border_color(theme.border)));
         }
         div()
             .flex()
@@ -200,21 +201,18 @@ impl NotesView {
                 4,
             ),
         ] {
-            gestures.push(self.settings_row(label, description).child(self.appearance_switch(
-                id,
-                label,
-                enabled,
-                cx,
-                move |this| {
-                    let s = &mut this.controller.settings;
-                    match kind {
-                        1 => s.scratch_erase = !s.scratch_erase,
-                        2 => s.hold_shapes = !s.hold_shapes,
-                        3 => s.encircle_select = !s.encircle_select,
-                        _ => s.auto_math_ink = !s.auto_math_ink,
-                    }
-                },
-            )));
+            gestures.push(
+                self.settings_row(label, description)
+                    .child(self.appearance_switch(id, label, enabled, cx, move |this| {
+                        let s = &mut this.controller.settings;
+                        match kind {
+                            1 => s.scratch_erase = !s.scratch_erase,
+                            2 => s.hold_shapes = !s.hold_shapes,
+                            3 => s.encircle_select = !s.encircle_select,
+                            _ => s.auto_math_ink = !s.auto_math_ink,
+                        }
+                    })),
+            );
         }
         let pad = self.pad_button_rows(cx);
         let wheel = self.tool_wheel_rows(cx);
@@ -497,12 +495,11 @@ impl NotesView {
                 "Current library",
                 &self.controller.data_dir.display().to_string(),
             )
-            .child(self.settings_action(
-                "switch-library",
-                "Open another…",
-                cx,
-                |this, w, cx| this.switch_library_dialog(w, cx),
-            ))
+            .child(
+                self.settings_action("switch-library", "Open another…", cx, |this, w, cx| {
+                    this.switch_library_dialog(w, cx)
+                }),
+            )
             .child(
                 self.settings_action("default-library", "Use by default", cx, |this, _, _| {
                     if let Err(e) = this.controller.use_library_by_default() {
@@ -549,12 +546,11 @@ impl NotesView {
                 |this, _, cx| this.backup_dialog(cx),
             )),
             self.settings_row("Restore a backup", "Restores into a new library folder.")
-                .child(self.settings_action(
-                    "restore-library",
-                    "Restore…",
-                    cx,
-                    |this, _, cx| this.restore_dialog(cx),
-                )),
+                .child(
+                    self.settings_action("restore-library", "Restore…", cx, |this, _, cx| {
+                        this.restore_dialog(cx)
+                    }),
+                ),
         ];
         if let Some(path) = &self.controller.restored_library {
             backup.push(
@@ -672,7 +668,11 @@ impl NotesView {
             };
             let reset = changed.then(|| {
                 self.settings_action(
-                    if interface { "ui-reset" } else { "cursor-reset" },
+                    if interface {
+                        "ui-reset"
+                    } else {
+                        "cursor-reset"
+                    },
                     "Reset",
                     cx,
                     move |this, _, _| {
@@ -687,20 +687,21 @@ impl NotesView {
                 )
                 .text_xs()
             });
-            rows.push(
-                self.settings_row(label, description)
-                    .children(reset)
-                    .child(self.settings_stepper(less, more, value, cx, move |this, sign| {
-                        let s = &mut this.controller.settings;
-                        if interface {
-                            s.ui_scale = (s.ui_scale + sign * 0.1).clamp(0.8, 1.6);
-                        } else {
-                            s.cursor_size = (s.cursor_size + sign * 2.).clamp(4., 64.);
-                        }
-                    })),
-            );
+            rows.push(self.settings_row(label, description).children(reset).child(
+                self.settings_stepper(less, more, value, cx, move |this, sign| {
+                    let s = &mut this.controller.settings;
+                    if interface {
+                        s.ui_scale = (s.ui_scale + sign * 0.1).clamp(0.8, 1.6);
+                    } else {
+                        s.cursor_size = (s.cursor_size + sign * 2.).clamp(4., 64.);
+                    }
+                }),
+            ));
         }
-        div().flex().flex_col().child(self.settings_group(None, rows))
+        div()
+            .flex()
+            .flex_col()
+            .child(self.settings_group(None, rows))
     }
     pub(super) fn settings_panel(
         &mut self,

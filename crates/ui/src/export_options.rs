@@ -172,12 +172,30 @@ impl NotesView {
                 },
             ))
             .child(document_actions::separator(theme))
-            .child(document_actions::heading(theme, "Colors in PDF, SVG and PNG"));
+            .child(document_actions::heading(
+                theme,
+                "Colors in PDF, SVG and PNG",
+            ));
         let mut modes = div().flex().gap_1().px_1();
         for (id, label, text, mode) in [
-            ("export-original", "Original colors", "Original", Appearance::Original),
-            ("export-visible", "Visible appearance", "As shown", Appearance::Visible),
-            ("export-print", "Light paper for printing", "Print", Appearance::Print),
+            (
+                "export-original",
+                "Original colors",
+                "Original",
+                Appearance::Original,
+            ),
+            (
+                "export-visible",
+                "Visible appearance",
+                "As shown",
+                Appearance::Visible,
+            ),
+            (
+                "export-print",
+                "Light paper for printing",
+                "Print",
+                Appearance::Print,
+            ),
         ] {
             let active = self.export_options.appearance == mode;
             modes = modes.child(
@@ -242,7 +260,14 @@ impl NotesView {
             .child(document_actions::separator(theme))
             .child(document_actions::heading(theme, "Export as"));
         for (id, label, text, scope, kind, export) in [
-            ("export-pdf", "PDF · all pages", "PDF", "All pages", Icon::Page, ExportKind::Pdf),
+            (
+                "export-pdf",
+                "PDF · all pages",
+                "PDF",
+                "All pages",
+                Icon::Page,
+                ExportKind::Pdf,
+            ),
             (
                 "export-notebook",
                 "Editable document · with assets",
@@ -251,8 +276,22 @@ impl NotesView {
                 Icon::Book,
                 ExportKind::Notebook,
             ),
-            ("export-svg", "SVG · current page", "SVG", "This page", Icon::Shapes, ExportKind::Svg),
-            ("export-png", "PNG · current page", "PNG", "This page", Icon::Image, ExportKind::Png),
+            (
+                "export-svg",
+                "SVG · current page",
+                "SVG",
+                "This page",
+                Icon::Shapes,
+                ExportKind::Svg,
+            ),
+            (
+                "export-png",
+                "PNG · current page",
+                "PNG",
+                "This page",
+                Icon::Image,
+                ExportKind::Png,
+            ),
             (
                 "export-text",
                 "Plain text · typed content",

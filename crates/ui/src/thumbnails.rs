@@ -174,13 +174,7 @@ fn thumbnail_edge(properties: &folio_document::PageProperties, max_height: f32, 
     }
 }
 
-fn thumbnail_frame(
-    width: f32,
-    max_height: f32,
-    aspect: f32,
-    corner: f32,
-    paper: u32,
-) -> Div {
+fn thumbnail_frame(width: f32, max_height: f32, aspect: f32, corner: f32, paper: u32) -> Div {
     let height = (width / aspect.max(0.01)).min(max_height);
     div()
         .rounded(px(corner))
@@ -482,12 +476,12 @@ mod tests {
         let replacement = graph::image(1, 1, vec![0; 4]);
         let replacement_weak = Arc::downgrade(&replacement);
         atlas.insert(replacement.id);
-        assert!(cache.finish(
-            page.id,
-            generation,
-            Ok((replacement, 1.)),
-            |image| assert!(atlas.remove(&image.id), "Image retired more than once"),
-        ));
+        assert!(
+            cache.finish(page.id, generation, Ok((replacement, 1.)), |image| assert!(
+                atlas.remove(&image.id),
+                "Image retired more than once"
+            ),)
+        );
         assert!(old_image.upgrade().is_none());
         assert!(replacement_weak.upgrade().is_some());
         assert_eq!(atlas.len(), 1);

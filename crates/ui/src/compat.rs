@@ -12,7 +12,6 @@ use crate::NotesView;
 use rune::{Color, Cursor, El, Shadow, TextStyle, Tx};
 use std::{cell::RefCell, marker::PhantomData, rc::Rc};
 
-
 // ---------------------------------------------------------------- units
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd)]
@@ -82,13 +81,19 @@ impl std::ops::SubAssign for Pixels {
 impl<T: std::ops::Add<Output = T>> std::ops::Add for Point<T> {
     type Output = Point<T>;
     fn add(self, o: Point<T>) -> Point<T> {
-        Point { x: self.x + o.x, y: self.y + o.y }
+        Point {
+            x: self.x + o.x,
+            y: self.y + o.y,
+        }
     }
 }
 impl<T: std::ops::Sub<Output = T>> std::ops::Sub for Point<T> {
     type Output = Point<T>;
     fn sub(self, o: Point<T>) -> Point<T> {
-        Point { x: self.x - o.x, y: self.y - o.y }
+        Point {
+            x: self.x - o.x,
+            y: self.y - o.y,
+        }
     }
 }
 pub fn px(v: f32) -> Pixels {
@@ -218,7 +223,10 @@ impl Rgba {
         .unwrap_or(resvg::tiny_skia::Color::TRANSPARENT)
     }
     pub fn opacity(self, factor: f32) -> Self {
-        Self { a: self.a * factor, ..self }
+        Self {
+            a: self.a * factor,
+            ..self
+        }
     }
 }
 pub type Hsla = Rgba;
@@ -706,7 +714,9 @@ impl Div {
             e = e.clip_rounded(radius);
         }
         if self.scroll_y {
-            e = e.scroll(rune::ScrollSpec { stick_bottom: false });
+            e = e.scroll(rune::ScrollSpec {
+                stick_bottom: false,
+            });
         } else if self.scroll_x {
             e = e.scroll_x();
         }
@@ -1470,25 +1480,30 @@ impl Div {
     }
     pub fn on_mouse_down(self, button: MouseButton, listener: Listener<MouseDownEvent>) -> Self {
         self.op(move |e| match button {
-            MouseButton::Left => e.press_on_down().on_press_tx(move |s: &mut crate::AppState, tx| {
-                let event = MouseDownEvent {
-                    position: s.view.get_mut().mouse_position,
-                    modifiers: Modifiers::from_mods(tx.mods()),
-                    click_count: 1,
-                };
-                let f = listener.0.clone();
-                dispatch(s, tx, |view, window, cx| f(view, &event, window, cx));
-            }),
-            MouseButton::Right => e.on_secondary_press(move |s: &mut crate::AppState, press, tx| {
-                let event = MouseDownEvent {
-                    position: point(px(press.x), px(press.y)),
-                    modifiers: Modifiers::from_mods(tx.mods()),
-                    click_count: 1,
-                };
-                s.view.get_mut().mouse_position = event.position;
-                let f = listener.0.clone();
-                dispatch(s, tx, |view, window, cx| f(view, &event, window, cx));
-            }),
+            MouseButton::Left => {
+                e.press_on_down()
+                    .on_press_tx(move |s: &mut crate::AppState, tx| {
+                        let event = MouseDownEvent {
+                            position: s.view.get_mut().mouse_position,
+                            modifiers: Modifiers::from_mods(tx.mods()),
+                            click_count: 1,
+                        };
+                        let f = listener.0.clone();
+                        dispatch(s, tx, |view, window, cx| f(view, &event, window, cx));
+                    })
+            }
+            MouseButton::Right => {
+                e.on_secondary_press(move |s: &mut crate::AppState, press, tx| {
+                    let event = MouseDownEvent {
+                        position: point(px(press.x), px(press.y)),
+                        modifiers: Modifiers::from_mods(tx.mods()),
+                        click_count: 1,
+                    };
+                    s.view.get_mut().mouse_position = event.position;
+                    let f = listener.0.clone();
+                    dispatch(s, tx, |view, window, cx| f(view, &event, window, cx));
+                })
+            }
             MouseButton::Middle => e.on_middle_press(move |s: &mut crate::AppState, tx| {
                 let event = MouseDownEvent {
                     position: s.view.get_mut().mouse_position,
@@ -1535,34 +1550,38 @@ impl Div {
     }
     pub fn on_key_down(self, listener: Listener<KeyDownEvent>) -> Self {
         self.op(move |e| {
-            e.on_key(move |s: &mut crate::AppState, key: &rune::KeyEvent, tx: &mut Tx| {
-                let Some(event) = KeyDownEvent::from_rune(key) else {
-                    return false;
-                };
-                let f = listener.0.clone();
-                let view = s.view.get_mut();
-                let mut window = Window::handler(view, tx);
-                let mut cx = Context::fresh();
-                f(view, &event, &mut window, &mut cx);
-                let stopped = cx.stopped;
-                view.apply_effects(window, cx, tx);
-                stopped
-            })
+            e.on_key(
+                move |s: &mut crate::AppState, key: &rune::KeyEvent, tx: &mut Tx| {
+                    let Some(event) = KeyDownEvent::from_rune(key) else {
+                        return false;
+                    };
+                    let f = listener.0.clone();
+                    let view = s.view.get_mut();
+                    let mut window = Window::handler(view, tx);
+                    let mut cx = Context::fresh();
+                    f(view, &event, &mut window, &mut cx);
+                    let stopped = cx.stopped;
+                    view.apply_effects(window, cx, tx);
+                    stopped
+                },
+            )
         })
     }
     pub fn on_scroll_wheel(self, listener: Listener<ScrollWheelEvent>) -> Self {
         self.op(move |e| {
-            e.on_wheel(move |s: &mut crate::AppState, w: rune::WheelEvent, tx: &mut Tx| {
-                let event = ScrollWheelEvent::from_rune(&w, s.view.get_mut().mouse_position);
-                let f = listener.0.clone();
-                let view = s.view.get_mut();
-                let mut window = Window::handler(view, tx);
-                let mut cx = Context::fresh();
-                f(view, &event, &mut window, &mut cx);
-                let stopped = cx.stopped;
-                view.apply_effects(window, cx, tx);
-                stopped
-            })
+            e.on_wheel(
+                move |s: &mut crate::AppState, w: rune::WheelEvent, tx: &mut Tx| {
+                    let event = ScrollWheelEvent::from_rune(&w, s.view.get_mut().mouse_position);
+                    let f = listener.0.clone();
+                    let view = s.view.get_mut();
+                    let mut window = Window::handler(view, tx);
+                    let mut cx = Context::fresh();
+                    f(view, &event, &mut window, &mut cx);
+                    let stopped = cx.stopped;
+                    view.apply_effects(window, cx, tx);
+                    stopped
+                },
+            )
         })
     }
     pub fn on_action<A: Action>(self, listener: Listener<A>) -> Self {
@@ -1671,15 +1690,36 @@ pub enum Effect {
     Paste(Rc<dyn Fn(&mut NotesView, rune::ClipboardContent, &mut Window, &mut Context<NotesView>)>),
     OpenFiles(
         rune::FileDialogOptions,
-        Rc<dyn Fn(&mut NotesView, Option<std::path::PathBuf>, &mut Window, &mut Context<NotesView>)>,
+        Rc<
+            dyn Fn(
+                &mut NotesView,
+                Option<std::path::PathBuf>,
+                &mut Window,
+                &mut Context<NotesView>,
+            ),
+        >,
     ),
     SaveFile(
         rune::FileDialogOptions,
-        Rc<dyn Fn(&mut NotesView, Option<std::path::PathBuf>, &mut Window, &mut Context<NotesView>)>,
+        Rc<
+            dyn Fn(
+                &mut NotesView,
+                Option<std::path::PathBuf>,
+                &mut Window,
+                &mut Context<NotesView>,
+            ),
+        >,
     ),
     OpenFolder(
         rune::FileDialogOptions,
-        Rc<dyn Fn(&mut NotesView, Option<std::path::PathBuf>, &mut Window, &mut Context<NotesView>)>,
+        Rc<
+            dyn Fn(
+                &mut NotesView,
+                Option<std::path::PathBuf>,
+                &mut Window,
+                &mut Context<NotesView>,
+            ),
+        >,
     ),
     WakeAfter(std::time::Duration),
     Instant,
@@ -1825,28 +1865,32 @@ impl<T> Context<T> {
     /// Reads the clipboard; `f` runs with its content on a later frame.
     pub fn read_clipboard(
         &mut self,
-        f: impl Fn(&mut NotesView, rune::ClipboardContent, &mut Window, &mut Context<NotesView>) + 'static,
+        f: impl Fn(&mut NotesView, rune::ClipboardContent, &mut Window, &mut Context<NotesView>)
+        + 'static,
     ) {
         self.effects.push(Effect::Paste(Rc::new(f)));
     }
     pub fn open_file(
         &mut self,
         options: rune::FileDialogOptions,
-        f: impl Fn(&mut NotesView, Option<std::path::PathBuf>, &mut Window, &mut Context<NotesView>) + 'static,
+        f: impl Fn(&mut NotesView, Option<std::path::PathBuf>, &mut Window, &mut Context<NotesView>)
+        + 'static,
     ) {
         self.effects.push(Effect::OpenFiles(options, Rc::new(f)));
     }
     pub fn save_file(
         &mut self,
         options: rune::FileDialogOptions,
-        f: impl Fn(&mut NotesView, Option<std::path::PathBuf>, &mut Window, &mut Context<NotesView>) + 'static,
+        f: impl Fn(&mut NotesView, Option<std::path::PathBuf>, &mut Window, &mut Context<NotesView>)
+        + 'static,
     ) {
         self.effects.push(Effect::SaveFile(options, Rc::new(f)));
     }
     pub fn open_folder(
         &mut self,
         options: rune::FileDialogOptions,
-        f: impl Fn(&mut NotesView, Option<std::path::PathBuf>, &mut Window, &mut Context<NotesView>) + 'static,
+        f: impl Fn(&mut NotesView, Option<std::path::PathBuf>, &mut Window, &mut Context<NotesView>)
+        + 'static,
     ) {
         self.effects.push(Effect::OpenFolder(options, Rc::new(f)));
     }
@@ -1889,7 +1933,9 @@ pub fn apply(effects: Vec<Effect>, tx: &mut Tx) {
                 let _ = tx.open_url(&url);
             }
             Effect::Paste(f) => tx.read_clipboard(move |s: &mut crate::AppState, content, tx| {
-                dispatch(s, tx, |view, window, cx| f(view, content.clone(), window, cx));
+                dispatch(s, tx, |view, window, cx| {
+                    f(view, content.clone(), window, cx)
+                });
             }),
             Effect::OpenFiles(options, f) => {
                 tx.open_file(options, move |s: &mut crate::AppState, result, tx| {
@@ -1960,7 +2006,14 @@ impl KeyDownEvent {
         let (key, key_char) = match &ev.key {
             Key::Text(t) => {
                 let lower = t.to_lowercase();
-                (if lower == " " { "space".to_owned() } else { lower }, Some(t.clone()))
+                (
+                    if lower == " " {
+                        "space".to_owned()
+                    } else {
+                        lower
+                    },
+                    Some(t.clone()),
+                )
             }
             Key::Command(c) => {
                 modifiers.control = true;
@@ -2002,7 +2055,11 @@ impl KeyDownEvent {
             s.push_str("alt-");
         }
         // Shift is part of a typed character itself ("+"), not a modifier.
-        if m.shift && (self.keystroke.key.chars().count() > 1 || self.keystroke.key.chars().all(|c| c.is_ascii_alphabetic()) || m.control) {
+        if m.shift
+            && (self.keystroke.key.chars().count() > 1
+                || self.keystroke.key.chars().all(|c| c.is_ascii_alphabetic())
+                || m.control)
+        {
             s.push_str("shift-");
         }
         s.push_str(&self.keystroke.key);
@@ -2074,7 +2131,8 @@ pub fn clear_actions() {
     ACTIONS.with(|a| a.borrow_mut().clear());
 }
 fn register_action<A: Action>(listener: Listener<A>) {
-    let f: ActionHandler = Rc::new(move |view, window, cx| (listener.0)(view, &A::default(), window, cx));
+    let f: ActionHandler =
+        Rc::new(move |view, window, cx| (listener.0)(view, &A::default(), window, cx));
     ACTIONS.with(|a| {
         a.borrow_mut().insert(A::name(), f);
     });
@@ -2121,34 +2179,66 @@ pub trait Render {}
 pub struct Subscription;
 
 /// Folio's lists built rows from the view lazily; here every row is built.
-pub struct Processor<R>(Rc<dyn Fn(&mut NotesView, std::ops::Range<usize>, &mut Window, &mut Context<NotesView>) -> Vec<R>>);
+pub struct Processor<R>(
+    Rc<
+        dyn Fn(
+            &mut NotesView,
+            std::ops::Range<usize>,
+            &mut Window,
+            &mut Context<NotesView>,
+        ) -> Vec<R>,
+    >,
+);
 impl<T> Context<T> {
     pub fn processor<R: 'static>(
         &self,
-        f: impl Fn(&mut NotesView, std::ops::Range<usize>, &mut Window, &mut Context<NotesView>) -> Vec<R> + 'static,
+        f: impl Fn(
+            &mut NotesView,
+            std::ops::Range<usize>,
+            &mut Window,
+            &mut Context<NotesView>,
+        ) -> Vec<R>
+        + 'static,
     ) -> Processor<R> {
         Processor(Rc::new(f))
     }
 }
 /// A list of `count` uniform rows from `processor`, in a scroll viewport.
-pub fn uniform_list<R: IntoElement + 'static>(id: impl Into<String>, count: usize, processor: Processor<R>) -> Div {
+pub fn uniform_list<R: IntoElement + 'static>(
+    id: impl Into<String>,
+    count: usize,
+    processor: Processor<R>,
+) -> Div {
     let id = id.into();
     let row_prefix = id.clone();
-    div().id(id).flex().flex_col().child(AnyElement::Lazy(Box::new(move |bcx: &mut BuildCx| {
-        let rows = (processor.0)(bcx.view, 0..count, bcx.window, bcx.cx);
-        let mut list = div().flex().flex_col().w_full().flex_shrink_0();
-        for (i, row) in rows.into_iter().enumerate() {
-            list = list.child(div().id(format!("{row_prefix}-row-{i}")).flex_shrink_0().child(row));
-        }
-        list.into_any_element()
-    })))
+    div()
+        .id(id)
+        .flex()
+        .flex_col()
+        .child(AnyElement::Lazy(Box::new(move |bcx: &mut BuildCx| {
+            let rows = (processor.0)(bcx.view, 0..count, bcx.window, bcx.cx);
+            let mut list = div().flex().flex_col().w_full().flex_shrink_0();
+            for (i, row) in rows.into_iter().enumerate() {
+                list = list.child(
+                    div()
+                        .id(format!("{row_prefix}-row-{i}"))
+                        .flex_shrink_0()
+                        .child(row),
+                );
+            }
+            list.into_any_element()
+        })))
 }
 impl Div {
     /// Ties this scroll viewport to `handle`: its key, and rows it was asked to reveal.
     pub fn track_scroll(self, handle: impl std::borrow::Borrow<crate::ScrollHandle>) -> Self {
         let handle = handle.borrow().clone();
         let key = handle.key.clone();
-        let mut this = if key.is_empty() { self } else { self.id(key.clone()) };
+        let mut this = if key.is_empty() {
+            self
+        } else {
+            self.id(key.clone())
+        };
         this.scroll_y = this.scroll_y || !this.scroll_x;
         let position = handle.position.clone();
         let thumb = handle.thumb.clone();
@@ -2166,7 +2256,9 @@ impl Div {
         });
         this.child(AnyElement::Lazy(Box::new(move |bcx: &mut BuildCx| {
             if let Some(index) = handle.take_request() {
-                bcx.cx.effects.push(Effect::ScrollIntoView(format!("{key}-row-{index}")));
+                bcx.cx
+                    .effects
+                    .push(Effect::ScrollIntoView(format!("{key}-row-{index}")));
             }
             AnyElement::Empty
         })))
@@ -2210,9 +2302,15 @@ pub struct StyledText {
 }
 impl StyledText {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), highlights: Vec::new() }
+        Self {
+            text: text.into(),
+            highlights: Vec::new(),
+        }
     }
-    pub fn with_highlights(mut self, h: impl IntoIterator<Item = (std::ops::Range<usize>, HighlightStyle)>) -> Self {
+    pub fn with_highlights(
+        mut self,
+        h: impl IntoIterator<Item = (std::ops::Range<usize>, HighlightStyle)>,
+    ) -> Self {
         self.highlights = h.into_iter().collect();
         self
     }
@@ -2362,14 +2460,16 @@ pub type KeyUpEvent = KeyDownEvent;
 impl Div {
     pub fn on_key_up(self, listener: Listener<KeyUpEvent>) -> Self {
         self.op(move |e| {
-            e.on_key_up(move |s: &mut crate::AppState, key: &rune::KeyEvent, tx: &mut Tx| {
-                let Some(event) = KeyDownEvent::from_rune(key) else {
-                    return false;
-                };
-                let f = listener.0.clone();
-                dispatch(s, tx, |view, window, cx| f(view, &event, window, cx));
-                false
-            })
+            e.on_key_up(
+                move |s: &mut crate::AppState, key: &rune::KeyEvent, tx: &mut Tx| {
+                    let Some(event) = KeyDownEvent::from_rune(key) else {
+                        return false;
+                    };
+                    let f = listener.0.clone();
+                    dispatch(s, tx, |view, window, cx| f(view, &event, window, cx));
+                    false
+                },
+            )
         })
     }
 }
@@ -2387,7 +2487,8 @@ struct DragState {
     origin: Point<Pixels>,
     position: Point<Pixels>,
 }
-type DropHandler = Rc<dyn Fn(&mut NotesView, &dyn std::any::Any, &mut Window, &mut Context<NotesView>)>;
+type DropHandler =
+    Rc<dyn Fn(&mut NotesView, &dyn std::any::Any, &mut Window, &mut Context<NotesView>)>;
 thread_local! {
     static DRAG: RefCell<Option<DragState>> = const { RefCell::new(None) };
     static DROP_TARGETS: RefCell<Vec<(String, std::any::TypeId, DropHandler)>> = const { RefCell::new(Vec::new()) };
@@ -2438,41 +2539,47 @@ impl Div {
     pub fn on_drag<T: DragView + Clone, B>(self, value: T, _builder: B) -> Self {
         let value = Rc::new(value);
         self.op(move |e| {
-            e.on_drag(move |s: &mut crate::AppState, drag: &mut rune::Drag, tx: &mut Tx| {
-                let view = s.view.get_mut();
-                match drag.phase {
-                    rune::Phase::Down => {}
-                    rune::Phase::Move => {
-                        let started = DRAG.with(|d| d.borrow().is_some());
-                        if !started {
-                            let preview_value = value.clone();
-                            let state = DragState {
-                                value: value.clone(),
-                                preview: Rc::new(move || preview_value.preview()),
-                                type_id: std::any::TypeId::of::<T>(),
-                                origin: view.mouse_position,
-                                position: view.mouse_position,
-                            };
-                            DRAG.with(|d| *d.borrow_mut() = Some(state));
-                        }
-                        DRAG.with(|d| {
-                            if let Some(d) = d.borrow_mut().as_mut() {
-                                d.position = point(d.origin.x + px(drag.dx), d.origin.y + px(drag.dy));
+            e.on_drag(
+                move |s: &mut crate::AppState, drag: &mut rune::Drag, tx: &mut Tx| {
+                    let view = s.view.get_mut();
+                    match drag.phase {
+                        rune::Phase::Down => {}
+                        rune::Phase::Move => {
+                            let started = DRAG.with(|d| d.borrow().is_some());
+                            if !started {
+                                let preview_value = value.clone();
+                                let state = DragState {
+                                    value: value.clone(),
+                                    preview: Rc::new(move || preview_value.preview()),
+                                    type_id: std::any::TypeId::of::<T>(),
+                                    origin: view.mouse_position,
+                                    position: view.mouse_position,
+                                };
+                                DRAG.with(|d| *d.borrow_mut() = Some(state));
                             }
-                        });
-                    }
-                    rune::Phase::Up => {
-                        let state = DRAG.with(|d| d.borrow_mut().take());
-                        if let Some(state) = state
-                            && !drag.cancelled()
-                            && let Some((_, handler)) = drop_target_at(state.position, state.type_id)
-                        {
-                            let value = state.value.clone();
-                            dispatch(s, tx, |view, window, cx| handler(view, value.as_ref(), window, cx));
+                            DRAG.with(|d| {
+                                if let Some(d) = d.borrow_mut().as_mut() {
+                                    d.position =
+                                        point(d.origin.x + px(drag.dx), d.origin.y + px(drag.dy));
+                                }
+                            });
+                        }
+                        rune::Phase::Up => {
+                            let state = DRAG.with(|d| d.borrow_mut().take());
+                            if let Some(state) = state
+                                && !drag.cancelled()
+                                && let Some((_, handler)) =
+                                    drop_target_at(state.position, state.type_id)
+                            {
+                                let value = state.value.clone();
+                                dispatch(s, tx, |view, window, cx| {
+                                    handler(view, value.as_ref(), window, cx)
+                                });
+                            }
                         }
                     }
-                }
-            })
+                },
+            )
         })
     }
     pub fn on_drop<T: 'static>(mut self, listener: Listener<T>) -> Self {
@@ -2490,7 +2597,10 @@ impl Div {
                 (listener.0)(view, value, window, cx);
             }
         });
-        DROP_TARGETS.with(|t| t.borrow_mut().push((key.clone(), std::any::TypeId::of::<T>(), handler)));
+        DROP_TARGETS.with(|t| {
+            t.borrow_mut()
+                .push((key.clone(), std::any::TypeId::of::<T>(), handler))
+        });
         self.op(move |e| {
             e.on_layout(move |_: &mut crate::AppState, r: [f32; 4]| {
                 DROP_RECTS.with(|rects| {
@@ -2503,7 +2613,9 @@ impl Div {
         mut self,
         f: impl FnOnce(StyleRefinement, &T, &mut Window, &mut Context<NotesView>) -> StyleRefinement,
     ) -> Self {
-        let Some(key) = self.key.clone() else { return self };
+        let Some(key) = self.key.clone() else {
+            return self;
+        };
         if hovered_drop(std::any::TypeId::of::<T>()).as_deref() == Some(key.as_str()) {
             let value = DRAG.with(|d| d.borrow().as_ref().map(|d| d.value.clone()));
             if let Some(value) = value
@@ -2600,25 +2712,27 @@ impl Div {
     /// Every phase of a press that may move, in window points.
     pub fn on_pointer_drag(self, listener: Listener<DragEvent>) -> Self {
         self.op(move |e| {
-            e.on_drag(move |s: &mut crate::AppState, drag: &mut rune::Drag, tx: &mut Tx| {
-                let view = s.view.get_mut();
-                if drag.phase == rune::Phase::Down {
-                    DRAG_ORIGIN.with(|o| o.set(view.mouse_position));
-                }
-                let origin = DRAG_ORIGIN.with(|o| o.get());
-                let event = DragEvent {
-                    phase: match drag.phase {
-                        rune::Phase::Down => DragPhase::Down,
-                        rune::Phase::Move => DragPhase::Move,
-                        rune::Phase::Up => DragPhase::Up,
-                    },
-                    position: point(origin.x + px(drag.dx), origin.y + px(drag.dy)),
-                    cancelled: drag.cancelled(),
-                };
-                view.mouse_position = event.position;
-                let f = listener.0.clone();
-                dispatch(s, tx, |view, window, cx| f(view, &event, window, cx));
-            })
+            e.on_drag(
+                move |s: &mut crate::AppState, drag: &mut rune::Drag, tx: &mut Tx| {
+                    let view = s.view.get_mut();
+                    if drag.phase == rune::Phase::Down {
+                        DRAG_ORIGIN.with(|o| o.set(view.mouse_position));
+                    }
+                    let origin = DRAG_ORIGIN.with(|o| o.get());
+                    let event = DragEvent {
+                        phase: match drag.phase {
+                            rune::Phase::Down => DragPhase::Down,
+                            rune::Phase::Move => DragPhase::Move,
+                            rune::Phase::Up => DragPhase::Up,
+                        },
+                        position: point(origin.x + px(drag.dx), origin.y + px(drag.dy)),
+                        cancelled: drag.cancelled(),
+                    };
+                    view.mouse_position = event.position;
+                    let f = listener.0.clone();
+                    dispatch(s, tx, |view, window, cx| f(view, &event, window, cx));
+                },
+            )
         })
     }
 }
@@ -2664,16 +2778,18 @@ impl Div {
     }
     pub fn on_mouse_move(self, listener: Listener<MouseMoveEvent>) -> Self {
         self.op(move |e| {
-            e.on_pointer_move_local(move |s: &mut crate::AppState, p: rune::PointerEvent, tx: &mut Tx| {
-                let event = MouseMoveEvent {
-                    position: point(px(p.window_x), px(p.window_y)),
-                    pressed_button: None,
-                    modifiers: Modifiers::from_mods(tx.mods()),
-                };
-                s.view.get_mut().mouse_position = event.position;
-                let f = listener.0.clone();
-                dispatch(s, tx, |view, window, cx| f(view, &event, window, cx));
-            })
+            e.on_pointer_move_local(
+                move |s: &mut crate::AppState, p: rune::PointerEvent, tx: &mut Tx| {
+                    let event = MouseMoveEvent {
+                        position: point(px(p.window_x), px(p.window_y)),
+                        pressed_button: None,
+                        modifiers: Modifiers::from_mods(tx.mods()),
+                    };
+                    s.view.get_mut().mouse_position = event.position;
+                    let f = listener.0.clone();
+                    dispatch(s, tx, |view, window, cx| f(view, &event, window, cx));
+                },
+            )
         })
     }
 }
