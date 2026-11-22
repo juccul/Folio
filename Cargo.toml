@@ -60,6 +60,13 @@ lto = "thin"
 codegen-units = 16
 strip = false
 
+# The canvas is rasterized on the CPU; size-optimizing the rasterizer makes
+# every frame several times slower.
+[profile.release.package.tiny-skia]
+opt-level = 3
+[profile.release.package.tiny-skia-path]
+opt-level = 3
+
 [profile.release.package.folio-ink]
 opt-level = "s"
 
