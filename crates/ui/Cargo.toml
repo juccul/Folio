@@ -21,3 +21,5 @@ resvg.workspace = true
 unicode-segmentation = "1.12"
 smallvec = "1"
 futures = "0.3"
+# Rune's winit, patched in the workspace with Folio's tablet extension.
+winit = { version = "0.30", default-features = false }

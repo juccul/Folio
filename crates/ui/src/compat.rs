@@ -2407,8 +2407,8 @@ impl Div {
     }
 }
 
-// Tablet input reaches GPUI through Folio's patched platform layer; Rune
-// reports pointers only, so these events are never produced here.
+// Pen and pad reports from Folio's winit tablet extension (`tablet.rs`),
+// in view points with adapted force and tilt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabletPhase {
     Hover,

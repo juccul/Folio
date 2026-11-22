@@ -154,9 +154,24 @@ fn on_key(s: &mut AppState, key: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
 }
 
 fn poll(s: &mut AppState, _clock: f64, tx: &mut rune::Tx) -> bool {
+    let reports = tablet::drain();
+    let pen = !reports.is_empty();
+    let scale = s.view.get_mut().scale;
+    for report in reports {
+        match report {
+            winit::platform::tablet::TabletEvent::Tool(tool) => {
+                let event = tablet::tool_event(&tool, scale);
+                dispatch(s, tx, |view, window, cx| view.tablet(&event, window, cx));
+            }
+            winit::platform::tablet::TabletEvent::Pad(pad) => {
+                let event = tablet::pad_event(&pad);
+                dispatch(s, tx, |view, window, cx| view.pad(&event, window, cx));
+            }
+        }
+    }
     let view = s.view.get_mut();
     view.focused_key = tx.focused().map(str::to_owned);
-    view.poll(tx)
+    view.poll(tx) || pen
 }
 
 fn no_init() -> AppState {
@@ -165,6 +180,7 @@ fn no_init() -> AppState {
 
 fn setup(s: &mut AppState, waker: rune::Waker) {
     executor::set_waker(waker.clone());
+    tablet::install(waker.clone());
     let view = s.view.get_mut();
     view.controller.set_wakeup(waker.clone());
     view.updater.set_wakeup(waker);

@@ -532,14 +532,36 @@ impl NotesView {
                 .on_magnify(
                     |s: &mut AppState, m: rune::MagnifyEvent, tx: &mut rune::Tx| {
                         dispatch(s, tx, |view, _, _| {
-                            if view.canvas_input_blocked() || view.controller.interaction.is_some()
-                            {
+                            if !view.canvas_gesture_allowed() {
                                 return;
                             }
+                            // Off macOS Ctrl + wheel arrives as a magnify of `-dy / 200`,
+                            // which a fast wheel takes below -1; an exponent keeps the zoom
+                            // positive, as GPUI's Ctrl + wheel zoom did.
+                            let factor = m.delta.clamp(-2., 2.).exp();
                             view.controller
                                 .session_mut()
                                 .viewport
-                                .zoom_at(1. + m.delta, DocPoint::new(m.x, m.y));
+                                .zoom_at(factor, DocPoint::new(m.x, m.y));
+                            view.synchronize_page_view();
+                        });
+                        true
+                    },
+                )
+                .on_rotate(
+                    |s: &mut AppState, r: rune::RotateEvent, tx: &mut rune::Tx| {
+                        dispatch(s, tx, |view, _, _| {
+                            if !view.canvas_gesture_allowed() || !r.degrees.is_finite() {
+                                return;
+                            }
+                            // Turn about the fingers: the document point under them stays.
+                            let anchor = DocPoint::new(r.x, r.y);
+                            let viewport = &mut view.controller.session_mut().viewport;
+                            let original = viewport.to_document(anchor);
+                            viewport.rotation -= r.degrees.to_radians();
+                            let after = viewport.to_screen(original);
+                            viewport.pan.x += anchor.x - after.x;
+                            viewport.pan.y += anchor.y - after.y;
                             view.synchronize_page_view();
                         });
                         true

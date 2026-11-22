@@ -1,4 +1,6 @@
 //! Normalized rich tablet frames, independent of any UI toolkit.
+mod adapter;
+pub use adapter::{ForceAngle, PadAction, PadInput, RawPen};
 use folio_document::{Point, StrokePoint};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Device {

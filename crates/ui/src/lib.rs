@@ -43,6 +43,7 @@ mod region;
 mod selection;
 mod settings;
 mod shell;
+mod tablet;
 mod templates;
 mod text_render;
 mod theme;
@@ -60,7 +61,7 @@ pub use compat::*;
 pub use field::{Entity, Field, FieldBoundsChanged, InlineStyle, Navigate, Submitted};
 use folio_app::{Controller, ExportKind, Interaction, NoteFilter, RecognitionKind, Tool};
 use folio_document::{Color, Id, InkTool, Paper, Point as DocPoint};
-use folio_input::{Device, PenEvent, Phase, Tool as PenTool};
+use folio_input::{Device, PenEvent, Phase, TimestampExtender, Tool as PenTool};
 use icons::{Icon, icon};
 pub use painting::CanvasFrame;
 pub use shell::{AppState, run};
@@ -348,6 +349,10 @@ pub struct NotesView {
     writing_style: Option<folio_document::PenStyle>,
     last_tablet: Option<Instant>,
     pen_in_range: bool,
+    /// Pen timestamps, extended past their 32-bit wrap.
+    timestamps: TimestampExtender,
+    /// The pen's barrel buttons at its last report.
+    pen_buttons: u32,
     gesture_start: Option<folio_canvas::Viewport>,
     mouse_pan: bool,
     start: Instant,
@@ -545,6 +550,8 @@ impl NotesView {
             writing_style: None,
             last_tablet: None,
             pen_in_range: false,
+            timestamps: TimestampExtender::default(),
+            pen_buttons: 0,
             gesture_start: None,
             mouse_pan: false,
             start: Instant::now(),
@@ -1440,6 +1447,179 @@ impl NotesView {
             }
         }
     }
+    /// A pen report from the tablet layer (`tablet.rs`), in view points with adapted force
+    /// and tilt.
+    pub(crate) fn tablet(
+        &mut self,
+        event: &TabletEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.diagnostics.pen(event);
+        self.last_tablet = Some(Instant::now());
+        self.pen_in_range = !matches!(event.phase, TabletPhase::Leave | TabletPhase::Cancel);
+        if self.pen_tool_wheel(event, window, cx) {
+            return;
+        }
+        if self.canvas_input_blocked() || self.controller.loading_note() {
+            // A stroke the pen began still ends, though a dialog opened meanwhile.
+            if !matches!(
+                event.phase,
+                TabletPhase::Up | TabletPhase::Cancel | TabletPhase::Leave
+            ) || self.controller.interaction.is_none()
+            {
+                return;
+            }
+        }
+        let Some(bounds) = self.canvas_bounds else {
+            return;
+        };
+        if event.phase == TabletPhase::Down && !bounds.contains(&event.position) {
+            return;
+        }
+        if self.controller.interaction.is_none()
+            && self.region_selection.is_none()
+            && !bounds.contains(&event.position)
+        {
+            // Leaving the canvas clears the pen cursor it paints.
+            if event.phase == TabletPhase::Hover && self.controller.cursor.is_some() {
+                self.controller.pointer(PenEvent {
+                    device: Device::Tablet,
+                    tool: PenTool::Pen,
+                    phase: Phase::Leave,
+                    position: DocPoint::new(
+                        f32::from(event.position.x - bounds.origin.x),
+                        f32::from(event.position.y - bounds.origin.y),
+                    ),
+                    pressure: 0.,
+                    tilt_x: 0.,
+                    tilt_y: 0.,
+                    buttons: 0,
+                    timestamp: self.timestamps.extend(event.timestamp),
+                });
+                cx.notify();
+            }
+            return;
+        }
+        self.mouse_position = event.position;
+        let position = DocPoint::new(
+            f32::from(event.position.x) - f32::from(bounds.origin.x),
+            f32::from(event.position.y) - f32::from(bounds.origin.y),
+        );
+        let phase = match event.phase {
+            TabletPhase::Down => Phase::Down,
+            TabletPhase::Move => Phase::Move,
+            TabletPhase::Up => Phase::Up,
+            TabletPhase::Hover => Phase::Hover,
+            TabletPhase::Leave => Phase::Leave,
+            TabletPhase::Cancel => Phase::Cancel,
+        };
+        let input = PenEvent {
+            device: Device::Tablet,
+            tool: if event.eraser {
+                PenTool::Eraser
+            } else {
+                PenTool::Pen
+            },
+            phase,
+            position,
+            pressure: event.pressure,
+            tilt_x: event.tilt_x,
+            tilt_y: event.tilt_y,
+            buttons: event.buttons,
+            timestamp: self.timestamps.extend(event.timestamp),
+        };
+        if phase == Phase::Down {
+            self.focus.focus(window);
+        }
+        if self.region_input(input.phase, input.position, cx) {
+            return;
+        }
+        let was_panning = matches!(self.controller.interaction, Some(Interaction::Pan { .. }));
+        self.controller.pointer(input);
+        if phase == Phase::Up && was_panning {
+            self.synchronize_page_view();
+        }
+        self.check_text(phase, window, cx);
+        cx.notify();
+    }
+    /// A tablet pad control: express keys run their configured action (or choose a row in
+    /// the Writing settings), rings zoom and strips scroll the canvas.
+    pub(crate) fn pad(
+        &mut self,
+        event: &TabletPadEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(check) = &mut self.diagnostics.check {
+            check.pad(event);
+            cx.notify();
+        }
+        if self.settings_open {
+            self.pad_button_pressed(event, cx);
+            return;
+        }
+        if self.library_open
+            || self.blocking_overlay()
+            || self.tool_menu.is_some()
+            || self.controller.loading_note()
+            || self.controller.interaction.is_some()
+        {
+            return;
+        }
+        let pad = folio_input::PadInput::default();
+        let action = match event.button {
+            Some(button) => {
+                pad.button(button, event.pressed, &self.controller.settings.pad_buttons)
+            }
+            None if event.strip => pad.strip(event.delta),
+            None => pad.ring(event.delta),
+        };
+        let Some(action) = action else {
+            return;
+        };
+        match action {
+            folio_input::PadAction::Button(slug) => match slug.as_str() {
+                "undo" => self.controller.undo(),
+                "redo" => self.controller.redo(),
+                "wheel" => self.toggle_tool_wheel(self.mouse_position, window, cx),
+                "eraser" => self.controller.set_tool(Tool::Eraser),
+                "pen" => self.controller.set_tool(Tool::Pen),
+                "previous-page" => self
+                    .controller
+                    .change_page(self.controller.session().page.saturating_sub(1)),
+                "next-page" => self.controller.change_page(
+                    (self.controller.session().page + 1).min(
+                        self.controller
+                            .session()
+                            .document
+                            .pages
+                            .len()
+                            .saturating_sub(1),
+                    ),
+                ),
+                _ => {}
+            },
+            folio_input::PadAction::Scroll(points) => {
+                self.controller.session_mut().viewport.pan.y -= points;
+                self.synchronize_page_view();
+            }
+            folio_input::PadAction::Zoom(factor) => {
+                let anchor = self
+                    .canvas_bounds
+                    .map(|b| {
+                        DocPoint::new(f32::from(b.size.width) / 2., f32::from(b.size.height) / 2.)
+                    })
+                    .unwrap_or_default();
+                self.controller
+                    .session_mut()
+                    .viewport
+                    .zoom_at(factor, anchor);
+                self.synchronize_page_view();
+            }
+        }
+        cx.notify();
+    }
     fn mouse(
         &mut self,
         position: Point<Pixels>,
@@ -1448,9 +1628,12 @@ impl NotesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A pen also moves the pointer for the window's controls; the canvas takes the pen's
+        // own reports instead (`tablet`).
         if self.canvas_input_blocked()
             || self.controller.loading_note()
             || self.pen_in_range
+            || tablet::pen_active()
             || self
                 .last_tablet
                 .is_some_and(|t| t.elapsed() < Duration::from_millis(200))
@@ -1498,32 +1681,6 @@ impl NotesView {
             buttons: 0,
             timestamp: self.start.elapsed().as_millis() as u64,
         };
-        // Rune reports pointers without pen pressure; the input check and
-        // recordings see them as constant-pressure pen samples.
-        self.diagnostics.pen(&TabletEvent {
-            phase: match phase {
-                Phase::Hover => TabletPhase::Hover,
-                Phase::Down => TabletPhase::Down,
-                Phase::Move => TabletPhase::Move,
-                Phase::Up => TabletPhase::Up,
-                Phase::Leave => TabletPhase::Leave,
-                Phase::Cancel => TabletPhase::Cancel,
-            },
-            position: point(
-                bounds.origin.x + px(position.x),
-                bounds.origin.y + px(position.y),
-            ),
-            pressure: if matches!(phase, Phase::Hover | Phase::Leave) {
-                0.
-            } else {
-                event.pressure
-            },
-            tilt_x: 0.,
-            tilt_y: 0.,
-            buttons: 0,
-            timestamp: event.timestamp as u32,
-            eraser: false,
-        });
         let was_panning = matches!(self.controller.interaction, Some(Interaction::Pan { .. }));
         if phase == Phase::Up && self.mouse_pan {
             self.mouse_pan = false;
@@ -1549,6 +1706,16 @@ impl NotesView {
             let id = self.controller.create_text_box(position);
             self.begin_inline_text(id, window, cx);
         }
+    }
+    /// Whether a touchpad pinch or rotation may move the canvas: not over a dialog or
+    /// settings, during a stroke or drag, or while a pen is in range (a palm on the touchpad).
+    pub(crate) fn canvas_gesture_allowed(&self) -> bool {
+        !(self.canvas_input_blocked()
+            || self.modal.is_some()
+            || self.settings_open
+            || self.controller.loading_note()
+            || self.controller.interaction.is_some()
+            || self.pen_in_range)
     }
     fn scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
         if self.modal.is_some()

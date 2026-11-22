@@ -1349,6 +1349,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "unicode-segmentation",
+ "winit",
 ]
 
 [[package]]
@@ -5768,7 +5769,6 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "git+https://github.com/anomalyco/rune?rev=dd672fc8257a1bfb55d2e8595f585fc411e709df#dd672fc8257a1bfb55d2e8595f585fc411e709df"
 dependencies = [
  "ahash",
  "android-activity",

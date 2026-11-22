@@ -2,6 +2,18 @@
 
 These directories retain full upstream sources and notices.
 
+## winit 0.30.13 (Rune's fork, revision dd672fc) — Apache-2.0
+
+The workspace patches `winit` to `vendor/winit`, Rune's patched winit with Folio's tablet extension on top. Only the files below differ from Rune's copy:
+
+- `src/platform/tablet.rs`: the public `winit::platform::tablet` side channel (pen reports, pad buttons/rings/strips, proximity state) and ring wrap arithmetic.
+- `src/platform_impl/linux/wayland/seat/tablet.rs` with `seat/mod.rs`, `state.rs` and `window/state.rs`: `zwp_tablet_v2` tools (pressure, tilt, rotation, eraser, barrel buttons, removal cancellation), pointer emulation for the window's controls, pen moves and clicks on client-side decorations, `wp_cursor_shape_v1` tool cursors that follow the window cursor, and pads with frame-delimited ring/strip deltas.
+- `src/platform_impl/linux/wayland/seat/pointer/gestures.rs`: `zwp_pointer_gestures_v1` pinch and rotation as `PinchGesture`/`RotationGesture` window events.
+- `src/platform_impl/linux/x11/tablet.rs` with `event_processor.rs` and `mod.rs`: XInput2 pressure/tilt valuator discovery by label, normalization, tip/barrel/pad button routing and proximity loss when another device moves the pointer.
+- `src/platform_impl/windows/pen.rs` with `event_loop.rs`: Windows Ink pen history with sub-pixel himetric positions, pressure, tilt, twist, eraser and barrel identity, cancellation, and mouse emulation instead of touch events.
+
+Run the extension's unit tests from `vendor/winit` with Rune's `sctk-adwaita` patch: `cargo test --lib tablet --config 'patch.crates-io.sctk-adwaita.git="https://github.com/anomalyco/rune"' --config 'patch.crates-io.sctk-adwaita.rev="dd672fc8257a1bfb55d2e8595f585fc411e709df"'`.
+
 ## GPUI 0.2.2 — Apache-2.0
 
 - `interactive.rs`/`window.rs`: rich `TabletEvent`, `TabletPadEvent` and `NavigationGesture` platform events, atomic sensor fields, input routing and native synthetic replay entry points.
