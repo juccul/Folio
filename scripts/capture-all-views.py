@@ -97,7 +97,10 @@ def capture_session(args):
                     db.execute("INSERT OR REPLACE INTO settings(key,data) VALUES('preferences',?)", (json.dumps(preferences),))
                     note, metadata = db.execute('SELECT id,metadata FROM notes LIMIT 1').fetchone()
                     metadata = json.loads(metadata)
-                    trash = dict(metadata, id=str(uuid.uuid4()), title='Archived ideas', trashed=True, favorite=False)
+                    # Fixed ids keep the library order identical between runs and
+                    # modes; generated documents share the fixture's edit time.
+                    stable = lambda name: str(uuid.uuid5(uuid.NAMESPACE_URL, 'folio-capture/' + name))
+                    trash = dict(metadata, id=stable('Archived ideas'), title='Archived ideas', trashed=True, favorite=False)
                     db.execute('INSERT INTO notes(id,metadata) VALUES(?,?)', (trash['id'], json.dumps(trash)))
                     # Extra condition-dependent views use generated demo media,
                     # not any imported files from the user's library.
@@ -124,13 +127,13 @@ def capture_session(args):
                     template_header = json.loads(header)
                     identity = {'a': 1, 'b': 0, 'c': 0, 'd': 1, 'tx': 0, 'ty': 0}
                     for title, object_type in [('Demo image', 'Image'), ('Demo equation', 'Equation'), ('Demo PDF', 'PDF')]:
-                        demo = dict(metadata, id=str(uuid.uuid4()), title=title, trashed=False, favorite=False, notebook=None)
-                        demo_page = dict(template_header, id=str(uuid.uuid4()), order=[], groups=[], text='', revision=0)
+                        demo = dict(metadata, id=stable(title), title=title, trashed=False, favorite=False, notebook=None)
+                        demo_page = dict(template_header, id=stable(title + '/page'), order=[], groups=[], text='', revision=0)
                         demo_page['properties'] = dict(demo_page['properties'], paper='Blank')
                         if object_type == 'PDF':
                             demo_page['properties']['pdf'] = {'asset': 'screenshot-demo.pdf', 'page': 1, 'preview_asset': 'screenshot-demo-pdf.png'}
                         else:
-                            object_id = str(uuid.uuid4())
+                            object_id = stable(title + '/object')
                             rect = {'min': {'x': 64, 'y': 120}, 'max': {'x': 704, 'y': 480}}
                             content = {'id': object_id, 'rect': rect, 'transform': identity}
                             if object_type == 'Image':
@@ -235,6 +238,8 @@ def capture_session(args):
                                 click(section + ' ›')
 
                         def capture(name, actions):
+                            if args.views and name not in args.views:
+                                return
                             record = {'view': name, 'mode': mode}
                             try:
                                 actions()
@@ -329,9 +334,10 @@ def capture_session(args):
                         capture('settings-custom-palette-bottom', lambda: [client.click(1020, 700, button=5, delay=.04) for _ in range(16)])
                         capture('settings-theme-color', lambda: sequence(library, 'Settings', 'Appearance', lambda: click('Edit colors…') if any(n.get_name() == 'Edit colors…' for n in nodes()) else None, 'Customize Primary'))
                         capture('settings-paper-color', lambda: sequence(library, 'Settings', 'Appearance', 'Paper follows appearance: On', 'Custom paper color'))
-                        client.key('Escape')
-                        click('Appearance')
-                        click('Paper follows appearance: Off')
+                        if not args.views or 'settings-paper-color' in args.views:
+                            client.key('Escape')
+                            click('Appearance')
+                            click('Paper follows appearance: Off')
                         capture('settings-pad-buttons', lambda: sequence(library, 'Settings', 'Writing', 'Button 1 action: Undo'))
                         capture('editor', editor)
                         capture('editor-pages', lambda: sequence(editor, lambda: click('Page thumbnails', True) if not any(n.get_name() == 'Hide pages' for n in nodes()) else None))
@@ -361,7 +367,8 @@ def capture_session(args):
                         capture('editor-custom-ink', lambda: sequence(editor, 'Custom ink color'))
                         capture('pen-settings', lambda: sequence(editor, 'Pen · P', 'Pen settings and presets'))
                         capture('pen-save-preset', lambda: sequence(editor, 'Pen · P', 'Pen settings and presets', 'Save current pen as preset…'))
-                        sequence(lambda: fill('Demo pen'), 'Save')
+                        if not args.views or 'pen-save-preset' in args.views:
+                            sequence(lambda: fill('Demo pen'), 'Save')
                         capture('pen-presets', lambda: sequence(editor, 'Pen · P', 'Pen settings and presets'))
                         capture('pen-rename-preset', lambda: sequence(editor, 'Pen · P', 'Pen settings and presets', 'Rename'))
                         capture('eraser-settings', lambda: sequence(editor, 'Eraser · E', 'Eraser modes and size'))
@@ -412,6 +419,7 @@ def main():
     parser.add_argument('--private-session', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--pdf-only', action='store_true', help='Refresh only the demo PDF pair in an existing gallery')
     parser.add_argument('--media-only', action='store_true', help='Refresh PDF, image and crop pairs after asynchronous asset loading')
+    parser.add_argument('--views', type=lambda value: set(filter(None, value.split(','))), default=set(), help='Comma-separated view names to capture (default: all)')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -430,6 +438,8 @@ def main():
                     command.append('--pdf-only')
                 if args.media_only:
                     command.append('--media-only')
+                if args.views:
+                    command += ['--views', ','.join(sorted(args.views))]
                 subprocess.run(command, env=environment, check=True)
                 report(args)
             finally:
