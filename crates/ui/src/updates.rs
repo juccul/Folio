@@ -1,5 +1,4 @@
 //! Update notice lives in the shared title bar, beside the window controls.
-use super::workspace::Hint;
 use super::*;
 use folio_update::State;
 

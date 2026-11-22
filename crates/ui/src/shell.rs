@@ -29,7 +29,12 @@ fn view_fn(s: &AppState, cx: &mut rune::Cx<AppState>) -> rune::El {
     let mut view = s.view.borrow_mut();
     view.system_dark = cx.system_dark();
     view.scale = cx.env().scale;
-    view.chrome_trailing = cx.chrome_insets().trailing;
+    let insets = cx.chrome_insets();
+    view.chrome_trailing = insets.trailing;
+    view.chrome_leading = insets.leading;
+    if (view.controller.settings.ui_scale - 1.).abs() > 0.001 {
+        cx.titlebar_height(40. * view.controller.settings.ui_scale);
+    }
     let ui_scale = view.controller.settings.ui_scale;
     if (ui_scale - 1.).abs() > 0.001 {
         cx.zoom(ui_scale);
@@ -179,7 +184,10 @@ pub fn run(
         families: (FONT_FAMILY_LIST, "monospace"),
         ..rune::AppSpec::new("Folio", (1320., 860.), no_init, view_fn)
     };
-    let app = rune::App::new(spec);
+    // Folio draws its own titlebar band (the tab strip); Rune keeps the
+    // window's controls over it on Windows and macOS. Linux keeps the
+    // system frame, which resizes and decorates the window.
+    let app = rune::App::new(spec).titlebar(rune::Titlebar::new(40.));
     let handle = app.handle();
     ready(handle.clone());
     app.args(rune_args)

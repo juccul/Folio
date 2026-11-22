@@ -367,17 +367,33 @@ pub struct NotesView {
     pub focused_key: Option<String>,
     /// Width the window's caption buttons take over the titlebar band.
     pub chrome_trailing: f32,
+    /// Width the window's controls take at the titlebar band's start (macOS).
+    pub chrome_leading: f32,
     /// Effects queued while the view was built, applied by the next poll.
     deferred: Vec<Effect>,
     /// The time poll should run again for background work, if idle.
     next_wake: Option<Duration>,
 }
 
-/// A scroll viewport's key and the offset a view asks it to scroll to.
-#[derive(Clone, Default)]
+/// A scroll viewport's key, the row a view asks it to reveal, and where it
+/// last scrolled to.
+#[derive(Clone)]
 pub struct ScrollHandle {
     pub key: String,
     pub request: std::rc::Rc<std::cell::Cell<Option<usize>>>,
+    pub position: std::rc::Rc<std::cell::Cell<Option<rune::ScrollPos>>>,
+    /// A thumb's offset along the viewport, kept current while it scrolls.
+    pub thumb: rune::Live<[f32; 2]>,
+}
+impl Default for ScrollHandle {
+    fn default() -> Self {
+        Self {
+            key: String::new(),
+            request: Default::default(),
+            position: Default::default(),
+            thumb: rune::Live::new([0., 0.]),
+        }
+    }
 }
 impl ScrollHandle {
     pub fn new() -> Self {
@@ -386,7 +402,7 @@ impl ScrollHandle {
     pub fn keyed(key: &str) -> Self {
         Self {
             key: key.into(),
-            request: Default::default(),
+            ..Self::default()
         }
     }
     pub fn set_offset(&self, _: Point<Pixels>) {}
@@ -400,13 +416,19 @@ impl ScrollHandle {
         self.request.set(Some(index));
     }
     pub fn offset(&self) -> Point<Pixels> {
-        Point::default()
+        self.position
+            .get()
+            .map_or_else(Point::default, |p| point(px(-p.offset[0]), px(-p.offset[1])))
     }
     pub fn bounds(&self) -> Bounds<Pixels> {
-        Bounds::default()
+        self.position.get().map_or_else(Bounds::default, |p| {
+            Bounds::new(Point::default(), size(px(p.viewport[0]), px(p.viewport[1])))
+        })
     }
     pub fn max_offset(&self) -> Size<Pixels> {
-        Size::default()
+        self.position
+            .get()
+            .map_or_else(Size::default, |p| size(px(p.max[0]), px(p.max[1])))
     }
     pub fn take_request(&self) -> Option<usize> {
         self.request.take()
@@ -544,6 +566,7 @@ impl NotesView {
             window_hovered: false,
             focused_key: None,
             chrome_trailing: 0.,
+            chrome_leading: 0.,
             deferred: Vec::new(),
             next_wake: None,
         }
@@ -1481,6 +1504,28 @@ impl NotesView {
             buttons: 0,
             timestamp: self.start.elapsed().as_millis() as u64,
         };
+        // Rune reports pointers without pen pressure; the input check and
+        // recordings see them as constant-pressure pen samples.
+        self.diagnostics.pen(&TabletEvent {
+            phase: match phase {
+                Phase::Hover => TabletPhase::Hover,
+                Phase::Down => TabletPhase::Down,
+                Phase::Move => TabletPhase::Move,
+                Phase::Up => TabletPhase::Up,
+                Phase::Leave => TabletPhase::Leave,
+                Phase::Cancel => TabletPhase::Cancel,
+            },
+            position: point(
+                bounds.origin.x + px(position.x),
+                bounds.origin.y + px(position.y),
+            ),
+            pressure: if matches!(phase, Phase::Hover | Phase::Leave) { 0. } else { event.pressure },
+            tilt_x: 0.,
+            tilt_y: 0.,
+            buttons: 0,
+            timestamp: event.timestamp as u32,
+            eraser: false,
+        });
         let was_panning = matches!(self.controller.interaction, Some(Interaction::Pan { .. }));
         if phase == Phase::Up && self.mouse_pan {
             self.mouse_pan = false;

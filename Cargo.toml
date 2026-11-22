@@ -54,6 +54,14 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 
+# Optimized like release, linked quickly: for measuring frame times.
+[profile.perf]
+inherits = "release"
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+strip = false
+
 [profile.release.package.folio-ink]
 opt-level = "s"
 

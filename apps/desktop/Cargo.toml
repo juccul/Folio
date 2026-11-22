@@ -14,5 +14,9 @@ folio-platform = { path = "../../crates/platform" }
 folio-storage = { path = "../../crates/storage" }
 folio-update = { path = "../../crates/update" }
 
+[features]
+# Rune's headless snapshots, scripts and element trees in optimized builds.
+tooling = ["rune/tooling"]
+
 [build-dependencies]
 embed-resource = "3"

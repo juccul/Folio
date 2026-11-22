@@ -2110,6 +2110,20 @@ impl Div {
         let key = handle.key.clone();
         let mut this = if key.is_empty() { self } else { self.id(key.clone()) };
         this.scroll_y = this.scroll_y || !this.scroll_x;
+        let position = handle.position.clone();
+        let thumb = handle.thumb.clone();
+        this = this.op(move |e| {
+            e.on_scroll_offset(move |at: rune::ScrollPos| {
+                position.set(Some(at));
+                // The thumb Folio's settings draw: 4 pt inside the viewport.
+                let (viewport, range) = (at.viewport[1], at.max[1]);
+                if viewport > 0. && range > 0. {
+                    let length = (viewport * viewport / (viewport + range)).max(32.);
+                    let progress = (at.offset[1] / range).clamp(0., 1.);
+                    thumb.set([0., (viewport - length - 8.) * progress]);
+                }
+            })
+        });
         this.child(AnyElement::Lazy(Box::new(move |bcx: &mut BuildCx| {
             if let Some(index) = handle.take_request() {
                 bcx.cx.effects.push(Effect::ScrollIntoView(format!("{key}-row-{index}")));

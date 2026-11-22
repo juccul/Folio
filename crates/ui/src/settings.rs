@@ -766,15 +766,18 @@ impl NotesView {
             // Only when meaningfully more content is below.
             (viewport > 0. && range > 48.).then(|| {
                 let thumb = (viewport * viewport / (viewport + range)).max(32.);
-                let progress = (-f32::from(self.settings_scroll.offset().y) / range).clamp(0., 1.);
+                // Scrolling moves the thumb through a live offset, without
+                // rebuilding the view.
+                let live = self.settings_scroll.thumb.clone();
                 div()
                     .absolute()
                     .right(px(5.))
-                    .top(px(4. + (viewport - thumb - 8.) * progress))
+                    .top(px(4.))
                     .w(px(4.))
                     .h(px(thumb))
                     .rounded_full()
                     .bg(rgba((theme.ink << 8) | 0x4d))
+                    .el(move |e| e.live_offset(&live))
             })
         };
         let body = div()

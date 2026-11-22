@@ -17,21 +17,6 @@ pub(super) fn edited_label(updated: u64) -> String {
     format!("Edited {age} ago")
 }
 
-pub(super) struct Hint(pub(super) SharedString, pub(super) Theme);
-impl Hint {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_3()
-            .py_2()
-            .rounded(px(self.1.radius))
-            .shadow_md()
-            .text_xs()
-            .bg(rgb(self.1.ink))
-            .text_color(rgb(self.1.surface))
-            .child(self.0.clone())
-    }
-}
-
 /// Library grid geometry, in logical pixels: cards stretch so each row
 /// fills the shelf, between a minimum and maximum width.
 #[derive(Clone, Copy)]
@@ -1774,7 +1759,7 @@ impl NotesView {
                 tabs.child(surface)
             };
         }
-        let drag_events: Option<Div> = None;
+        let leading = self.chrome_leading;
         div()
             .h(rems(2.5))
             .flex_shrink_0()
@@ -1782,9 +1767,9 @@ impl NotesView {
             .items_center()
             .gap_1()
             .px_2()
+            .when(leading > 0., |row| row.pl(px(leading)))
             .border_b_1()
             .border_color(theme.border)
-            .children(drag_events)
             .child(home)
             .child(tabs)
             .child(

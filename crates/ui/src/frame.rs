@@ -442,6 +442,7 @@ impl NotesView {
             viewport.pan.x += f32::from(area.origin.x - bounds.origin.x);
             viewport.pan.y += f32::from(area.origin.y - bounds.origin.y);
             view.painter.hide_selection = view.cropping();
+            view.diagnostics.painted();
             view.painter
                 .paint(&mut view.controller, bounds, editing, window, cx);
             view.controller.session_mut().viewport.pan = pan;
