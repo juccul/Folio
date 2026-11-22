@@ -75,15 +75,18 @@ impl Layout {
         let (Some(tree), Some(raster)) = (&self.tree, window.raster.as_mut()) else {
             return;
         };
-        let t = raster.transform.pre_concat(sk::Transform::from_row(
-            transform.a,
-            transform.b,
-            transform.c,
-            transform.d,
-            transform.tx,
-            transform.ty,
-        ));
-        resvg::render(tree, t, &mut raster.pixmap.as_mut());
+        raster.render_svg(
+            tree.clone(),
+            sk::Transform::from_row(
+                transform.a,
+                transform.b,
+                transform.c,
+                transform.d,
+                transform.tx,
+                transform.ty,
+            ),
+            true,
+        );
     }
 }
 
@@ -98,7 +101,10 @@ pub fn paint_label(label: &str, origin: Point<Pixels>, size: f32, color: u32, wi
         folio_export::escape(label)
     );
     if let Ok(tree) = usvg::Tree::from_str(&svg, &folio_export::system_svg_options()) {
-        let t = raster.transform.pre_translate(origin.x.0, origin.y.0);
-        resvg::render(&tree, t, &mut raster.pixmap.as_mut());
+        raster.render_svg(
+            Arc::new(tree),
+            sk::Transform::from_translate(origin.x.0, origin.y.0),
+            false,
+        );
     }
 }

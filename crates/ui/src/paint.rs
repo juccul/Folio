@@ -1,6 +1,7 @@
 //! GPUI's immediate-mode painting (`canvas`, `paint_path`, `paint_quad`,
-//! `paint_image`) on a CPU rasterizer. Each canvas paints into a tiny-skia
-//! pixmap at the window's device scale, which Rune draws as an image.
+//! `paint_image`), recorded as a display list: quads and images become Rune
+//! elements drawn on the GPU, and paths and text are rasterized with
+//! tiny-skia at the window's device scale, only within their bounds.
 #![allow(dead_code)]
 use super::compat::*;
 use resvg::tiny_skia as sk;
@@ -550,78 +551,337 @@ pub fn img(source: impl Into<ImageSource>) -> Div {
     }
 }
 
-// ---------------------------------------------------------------- raster
+// ---------------------------------------------------------------- display list
 
-/// A pixmap being painted, in window points through `transform`.
-///
-/// Clips are rectangles in device pixels. Shapes wholly inside the clip draw
-/// directly; only shapes that cross its edge pay for a coverage mask, which
-/// is made once per clip.
-pub struct Raster {
-    pub pixmap: sk::Pixmap,
-    pub transform: sk::Transform,
-    clips: Vec<sk::Rect>,
-    mask: Option<(sk::Rect, sk::Mask)>,
-    scale: f32,
+/// What a canvas paints, in its own points (origin top-left). Quads and
+/// images become Rune elements, composited on the GPU; images are uploaded
+/// once and then only move. Paths, text and gradients are rasterized on the
+/// CPU in runs no larger than their bounds, keeping the paint order.
+pub enum Item {
+    Quad {
+        rect: [f32; 4],
+        color: rune::Color,
+        radii: [f32; 4],
+        border: Option<(f32, rune::Color)>,
+    },
+    Image {
+        pixels: rune::Pixels,
+        id: u64,
+        rect: [f32; 4],
+        rotate: f32,
+        clip: Option<[f32; 4]>,
+    },
+    Run {
+        rect: [f32; 4],
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
+    /// Polylines in the shape's own points, drawn opaque and faded as one
+    /// layer, so overlapping segments of translucent ink blend once.
+    Shape {
+        shape: rune::Shape,
+        opacity: f32,
+        rect: [f32; 4],
+        clip: Option<[f32; 4]>,
+    },
 }
-enum Clip {
-    None,
-    Skip,
-    Mask,
+
+/// How long a cached SVG's scale or rotation must rest before it is
+/// rasterized again at the new one.
+const SVG_SETTLE: std::time::Duration = std::time::Duration::from_millis(140);
+
+struct SvgImage {
+    tree: Arc<resvg::usvg::Tree>,
+    /// The linear part of the transform the image was rasterized through.
+    linear: sk::Transform,
+    /// The image's top-left in that linear space.
+    origin: (f32, f32),
+    image: Arc<RenderImage>,
+    /// The linear part last asked for, and when it last changed.
+    wanted: sk::Transform,
+    changed: std::time::Instant,
+    frame: u64,
+}
+#[derive(Default)]
+struct SvgCache {
+    frame: u64,
+    images: HashMap<usize, SvgImage>,
+}
+thread_local! {
+    static SVG_CACHE: RefCell<SvgCache> = RefCell::new(SvgCache::default());
+}
+
+/// The cached image of `tree` drawn through `transform` (device pixels), and
+/// the transform that places its pixels. None when it would be larger than
+/// a few canvases (`area` device pixels each).
+fn svg_image(
+    tree: &Arc<resvg::usvg::Tree>,
+    transform: sk::Transform,
+    area: f32,
+) -> Option<(Arc<RenderImage>, sk::Transform)> {
+    let linear = sk::Transform::from_row(
+        transform.sx,
+        transform.ky,
+        transform.kx,
+        transform.sy,
+        0.,
+        0.,
+    );
+    let now = std::time::Instant::now();
+    SVG_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let frame = cache.frame;
+        let key = Arc::as_ptr(tree) as usize;
+        let entry = cache.images.get_mut(&key);
+        let stale = match entry {
+            Some(entry) => {
+                if entry.wanted != linear {
+                    entry.wanted = linear;
+                    entry.changed = now;
+                }
+                entry.frame = frame;
+                let ratio = (linear.sx * linear.sy - linear.kx * linear.ky).abs().sqrt()
+                    / (entry.linear.sx * entry.linear.sy - entry.linear.kx * entry.linear.ky)
+                        .abs()
+                        .sqrt();
+                entry.linear != linear
+                    && (now.duration_since(entry.changed) >= SVG_SETTLE
+                        || !(0.5..=2.).contains(&ratio))
+            }
+            None => true,
+        };
+        if stale {
+            let bounds = tree
+                .root()
+                .abs_layer_bounding_box()
+                .to_rect()
+                .transform(linear)?;
+            let (x0, y0) = (bounds.left().floor(), bounds.top().floor());
+            let (w, h) = (bounds.right().ceil() - x0, bounds.bottom().ceil() - y0);
+            if w < 1. || h < 1. || w * h > area * 4. {
+                cache.images.remove(&key);
+                return None;
+            }
+            let mut pixmap = sk::Pixmap::new(w as u32, h as u32)?;
+            resvg::render(tree, linear.post_translate(-x0, -y0), &mut pixmap.as_mut());
+            cache.images.insert(
+                key,
+                SvgImage {
+                    tree: tree.clone(),
+                    linear,
+                    origin: (x0, y0),
+                    image: Arc::new(RenderImage::from_pixmap(pixmap)),
+                    wanted: linear,
+                    changed: now,
+                    frame,
+                },
+            );
+        }
+        let entry = cache.images.get(&key)?;
+        let mut at = transform
+            .pre_concat(entry.linear.invert()?)
+            .pre_translate(entry.origin.0, entry.origin.1);
+        // An image at its own scale lands on whole pixels, so text stays crisp.
+        if (at.sx - 1.).abs() < 1e-4 && (at.sy - 1.).abs() < 1e-4 && at.kx == 0. && at.ky == 0. {
+            at.tx = at.tx.round();
+            at.ty = at.ty.round();
+        }
+        Some((entry.image.clone(), at))
+    })
+}
+
+/// A CPU operation of a run, in device pixels of the whole canvas.
+enum Op {
+    Fill {
+        path: Arc<sk::Path>,
+        paint: sk::Paint<'static>,
+        rule: sk::FillRule,
+        transform: sk::Transform,
+    },
+    Stroke {
+        path: Arc<sk::Path>,
+        paint: sk::Paint<'static>,
+        stroke: sk::Stroke,
+        transform: sk::Transform,
+    },
+    Image {
+        pixmap: Arc<sk::Pixmap>,
+        quality: sk::FilterQuality,
+        transform: sk::Transform,
+    },
+    Svg {
+        tree: Arc<resvg::usvg::Tree>,
+        transform: sk::Transform,
+    },
+}
+
+/// A canvas being painted, in window points through `transform` (which maps
+/// them to the canvas's device pixels). Clips are device-pixel rectangles.
+pub struct Raster {
+    pub transform: sk::Transform,
+    width: f32,
+    height: f32,
+    scale: f32,
+    clips: Vec<sk::Rect>,
+    items: Vec<Item>,
+    run: Vec<(Op, Option<sk::Rect>)>,
+    run_bounds: Option<sk::Rect>,
 }
 impl Raster {
     pub fn new(width: u32, height: u32, scale: f32, origin: Point<Pixels>) -> Option<Self> {
         Some(Self {
-            pixmap: sk::Pixmap::new(width.max(1), height.max(1))?,
             transform: sk::Transform::from_scale(scale, scale)
                 .pre_translate(-origin.x.0, -origin.y.0),
-            clips: Vec::new(),
-            mask: None,
+            width: width.max(1) as f32,
+            height: height.max(1) as f32,
             scale,
+            clips: Vec::new(),
+            items: Vec::new(),
+            run: Vec::new(),
+            run_bounds: None,
         })
     }
-    /// How a shape with device bounds `bounds` meets the current clip.
-    fn clip_for(&self, bounds: Option<sk::Rect>) -> Clip {
-        let Some(clip) = self.clips.last() else {
-            return Clip::None;
-        };
-        let Some(b) = bounds else {
-            return Clip::Mask;
-        };
-        if b.right() <= clip.left()
-            || b.left() >= clip.right()
-            || b.bottom() <= clip.top()
-            || b.top() >= clip.bottom()
-        {
-            Clip::Skip
-        } else if b.left() >= clip.left()
-            && b.right() <= clip.right()
-            && b.top() >= clip.top()
-            && b.bottom() <= clip.bottom()
-        {
-            Clip::None
-        } else {
-            Clip::Mask
-        }
+    fn full(&self) -> sk::Rect {
+        sk::Rect::from_xywh(0., 0., self.width, self.height).expect("canvas rect")
     }
-    /// The coverage mask of the current clip, made on first use.
-    fn clip_mask(&mut self) -> Option<&sk::Mask> {
-        let clip = *self.clips.last()?;
-        if self.mask.as_ref().is_none_or(|(r, _)| *r != clip) {
-            let mut mask = sk::Mask::new(self.pixmap.width(), self.pixmap.height())?;
-            mask.fill_path(
-                &sk::PathBuilder::from_rect(clip),
-                sk::FillRule::Winding,
-                true,
-                sk::Transform::identity(),
-            );
-            self.mask = Some((clip, mask));
+    /// The current clip, unless it leaves the whole canvas visible.
+    fn clip(&self) -> Option<sk::Rect> {
+        self.clips.last().copied().filter(|c| {
+            !(c.left() <= 0.5
+                && c.top() <= 0.5
+                && c.right() >= self.width - 0.5
+                && c.bottom() >= self.height - 0.5)
+        })
+    }
+    /// Adds a CPU operation that paints within device `bounds` (`None`:
+    /// anywhere) to the current run.
+    fn record(&mut self, op: Op, bounds: Option<sk::Rect>) {
+        let clip = self.clip();
+        let area = clip.unwrap_or(self.full());
+        let bounds = match bounds {
+            Some(b) => b.outset(2., 2.).and_then(|b| b.intersect(&area)),
+            None => Some(area),
+        };
+        let Some(bounds) = bounds else {
+            return;
+        };
+        self.run_bounds = Some(match self.run_bounds {
+            Some(r) => sk::Rect::from_ltrb(
+                r.left().min(bounds.left()),
+                r.top().min(bounds.top()),
+                r.right().max(bounds.right()),
+                r.bottom().max(bounds.bottom()),
+            )
+            .unwrap_or(r),
+            None => bounds,
+        });
+        self.run.push((op, clip));
+    }
+    /// Rasterizes the pending run into an image of its bounds.
+    fn flush(&mut self) {
+        let ops = std::mem::take(&mut self.run);
+        let Some(b) = self.run_bounds.take() else {
+            return;
+        };
+        let (x0, y0) = (b.left().floor().max(0.), b.top().floor().max(0.));
+        let (x1, y1) = (
+            b.right().ceil().min(self.width),
+            b.bottom().ceil().min(self.height),
+        );
+        if x1 <= x0 || y1 <= y0 {
+            return;
         }
-        self.mask.as_ref().map(|(_, m)| m)
+        let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
+        let Some(mut pixmap) = sk::Pixmap::new(w, h) else {
+            return;
+        };
+        let shift = |t: sk::Transform| t.post_translate(-x0, -y0);
+        let whole = sk::Rect::from_xywh(0., 0., w as f32, h as f32).expect("run rect");
+        let mut mask: Option<(sk::Rect, sk::Mask)> = None;
+        for (op, clip) in ops {
+            let clip = clip
+                .and_then(|c| {
+                    sk::Rect::from_ltrb(
+                        c.left() - x0,
+                        c.top() - y0,
+                        c.right() - x0,
+                        c.bottom() - y0,
+                    )
+                })
+                .filter(|c| {
+                    !(c.left() <= 0.
+                        && c.top() <= 0.
+                        && c.right() >= whole.right()
+                        && c.bottom() >= whole.bottom())
+                });
+            if let Some(c) = clip
+                && mask.as_ref().is_none_or(|(r, _)| *r != c)
+                && let Some(mut m) = sk::Mask::new(w, h)
+            {
+                m.fill_path(
+                    &sk::PathBuilder::from_rect(c),
+                    sk::FillRule::Winding,
+                    true,
+                    sk::Transform::identity(),
+                );
+                mask = Some((c, m));
+            }
+            let mask = clip.and(mask.as_ref().map(|(_, m)| m));
+            match op {
+                Op::Fill {
+                    path,
+                    paint,
+                    rule,
+                    transform,
+                } => pixmap.fill_path(&path, &paint, rule, shift(transform), mask),
+                Op::Stroke {
+                    path,
+                    paint,
+                    stroke,
+                    transform,
+                } => pixmap.stroke_path(&path, &paint, &stroke, shift(transform), mask),
+                Op::Image {
+                    pixmap: image,
+                    quality,
+                    transform,
+                } => {
+                    let paint = sk::PixmapPaint {
+                        quality,
+                        ..Default::default()
+                    };
+                    pixmap.draw_pixmap(
+                        0,
+                        0,
+                        image.as_ref().as_ref(),
+                        &paint,
+                        shift(transform),
+                        mask,
+                    )
+                }
+                Op::Svg { tree, transform } => {
+                    resvg::render(&tree, shift(transform), &mut pixmap.as_mut())
+                }
+            }
+        }
+        let mut rgba = pixmap.take();
+        crate::graph::unpremultiply(&mut rgba);
+        let s = self.scale;
+        self.items.push(Item::Run {
+            rect: [x0 / s, y0 / s, (x1 - x0) / s, (y1 - y0) / s],
+            width: w,
+            height: h,
+            rgba,
+        });
+    }
+    /// Everything painted, in order.
+    pub fn finish(mut self) -> Vec<Item> {
+        self.flush();
+        self.items
     }
     pub fn fill_path(
         &mut self,
-        path: &sk::Path,
+        path: &Arc<sk::Path>,
         color: Rgba,
         rule: FillRule,
         transform: sk::Transform,
@@ -629,24 +889,35 @@ impl Raster {
         let mut paint = sk::Paint::default();
         paint.set_color(color.skia());
         paint.anti_alias = true;
+        self.fill_with(path, paint, rule, transform);
+    }
+    fn fill_with(
+        &mut self,
+        path: &Arc<sk::Path>,
+        paint: sk::Paint<'static>,
+        rule: FillRule,
+        transform: sk::Transform,
+    ) {
         let rule = match rule {
             FillRule::NonZero => sk::FillRule::Winding,
             FillRule::EvenOdd => sk::FillRule::EvenOdd,
         };
-        let bounds = path.bounds().transform(transform);
-        match self.clip_for(bounds) {
-            Clip::Skip => {}
-            Clip::None => self.pixmap.fill_path(path, &paint, rule, transform, None),
-            Clip::Mask => {
-                self.clip_mask();
-                let mask = self.mask.as_ref().map(|(_, m)| m);
-                self.pixmap.fill_path(path, &paint, rule, transform, mask);
-            }
-        }
+        let Some(bounds) = path.bounds().transform(transform) else {
+            return;
+        };
+        self.record(
+            Op::Fill {
+                path: path.clone(),
+                paint,
+                rule,
+                transform,
+            },
+            Some(bounds),
+        );
     }
     pub fn stroke_path(
         &mut self,
-        path: &sk::Path,
+        path: &Arc<sk::Path>,
         color: Rgba,
         width: f32,
         dash: Option<&[f32]>,
@@ -662,22 +933,157 @@ impl Raster {
             dash: dash.and_then(|d| sk::StrokeDash::new(d.to_vec(), 0.)),
             ..Default::default()
         };
-        let bounds = path
+        let Some(bounds) = path
             .bounds()
             .outset(width, width)
-            .and_then(|b| b.transform(transform));
-        match self.clip_for(bounds) {
-            Clip::Skip => {}
-            Clip::None => self
-                .pixmap
-                .stroke_path(path, &paint, &stroke, transform, None),
-            Clip::Mask => {
-                self.clip_mask();
-                let mask = self.mask.as_ref().map(|(_, m)| m);
-                self.pixmap
-                    .stroke_path(path, &paint, &stroke, transform, mask);
+            .and_then(|b| b.transform(transform))
+        else {
+            return;
+        };
+        self.record(
+            Op::Stroke {
+                path: path.clone(),
+                paint,
+                stroke,
+                transform,
+            },
+            Some(bounds),
+        );
+    }
+    /// Draws an SVG tree through `extra` (in window points). A `cached` tree
+    /// (one kept while its content is unchanged, as text layouts are) is
+    /// rasterized once into an image the GPU moves; after its scale or
+    /// rotation changes, the old image is stretched until the change has
+    /// rested for [`SVG_SETTLE`].
+    pub fn render_svg(&mut self, tree: Arc<resvg::usvg::Tree>, extra: sk::Transform, cached: bool) {
+        let transform = self.transform.pre_concat(extra);
+        if cached && let Some((image, at)) = svg_image(&tree, transform, self.width * self.height) {
+            let (w, h) = (image.pixmap.width() as f32, image.pixmap.height() as f32);
+            self.draw_image(
+                &image,
+                Bounds::new(point(px(0.), px(0.)), size(px(w), px(h))),
+                at,
+            );
+            return;
+        }
+        let bounds = tree
+            .root()
+            .abs_layer_bounding_box()
+            .to_rect()
+            .transform(transform);
+        self.record(Op::Svg { tree, transform }, bounds);
+    }
+    /// Round-capped polylines (window points, widths in canvas points) as
+    /// one GPU shape.
+    pub fn polylines(&mut self, lines: Vec<(Vec<[f32; 2]>, f32)>, color: Rgba) {
+        let s = self.scale;
+        let t = self.transform;
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        let mut mapped = Vec::with_capacity(lines.len());
+        for (points, width) in lines {
+            let pad = width / 2. + 1.;
+            let points = points
+                .into_iter()
+                .map(|[x, y]| {
+                    let mut p = sk::Point::from_xy(x, y);
+                    t.map_point(&mut p);
+                    let p = [p.x / s, p.y / s];
+                    x0 = x0.min(p[0] - pad);
+                    y0 = y0.min(p[1] - pad);
+                    x1 = x1.max(p[0] + pad);
+                    y1 = y1.max(p[1] + pad);
+                    p
+                })
+                .collect::<Vec<_>>();
+            mapped.push((points, width));
+        }
+        if x1 <= x0 || y1 <= y0 || !x0.is_finite() || !y1.is_finite() {
+            return;
+        }
+        let area = self.clips.last().copied().unwrap_or(self.full());
+        let dest = sk::Rect::from_ltrb(x0 * s, y0 * s, x1 * s, y1 * s);
+        let Some(dest) = dest.filter(|d| d.intersect(&area).is_some()) else {
+            return;
+        };
+        self.flush();
+        let opaque = Rgba { a: 1., ..color };
+        let mut shape = rune::Shape::new();
+        for (points, width) in mapped {
+            let points = points
+                .into_iter()
+                .map(|[x, y]| [x - x0, y - y0])
+                .collect::<Vec<_>>();
+            shape = shape.stroke_with(points, false, width, rune::LineCap::Round, opaque.color());
+        }
+        let clip = self.clip().filter(|c| {
+            !(dest.left() >= c.left()
+                && dest.top() >= c.top()
+                && dest.right() <= c.right()
+                && dest.bottom() <= c.bottom())
+        });
+        self.items.push(Item::Shape {
+            shape,
+            opacity: color.a.clamp(0., 1.),
+            rect: [x0, y0, x1 - x0, y1 - y0],
+            clip: clip.map(|c| [c.left() / s, c.top() / s, c.width() / s, c.height() / s]),
+        });
+    }
+    /// A quad as a GPU element. False when it needs the CPU (a rounded or
+    /// bordered quad cut by a clip).
+    fn quad(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        color: Rgba,
+        radii: [f32; 4],
+        border: Option<(f32, Rgba)>,
+    ) -> bool {
+        let t = self.transform;
+        if t.kx != 0. || t.ky != 0. {
+            return false;
+        }
+        let Some(mut dest) = sk::Rect::from_xywh(
+            bounds.origin.x.0,
+            bounds.origin.y.0,
+            bounds.size.width.0,
+            bounds.size.height.0,
+        )
+        .and_then(|r| r.transform(t)) else {
+            return true;
+        };
+        if let Some(clip) = self.clips.last() {
+            let inside = dest.left() >= clip.left()
+                && dest.top() >= clip.top()
+                && dest.right() <= clip.right()
+                && dest.bottom() <= clip.bottom();
+            if !inside {
+                if radii != [0.; 4] || border.is_some() {
+                    return dest.intersect(clip).is_none();
+                }
+                match dest.intersect(clip) {
+                    Some(r) => dest = r,
+                    None => return true,
+                }
             }
         }
+        if color.a <= 0. && border.is_none() {
+            return true;
+        }
+        self.flush();
+        let s = self.scale;
+        let rect = [
+            dest.left() / s,
+            dest.top() / s,
+            dest.width() / s,
+            dest.height() / s,
+        ];
+        let max = rect[2].min(rect[3]) / 2.;
+        self.items.push(Item::Quad {
+            rect,
+            color: color.color(),
+            radii: radii.map(|r| r.clamp(0., max)),
+            border: border.map(|(w, c)| (w, c.color())),
+        });
+        true
     }
     pub fn push_clip(&mut self, bounds: Bounds<Pixels>) {
         let rect = sk::Rect::from_xywh(
@@ -687,91 +1093,80 @@ impl Raster {
             bounds.size.height.0.max(0.),
         )
         .and_then(|r| r.transform(self.transform));
-        let full = sk::Rect::from_xywh(
-            0.,
-            0.,
-            self.pixmap.width() as f32,
-            self.pixmap.height() as f32,
-        );
-        let parent = self.clips.last().copied().or(full);
-        let clip = match (rect, parent) {
-            (Some(r), Some(p)) => r
-                .intersect(&p)
+        let parent = self.clips.last().copied().unwrap_or(self.full());
+        let clip = match rect {
+            Some(r) => r
+                .intersect(&parent)
                 .unwrap_or(sk::Rect::from_xywh(0., 0., 0.1, 0.1).unwrap()),
-            (Some(r), None) => r,
-            (None, Some(p)) => p,
-            (None, None) => return,
+            None => parent,
         };
         self.clips.push(clip);
     }
     pub fn pop_clip(&mut self) {
         self.clips.pop();
     }
-    pub fn draw_image(
+    /// Draws `image` stretched over `bounds` through `transform`: as a GPU
+    /// element when the transform keeps it a rectangle, else on the CPU.
+    fn draw_image(
         &mut self,
-        image: &sk::Pixmap,
+        image: &RenderImage,
         bounds: Bounds<Pixels>,
         transform: sk::Transform,
     ) {
-        let (w, h) = (image.width() as f32, image.height() as f32);
+        let (w, h) = (image.pixmap.width() as f32, image.pixmap.height() as f32);
         if w <= 0. || h <= 0. {
             return;
         }
-        let sx = bounds.size.width.0 / w;
-        let sy = bounds.size.height.0 / h;
         let t = transform.pre_concat(sk::Transform::from_row(
-            sx,
+            bounds.size.width.0 / w,
             0.,
             0.,
-            sy,
+            bounds.size.height.0 / h,
             bounds.origin.x.0,
             bounds.origin.y.0,
         ));
         let Some(dest) = sk::Rect::from_xywh(0., 0., w, h).and_then(|r| r.transform(t)) else {
             return;
         };
-        let quality =
-            if (t.sx - 1.).abs() < 1e-4 && (t.sy - 1.).abs() < 1e-4 && t.kx == 0. && t.ky == 0. {
-                sk::FilterQuality::Nearest
-            } else {
-                sk::FilterQuality::Bilinear
-            };
-        let axis_aligned = t.kx == 0. && t.ky == 0.;
-        if axis_aligned {
-            // An axis-aligned image is a rectangle filled with its pattern,
-            // cut to the clip without a mask.
-            let rect = match self.clips.last() {
-                Some(clip) => match dest.intersect(clip) {
-                    Some(r) => r,
-                    None => return,
-                },
-                None => dest,
-            };
-            let paint = sk::Paint {
-                shader: sk::Pattern::new(image.as_ref(), sk::SpreadMode::Pad, quality, 1., t),
-                anti_alias: false,
-                ..Default::default()
-            };
-            self.pixmap
-                .fill_rect(rect, &paint, sk::Transform::identity(), None);
+        let area = self.clips.last().copied().unwrap_or(self.full());
+        if dest.intersect(&area).is_none() {
             return;
         }
-        let paint = sk::PixmapPaint {
-            quality,
-            ..Default::default()
-        };
-        match self.clip_for(Some(dest)) {
-            Clip::Skip => {}
-            Clip::None => self
-                .pixmap
-                .draw_pixmap(0, 0, image.as_ref(), &paint, t, None),
-            Clip::Mask => {
-                self.clip_mask();
-                let mask = self.mask.as_ref().map(|(_, m)| m);
-                self.pixmap
-                    .draw_pixmap(0, 0, image.as_ref(), &paint, t, mask);
-            }
+        // Image axes in points: they must stay perpendicular and unflipped.
+        let s = self.scale;
+        let (ux, uy) = (t.sx * w / s, t.ky * w / s);
+        let (vx, vy) = (t.kx * h / s, t.sy * h / s);
+        let (uw, vh) = (ux.hypot(uy), vx.hypot(vy));
+        let det = ux * vy - uy * vx;
+        if det <= 0. || (ux * vx + uy * vy).abs() > 1e-3 * uw * vh {
+            let quality = sk::FilterQuality::Bilinear;
+            self.record(
+                Op::Image {
+                    pixmap: image.pixmap.clone(),
+                    quality,
+                    transform: t,
+                },
+                Some(dest),
+            );
+            return;
         }
+        self.flush();
+        let mut centre = sk::Point::from_xy(w / 2., h / 2.);
+        t.map_point(&mut centre);
+        let (cx, cy) = (centre.x / s, centre.y / s);
+        let clip = self.clip().filter(|c| {
+            !(dest.left() >= c.left()
+                && dest.top() >= c.top()
+                && dest.right() <= c.right()
+                && dest.bottom() <= c.bottom())
+        });
+        self.items.push(Item::Image {
+            pixels: image.pixels(),
+            id: image.id,
+            rect: [cx - uw / 2., cy - vh / 2., uw, vh],
+            rotate: uy.atan2(ux),
+            clip: clip.map(|c| [c.left() / s, c.top() / s, c.width() / s, c.height() / s]),
+        });
     }
 }
 
@@ -842,15 +1237,37 @@ impl Window {
             None => raster.fill_path(&p, color, path.rule, t),
         }
     }
+    /// Round-capped polylines in window points, each with its width.
+    pub fn paint_polylines(&mut self, lines: Vec<(Vec<[f32; 2]>, f32)>, color: Rgba) {
+        if let Some(raster) = self.raster.as_mut() {
+            raster.polylines(lines, color);
+        }
+    }
     pub fn paint_quad(&mut self, quad: PaintQuad) {
         let Some(raster) = self.raster.as_mut() else {
             return;
         };
         let t = raster.transform;
+        let c = quad.corner_radii;
+        let radii = [
+            c.top_left.0,
+            c.top_right.0,
+            c.bottom_right.0,
+            c.bottom_left.0,
+        ];
+        let width = quad.border_widths.top.0;
+        let border = (width > 0. && quad.border_color.a > 0.).then_some((width, quad.border_color));
+        let dashed = border.is_some() && quad.border_style == BorderStyle::Dashed;
+        if quad.gradient.is_none()
+            && !dashed
+            && raster.quad(quad.bounds, quad.background, radii, border)
+        {
+            return;
+        }
         if quad.background.a > 0.
             && let Some(path) = rounded_rect(quad.bounds, quad.corner_radii)
         {
-            raster.fill_path(&path, quad.background, FillRule::NonZero, t);
+            raster.fill_path(&Arc::new(path), quad.background, FillRule::NonZero, t);
         }
         if let Some(g) = quad.gradient
             && let Some(path) = rounded_rect(quad.bounds, quad.corner_radii)
@@ -881,19 +1298,10 @@ impl Window {
                     anti_alias: true,
                     ..Default::default()
                 };
-                raster.clip_mask();
-                let mask = raster
-                    .mask
-                    .as_ref()
-                    .filter(|_| !raster.clips.is_empty())
-                    .map(|(_, m)| m);
-                raster
-                    .pixmap
-                    .fill_path(&path, &paint, sk::FillRule::Winding, t, mask);
+                raster.fill_with(&Arc::new(path), paint, FillRule::NonZero, t);
             }
         }
-        let width = quad.border_widths.top.0;
-        if width > 0. && quad.border_color.a > 0. {
+        if let Some((width, color)) = border {
             let inset = width / 2.;
             let b = Bounds::new(
                 point(
@@ -906,8 +1314,8 @@ impl Window {
                 ),
             );
             if let Some(path) = rounded_rect(b, quad.corner_radii) {
-                let dash = (quad.border_style == BorderStyle::Dashed).then(|| vec![4., 3.]);
-                raster.stroke_path(&path, quad.border_color, width, dash.as_deref(), t);
+                let dash = dashed.then(|| vec![4., 3.]);
+                raster.stroke_path(&Arc::new(path), color, width, dash.as_deref(), t);
             }
         }
     }
@@ -921,7 +1329,7 @@ impl Window {
     ) -> Result<(), ()> {
         let raster = self.raster.as_mut().ok_or(())?;
         let t = raster.transform;
-        raster.draw_image(&image.pixmap, bounds, t);
+        raster.draw_image(&image, bounds, t);
         Ok(())
     }
     pub fn paint_image_transformed(
@@ -935,23 +1343,8 @@ impl Window {
     ) -> Result<(), ()> {
         let raster = self.raster.as_mut().ok_or(())?;
         let t = raster.transform.pre_concat(transformation.skia());
-        raster.draw_image(&image.pixmap, bounds, t);
+        raster.draw_image(&image, bounds, t);
         Ok(())
-    }
-    /// Paints a premultiplied pixmap (from a CPU renderer) at `bounds`.
-    pub fn paint_pixmap(
-        &mut self,
-        bounds: Bounds<Pixels>,
-        pixmap: &sk::Pixmap,
-        transform: Option<sk::Transform>,
-    ) {
-        if let Some(raster) = self.raster.as_mut() {
-            let t = match transform {
-                Some(extra) => raster.transform.pre_concat(extra),
-                None => raster.transform,
-            };
-            raster.draw_image(pixmap, bounds, t);
-        }
     }
     pub fn with_content_mask<R>(
         &mut self,
@@ -980,7 +1373,7 @@ impl Window {
 
 thread_local! {
     static CANVAS_RECTS: RefCell<HashMap<String, [f32; 4]>> = RefCell::new(HashMap::new());
-    static CANVAS_PIXELS: RefCell<HashMap<String, rune::Pixels>> = RefCell::new(HashMap::new());
+    static CANVAS_RUNS: RefCell<HashMap<String, Vec<RunSlot>>> = RefCell::new(HashMap::new());
     static CANVAS_SITES: RefCell<HashMap<(&'static str, u32, u32), usize>> = RefCell::new(HashMap::new());
     static FRAME_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.) };
 }
@@ -988,11 +1381,165 @@ thread_local! {
 /// paint at `scale` device pixels per point.
 pub fn begin_frame(scale: f32) {
     CANVAS_SITES.with(|s| s.borrow_mut().clear());
+    SVG_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let frame = cache.frame;
+        // Images not drawn last frame are released.
+        cache.images.retain(|_, image| image.frame + 1 >= frame);
+        cache.frame += 1;
+    });
     FRAME_SCALE.with(|s| s.set(scale));
 }
 /// A canvas's window rect as last laid out.
 pub fn canvas_rect(key: &str) -> Option<[f32; 4]> {
     CANVAS_RECTS.with(|r| r.borrow().get(key).copied())
+}
+
+/// The image a canvas shows for one CPU run, kept between frames so an
+/// unchanged run is not uploaded again.
+struct RunSlot {
+    pixels: rune::Pixels,
+    size: (u32, u32),
+    rgba: Vec<u8>,
+}
+
+/// Paints a canvas of window rect `[x, y, w, h]` and returns its elements,
+/// which fill the canvas element.
+fn paint_canvas(
+    key: &str,
+    [x, y, w, h]: [f32; 4],
+    window: &mut Window,
+    paint: impl FnOnce(Bounds<Pixels>, &mut Window),
+) -> Option<rune::El> {
+    if w < 1. || h < 1. {
+        return None;
+    }
+    let scale = FRAME_SCALE.with(|s| s.get()).max(0.5);
+    let bounds = Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
+    window.raster = Raster::new(
+        (w * scale).ceil() as u32,
+        (h * scale).ceil() as u32,
+        scale,
+        bounds.origin,
+    );
+    paint(bounds, window);
+    let items = window.raster.take()?.finish();
+    Some(display_list(key, items))
+}
+
+/// Rune elements for a canvas's items, in paint order.
+fn display_list(key: &str, items: Vec<Item>) -> rune::El {
+    let mut children = Vec::with_capacity(items.len());
+    let mut images: HashMap<u64, u32> = HashMap::new();
+    let (mut quads, mut runs, mut shapes) = (0usize, 0usize, 0usize);
+    CANVAS_RUNS.with(|slots| {
+        let mut slots = slots.borrow_mut();
+        let slots = slots.entry(key.to_owned()).or_default();
+        for item in items {
+            match item {
+                Item::Quad {
+                    rect,
+                    color,
+                    radii,
+                    border,
+                } => {
+                    let mut e = rune::el()
+                        .key(format!("q{quads}"))
+                        .absolute(rect[0], rect[1])
+                        .size(rect[2], rect[3])
+                        .fill(color);
+                    if radii != [0.; 4] {
+                        e = e.corners(radii);
+                    }
+                    if let Some((width, color)) = border {
+                        e = e.border(width, color);
+                    }
+                    quads += 1;
+                    children.push(e);
+                }
+                Item::Image {
+                    pixels,
+                    id,
+                    rect,
+                    rotate,
+                    clip,
+                } => {
+                    let n = images.entry(id).or_insert(0);
+                    let key = format!("i{id}-{n}");
+                    *n += 1;
+                    let mut e = rune::el().pixels(&pixels).size(rect[2], rect[3]);
+                    if rotate != 0. {
+                        e = e.rotate(rotate);
+                    }
+                    children.push(match clip {
+                        None => e.key(key).absolute(rect[0], rect[1]),
+                        Some(c) => rune::el()
+                            .key(key)
+                            .absolute(c[0], c[1])
+                            .size(c[2], c[3])
+                            .clip_rounded(0.)
+                            .child(e.absolute(rect[0] - c[0], rect[1] - c[1])),
+                    });
+                }
+                Item::Shape {
+                    shape,
+                    opacity,
+                    rect,
+                    clip,
+                } => {
+                    let key = format!("s{shapes}");
+                    shapes += 1;
+                    let mut e = rune::canvas(shape).size(rect[2], rect[3]);
+                    if opacity < 1. {
+                        e = e.opacity(opacity);
+                    }
+                    children.push(match clip {
+                        None => e.key(key).absolute(rect[0], rect[1]),
+                        Some(c) => rune::el()
+                            .key(key)
+                            .absolute(c[0], c[1])
+                            .size(c[2], c[3])
+                            .clip_rounded(0.)
+                            .child(e.absolute(rect[0] - c[0], rect[1] - c[1])),
+                    });
+                }
+                Item::Run {
+                    rect,
+                    width,
+                    height,
+                    rgba,
+                } => {
+                    if slots.len() <= runs {
+                        slots.push(RunSlot {
+                            pixels: rune::Pixels::new(),
+                            size: (0, 0),
+                            rgba: Vec::new(),
+                        });
+                    }
+                    let slot = &mut slots[runs];
+                    if slot.size != (width, height) || slot.rgba != rgba {
+                        slot.pixels.set(width, height, rgba.clone());
+                        slot.size = (width, height);
+                        slot.rgba = rgba;
+                    }
+                    children.push(
+                        rune::el()
+                            .key(format!("r{runs}"))
+                            .absolute(rect[0], rect[1])
+                            .size(rect[2], rect[3])
+                            .pixels(&slot.pixels),
+                    );
+                    runs += 1;
+                }
+            }
+        }
+        slots.truncate(runs);
+    });
+    rune::el()
+        .pin(Some(0.), Some(0.), Some(0.), Some(0.))
+        .clip_rounded(0.)
+        .instant_changes()
+        .children(children)
 }
 
 type Paint = Box<dyn FnOnce(Bounds<Pixels>, &mut Window, &mut Context<crate::NotesView>)>;
@@ -1065,48 +1612,28 @@ impl Canvas {
         self.style = self.style.size(v);
         self
     }
-    /// Paints now, with the bounds of the canvas's last layout, into a pixmap
-    /// at `scale` device pixels per point.
+    /// Paints now, with the bounds of the canvas's last layout.
     pub fn paint_now(self) -> Div {
         let key = self.key.clone();
-        let rect = canvas_rect(&key);
-        let pixels = CANVAS_PIXELS.with(|p| {
-            p.borrow_mut()
-                .entry(key.clone())
-                .or_insert_with(rune::Pixels::new)
-                .clone()
+        let scale = FRAME_SCALE.with(|s| s.get()).max(0.5);
+        let mut window = Window::paint(scale);
+        let paint = self.paint;
+        let painted = canvas_rect(&key).and_then(|rect| {
+            paint_canvas(&key, rect, &mut window, |bounds, window| {
+                paint(bounds, window, &mut Context::fresh())
+            })
         });
-        if let Some([x, y, w, h]) = rect
-            && w >= 1.
-            && h >= 1.
-        {
-            let scale = FRAME_SCALE.with(|s| s.get()).max(0.5);
-            let bounds = Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
-            let mut window = Window::paint(scale);
-            window.raster = Raster::new(
-                (w * scale).ceil() as u32,
-                (h * scale).ceil() as u32,
-                scale,
-                bounds.origin,
-            );
-            let mut cx = Context::fresh();
-            (self.paint)(bounds, &mut window, &mut cx);
-            if let Some(raster) = window.raster.take() {
-                let (pw, ph) = (raster.pixmap.width(), raster.pixmap.height());
-                let mut rgba = raster.pixmap.take();
-                crate::graph::unpremultiply(&mut rgba);
-                pixels.set(pw, ph, rgba);
-            }
-        }
         let layout_key = key.clone();
-        self.style.id(key).el(move |e| {
-            e.pixels(&pixels)
-                .on_layout(move |_: &mut crate::AppState, r: [f32; 4]| {
+        self.style
+            .id(key)
+            .children(painted.map(AnyElement::El))
+            .el(move |e| {
+                e.on_layout(move |_: &mut crate::AppState, r: [f32; 4]| {
                     CANVAS_RECTS.with(|rects| {
                         rects.borrow_mut().insert(layout_key.clone(), r);
                     });
                 })
-        })
+            })
     }
 }
 impl IntoElement for Canvas {
@@ -1126,56 +1653,35 @@ pub fn view_canvas(
         &mut Context<crate::NotesView>,
     ) + 'static,
 ) -> Div {
-    let pixels = CANVAS_PIXELS.with(|p| {
-        p.borrow_mut()
-            .entry(key.to_owned())
-            .or_insert_with(rune::Pixels::new)
-            .clone()
-    });
-    let layout_pixels = pixels.clone();
     div()
         .id(key)
         .size_full()
         .child(AnyElement::Lazy(Box::new(move |bcx: &mut BuildCx| {
-            if let Some([x, y, w, h]) = canvas_rect(key)
-                && w >= 1.
-                && h >= 1.
-            {
-                let scale = FRAME_SCALE.with(|s| s.get()).max(0.5);
-                let bounds = Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
-                let mut window = Window::render(bcx.view);
-                window.raster = Raster::new(
-                    (w * scale).ceil() as u32,
-                    (h * scale).ceil() as u32,
-                    scale,
-                    bounds.origin,
+            let Some(rect) = canvas_rect(key) else {
+                return AnyElement::Empty;
+            };
+            let started = std::time::Instant::now();
+            let mut window = Window::render(bcx.view);
+            let mut painted = std::time::Duration::ZERO;
+            let elements = paint_canvas(key, rect, &mut window, |bounds, window| {
+                paint(bcx.view, bounds, window, bcx.cx);
+                painted = started.elapsed();
+            });
+            if std::env::var_os("FOLIO_PROFILE_CANVAS").is_some() {
+                eprintln!(
+                    "FOLIO_CANVAS {key}: paint {:.2} ms, total {:.2} ms",
+                    painted.as_secs_f64() * 1000.,
+                    started.elapsed().as_secs_f64() * 1000.
                 );
-                let started = std::time::Instant::now();
-                paint(bcx.view, bounds, &mut window, bcx.cx);
-                let painted = started.elapsed();
-                if let Some(raster) = window.raster.take() {
-                    let (pw, ph) = (raster.pixmap.width(), raster.pixmap.height());
-                    let mut rgba = raster.pixmap.take();
-                    crate::graph::unpremultiply(&mut rgba);
-                    layout_pixels.set(pw, ph, rgba);
-                }
-                if std::env::var_os("FOLIO_PROFILE_CANVAS").is_some() {
-                    eprintln!(
-                        "FOLIO_CANVAS {key}: paint {:.2} ms, total {:.2} ms",
-                        painted.as_secs_f64() * 1000.,
-                        started.elapsed().as_secs_f64() * 1000.
-                    );
-                }
-                bcx.cx.effects.extend(window.effects);
             }
-            AnyElement::Empty
+            bcx.cx.effects.extend(window.effects);
+            elements.map_or(AnyElement::Empty, AnyElement::El)
         })))
         .el(move |e| {
-            e.pixels(&pixels)
-                .on_layout(move |_: &mut crate::AppState, r: [f32; 4]| {
-                    CANVAS_RECTS.with(|rects| {
-                        rects.borrow_mut().insert(key.to_owned(), r);
-                    });
-                })
+            e.on_layout(move |_: &mut crate::AppState, r: [f32; 4]| {
+                CANVAS_RECTS.with(|rects| {
+                    rects.borrow_mut().insert(key.to_owned(), r);
+                });
+            })
         })
 }

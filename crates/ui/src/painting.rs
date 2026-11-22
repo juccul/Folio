@@ -382,6 +382,58 @@ fn ink_path_from_points(
     });
     any.then(|| b.build().ok()).flatten()
 }
+/// Draws ink on the GPU as round-capped segments, one polyline per run of
+/// equal widths. False when `transform` is not a similarity (the segments
+/// would not keep their shape).
+fn paint_ink_gpu(
+    window: &mut Window,
+    points: &[PathPoint],
+    transform: Transform,
+    color: Rgba,
+) -> bool {
+    let Transform { a, b, c, d, .. } = transform;
+    let scale = transform.scale();
+    let eps = 1e-3 * scale.max(1e-6);
+    let rotation = (a - d).abs() < eps && (b + c).abs() < eps;
+    let mirror = (a + d).abs() < eps && (b - c).abs() < eps;
+    if !scale.is_finite() || scale <= 0. || !(rotation || mirror) {
+        return false;
+    }
+    let Some(first) = points.first() else {
+        return true;
+    };
+    let at = |p: &PathPoint| {
+        let q = transform.apply(p.position);
+        [q.x, q.y]
+    };
+    let mut lines: Vec<(Vec<[f32; 2]>, f32)> = Vec::new();
+    if points.len() == 1 {
+        lines.push((vec![at(first), at(first)], 2. * first.radius * scale));
+    }
+    for pair in points.windows(2) {
+        let width = (pair[0].radius + pair[1].radius) * scale;
+        match lines.last_mut() {
+            Some((line, w)) if (*w - width).abs() <= 0.02 * w.max(0.5) => line.push(at(&pair[1])),
+            _ => lines.push((vec![at(&pair[0]), at(&pair[1])], width)),
+        }
+    }
+    window.paint_polylines(lines, color);
+    true
+}
+/// Ink on the GPU when possible, else as its filled outline.
+fn paint_ink(
+    window: &mut Window,
+    points: &[PathPoint],
+    transform: Transform,
+    color: Rgba,
+    scratch: &mut folio_ink::OutlineScratch,
+) {
+    if !paint_ink_gpu(window, points, transform, color)
+        && let Some(path) = ink_path_from_points(points, scratch)
+    {
+        window.paint_path(path.transformed(coefficients(transform)), color);
+    }
+}
 #[cfg(test)]
 fn shape_contours(points: &[DocPoint], width: f32) -> Vec<Vec<DocPoint>> {
     let centerline = points
@@ -1062,14 +1114,13 @@ impl Painter {
                         for part in parts {
                             let color = self.display_color(part.style.color.rgb(), canvas_theme);
                             let points = part.decode_display_path(&mut self.path_buf);
-                            if let Some(path) =
-                                ink_path_from_points(points, &mut self.outline_scratch)
-                            {
-                                window.paint_path(
-                                    path.transformed(coefficients(world.compose(part.transform))),
-                                    alpha(color, part.style.opacity),
-                                );
-                            }
+                            paint_ink(
+                                window,
+                                points,
+                                world.compose(part.transform),
+                                alpha(color, part.style.opacity),
+                                &mut self.outline_scratch,
+                            );
                         }
                     }
                     continue;
@@ -1095,20 +1146,28 @@ impl Painter {
                             if anim.progress < 0.999 {
                                 let points = s.decode_display_path(&mut self.path_buf);
                                 partial_stroke_points(points, anim.progress, &mut partial_buf);
-                                if let Some(path) =
-                                    ink_path_from_points(&partial_buf, &mut self.outline_scratch)
-                                {
-                                    window.paint_path(
-                                        path.transformed(coefficients(transform)),
-                                        alpha(tinted, s.style.opacity),
-                                    );
-                                }
+                                paint_ink(
+                                    window,
+                                    &partial_buf,
+                                    transform,
+                                    alpha(tinted, s.style.opacity),
+                                    &mut self.outline_scratch,
+                                );
                                 continue;
                             }
                             tinted
                         } else {
                             base_color
                         };
+                        // Ink without a cached image is drawn by the GPU,
+                        // straight from its centreline.
+                        if !selection.contains(&s.id) && !visible.intersects(object.bounds()) {
+                            continue;
+                        }
+                        let points = s.decode_display_path(&mut self.path_buf);
+                        if paint_ink_gpu(window, points, transform, alpha(color, s.style.opacity)) {
+                            continue;
+                        }
                         let valid = self
                             .paths
                             .get(&s.id)
@@ -1354,10 +1413,20 @@ impl Painter {
                             self.display_color(builder.style().color.rgb(), canvas_theme),
                             builder.style().opacity,
                         );
+                        let width = builder.style().width;
                         if let Some(fit) = preview {
-                            if let Some(path) = shape_path(&fit.vertices, builder.style().width) {
-                                window.paint_path(path.transformed(coefficients(world)), color);
-                            }
+                            let centreline = fit
+                                .vertices
+                                .iter()
+                                .map(|&position| PathPoint {
+                                    position,
+                                    radius: width / 2.,
+                                })
+                                .collect::<Vec<_>>();
+                            paint_ink(window, &centreline, world, color, &mut self.outline_scratch);
+                        } else if paint_ink_gpu(window, builder.path(), world, color) {
+                            self.active_id = None;
+                            self.active_chunks.clear();
                         } else {
                             if self.active_id != Some(builder.id()) {
                                 self.active_id = Some(builder.id());
@@ -1784,30 +1853,51 @@ impl Painter {
                 });
             };
             if !properties.infinite {
-                paint_rect(
+                // The opaque paper covers the middle of the shadow and the
+                // hairline; blending those parts over the whole page cost
+                // most of a CPU frame. Only device pixels the paper fully
+                // covers are skipped.
+                let inner = Rect {
+                    min: DocPoint::new(
+                        (bounds.min.x * scale).ceil() / scale,
+                        (bounds.min.y * scale).ceil() / scale,
+                    ),
+                    max: DocPoint::new(
+                        (bounds.max.x * scale).floor() / scale,
+                        (bounds.max.y * scale).floor() / scale,
+                    ),
+                };
+                for part in rect_outside(
                     Rect::new(
                         bounds.min.x + 2.,
                         bounds.min.y + 3.,
                         bounds.width(),
                         bounds.height(),
                     ),
-                    alpha(0x000000, if theme.dark { 0.45 } else { 0.08 }),
-                );
+                    inner,
+                ) {
+                    paint_rect(part, alpha(0x000000, if theme.dark { 0.45 } else { 0.08 }));
+                }
                 // A hairline keeps the page edge visible against the
                 // workspace: light on dark paper, a faint shade on light.
-                paint_rect(
+                for part in rect_outside(
                     Rect::new(
                         bounds.min.x - 1.,
                         bounds.min.y - 1.,
                         bounds.width() + 2.,
                         bounds.height() + 2.,
                     ),
-                    if theme.dark {
-                        alpha(0xffffff, 0.2)
-                    } else {
-                        alpha(0x000000, 0.1)
-                    },
-                );
+                    inner,
+                ) {
+                    paint_rect(
+                        part,
+                        if theme.dark {
+                            alpha(0xffffff, 0.2)
+                        } else {
+                            alpha(0x000000, 0.1)
+                        },
+                    );
+                }
             }
             paint_rect(bounds, rgb(paper_color));
         } else {
@@ -2168,6 +2258,27 @@ fn pixel_rectangles(rect: Rect, color: Rgba, scale: f32, rectangles: &mut Vec<(R
     visit_pixel_rectangles(rect, color, scale, |bounds, color| {
         rectangles.push((bounds, color));
     });
+}
+
+/// The parts of `rect` outside `inner`: up to four bands.
+fn rect_outside(rect: Rect, inner: Rect) -> impl Iterator<Item = Rect> {
+    let (x0, x1) = (inner.min.x.max(rect.min.x), inner.max.x.min(rect.max.x));
+    let (y0, y1) = (inner.min.y.max(rect.min.y), inner.max.y.min(rect.max.y));
+    let parts = if x0 >= x1 || y0 >= y1 {
+        [Some(rect), None, None, None]
+    } else {
+        [
+            Rect::from_points([rect.min, DocPoint::new(rect.max.x, y0)]),
+            Rect::from_points([DocPoint::new(rect.min.x, y1), rect.max]),
+            Rect::from_points([DocPoint::new(rect.min.x, y0), DocPoint::new(x0, y1)]),
+            Rect::from_points([DocPoint::new(x1, y0), DocPoint::new(rect.max.x, y1)]),
+        ]
+        .map(Some)
+    };
+    parts
+        .into_iter()
+        .flatten()
+        .filter(|r| r.width() > 0. && r.height() > 0.)
 }
 
 fn paper_clip(page: Rect, visible: Rect) -> Rect {
