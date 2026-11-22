@@ -3,79 +3,39 @@ use std::path::PathBuf;
 impl NotesView {
     pub(super) fn backup_dialog(&mut self, cx: &mut Context<Self>) {
         let suggested = format!("Folio-{}.foliobackup", folio_document::now_ms());
-        let path = cx.prompt_for_new_path(&self.controller.data_dir, Some(&suggested));
-        cx.spawn(async move |view, cx| match path.await {
-            Ok(Ok(Some(path))) => {
-                let _ = view.update(cx, |view, cx| {
-                    if let Err(e) = view.controller.backup_library(path) {
-                        view.controller.error = Some(e);
-                    }
-                    cx.notify();
-                });
+        let options = rune::FileDialogOptions {
+            title: "Back up library".into(),
+            directory: Some(self.controller.data_dir.clone()),
+            file_name: Some(suggested),
+            ..Default::default()
+        };
+        cx.save_file(options, |view, path, _, _| {
+            if let Some(path) = path
+                && let Err(e) = view.controller.backup_library(path)
+            {
+                view.controller.error = Some(e);
             }
-            Ok(Err(error)) => {
-                let _ = view.update(cx, |view, cx| {
-                    view.controller.error = Some(error.to_string());
-                    cx.notify();
-                });
-            }
-            _ => {}
-        })
-        .detach();
+        });
     }
     pub(super) fn restore_dialog(&mut self, cx: &mut Context<Self>) {
-        let source = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Choose a Folio library backup".into()),
+        let options = rune::FileDialogOptions {
+            title: "Choose a Folio library backup".into(),
+            ..Default::default()
+        };
+        cx.open_file(options, |_, path, _, cx| {
+            let Some(path) = path else { return };
+            let options = rune::FileDialogOptions {
+                title: "Choose a parent folder for the restored library".into(),
+                ..Default::default()
+            };
+            cx.open_folder(options, move |view, parent, _, _| {
+                if let Some(parent) = parent
+                    && let Err(error) = view.controller.restore_library(path.clone(), parent)
+                {
+                    view.controller.error = Some(error);
+                }
+            });
         });
-        cx.spawn(async move |view, cx| {
-            let paths = match source.await {
-                Ok(Ok(Some(paths))) => paths,
-                Ok(Err(error)) => {
-                    let _ = view.update(cx, |view, cx| {
-                        view.controller.error = Some(error.to_string());
-                        cx.notify();
-                    });
-                    return;
-                }
-                _ => return,
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return;
-            };
-            let Ok(destination) = cx.update(|cx| {
-                cx.prompt_for_paths(PathPromptOptions {
-                    files: false,
-                    directories: true,
-                    multiple: false,
-                    prompt: Some("Choose a parent folder for the restored library".into()),
-                })
-            }) else {
-                return;
-            };
-            match destination.await {
-                Ok(Ok(Some(parents))) => {
-                    if let Some(parent) = parents.into_iter().next() {
-                        let _ = view.update(cx, |view, cx| {
-                            if let Err(error) = view.controller.restore_library(path, parent) {
-                                view.controller.error = Some(error);
-                            }
-                            cx.notify();
-                        });
-                    }
-                }
-                Ok(Err(error)) => {
-                    let _ = view.update(cx, |view, cx| {
-                        view.controller.error = Some(error.to_string());
-                        cx.notify();
-                    });
-                }
-                _ => {}
-            }
-        })
-        .detach();
     }
     pub(super) fn open_restored_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = self.controller.restored_library.clone() else {
@@ -83,29 +43,16 @@ impl NotesView {
         };
         self.switch_library(path, window, cx);
     }
-    pub(super) fn switch_library_dialog(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let paths = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Choose an existing Folio library folder".into()),
+    pub(super) fn switch_library_dialog(&mut self, _: &Window, cx: &mut Context<Self>) {
+        let options = rune::FileDialogOptions {
+            title: "Choose an existing Folio library folder".into(),
+            ..Default::default()
+        };
+        cx.open_folder(options, |view, path, window, cx| {
+            if let Some(path) = path {
+                view.switch_library(path, window, cx);
+            }
         });
-        cx.spawn_in(window, async move |view, cx| match paths.await {
-            Ok(Ok(Some(paths))) => {
-                if let Some(path) = paths.into_iter().next() {
-                    let _ = view
-                        .update_in(cx, |view, window, cx| view.switch_library(path, window, cx));
-                }
-            }
-            Ok(Err(e)) => {
-                let _ = view.update(cx, |view, cx| {
-                    view.controller.error = Some(e.to_string());
-                    cx.notify();
-                });
-            }
-            _ => {}
-        })
-        .detach();
     }
     fn switch_library(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if !path.join("notes.sqlite3").is_file() {

@@ -36,13 +36,13 @@ impl NotesView {
     pub(super) fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.find.is_none() {
             let field = cx.new(|cx| {
-                let mut field = Field::new(self.controller.search_query.clone(), false, cx);
+                let mut field = Field::with_cx(self.controller.search_query.clone(), false, cx);
                 field.placeholder = Some("Find in all documents".into());
                 field.compact = true;
                 field
             });
             let subscription = cx.observe(&field, |this, field, cx| {
-                let text = field.read(cx).content.trim().to_owned();
+                let text = field.read(cx).content().trim().to_owned();
                 if let Some(find) = &mut this.find
                     && text != find.searched
                 {
@@ -105,7 +105,7 @@ impl NotesView {
             return;
         }
         find.typed = None;
-        let text = find.field.read(cx).content.trim().to_owned();
+        let text = find.field.read(cx).content().trim().to_owned();
         if text == find.searched {
             return;
         }
@@ -282,7 +282,7 @@ impl NotesView {
         let theme = Theme::new(&self.controller.settings);
         let field = find.field.clone();
         field.update(cx, |field, _| field.theme = theme);
-        let text = field.read(cx).content.trim().to_owned();
+        let text = field.read(cx).content().trim().to_owned();
         let results = &self.controller.search_results;
         let pending = find.typed.is_some()
             || text != find.searched
@@ -412,7 +412,7 @@ impl NotesView {
             .rounded(px(theme.corner_md()))
             .glass(theme, theme.popover)
             // Browser keys, handled before the field sees them.
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let key = &event.keystroke;
                 let shift = key.modifiers.shift;
                 let control = key.modifiers.control;
@@ -428,7 +428,7 @@ impl NotesView {
                 cx.stop_propagation();
             }))
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.close_find(window, cx)))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .occlude()
             .child(
                 div()
                     .flex()

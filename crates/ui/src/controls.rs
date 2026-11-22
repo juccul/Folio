@@ -74,13 +74,13 @@ impl NotesView {
         action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
-        let id = id.into();
-        let label = label.into();
-        let window_control = id.as_ref().starts_with("window-");
-        let id_is_doc_menu = id.as_ref().starts_with("doc-menu-");
-        let enabled = self.control_enabled(id.as_ref(), cx);
+        let id: String = id.into();
+        let label: String = label.into();
+        let window_control = id.starts_with("window-");
+        let id_is_doc_menu = id.starts_with("doc-menu-");
+        let enabled = self.control_enabled(&id, cx);
         let hover_id = id.clone();
-        let hover = self.motion.borrow_mut().hover_value(id.as_ref());
+        let hover = self.motion.borrow_mut().hover_value(id.as_str());
         // Controls sit on glass: clear at rest, tinted when hovered or active.
         let background = theme.tint(if active { 1. } else { hover });
         let destructive = [
@@ -90,14 +90,14 @@ impl NotesView {
             "Close without saving",
         ]
         .iter()
-        .any(|prefix| label.as_ref().starts_with(prefix));
+        .any(|prefix| label.starts_with(prefix));
         // Controls behind a context menu cannot be used, but keep their
         // appearance; only real dialogs dim what they cover.
         let dimmed = !enabled
-            && !(self.menu_only_overlay() && self.control_enabled_behind(id.as_ref(), false, cx));
+            && !(self.menu_only_overlay() && self.control_enabled_behind(id.as_str(), false, cx));
         let action: accessibility::Callback = std::rc::Rc::new(action);
-        let (node, focus) = self.accessibility.control(
-            id.as_ref(),
+        let (_node, focus) = self.accessibility.control(
+            id.as_str(),
             &label,
             action.clone(),
             enabled,
@@ -105,16 +105,10 @@ impl NotesView {
             !self.blocking_overlay() || self.building_overlay || window_control,
             cx,
         );
-        let bridge = self.accessibility.clone();
-        let decoration = canvas(
-            move |bounds, _, _| {
-                bridge.set_bounds(node, bounds);
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .inset_0();
         let control_key = id.clone();
+        let id_for_bounds = id.clone();
+        let role_key = id.clone();
+        let accessible_label = accessibility::Accessibility::label_for(&id, &label);
         div()
             .id(id)
             .relative()
@@ -143,7 +137,7 @@ impl NotesView {
                             || matches!(event.keystroke.key.as_str(), "up" | "down");
                         if along
                             && let Some(focus) = this.accessibility.menu_neighbor(
-                                control_key.as_ref(),
+                                control_key.as_str(),
                                 prefix,
                                 forward,
                             )
@@ -155,8 +149,7 @@ impl NotesView {
                         return;
                     }
                     if matches!(event.keystroke.key.as_str(), "left" | "right")
-                        && let Some(id) = control_key
-                            .as_ref()
+                        && let Some(id) = control_key.as_str()
                             .strip_prefix("folder-")
                             .and_then(|id| Id::parse_str(id).ok())
                     {
@@ -177,8 +170,7 @@ impl NotesView {
                             return;
                         }
                     }
-                    if let Some(id) = control_key
-                        .as_ref()
+                    if let Some(id) = control_key.as_str()
                         .strip_prefix("folder-")
                         .and_then(|id| Id::parse_str(id).ok())
                         && this.navigate_folder_control(id, forward, window, cx)
@@ -189,7 +181,7 @@ impl NotesView {
                     }
                     if let Some((callback, focus)) = this
                         .accessibility
-                        .group_neighbor(control_key.as_ref(), forward)
+                        .group_neighbor(control_key.as_str(), forward)
                     {
                         focus.focus(window);
                         callback(this, window, cx);
@@ -224,7 +216,7 @@ impl NotesView {
                 if enabled {
                     if *hovered
                         && matches!(
-                            hover_id.as_ref(),
+                            hover_id.as_str(),
                             "recognize-text"
                                 | "recognize-math"
                                 | "index-handwriting"
@@ -237,7 +229,7 @@ impl NotesView {
                         this.controller.prepare_recognition();
                     }
                     this.motion.borrow_mut().hover(
-                        hover_id.as_ref(),
+                        hover_id.as_str(),
                         *hovered,
                         this.controller.settings.reduce_motion,
                     );
@@ -256,7 +248,10 @@ impl NotesView {
             .opacity(if dimmed { 0.4 } else { 1. })
             .when(enabled, |s| s.cursor_pointer())
             .child(content)
-            .child(decoration)
+            .track_bounds(id_for_bounds)
+            .role(accessibility::role(&role_key))
+            .label(accessible_label)
+            .when(accessibility::toggles(&role_key) || accessibility::selects(&role_key), |s| s.checked(active))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if enabled {
                     this.pointer_activation = !event.is_keyboard();

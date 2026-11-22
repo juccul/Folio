@@ -5,7 +5,7 @@ use super::{
 };
 use folio_app::Tool;
 use folio_document::{Id, Object, Point as DocPoint, Rect, Transform};
-use gpui::{prelude::*, *};
+use super::*;
 use std::sync::Arc;
 
 pub struct Editor {
@@ -52,7 +52,7 @@ impl NotesView {
             return;
         };
         let field = cx.new(|cx| {
-            let mut field = Field::new(text.text.clone(), true, cx);
+            let mut field = Field::with_cx(text.text.clone(), true, cx);
             // Text boxes on the canvas are not dialog fields in the Tab order.
             field.focus = field.focus.clone().tab_stop(false);
             field
@@ -99,7 +99,7 @@ impl NotesView {
     /// Commit and close the inline editor, wherever its box now is.
     pub(super) fn commit_inline_text(&mut self, cx: &mut Context<Self>) {
         if let Some(editor) = self.inline_text.take() {
-            let content = editor.field.read(cx).content.clone();
+            let content = editor.field.read(cx).content().clone();
             self.controller
                 .finish_text_edit(editor.note, editor.page, editor.id, content);
             // Return to the Text tool unless another tool was chosen meanwhile.
@@ -174,13 +174,13 @@ impl NotesView {
             let Object::Text(text) = source.as_ref() else {
                 return None;
             };
-            let cached = editor
-                .field
-                .read(cx)
+            let field = editor.field.read(cx);
+            let cached = field
                 .inline
                 .as_ref()
-                .filter(|style| Arc::ptr_eq(&style.source, source));
-            Some(cached.map_or_else(|| Arc::new(text.clone()), |style| style.text.clone()))
+                .filter(|style| Arc::ptr_eq(&style.source, source))
+                .map(|style| style.text.clone());
+            Some(cached.unwrap_or_else(|| Arc::new(text.clone())))
         });
         if !valid || text.is_none() {
             self.commit_inline_text(cx);
@@ -690,10 +690,7 @@ impl WithHint for Stateful<Div> {
     fn with_hint(self, hint: impl Into<SharedString>, theme: Theme, show: bool) -> Self {
         let hint = hint.into();
         self.when(show, |button| {
-            button.tooltip(move |_, cx| {
-                cx.new(|_| super::workspace::Hint(hint.clone(), theme))
-                    .into()
-            })
+            button.tooltip(hint.clone())
         })
     }
 }

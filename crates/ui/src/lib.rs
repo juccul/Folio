@@ -1,17 +1,22 @@
-//! GPUI presentation and native input adapter. Document operations are delegated
-//! to folio-app; ink geometry remains independent of GPUI.
+//! Rune presentation and native input adapter. Document operations are delegated
+//! to folio-app; ink geometry remains independent of the toolkit.
+#[macro_use]
+pub mod compat;
 mod accessibility;
 mod diagnostics;
 mod document_actions;
+mod executor;
+pub use executor::{AsyncApp, BackgroundExecutor, Task, WeakView};
 use document_actions::MoreSection;
 mod input_check;
 mod recovery;
-pub use recovery::RecoveryView;
+pub use recovery::{RecoveryView, run_recovery};
 mod appearance;
 mod canvas_menu;
 mod color_picker;
 mod controls;
 mod field;
+pub(crate) use field::FieldCallback;
 mod find;
 mod folder_menu;
 mod font_picker;
@@ -19,7 +24,6 @@ mod frame;
 mod graph;
 mod help;
 mod icons;
-pub use icons::IconAssets;
 mod export_options;
 mod ink_layers;
 mod inline_text;
@@ -30,13 +34,16 @@ mod navigation;
 mod notebook_setup;
 mod ocr_setup;
 mod page_size;
+mod paint;
 mod painting;
+pub use paint::*;
 mod pen_menu;
 mod pen_presets;
 mod portable;
 mod region;
 mod selection;
 mod settings;
+mod shell;
 mod templates;
 mod text_render;
 mod theme;
@@ -50,14 +57,16 @@ mod updates;
 mod validation;
 mod workspace;
 mod workspace_state;
-use field::{Field, FieldBoundsChanged, Submitted};
+pub use compat::*;
+pub use field::{Entity, Field, FieldBoundsChanged, InlineStyle, Navigate, Submitted};
 use folio_app::{Controller, ExportKind, Interaction, NoteFilter, RecognitionKind, Tool};
 use folio_document::{Color, Id, InkTool, Paper, Point as DocPoint};
 use folio_input::{Device, PenEvent, Phase, TimestampExtender, Tool as PenTool};
-use futures::StreamExt;
-use gpui::{prelude::*, *};
 use icons::{Icon, icon};
 pub use painting::CanvasFrame;
+pub use shell::{AppState, run};
+/// GPUI's app context, which helpers took for reading entities.
+pub type App = Context<NotesView>;
 use std::time::{Duration, Instant};
 use theme::{Glass, Theme};
 
@@ -229,20 +238,10 @@ impl Modal {
         }
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PollMode {
-    Fast,
-    Deferred,
-    Stopped,
-}
-
 pub struct NotesView {
     updater: folio_update::Updater,
     titlebar_smoke: bool,
     update_preparing: bool,
-    poll_task: Option<Task<()>>,
-    /// Scheduled polling cadence: None when sleeping at 0 Hz, or whether fast (16 ms) vs deferred idle wake.
-    poll_mode: PollMode,
     canvas_ease: CanvasEase,
     /// A document tab being pressed or dragged along the tab bar.
     tab_drag: Option<navigation::TabDrag>,
@@ -266,12 +265,9 @@ pub struct NotesView {
     folder_destination: Option<Id>,
     page_size_unit: page_size::Unit,
     notebook_setup: Option<notebook_setup::Setup>,
-    color_drag: Option<(EntityId, usize)>,
+    color_drag: Option<(usize, usize)>,
     color_picker: Option<color_picker::PickerState>,
     inline_text: Option<inline_text::Editor>,
-    subscriptions: Vec<Subscription>,
-    _appearance_subscription: Subscription,
-    _poll_subscription: Subscription,
     motion: std::cell::RefCell<motion::Motion>,
     transitions: std::cell::RefCell<transitions::Transitions>,
     building_overlay: bool,
@@ -301,8 +297,6 @@ pub struct NotesView {
     move_page_destination: Option<Id>,
     /// Menu control to focus once its menu has been built.
     menu_focus: Option<String>,
-    /// Focused element missing from the last rendered frame.
-    lost_focus: Option<FocusHandle>,
     /// Which toolbar control the Document actions popover opens from.
     more_anchor: String,
     attention_error: Option<String>,
@@ -337,12 +331,12 @@ pub struct NotesView {
     pointer_activation: bool,
     folder_menu: Option<(Id, Point<Pixels>)>,
     folder_rows: Vec<Id>,
-    folder_scroll: UniformListScrollHandle,
+    folder_scroll: ScrollHandle,
     /// The page thumbnails, scrolled to keep the current page in view.
-    pages_scroll: UniformListScrollHandle,
+    pages_scroll: ScrollHandle,
     /// Installed font families, read when the font dialog first opens.
     fonts: Option<std::rc::Rc<Vec<SharedString>>>,
-    font_scroll: UniformListScrollHandle,
+    font_scroll: ScrollHandle,
     /// The formatting bar's open font menu.
     font_menu: Option<font_picker::FontMenu>,
     font_appear: f32,
@@ -364,71 +358,78 @@ pub struct NotesView {
     window_title: String,
     painter: painting::Painter,
     accessibility: std::rc::Rc<accessibility::Accessibility>,
+    // Window state Rune reports, read by views and handlers.
+    pub viewport: Size<Pixels>,
+    pub mouse_position: Point<Pixels>,
+    pub scale: f32,
+    pub system_dark: bool,
+    pub window_hovered: bool,
+    pub focused_key: Option<String>,
+    /// Width the window's caption buttons take over the titlebar band.
+    pub chrome_trailing: f32,
+    /// Effects queued while the view was built, applied by the next poll.
+    deferred: Vec<Effect>,
+    /// The time poll should run again for background work, if idle.
+    next_wake: Option<Duration>,
 }
+
+/// A scroll viewport's key and the offset a view asks it to scroll to.
+#[derive(Clone, Default)]
+pub struct ScrollHandle {
+    pub key: String,
+    pub request: std::rc::Rc<std::cell::Cell<Option<usize>>>,
+}
+impl ScrollHandle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn keyed(key: &str) -> Self {
+        Self {
+            key: key.into(),
+            request: Default::default(),
+        }
+    }
+    pub fn set_offset(&self, _: Point<Pixels>) {}
+    pub fn scroll_to(&self, index: usize) {
+        self.request.set(Some(index));
+    }
+    pub fn scroll_to_item(&self, index: usize, _: ScrollStrategy) {
+        self.request.set(Some(index));
+    }
+    pub fn scroll_to_item_strict(&self, index: usize, _: ScrollStrategy) {
+        self.request.set(Some(index));
+    }
+    pub fn offset(&self) -> Point<Pixels> {
+        Point::default()
+    }
+    pub fn bounds(&self) -> Bounds<Pixels> {
+        Bounds::default()
+    }
+    pub fn max_offset(&self) -> Size<Pixels> {
+        Size::default()
+    }
+    pub fn take_request(&self) -> Option<usize> {
+        self.request.take()
+    }
+}
+#[derive(Clone, Copy)]
+pub enum ScrollStrategy {
+    Top,
+    Bottom,
+    Center,
+}
+
 impl NotesView {
-    pub fn new(controller: Controller, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::new_with_titlebar_fixture(controller, window, cx, false)
+    pub fn new(controller: Controller) -> Self {
+        Self::new_with_titlebar_fixture(controller, false)
     }
     /// Isolated real-pointer fixture: no update worker or installed update cache is opened.
-    pub fn new_titlebar_smoke(
-        controller: Controller,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let mut view = Self::new_with_titlebar_fixture(controller, window, cx, true);
+    pub fn new_titlebar_smoke(controller: Controller) -> Self {
+        let mut view = Self::new_with_titlebar_fixture(controller, true);
         view.update_smoke_phase(0);
         view
     }
-    fn new_with_titlebar_fixture(
-        mut controller: Controller,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        titlebar_smoke: bool,
-    ) -> Self {
-        controller.apply_system_theme(matches!(
-            window.appearance(),
-            WindowAppearance::Dark | WindowAppearance::VibrantDark
-        ));
-        let entity = cx.entity().downgrade();
-        let appearance_subscription = window.observe_window_appearance(move |window, cx| {
-            let _ = entity.update(cx, |view, cx| {
-                if view.controller.apply_system_theme(matches!(
-                    window.appearance(),
-                    WindowAppearance::Dark | WindowAppearance::VibrantDark
-                )) {
-                    cx.notify();
-                }
-            });
-        });
-        let focus = cx.focus_handle();
-        focus.focus(window);
-        let entity = cx.entity().downgrade();
-        window.on_window_should_close(cx, move |window, cx| {
-            entity
-                .update(cx, |view, cx| {
-                    if view.update_preparing {
-                        return false;
-                    }
-                    if view.closing {
-                        return true;
-                    }
-                    view.commit_inline_text(cx);
-                    if view.needs_close_prompt() {
-                        view.modal(Modal::UnsavedChanges, window, cx);
-                        return false;
-                    }
-                    view.store_workspace();
-                    match view.controller.flush() {
-                        Ok(()) => true,
-                        Err(e) => {
-                            view.controller.error = Some(e);
-                            cx.notify();
-                            false
-                        }
-                    }
-                })
-                .unwrap_or(true)
-        });
+    fn new_with_titlebar_fixture(controller: Controller, titlebar_smoke: bool) -> Self {
         let mut workspace = controller.settings.workspace.clone();
         workspace
             .open_tabs
@@ -437,15 +438,7 @@ impl NotesView {
             workspace.open_tabs.clear();
             workspace.library_open = true;
         }
-        let poll_subscription = cx.observe_self(|view, cx| {
-            // Input and background render notifications resume maintenance from
-            // 0 Hz idle sleep so newly started work/animations run immediately.
-            if view.poll_mode == PollMode::Stopped {
-                view.schedule_poll(Duration::from_millis(16), cx);
-            }
-        });
-        let (accessibility, mut accessibility_requests) = accessibility::Accessibility::new(window);
-        let mut view = Self {
+        Self {
             updater: if titlebar_smoke {
                 folio_update::Updater::disabled()
             } else {
@@ -453,8 +446,6 @@ impl NotesView {
             },
             titlebar_smoke,
             update_preparing: false,
-            poll_task: None,
-            poll_mode: PollMode::Stopped,
             canvas_ease: CanvasEase::default(),
             tab_drag: None,
             tab_bounds: Default::default(),
@@ -467,7 +458,7 @@ impl NotesView {
             diagnostics: diagnostics::Diagnostics::new(),
             canvas_bounds: None,
             canvas_document: None,
-            focus,
+            focus: FocusHandle::new("folio-root"),
             modal: None,
             equation_draft: None,
             folder_destination: None,
@@ -476,9 +467,6 @@ impl NotesView {
             color_drag: None,
             color_picker: None,
             inline_text: None,
-            subscriptions: vec![],
-            _appearance_subscription: appearance_subscription,
-            _poll_subscription: poll_subscription,
             motion: Default::default(),
             transitions: Default::default(),
             building_overlay: false,
@@ -493,12 +481,11 @@ impl NotesView {
             modal_error: None,
             modal_cursor: 0,
             find: None,
-            picker_scroll: ScrollHandle::new(),
-            settings_scroll: ScrollHandle::new(),
+            picker_scroll: ScrollHandle::keyed("tab-picker-results"),
+            settings_scroll: ScrollHandle::keyed("settings-section-scroll"),
             picker_query: String::new(),
             move_page_destination: None,
             menu_focus: None,
-            lost_focus: None,
             more_anchor: "more".into(),
             attention_error: None,
             pen_settings: false,
@@ -520,7 +507,7 @@ impl NotesView {
             sort_reverse: workspace.sort_reverse,
             sort_open: false,
             open_tabs: workspace.open_tabs,
-            tab_scroll: ScrollHandle::new(),
+            tab_scroll: ScrollHandle::keyed("document-tabs"),
             tab_target: None,
             document_menu: None,
             document_menu_tab: false,
@@ -528,10 +515,10 @@ impl NotesView {
             pointer_activation: false,
             folder_menu: None,
             folder_rows: Vec::new(),
-            folder_scroll: UniformListScrollHandle::new(),
-            pages_scroll: UniformListScrollHandle::new(),
+            folder_scroll: ScrollHandle::keyed("folder-list"),
+            pages_scroll: ScrollHandle::keyed("page-list"),
             fonts: None,
-            font_scroll: UniformListScrollHandle::new(),
+            font_scroll: ScrollHandle::keyed("font-list"),
             font_menu: None,
             font_appear: 1.,
             pages_followed: None,
@@ -549,204 +536,71 @@ impl NotesView {
             start: Instant::now(),
             window_title: "Folio".into(),
             painter: painting::Painter::default(),
-            accessibility: std::rc::Rc::new(accessibility),
-        };
-        cx.spawn_in(window, async move |view, cx| {
-            while let Some(request) = accessibility_requests.next().await {
-                if view
-                    .update_in(cx, |view, window, cx| {
-                        view.accessibility_action(request, window, cx);
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
-        let (wake_tx, mut wake_rx) = futures::channel::mpsc::channel::<()>(1);
-        let wake_tx = std::sync::Arc::new(std::sync::Mutex::new(wake_tx));
-        let make_wake = || {
-            let wake_tx = wake_tx.clone();
-            std::sync::Arc::new(move || {
-                if let Ok(mut tx) = wake_tx.lock() {
-                    let _ = tx.try_send(());
-                }
-            })
-        };
-        view.controller.set_wakeup(make_wake());
-        view.updater.set_wakeup(make_wake());
-        cx.spawn(async move |view, cx| {
-            use futures::StreamExt;
-            while wake_rx.next().await.is_some() {
-                if view
-                    .update(cx, |view, cx| {
-                        if view.poll_mode != PollMode::Fast {
-                            view.schedule_poll(Duration::ZERO, cx);
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
-        view.schedule_poll(Duration::from_millis(16), cx);
-        view
+            accessibility: Default::default(),
+            viewport: size(px(1320.), px(860.)),
+            mouse_position: point(px(0.), px(0.)),
+            scale: 1.,
+            system_dark: false,
+            window_hovered: false,
+            focused_key: None,
+            chrome_trailing: 0.,
+            deferred: Vec::new(),
+            next_wake: None,
+        }
     }
-    fn accessibility_action(
-        &mut self,
-        request: accesskit::ActionRequest,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let accessibility = self.accessibility.clone();
-        if request.target_node == accesskit::NodeId(3) {
-            if let Some((_, field)) = &self.modal {
-                if request.action == accesskit::Action::Focus {
-                    field.read(cx).focus.focus(window);
-                }
-                if let Some(accesskit::ActionData::Value(value)) = request.data {
-                    field.update(cx, |field, cx| {
-                        field.set_accessible_content(value.into(), cx)
-                    });
-                }
-            }
-        } else if request.target_node == accesskit::NodeId(13) {
-            if let Some(editor) = &self.inline_text {
-                if request.action == accesskit::Action::Focus {
-                    editor.field.read(cx).focus.focus(window);
-                }
-                if let Some(accesskit::ActionData::Value(value)) = request.data {
-                    editor.field.update(cx, |field, cx| {
-                        field.set_accessible_content(value.into(), cx)
-                    });
-                }
-            }
-        } else if request.target_node == accesskit::NodeId(12) {
-            if let Some(setup) = &self.notebook_setup {
-                if request.action == accesskit::Action::Focus {
-                    setup.color.read(cx).focus.focus(window);
-                }
-                if let Some(accesskit::ActionData::Value(value)) = request.data {
-                    setup.color.update(cx, |field, cx| {
-                        field.set_accessible_content(value.into(), cx)
-                    });
-                }
-            }
-        } else if ((5..=8).contains(&request.target_node.0) || request.target_node.0 == 11)
-            && self.modal.is_none()
-            && !self.blocking_overlay()
+    /// Background maintenance before each frame: document workers, saving,
+    /// updates and animations. Returns whether anything visible changed.
+    pub fn poll(&mut self, tx: &mut rune::Tx) -> bool {
+        let changed = !self.update_preparing && self.controller.tick();
+        let update_changed = self.updater.poll();
+        if self.updater.state == folio_update::State::Exit {
+            self.update_preparing = false;
+            tx.quit();
+            return true;
+        }
+        if self.update_preparing
+            && update_changed
+            && !matches!(
+                self.updater.state,
+                folio_update::State::Preparing { .. } | folio_update::State::Exit
+            )
         {
-            if let Some(inputs) = &self.math_inputs {
-                let fields = [
-                    &inputs.expression,
-                    &inputs.variable,
-                    &inputs.next_line,
-                    &inputs.range,
-                ];
-                let field = if request.target_node.0 == 11 {
-                    &inputs.result_latex
-                } else {
-                    fields[(request.target_node.0 - 5) as usize]
-                };
-                if request.action == accesskit::Action::Focus {
-                    field.read(cx).focus.focus(window);
-                }
-                if let Some(accesskit::ActionData::Value(value)) = request.data {
-                    field.update(cx, |field, cx| {
-                        field.set_accessible_content(value.into(), cx)
-                    });
-                }
-            }
-        } else if let Some((callback, focus)) = accessibility.action(request.target_node) {
-            match request.action {
-                accesskit::Action::Click => callback(self, window, cx),
-                accesskit::Action::Focus => focus.focus(window),
-                _ => {}
-            }
+            self.update_preparing = false;
         }
-    }
-    fn schedule_poll(&mut self, delay: Duration, cx: &mut Context<Self>) {
-        self.poll_mode = if delay > Duration::from_millis(16) {
-            PollMode::Deferred
-        } else {
-            PollMode::Fast
-        };
-        // Replacing the handle cancels the previous timer rather than creating
-        // a second poll loop. The weak entity stops polling when the view closes.
-        self.poll_task = Some(cx.spawn(async move |view, cx| {
-            if !delay.is_zero() {
-                cx.background_executor().timer(delay).await;
-            }
-            let _ = view.update(cx, |view, cx| {
-                if let Some(task) = view.poll_task.take() {
-                    task.detach();
-                }
-                let changed = !view.update_preparing && view.controller.tick();
-                let update_changed = view.updater.poll();
-                if view.updater.state == folio_update::State::Exit {
-                    view.update_preparing = false;
-                    cx.quit();
-                    return;
-                }
-                if view.update_preparing
-                    && update_changed
-                    && !matches!(
-                        view.updater.state,
-                        folio_update::State::Preparing { .. } | folio_update::State::Exit
-                    )
-                {
-                    view.update_preparing = false;
-                }
-                let motion_changed =
-                    view.motion.borrow_mut().advance() || view.transitions.borrow().animating();
-                let notify = changed || update_changed || motion_changed;
-                let fast = notify
-                    || view.controller.needs_fast_poll()
-                    || view.motion.borrow().needs_frame()
-                    || view.updater.state.busy()
-                    || view.updater.state == folio_update::State::Checking;
-                if fast {
-                    view.schedule_poll(Duration::from_millis(16), cx);
-                } else if let Some(next) = view.controller.next_idle_wake() {
-                    view.schedule_poll(next.max(Duration::from_millis(16)), cx);
-                } else {
-                    // Truly idle: sleep at 0 Hz until user input or a worker wakeup.
-                    view.poll_mode = PollMode::Stopped;
-                }
-                if notify {
-                    cx.notify();
-                }
-            });
-        }));
-    }
-    fn resume_poll(&mut self, cx: &mut Context<Self>) {
-        // Rendering/layout can start work after the latest maintenance tick
-        // has entered idle sleep, without another entity notification.
-        if self.poll_mode == PollMode::Fast {
-            return;
-        }
-        let needs_fast = self.controller.needs_fast_poll()
+        let tasks = executor::poll(self);
+        let motion_changed =
+            self.motion.borrow_mut().advance() || self.transitions.borrow().animating();
+        let easing = self.canvas_ease.last.is_some();
+        let painting = self.painter.busy();
+        let notify = changed || update_changed || motion_changed || easing || painting;
+        let fast = notify
+            || tasks
+            || self.controller.needs_fast_poll()
             || self.motion.borrow().needs_frame()
-            || self.transitions.borrow().animating()
             || self.updater.state.busy()
             || self.updater.state == folio_update::State::Checking;
-        if needs_fast {
-            self.schedule_poll(Duration::from_millis(16), cx);
-        } else if self.poll_mode == PollMode::Stopped
-            && let Some(next) = self.controller.next_idle_wake()
-        {
-            self.schedule_poll(next.max(Duration::from_millis(16)), cx);
+        if fast {
+            tx.wake_after(Duration::from_millis(16));
+        } else if let Some(next) = self.controller.next_idle_wake() {
+            tx.wake_after(next.max(Duration::from_millis(16)));
         }
+        let deferred = std::mem::take(&mut self.deferred);
+        compat::apply(deferred, tx);
+        notify
     }
-    pub fn bindings(cx: &mut App) {
-        Field::bindings(cx);
-        cx.bind_keys([
-            KeyBinding::new("tab", FocusNext, None),
-            KeyBinding::new("shift-tab", FocusPrevious, None),
+    /// Queues effects from outside a handler, applied by the next poll.
+    pub fn queue_effects(&mut self, effects: Vec<Effect>) {
+        self.deferred.extend(effects);
+    }
+    /// Applies what a handler queued through its window and context.
+    pub fn apply_effects(&mut self, window: Window, cx: Context<NotesView>, tx: &mut rune::Tx) {
+        compat::apply(window.effects, tx);
+        compat::apply(cx.effects, tx);
+        // Input resumes maintenance so newly started work runs at once.
+        tx.wake_after(Duration::from_millis(16));
+    }
+    pub fn bindings() -> Vec<KeyBinding> {
+        let mut bindings = vec![
             KeyBinding::new("ctrl-t", OpenTab, Some("FolioLibrary")),
             KeyBinding::new("ctrl-w", CloseTab, Some("FolioLibrary")),
             KeyBinding::new("ctrl-tab", NextTab, Some("FolioLibrary")),
@@ -759,8 +613,8 @@ impl NotesView {
             KeyBinding::new("ctrl-s", Save, Some("FolioLibrary")),
             KeyBinding::new("ctrl-shift-l", Library, Some("FolioLibrary")),
             KeyBinding::new("escape", Escape, Some("FolioLibrary")),
-        ]);
-        cx.bind_keys([
+        ];
+        bindings.extend([
             KeyBinding::new("ctrl-z", Undo, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-shift-z", Redo, Some("Folio && !FolioField")),
             KeyBinding::new("ctrl-y", Redo, Some("Folio && !FolioField")),
@@ -821,9 +675,10 @@ impl NotesView {
             KeyBinding::new("ctrl-i", ToggleItalic, Some("Folio")),
             KeyBinding::new("ctrl-u", ToggleUnderline, Some("Folio")),
         ]);
+        bindings
     }
-    pub fn titlebar_smoke_bindings(cx: &mut App) {
-        cx.bind_keys([KeyBinding::new("ctrl-alt-u", ResetTitlebarSmoke, None)]);
+    pub fn titlebar_smoke_bindings() -> Vec<KeyBinding> {
+        vec![KeyBinding::new("ctrl-alt-u", ResetTitlebarSmoke, None)]
     }
     fn blocking_overlay(&self) -> bool {
         self.update_preparing
@@ -884,7 +739,6 @@ impl NotesView {
         self.clear_color_picker(window);
         self.modal = None;
         self.notebook_setup = None;
-        self.subscriptions.clear();
         if let Some(editor) = &self.inline_text {
             editor.field.read(cx).focus.focus(window);
         } else {
@@ -1058,8 +912,8 @@ impl NotesView {
             Modal::Recognition => Some("Type the text for this writing"),
             _ => None,
         };
-        let field = cx.new(|cx| {
-            let mut field = Field::new(content, multiline, cx);
+        let field = Entity::new({
+            let mut field = Field::new(content, multiline);
             field.secret = secret;
             field.theme = Theme::new(&self.controller.settings);
             field.placeholder = placeholder.filter(|p| !p.is_empty()).map(Into::into);
@@ -1098,24 +952,22 @@ impl NotesView {
                 .into(),
             );
         }
-        self.subscriptions.clear();
         self.observe_notebook_setup(window, cx);
-        self.subscriptions.push(cx.observe(&field, |this, _, cx| {
-            this.modal_error = None;
-            cx.notify();
-        }));
-        self.subscriptions.push(
-            cx.subscribe(&field, |this, _, navigate: &field::Navigate, cx| {
-                this.navigate_modal(navigate.0, cx)
-            }),
-        );
-        self.subscriptions
-            .push(cx.subscribe(&field, |_, _, _: &FieldBoundsChanged, cx| cx.notify()));
-        self.subscriptions.push(cx.subscribe_in(
-            &field,
-            window,
-            |this, _, _: &Submitted, window, cx| this.submit_modal(window, cx),
-        ));
+        {
+            let mut f = field.0.borrow_mut();
+            f.on_change = Some(std::rc::Rc::new(|this: &mut NotesView, _, _| {
+                this.modal_error = None;
+            }));
+            f.on_navigate = Some(std::rc::Rc::new(|this: &mut NotesView, down, _, cx| {
+                this.navigate_modal(down, cx)
+            }));
+            f.on_submit = Some(std::rc::Rc::new(|this: &mut NotesView, window, cx| {
+                this.submit_modal(window, cx)
+            }));
+            f.on_escape = Some(std::rc::Rc::new(|this: &mut NotesView, window, cx| {
+                this.escape(window, cx)
+            }));
+        }
         self.modal_error = None;
         self.clear_color_picker(window);
         self.modal = Some((modal, field));
@@ -1127,7 +979,7 @@ impl NotesView {
         };
         let modal = modal.clone();
         let field = field.clone();
-        let content = field.read(cx).content.clone();
+        let content = field.read(cx).content().clone();
         if self.controller.equation_pending
             && matches!(modal, Modal::Equation | Modal::EditEquation(_))
         {
@@ -1470,76 +1322,48 @@ impl NotesView {
         if self.controller.read_only() {
             return;
         }
-        if let Some(item) = cx.read_from_clipboard() {
-            let mut pasted = false;
-            for entry in item.entries() {
-                if let ClipboardEntry::Image(image) = entry {
-                    let ext = match image.format() {
-                        ImageFormat::Png => Some("png"),
-                        ImageFormat::Jpeg => Some("jpg"),
-                        ImageFormat::Webp => Some("webp"),
-                        _ => None,
-                    };
-                    if let Some(ext) = ext {
-                        if let Some(position) = position {
-                            self.controller.paste_image_at(image.bytes(), ext, position);
-                        } else {
-                            self.controller.paste_image(image.bytes(), ext);
-                        }
-                        pasted = true;
-                        break;
-                    }
-                }
+        cx.read_clipboard(move |this, content, _, _| {
+            if this.controller.read_only() {
+                return;
             }
-            if !pasted && let Some(text) = item.text() {
+            if let Some(image) = content.image() {
                 if let Some(position) = position {
-                    self.controller.paste_text_or_objects_at(text, position);
+                    this.controller.paste_image_at(image.png(), "png", position);
                 } else {
-                    self.controller.paste_text_or_objects(text);
+                    this.controller.paste_image(image.png(), "png");
+                }
+                return;
+            }
+            let text = content.text();
+            if !text.is_empty() {
+                if let Some(position) = position {
+                    this.controller.paste_text_or_objects_at(text.to_owned(), position);
+                } else {
+                    this.controller.paste_text_or_objects(text.to_owned());
                 }
             }
-        }
-        cx.notify();
+        });
     }
     fn import(&mut self, cx: &mut Context<Self>) {
         let from_home = self.library_open;
         let target = self.controller.active;
-        let paths = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: Some("Import PDF, image or editable Folio document".into()),
+        let options = rune::FileDialogOptions {
+            title: "Import PDF, image or editable Folio document".into(),
+            ..Default::default()
+        };
+        cx.open_file(options, move |view, path, _, _| {
+            let Some(path) = path else { return };
+            if from_home {
+                let id = view.controller.import_as_note(path);
+                if !view.open_tabs.contains(&id) {
+                    view.open_tabs.push(id);
+                }
+                view.show_editor();
+            } else {
+                view.controller.import_into(target, path);
+                view.open_note(target);
+            }
         });
-        cx.spawn(async move |view, cx| match paths.await {
-            Ok(Ok(Some(paths))) => {
-                let _ = view.update(cx, |view, cx| {
-                    for path in paths {
-                        if from_home {
-                            let id = view.controller.import_as_note(path);
-                            if !view.open_tabs.contains(&id) {
-                                view.open_tabs.push(id);
-                            }
-                        } else {
-                            view.controller.import_into(target, path);
-                        }
-                    }
-                    if !from_home {
-                        view.open_note(target);
-                    } else {
-                        view.show_editor();
-                    }
-                    cx.notify();
-                });
-            }
-            Ok(Err(e)) => {
-                let _ = view.update(cx, |v, cx| {
-                    v.controller.error = Some(e.to_string());
-                    cx.notify();
-                });
-            }
-            _ => {}
-        })
-        .detach();
     }
     fn export(&mut self, kind: ExportKind, cx: &mut Context<Self>) {
         self.export_open = false;
@@ -1564,88 +1388,39 @@ impl NotesView {
             let appearance = self.export_options.appearance;
             snapshot.map_pages(|page| export_options::apply(page, theme, appearance));
         }
-        let path = cx.prompt_for_new_path(&self.controller.data_dir, Some(&suggested));
-        cx.spawn(async move |view, cx| match path.await {
-            Ok(Ok(Some(path))) => {
-                let _ = view.update(cx, |view, cx| {
-                    view.controller.export_prepared(snapshot, path, kind);
-                    cx.notify();
-                });
+        let snapshot = std::cell::RefCell::new(Some(snapshot));
+        let options = rune::FileDialogOptions {
+            title: "Export".into(),
+            directory: Some(self.controller.data_dir.clone()),
+            file_name: Some(suggested),
+            ..Default::default()
+        };
+        cx.save_file(options, move |view, path, _, _| {
+            if let (Some(path), Some(snapshot)) = (path, snapshot.borrow_mut().take()) {
+                view.controller.export_prepared(snapshot, path, kind);
             }
-            Ok(Err(e)) => {
-                let _ = view.update(cx, |v, cx| {
-                    v.controller.error = Some(e.to_string());
-                    cx.notify();
-                });
-            }
-            _ => {}
-        })
-        .detach();
-        cx.notify();
+        });
     }
-    pub fn tablet(&mut self, event: &TabletEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.diagnostics.pen(event);
-        self.last_tablet = Some(Instant::now());
-        self.pen_in_range = !matches!(event.phase, TabletPhase::Leave | TabletPhase::Cancel);
-        if self.pen_tool_wheel(event, window, cx) {
-            return;
+    /// Files dropped on the window: imported as new documents from the
+    /// library, or into the open document.
+    pub(crate) fn drop_files(
+        &mut self,
+        files: Vec<std::path::PathBuf>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        if self.library_open {
+            for path in files {
+                let id = self.controller.import_as_note(path);
+                self.open_tabs.push(id);
+            }
+            self.show_editor();
+        } else {
+            let target = self.controller.active;
+            for path in files {
+                self.controller.import_into(target, path);
+            }
         }
-        if self.canvas_input_blocked() {
-            return;
-        }
-        let Some(bounds) = self.canvas_bounds else {
-            return;
-        };
-        if event.phase == TabletPhase::Down && !bounds.contains(&event.position) {
-            return;
-        }
-        if self.controller.interaction.is_none()
-            && self.region_selection.is_none()
-            && !bounds.contains(&event.position)
-        {
-            return;
-        }
-        self.last_tablet = Some(Instant::now());
-        let position = DocPoint::new(
-            f32::from(event.position.x) - f32::from(bounds.origin.x),
-            f32::from(event.position.y) - f32::from(bounds.origin.y),
-        );
-        let phase = match event.phase {
-            TabletPhase::Down => Phase::Down,
-            TabletPhase::Move => Phase::Move,
-            TabletPhase::Up => Phase::Up,
-            TabletPhase::Hover => Phase::Hover,
-            TabletPhase::Leave => Phase::Leave,
-            TabletPhase::Cancel => Phase::Cancel,
-        };
-        let input = PenEvent {
-            device: Device::Tablet,
-            tool: if event.eraser {
-                PenTool::Eraser
-            } else {
-                PenTool::Pen
-            },
-            phase,
-            position,
-            pressure: event.pressure,
-            tilt_x: event.tilt_x,
-            tilt_y: event.tilt_y,
-            buttons: event.buttons,
-            timestamp: self.timestamps.extend(event.timestamp),
-        };
-        if phase == Phase::Down {
-            self.focus.focus(window);
-        }
-        if self.region_input(input.phase, input.position, cx) {
-            return;
-        }
-        let was_panning = matches!(self.controller.interaction, Some(Interaction::Pan { .. }));
-        self.controller.pointer(input);
-        if phase == Phase::Up && was_panning {
-            self.synchronize_page_view();
-        }
-        self.check_text(phase, window, cx);
-        cx.notify();
     }
     fn mouse(
         &mut self,
@@ -1730,111 +1505,6 @@ impl NotesView {
             let id = self.controller.create_text_box(position);
             self.begin_inline_text(id, window, cx);
         }
-    }
-    fn pad(&mut self, event: &TabletPadEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(check) = &mut self.diagnostics.check {
-            check.pad(event);
-            cx.notify();
-        }
-        if self.settings_open {
-            self.pad_button_pressed(event, cx);
-            return;
-        }
-        if self.library_open
-            || self.blocking_overlay()
-            || self.tool_menu.is_some()
-            || self.controller.loading_note()
-            || self.controller.interaction.is_some()
-        {
-            return;
-        }
-        if let Some(button) = event.button {
-            if !event.pressed {
-                return;
-            }
-            let action = self
-                .controller
-                .settings
-                .pad_buttons
-                .get(button as usize)
-                .cloned()
-                .unwrap_or_default();
-            match action.as_str() {
-                "undo" => self.controller.undo(),
-                "redo" => self.controller.redo(),
-                "wheel" => self.toggle_tool_wheel(window.mouse_position(), window, cx),
-                "eraser" => self.controller.set_tool(Tool::Eraser),
-                "pen" => self.controller.set_tool(Tool::Pen),
-                "previous-page" => self
-                    .controller
-                    .change_page(self.controller.session().page.saturating_sub(1)),
-                "next-page" => self.controller.change_page(
-                    (self.controller.session().page + 1)
-                        .min(self.controller.session().document.pages.len() - 1),
-                ),
-                _ => {}
-            }
-        } else if event.strip {
-            self.controller.session_mut().viewport.pan.y -= event.delta * 800.;
-        } else {
-            let anchor = self
-                .canvas_bounds
-                .map(|b| DocPoint::new(f32::from(b.size.width) / 2., f32::from(b.size.height) / 2.))
-                .unwrap_or_default();
-            self.controller
-                .session_mut()
-                .viewport
-                .zoom_at((event.delta * 0.01).exp(), anchor);
-        }
-        if event.button.is_none() {
-            self.synchronize_page_view();
-        }
-        cx.notify();
-    }
-    fn gesture(&mut self, event: &NavigationGesture, cx: &mut Context<Self>) {
-        if self.modal.is_some()
-            || self.settings_open
-            || self.controller.interaction.is_some()
-            || self.controller.loading_note()
-            || self.pen_in_range
-        {
-            return;
-        }
-        let Some(bounds) = self.canvas_bounds else {
-            return;
-        };
-        if !bounds.contains(&event.position) && self.gesture_start.is_none() {
-            return;
-        }
-        match event.phase {
-            TouchPhase::Started => self.gesture_start = Some(self.controller.session().viewport),
-            TouchPhase::Moved => {
-                if self.gesture_start.is_none() {
-                    return;
-                }
-                let anchor = DocPoint::new(
-                    f32::from(event.position.x - bounds.origin.x),
-                    f32::from(event.position.y - bounds.origin.y),
-                );
-                let viewport = &mut self.controller.session_mut().viewport;
-                let original = viewport.to_document(anchor);
-                viewport.zoom_at(event.scale, anchor);
-                viewport.rotation += event.rotation;
-                let after = viewport.to_screen(original);
-                viewport.pan.x += anchor.x - after.x + f32::from(event.translation.x);
-                viewport.pan.y += anchor.y - after.y + f32::from(event.translation.y);
-            }
-            TouchPhase::Ended => {
-                if event.cancelled
-                    && let Some(original) = self.gesture_start
-                {
-                    self.controller.session_mut().viewport = original;
-                }
-                self.gesture_start = None;
-                self.synchronize_page_view();
-            }
-        }
-        cx.notify();
     }
     fn scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
         if self.modal.is_some()
@@ -2068,7 +1738,7 @@ impl NotesView {
             panel = panel.child(div().text_sm().child(message));
         }
         if matches!(modal, Modal::MoveNotebook(_) | Modal::MoveDocument(_)) {
-            let query = field.read(cx).content.to_lowercase();
+            let query = field.read(cx).content().to_lowercase();
             let mut destinations = div()
                 .id("folder-picker")
                 .max_h(px(280.))
@@ -2179,7 +1849,7 @@ impl NotesView {
         if matches!(modal, Modal::Recognition) {
             let math = self.reviewing_math();
             if math {
-                panel = panel.child(self.review_preview(field.read(cx).content.clone(), cx));
+                panel = panel.child(self.review_preview(field.read(cx).content().clone(), cx));
             }
             panel = panel.child(div().text_sm().text_color(rgb(theme.muted)).child(if math {
                 "Check the detected math, and edit it if anything is wrong. Copy keeps your ink; replacement inserts a rendered, editable equation."
@@ -2196,7 +1866,7 @@ impl NotesView {
                     )))
                     .child(self.button("copy-recognized-text", if math { "Copy LaTeX" } else { "Copy text" }, false, cx, |this, _, cx| {
                         if let Some((Modal::Recognition, field)) = &this.modal {
-                            cx.write_to_clipboard(ClipboardItem::new_string(field.read(cx).content.clone()));
+                            cx.write_to_clipboard(ClipboardItem::new_string(field.read(cx).content().clone()));
                             this.controller.status = "Recognized text copied".into();
                         }
                     }))
@@ -2209,7 +1879,7 @@ impl NotesView {
                         let text = this
                             .modal
                             .as_ref()
-                            .map(|(_, field)| field.read(cx).content.clone())
+                            .map(|(_, field)| field.read(cx).content().clone())
                             .unwrap_or_default();
                         match this.controller.use_math_review(text) {
                             Ok(()) => {
@@ -2234,7 +1904,7 @@ impl NotesView {
                         let text = this
                             .modal
                             .as_ref()
-                            .map(|(_, field)| field.read(cx).content.clone())
+                            .map(|(_, field)| field.read(cx).content().clone())
                             .unwrap_or_default();
                         match this.controller.keep_ink_and_index(text) {
                             Ok(()) => this.close_modal(w, cx),
@@ -2417,7 +2087,7 @@ impl NotesView {
         let query = self
             .modal
             .as_ref()
-            .map(|(_, field)| field.read(cx).content.trim().to_lowercase())
+            .map(|(_, field)| field.read(cx).content().trim().to_lowercase())
             .unwrap_or_default();
         let notes = self.controller.notes.iter().filter(|n| !n.trashed);
         if query.is_empty() {
@@ -2453,7 +2123,7 @@ impl NotesView {
         cx: &mut Context<Self>,
     ) -> Div {
         let theme = Theme::new(&self.controller.settings);
-        let query = field.read(cx).content.trim().to_lowercase();
+        let query = field.read(cx).content().trim().to_lowercase();
         if query != self.picker_query {
             self.picker_query = query.clone();
             self.modal_cursor = 0;
@@ -2716,210 +2386,8 @@ impl NotesView {
         } else {
             (current + count - 1) % count
         };
-        self.picker_scroll.scroll_to_item(self.modal_cursor);
+        self.picker_scroll.scroll_to(self.modal_cursor);
         cx.notify();
-    }
-    /// Prepare synthetic 120 Hz input. Dispatch is performed without borrowing
-    /// this entity, exactly as the native platform event loop dispatches frames.
-    pub fn smoke_events(&mut self) -> Result<Vec<TabletEvent>, String> {
-        let b = self.canvas_bounds.ok_or("Canvas was not laid out")?;
-        self.controller.create_note();
-        self.controller.session_mut().viewport = folio_canvas::Viewport {
-            zoom: 1.,
-            pan: DocPoint::new(40., 30.),
-            rotation: 0.,
-        };
-        let point = |x: f32, y: f32| {
-            point(
-                px(f32::from(b.origin.x) + 40. + x),
-                px(f32::from(b.origin.y) + 30. + y),
-            )
-        };
-        let mut events = (0..80)
-            .map(|i| TabletEvent {
-                position: point(50. + i as f32 * 3., 100. + (i as f32 * 0.12).sin() * 25.),
-                pressure: 0.1 + i as f32 / 100.,
-                tilt_x: 12.,
-                tilt_y: -8.,
-                timestamp: 101 + i * 8,
-                buttons: 0,
-                eraser: false,
-                phase: if i == 0 {
-                    TabletPhase::Down
-                } else {
-                    TabletPhase::Move
-                },
-                modifiers: Default::default(),
-            })
-            .collect::<Vec<_>>();
-        events.push(TabletEvent {
-            position: point(287., 100. + (79f32 * 0.12).sin() * 25.),
-            pressure: 0.,
-            tilt_x: 12.,
-            tilt_y: -8.,
-            timestamp: 900,
-            buttons: 0,
-            eraser: false,
-            phase: TabletPhase::Up,
-            modifiers: Default::default(),
-        });
-        Ok(events)
-    }
-    pub fn smoke_toolbar_setup(&mut self, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(String::new()));
-        self.controller.select_all();
-        cx.notify();
-    }
-    pub fn smoke_toolbar_events(&self) -> Result<Vec<PlatformInput>, String> {
-        let b = self.canvas_bounds.ok_or("Canvas not laid out")?;
-        let button = self
-            .accessibility
-            .control_bounds("Copy")
-            .ok_or("Contextual selection toolbar not laid out")?;
-        let origin = self.selection_toolbar_origin();
-        let left = f32::from(b.origin.x) + origin.x;
-        let top = f32::from(b.origin.y) + origin.y;
-        if button.x0 < (left - 1.) as f64
-            || button.y0 < (top - 1.) as f64
-            || button.x1 > (left + f32::from(self.selection_toolbar_size.width) + 1.) as f64
-            || button.y1 > (top + f32::from(self.selection_toolbar_size.height) + 1.) as f64
-        {
-            return Err(format!(
-                "Contextual selection toolbar is still laying out: button {button:?}; origin {left},{top}; size {:?}; canvas {b:?}; viewport {:?}",
-                self.selection_toolbar_size,
-                self.controller.session().viewport
-            ));
-        }
-        let position = point(
-            px(((button.x0 + button.x1) * 0.5) as f32),
-            px(((button.y0 + button.y1) * 0.5) as f32),
-        );
-        let tablet = |phase| TabletEvent {
-            position,
-            pressure: 0.7,
-            tilt_x: 12.,
-            tilt_y: -8.,
-            timestamp: 1000,
-            buttons: 0,
-            eraser: false,
-            phase,
-            modifiers: Default::default(),
-        };
-        Ok(vec![
-            PlatformInput::Tablet(tablet(TabletPhase::Down)),
-            PlatformInput::MouseDown(MouseDownEvent {
-                button: MouseButton::Left,
-                position,
-                modifiers: Default::default(),
-                click_count: 1,
-                first_mouse: false,
-            }),
-            PlatformInput::Tablet(tablet(TabletPhase::Up)),
-            PlatformInput::MouseUp(MouseUpEvent {
-                button: MouseButton::Left,
-                position,
-                modifiers: Default::default(),
-                click_count: 1,
-            }),
-            PlatformInput::Tablet(tablet(TabletPhase::Leave)),
-            PlatformInput::NavigationGesture(NavigationGesture {
-                position: point(b.origin.x + px(200.), b.origin.y + px(200.)),
-                translation: point(px(0.), px(0.)),
-                scale: 1.,
-                rotation: 0.,
-                phase: TouchPhase::Started,
-                cancelled: false,
-            }),
-            PlatformInput::NavigationGesture(NavigationGesture {
-                position: point(b.origin.x + px(200.), b.origin.y + px(200.)),
-                translation: point(px(30.), px(20.)),
-                scale: 1.25,
-                rotation: 0.2,
-                phase: TouchPhase::Moved,
-                cancelled: false,
-            }),
-            PlatformInput::NavigationGesture(NavigationGesture {
-                position: point(b.origin.x + px(200.), b.origin.y + px(200.)),
-                translation: point(px(0.), px(0.)),
-                scale: 1.,
-                rotation: 0.,
-                phase: TouchPhase::Ended,
-                cancelled: true,
-            }),
-            PlatformInput::TabletPad(TabletPadEvent {
-                button: Some(0),
-                pressed: true,
-                delta: 0.,
-                strip: false,
-                timestamp: 1100,
-            }),
-            PlatformInput::TabletPad(TabletPadEvent {
-                button: Some(1),
-                pressed: true,
-                delta: 0.,
-                strip: false,
-                timestamp: 1110,
-            }),
-        ])
-    }
-    pub fn smoke_verify(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
-        let viewport = self.controller.session().viewport;
-        if (viewport.zoom - 1.).abs() > 0.001
-            || viewport.rotation.abs() > 0.001
-            || viewport.pan.distance(DocPoint::new(40., 30.)) > 0.001
-        {
-            return Err("Cancelled navigation did not restore the viewport".into());
-        }
-        let stroke = self
-            .controller
-            .page()
-            .ordered_objects()
-            .find_map(|o| {
-                if let folio_document::Object::Stroke(s) = o.as_ref() {
-                    Some(s)
-                } else {
-                    None
-                }
-            })
-            .ok_or("Tablet dispatch produced no ink")?;
-        if stroke.raw.len() != 80
-            || stroke.raw.first().is_none_or(|p| p.tilt_x != 12.)
-            || stroke.raw.get(79).is_none_or(|p| p.pressure < 0.88)
-        {
-            return Err("Rich tablet samples were lost".into());
-        }
-        if self.controller.page().objects.len() != 1
-            || (stroke.transform.a - 1.).abs() > 0.001
-            || (stroke.transform.d - 1.).abs() > 0.001
-            || stroke.transform.b.abs() > 0.001
-            || stroke.transform.c.abs() > 0.001
-        {
-            return Err(format!(
-                "Stylus selection-toolbar Copy must preserve ink without drawing through the overlay: {} objects, {} selected, transform {:?}",
-                self.controller.page().objects.len(),
-                self.controller.session().selection.len(),
-                stroke.transform
-            ));
-        }
-        self.controller.select_all(); // Pad undo/redo clears selection; restore it for clipboard comparison.
-        let clipboard = cx.read_from_clipboard().and_then(|item| item.text());
-        if clipboard != self.controller.encode_clipboard() {
-            return Err(
-                "Selection Copy did not write the selected objects to the clipboard".into(),
-            );
-        }
-        self.controller.select_all();
-        self.controller.scale_selection(1.2);
-        self.controller.undo();
-        self.controller.redo();
-        self.controller.add_page();
-        self.controller.change_page(0);
-        self.controller.flush()
-    }
-    /// Diagnostics for the isolated ink-layer example; does not open the updater.
-    pub fn smoke_ink_layers(&mut self, enabled: Option<bool>) -> (usize, usize) {
-        self.painter.ink_layer_override = enabled;
-        self.painter.ink_layer_counts()
     }
 }
 
@@ -2936,4 +2404,29 @@ pub(crate) fn keycap(label: &'static str, theme: Theme) -> Div {
         .bg(theme.raised())
         .text_color(rgb(theme.ink))
         .child(label)
+}
+
+/// Scrolls a viewport to a marked element; here the viewport's key.
+#[derive(Clone, Default)]
+pub struct ScrollAnchor(ScrollHandle);
+impl ScrollAnchor {
+    pub fn for_handle(handle: ScrollHandle) -> Self {
+        Self(handle)
+    }
+    pub fn scroll_to(&self, window: &mut Window, _: &mut Context<NotesView>) {
+        if !self.0.key.is_empty() {
+            window.scroll_into_view(format!("{}-anchor", self.0.key));
+        }
+    }
+}
+
+impl Div {
+    /// Marks the element a [`ScrollAnchor`] scrolls to.
+    pub fn anchor_scroll(self, anchor: ScrollAnchor) -> Self {
+        if anchor.0.key.is_empty() {
+            self
+        } else {
+            self.id(format!("{}-anchor", anchor.0.key))
+        }
+    }
 }

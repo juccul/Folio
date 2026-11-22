@@ -16,12 +16,17 @@ uuid = { version = "1.23", features = ["v4", "serde"] }
 thiserror = "2"
 anyhow = "1"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
-gpui = { version = "=0.2.2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts"] }
+rune = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df", features = ["native-file-dialog"] }
 
 [patch.crates-io]
-gpui = { path = "vendor/gpui" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
 xattr = { path = "vendor/xattr" }
 proc-macro-error2 = { path = "vendor/proc-macro-error2" }
 

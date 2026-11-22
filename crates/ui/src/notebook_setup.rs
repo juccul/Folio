@@ -1,6 +1,6 @@
 use super::{Field, FieldBoundsChanged, NotesView, Submitted, Theme};
 use folio_document::{Color, PageProperties, Paper};
-use gpui::{prelude::*, *};
+use super::*;
 
 pub(super) struct Setup {
     pub properties: PageProperties,
@@ -15,7 +15,7 @@ impl NotesView {
             .color
             .map(|color| color.hex())
             .unwrap_or_default();
-        let color = cx.new(|cx| Field::new(initial_color, false, cx));
+        let color = cx.new(|cx| Field::with_cx(initial_color, false, cx));
         self.notebook_setup = Some(Setup {
             properties,
             color,
@@ -28,13 +28,11 @@ impl NotesView {
             return;
         };
         let color = setup.color.clone();
-        self.subscriptions.push(cx.observe(&color, |this, _, cx| {
+        drop(cx.observe(&color, |this, _, cx| {
             this.modal_error = None;
             cx.notify();
         }));
-        self.subscriptions
-            .push(cx.subscribe(&color, |_, _, _: &FieldBoundsChanged, cx| cx.notify()));
-        self.subscriptions.push(cx.subscribe_in(
+        drop(cx.subscribe_in(
             &color,
             window,
             |this, _, _: &Submitted, window, cx| this.submit_modal(window, cx),
@@ -51,7 +49,7 @@ impl NotesView {
             .as_ref()
             .ok_or("Document setup is unavailable")?;
         let mut properties = setup.properties.clone();
-        properties.color = paper_color(&setup.color.read(cx).content)?;
+        properties.color = paper_color(&setup.color.read(cx).content())?;
         let name = if name.trim().is_empty() {
             self.controller.untitled_title()
         } else {
@@ -68,7 +66,7 @@ impl NotesView {
         };
         let mut properties = setup.properties.clone();
         let color = setup.color.clone();
-        let color_value = color.read(cx).content.clone();
+        let color_value = color.read(cx).content().clone();
         let custom_color_open = setup.custom_color_open;
         if let Ok(value) = paper_color(&color_value) {
             properties.color = value;

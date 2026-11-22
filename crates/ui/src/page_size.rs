@@ -57,7 +57,7 @@ impl NotesView {
                         let Some((_, field)) = &this.modal else {
                             return;
                         };
-                        match this.page_size_unit.parse(&field.read(cx).content) {
+                        match this.page_size_unit.parse(&field.read(cx).content()) {
                             Ok((width, height)) => {
                                 field.update(cx, |field, cx| {
                                     field.set_content(unit.format(width, height), cx)

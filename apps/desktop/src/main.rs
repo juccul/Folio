@@ -2,8 +2,39 @@
 
 use folio_app::Controller;
 use folio_ui::NotesView;
-use gpui::*;
 use std::{path::PathBuf, time::Duration};
+
+/// Rune's own flags (headless snapshots, scripts, element trees), passed
+/// through to it; each name maps to whether it takes a value.
+const RUNE_FLAGS: &[(&str, bool)] = &[
+    ("--snap", true),
+    ("--size", true),
+    ("--scale", true),
+    ("--theme", true),
+    ("--scene", true),
+    ("--at", true),
+    ("--script", true),
+    ("--frames", true),
+    ("--out", true),
+    ("--tree", true),
+    ("--trace", true),
+    ("--start", true),
+    ("--every", true),
+    ("--cols", true),
+    ("--strip", true),
+    ("--crop", true),
+    ("--video", true),
+    ("--fps", true),
+    ("--duration", true),
+    ("--window", true),
+    ("--list-scenes", false),
+    ("--native", false),
+    ("--keys", false),
+    ("--pointer", false),
+    ("--chrome", false),
+    ("--first-pixels", false),
+];
+
 fn main() -> anyhow::Result<()> {
     folio_platform::tune_allocator();
     let startup = std::time::Instant::now();
@@ -23,14 +54,14 @@ fn main() -> anyhow::Result<()> {
     }
     if args.iter().any(|s| s == "--help" || s == "-h") {
         println!(
-            "Folio — offline vector handwriting\n\nUsage: folio [--data-dir PATH] [--new-note] [--open-note UUID] [--recover] [--smoke-test] [--smoke-titlebar] [PDF/IMAGE…]\n\nData: FOLIO_DATA_DIR or the platform's local application-data directory\n--smoke-titlebar: isolated pointer fixture; requires an explicit, empty --data-dir. Ctrl+Alt+U resets its simulated update.\nP/E/L/H/T/S: tools · Ctrl+S: save · Ctrl+F: search · Ctrl+0: fit"
+            "Folio — offline vector handwriting\n\nUsage: folio [--data-dir PATH] [--new-note] [--open-note UUID] [--recover] [--smoke-titlebar] [PDF/IMAGE…]\n\nData: FOLIO_DATA_DIR or the platform's local application-data directory\n--smoke-titlebar: isolated pointer fixture; requires an explicit, empty --data-dir. Ctrl+Alt+U resets its simulated update.\nP/E/L/H/T/S: tools · Ctrl+S: save · Ctrl+F: search · Ctrl+0: fit"
         );
         return Ok(());
     }
     let mut data_dir = folio_platform::data_dir();
     let mut explicit_path = std::env::var_os("FOLIO_DATA_DIR").is_some();
     let mut files = vec![];
-    let mut smoke = false;
+    let mut rune_args = Vec::new();
     let mut titlebar_smoke = false;
     let mut explicit_cli_path = false;
     let mut new_note = false;
@@ -55,7 +86,16 @@ fn main() -> anyhow::Result<()> {
                         .parse()?,
                 )
             }
-            "--smoke-test" => smoke = true,
+            value if RUNE_FLAGS.iter().any(|(name, _)| *name == value) => {
+                rune_args.push(value.to_owned());
+                if RUNE_FLAGS.iter().any(|(name, takes)| *name == value && *takes) {
+                    rune_args.push(
+                        args.next()
+                            .ok_or_else(|| anyhow::anyhow!("{value} requires a value"))?
+                            .clone(),
+                    );
+                }
+            }
             "--smoke-titlebar" => titlebar_smoke = true,
             "--new-note" => new_note = true,
             "--recover" => recover = true,
@@ -70,8 +110,7 @@ fn main() -> anyhow::Result<()> {
             "--smoke-titlebar requires an explicit --data-dir"
         );
         anyhow::ensure!(
-            !smoke
-                && !new_note
+            !new_note
                 && open_note.is_none()
                 && !recover
                 && !restart_after_update
@@ -106,14 +145,14 @@ fn main() -> anyhow::Result<()> {
     }
     // Fixtures and recovery stay isolated; update restarts skip activating the
     // exiting parent process, but still listen for future launches once running.
-    let listen_single_instance = !(smoke || titlebar_smoke || recover);
+    let headless = !rune_args.is_empty() && !rune_args.iter().any(|a| a == "--native");
+    let listen_single_instance = !(titlebar_smoke || recover || headless);
     if listen_single_instance && !restart_after_update && activate_running_instance(&data_dir) {
         return Ok(());
     }
-    let open_editor =
-        smoke || titlebar_smoke || new_note || open_note.is_some() || !files.is_empty();
+    let open_editor = titlebar_smoke || new_note || open_note.is_some() || !files.is_empty();
     // Opening the library (integrity check, settings, first document) and
-    // GPUI's platform setup (GPU and fonts) are independent; overlap them.
+    // the window's GPU setup are independent; overlap them.
     let library = {
         let data_dir = data_dir.clone();
         std::thread::Builder::new()
@@ -133,7 +172,7 @@ fn main() -> anyhow::Result<()> {
         })?
     };
     mark("before_platform");
-    let application = Application::new().with_assets(folio_ui::IconAssets);
+    rune::prewarm_gpu();
     mark("platform_ready");
     let result = library
         .join()
@@ -142,27 +181,7 @@ fn main() -> anyhow::Result<()> {
     let mut controller = match result {
         Ok(controller) => controller,
         Err(error) => {
-            application.run(move |cx| {
-                cx.open_window(
-                    WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                            None,
-                            size(px(900.), px(600.)),
-                            cx,
-                        ))),
-                        app_id: Some("io.github.folio.Notes".into()),
-                        titlebar: Some(TitlebarOptions {
-                            title: Some("Folio — Recovery".into()),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    },
-                    |window, cx| {
-                        cx.new(|cx| folio_ui::RecoveryView::new(data_dir, error, window, cx))
-                    },
-                )
-                .expect("open recovery window");
-            });
+            folio_ui::run_recovery(data_dir, error);
             return Ok(());
         }
     };
@@ -184,166 +203,25 @@ fn main() -> anyhow::Result<()> {
     for file in files {
         controller.import_as_note(file);
     }
-    application.run(move |cx| {
+    let view = if titlebar_smoke {
+        NotesView::new_titlebar_smoke(controller)
+    } else {
+        NotesView::new(controller)
+    };
+    mark("view_ready");
+    folio_ui::run(view, open_editor, rune_args, move |handle| {
         mark("event_loop");
-        NotesView::bindings(cx);
-        if titlebar_smoke { NotesView::titlebar_smoke_bindings(cx); }
-        let bounds = Bounds::centered(None, size(px(1320.), px(860.)), cx);
-        let window = cx.open_window(WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            app_id: Some("io.github.folio.Notes".into()),
-            titlebar: Some(TitlebarOptions {title:Some("Folio".into()), appears_transparent: true, ..Default::default()}),
-            window_decorations: Some(WindowDecorations::Client),
-            window_min_size: Some(size(px(1000.), px(620.))),
-            ..Default::default()
-        }, |window,cx|cx.new(|cx| {
-            let mut view=if titlebar_smoke {
-                NotesView::new_titlebar_smoke(controller,window,cx)
-            } else {
-                NotesView::new(controller,window,cx)
-            };
-            mark("view_ready");
-            if profile_startup {
-                window.on_next_frame(move |_, _| mark("first_frame"));
-            }
-            if open_editor { view.show_editor(); }
-            view
-        })).expect("Open GPUI window");
-        mark("window_ready");
-        cx.on_window_closed(|cx|cx.quit()).detach();
-        cx.activate(true);
         if listen_single_instance {
-            let (requests, mut received) = futures::channel::mpsc::unbounded::<(Option<String>, std::sync::mpsc::Sender<()>)>();
             let listening = folio_platform::listen_for_activation(&data_dir, move |token| {
-                let (done, activated) = std::sync::mpsc::channel();
-                requests.unbounded_send((token, done)).is_ok()
-                    && activated.recv_timeout(Duration::from_secs(2)).is_ok()
+                match token {
+                    Some(token) => handle.activate(token),
+                    None => handle.open(),
+                }
+                true
             });
             if let Err(error) = listening {
                 eprintln!("Folio could not accept activation from later launches: {error}");
             }
-            cx.spawn(async move |cx| {
-                use futures::StreamExt;
-                while let Some((token, done)) = received.next().await {
-                    if window.update(cx, |_, window, _| window.activate_window_with_token(token.as_deref())).is_ok() {
-                        let _ = done.send(());
-                    }
-                }
-            }).detach();
-        }
-        if smoke {
-            cx.spawn(async move |cx| {
-                cx.background_executor().timer(Duration::from_millis(600)).await;
-                let result: anyhow::Result<()> = (async {
-                    for phase in 0..3 {
-                        window.update(cx, |view, _, cx| { view.update_smoke_phase(phase); cx.notify(); })?;
-                        let mut rendered=Err("Update notice did not settle".to_owned());
-                        for _ in 0..100 {
-                            cx.background_executor().timer(Duration::from_millis(50)).await;
-                            rendered=window.update(cx, |view, _, _| view.update_smoke_verify(phase))?;
-                            if rendered.is_ok() { break; }
-                        }
-                        rendered.map_err(anyhow::Error::msg)?;
-
-                    }
-                    window.update(cx, |view, _, cx| { view.update_smoke_phase(3); cx.notify(); })?;
-                    let events=window.update(cx,|view,_,_|view.smoke_events())?.map_err(anyhow::Error::msg)?;
-                    for event in events {
-                        cx.update_window(window.into(),|_,window,cx|{window.dispatch_tablet_event(event,cx);})?;
-                        cx.background_executor().timer(Duration::from_millis(8)).await;
-                    }
-                    window.update(cx,|view,_,cx|view.smoke_toolbar_setup(cx))?;
-                    let mut toolbar_events=Err("Contextual selection toolbar did not settle".to_owned());
-                    for _ in 0..200 {
-                        cx.background_executor().timer(Duration::from_millis(50)).await;
-                        toolbar_events=window.update(cx,|view,_,_|view.smoke_toolbar_events())?;
-                        if toolbar_events.is_ok() { break; }
-                    }
-                    let events=toolbar_events.map_err(anyhow::Error::msg)?;
-                    for event in events {
-                        cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;
-                        cx.background_executor().timer(Duration::from_millis(12)).await;
-                    }
-                    window.update(cx,|view,_,cx|view.smoke_verify(cx))?.map_err(anyhow::Error::msg)?;
-                    let tool=window.update(cx,|view,_,_|view.controller.tool)?;
-                    for aim in [false,true] {
-                        let events=window.update(cx,|view,_,_|view.wheel_smoke_events(aim))?.map_err(anyhow::Error::msg)?;
-                        for event in events {cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;cx.background_executor().timer(Duration::from_millis(20)).await;}
-                        cx.background_executor().timer(Duration::from_millis(150)).await;
-                    }
-                    window.update(cx,|view,_,cx|view.wheel_smoke_verify(tool,cx))?.map_err(anyhow::Error::msg)?;
-                    let (a,b)=window.update(cx,|view,_,cx| {let ids=view.navigation_smoke_setup();cx.notify();ids})?;
-                    cx.background_executor().timer(Duration::from_millis(150)).await;
-                    for (label,right) in [("Open Smoke A",true),("Duplicate",false)] {
-                        let events=window.update(cx,|view,_,_|view.navigation_smoke_click(label,right))?.map_err(anyhow::Error::msg)?;
-                        for event in events {cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;cx.background_executor().timer(Duration::from_millis(20)).await;}
-                        cx.background_executor().timer(Duration::from_millis(100)).await;
-                        if right {window.update(cx,|view,_,_|view.navigation_smoke_context(a))?.map_err(anyhow::Error::msg)?;}
-                    }
-                    window.update(cx,|view,_,cx| {view.navigation_smoke_open(a);cx.notify();})?;
-                    cx.background_executor().timer(Duration::from_millis(150)).await;
-                    for label in ["Open or create a document · Ctrl+T","Open Smoke B"] {
-                        let events=window.update(cx,|view,_,_|view.navigation_smoke_click(label,false))?.map_err(anyhow::Error::msg)?;
-                        for event in events {cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;cx.background_executor().timer(Duration::from_millis(20)).await;}
-                        cx.background_executor().timer(Duration::from_millis(150)).await;
-                    }
-                    let events=window.update(cx,|view,_,_|view.navigation_smoke_drag())?.map_err(anyhow::Error::msg)?;
-                    for event in events {cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;cx.background_executor().timer(Duration::from_millis(20)).await;}
-                    cx.background_executor().timer(Duration::from_millis(150)).await;
-                    window.update(cx,|view,_,_|view.navigation_smoke_verify(a,b))?.map_err(anyhow::Error::msg)?;
-                    // Reordering must suppress only the drag's release click;
-                    // subsequent ordinary tab clicks still activate documents.
-                    for (label,id) in [("Open Smoke A",a),("Open Smoke B",b)] {
-                        let events=window.update(cx,|view,_,_|view.navigation_smoke_click(label,false))?.map_err(anyhow::Error::msg)?;
-                        for event in events {cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;cx.background_executor().timer(Duration::from_millis(20)).await;}
-                        cx.background_executor().timer(Duration::from_millis(150)).await;
-                        if !window.update(cx,|view,_,_|view.controller.active==id)? { anyhow::bail!("Clicking a tab after dragging did not activate its document"); }
-                    }
-                    window.update(cx,|view,window,cx|view.region_smoke_setup(window,cx))?.map_err(anyhow::Error::msg)?;
-                    cx.background_executor().timer(Duration::from_millis(150)).await;
-                    let events=window.update(cx,|view,_,_|view.region_smoke_events())?.map_err(anyhow::Error::msg)?;
-                    for (index,event) in events.into_iter().enumerate() {
-                        cx.update_window(window.into(),|_,window,cx|window.dispatch_input_event(event,cx))?;
-                        cx.background_executor().timer(Duration::from_millis(20)).await;
-                        if index==1 {window.update(cx,|view,_,_|view.region_smoke_outline())?.map_err(anyhow::Error::msg)?;}
-                    }
-                    window.update(cx,|view,_,cx|view.region_smoke_verify(cx))?.map_err(anyhow::Error::msg)?;
-                    for phase in 0..2 {
-                        window.update(cx, |view, _, cx| { view.update_smoke_phase(phase); cx.notify(); })?;
-                        let mut rendered=Err("Update notice did not settle".to_owned());
-                        for _ in 0..100 {
-                            cx.background_executor().timer(Duration::from_millis(50)).await;
-                            rendered=window.update(cx, |view, _, _| view.update_smoke_verify(phase))?;
-                            if rendered.is_ok() { break; }
-                        }
-                        rendered.map_err(anyhow::Error::msg)?;
-                        if phase < 2 {
-                            let label = if phase == 0 { "Update · 0.1.1" } else { "Downloading 42%" };
-                            let events=window.update(cx,|view,_,_|view.navigation_smoke_click(label,false))?.map_err(anyhow::Error::msg)?;
-                            for event in events {
-                                cx.update_window(window.into(),|_,window,cx|{window.dispatch_input_event(event,cx);})?;
-                                cx.background_executor().timer(Duration::from_millis(20)).await;
-                            }
-                        }
-                    }
-                    window.update(cx, |view, _, cx| { view.update_smoke_phase(3); cx.notify(); })?;
-                    cx.background_executor().timer(Duration::from_millis(200)).await;
-                    let events=window.update(cx,|view,_,_|view.navigation_smoke_click("Library · Ctrl+Shift+L",false))?.map_err(anyhow::Error::msg)?;
-                    for event in events {
-                        cx.update_window(window.into(),|_,window,cx|{window.dispatch_input_event(event,cx);})?;
-                        cx.background_executor().timer(Duration::from_millis(20)).await;
-                    }
-                    window.update(cx, |view, _, cx| view.titlebar_smoke_verify_home(cx))?.map_err(anyhow::Error::msg)?;
-                    cx.background_executor().timer(Duration::from_millis(200)).await;
-                    Ok(())
-                }).await;
-                match result {
-                    Ok(())=>println!("FOLIO_SMOKE_OK: native event dispatch, pressure/tilt, vector canvas, undo/redo, pages, right-click card menu, duplication, tab picker, native tab drag, drawn crop outline/undo, durable save"),
-                    Err(error)=>{eprintln!("FOLIO_SMOKE_FAILED: {error:#}");std::process::exit(1)}
-                }
-                cx.background_executor().timer(Duration::from_millis(300)).await;
-                let _=cx.update(|cx|cx.quit());
-            }).detach();
         }
     });
     Ok(())

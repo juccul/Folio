@@ -8,7 +8,7 @@ use super::{
     theme::Glass,
 };
 use folio_document::Object;
-use gpui::{prelude::*, *};
+use super::*;
 use std::rc::Rc;
 
 /// The family text boxes use unless another is chosen. It resolves to the
@@ -45,10 +45,12 @@ impl NotesView {
     fn installed_fonts(&mut self, cx: &App) -> Rc<Vec<SharedString>> {
         self.fonts
             .get_or_insert_with(|| {
-                let mut names = cx
-                    .text_system()
-                    .all_font_names()
-                    .into_iter()
+                let _ = cx;
+                let options = folio_export::system_svg_options();
+                let mut names = options
+                    .fontdb
+                    .faces()
+                    .flat_map(|face| face.families.iter().map(|f| f.0.clone()).collect::<Vec<_>>())
                     // Hidden and interface aliases are not choices.
                     .filter(|name| !name.starts_with('.') && name != DEFAULT_FAMILY)
                     .map(SharedString::from)
@@ -133,7 +135,7 @@ impl NotesView {
         self.dismiss_popovers();
         let theme = Theme::new(&self.controller.settings);
         let field = cx.new(|cx| {
-            let mut field = Field::new(String::new(), false, cx);
+            let mut field = Field::with_cx(String::new(), false, cx);
             field.theme = theme;
             field.compact = true;
             field.placeholder = Some("Search fonts".into());
@@ -141,7 +143,7 @@ impl NotesView {
         });
         let subscriptions = vec![
             cx.observe(&field, |this, field, cx| {
-                let query = field.read(cx).content.trim().to_lowercase();
+                let query = field.read(cx).content().trim().to_lowercase();
                 if let Some(menu) = &mut this.font_menu
                     && menu.query != query
                 {
@@ -322,7 +324,7 @@ impl NotesView {
                         }
                     }
                     // Virtual rows register during layout, after the root's render.
-                    this.resume_poll(cx);
+                    let _ = &cx;
                     this.accessibility.publish(this, window, cx);
                     elements
                 }),
@@ -415,7 +417,7 @@ impl NotesView {
                         })
                         .child(family.clone()),
                 )
-                .when(family.as_ref() == DEFAULT_FAMILY, |row| {
+                .when(family.as_str() == DEFAULT_FAMILY, |row| {
                     row.child(
                         div()
                             .flex_shrink_0()

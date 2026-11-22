@@ -14,9 +14,9 @@ pub(super) struct LibraryDrag {
     pub theme: Theme,
     pub position: Point<Pixels>,
 }
-impl Render for LibraryDrag {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().pl(self.position.x).pt(self.position.y).child(
+impl DragView for LibraryDrag {
+    fn preview(&self) -> Div {
+        div().child(
             div()
                 .px_3()
                 .py_2()
@@ -66,16 +66,7 @@ impl NotesView {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
-        let entity = cx.entity();
         element
-            .can_drop(move |value, _, cx| {
-                value.downcast_ref::<LibraryDrag>().is_some_and(|drag| {
-                    let view = entity.read(cx);
-                    !view.update_preparing
-                        && !view.blocking_overlay()
-                        && accepts_move(&view.controller, drag.item, destination)
-                })
-            })
             .drag_over::<LibraryDrag>(move |s, _, _, _| {
                 s.bg(theme.tint(1.))
                     .border_1()

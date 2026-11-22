@@ -174,6 +174,18 @@ fn write_object_svg(
     Ok(())
 }
 
+/// Font options for rendering `object` through usvg, as rasterization uses.
+pub fn object_svg_options(object: &Object) -> resvg::usvg::Options<'static> {
+    match object {
+        Object::Text(text) => text_block_options(text),
+        Object::Equation(_) => svg_options(),
+        _ => resvg::usvg::Options::default(),
+    }
+}
+/// Font options with the system fonts, for interface text drawn through usvg.
+pub fn system_svg_options() -> resvg::usvg::Options<'static> {
+    svg_options()
+}
 pub fn object_svg(object: &Object, assets: &Path) -> Result<String> {
     let mut out = String::new();
     let mut path_buf = Vec::new();

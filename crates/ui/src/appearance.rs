@@ -42,10 +42,7 @@ impl NotesView {
                         if let Some(dark) = value {
                             this.controller.set_theme(dark);
                         } else {
-                            this.controller.apply_system_theme(matches!(
-                                window.appearance(),
-                                WindowAppearance::Dark | WindowAppearance::VibrantDark
-                            ));
+                            this.controller.apply_system_theme(window.dark);
                         }
                         this.controller.store_settings();
                     },

@@ -1,4 +1,5 @@
 //! Display-only ink batches. Source strokes and vector exports stay unchanged.
+use super::RenderImage;
 use super::theme::CanvasTheme;
 use folio_document::{Id, Object, Page, Rect};
 use std::{
@@ -296,7 +297,7 @@ pub(super) fn test_page(objects: &[Arc<Object>]) -> Page {
     page
 }
 
-pub(super) fn raster(batch: &InkBatch) -> Option<Arc<gpui::RenderImage>> {
+pub(super) fn raster(batch: &InkBatch) -> Option<Arc<RenderImage>> {
     let mut strokes = Vec::with_capacity(batch.objects.len());
     for object in &batch.objects {
         let Object::Stroke(stroke) = object.as_ref() else {

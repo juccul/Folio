@@ -31,11 +31,17 @@ impl NotesView {
                 f32::from(at.y - bounds.origin.y),
             ));
         self.controller.select_for_context_menu(position);
-        let can_paste = !self.controller.read_only() && cx.read_from_clipboard().is_some_and(|item| {
-            item.text().is_some_and(|text| !text.is_empty()) || item.entries().iter().any(|entry| {
-                matches!(entry, ClipboardEntry::Image(image) if matches!(image.format(), ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Webp))
-            })
-        });
+        // The clipboard is read asynchronously; Paste enables once it has
+        // something Folio can insert.
+        let can_paste = false;
+        if !self.controller.read_only() {
+            cx.read_clipboard(|this, content, _, _| {
+                let available = !content.text().is_empty() || content.image().is_some();
+                if let Some(menu) = &mut this.canvas_menu {
+                    menu.can_paste = available;
+                }
+            });
+        }
         self.canvas_menu = Some(CanvasMenu {
             at,
             position,
@@ -74,8 +80,8 @@ impl NotesView {
             .top(px(
                 f32::from(menu.at.y).clamp(8., (f32::from(size.height) - height - 8.).max(8.))
             ))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .occlude()
+            .occlude()
             .w(px(width))
             .p_1()
             .flex()

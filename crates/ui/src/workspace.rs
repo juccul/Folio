@@ -18,7 +18,7 @@ pub(super) fn edited_label(updated: u64) -> String {
 }
 
 pub(super) struct Hint(pub(super) SharedString, pub(super) Theme);
-impl Render for Hint {
+impl Hint {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .px_3()
@@ -99,8 +99,8 @@ impl NotesView {
 
 #[derive(Clone)]
 struct PageDrag(Id);
-impl Render for PageDrag {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+impl DragView for PageDrag {
+    fn preview(&self) -> Div {
         div()
             .p_3()
             .bg(rgb(0xf0f0f0))
@@ -207,7 +207,7 @@ impl NotesView {
         .p_0()
         .rounded(px(theme.radius))
         .when(self.toolbar_hints_enabled(), |button| {
-            button.tooltip(move |_, cx| cx.new(|_| Hint(hint.clone(), theme)).into())
+            button.tooltip(hint.clone())
         })
     }
     fn editor_button(
@@ -246,7 +246,7 @@ impl NotesView {
             self.motion.borrow_mut().hover_value(id)
         }))
         .when(self.toolbar_hints_enabled(), |button| {
-            button.tooltip(move |_, cx| cx.new(|_| Hint(hint.into(), theme)).into())
+            button.tooltip(hint)
         })
     }
     /// A drawing tool. The current tool is filled with the primary color so
@@ -296,7 +296,7 @@ impl NotesView {
             theme.tint(self.motion.borrow_mut().hover_value(id))
         })
         .when(self.toolbar_hints_enabled(), |button| {
-            button.tooltip(move |_, cx| cx.new(|_| Hint(hint.into(), theme)).into())
+            button.tooltip(hint)
         })
     }
     fn editor_separator(&self) -> Div {
@@ -377,13 +377,7 @@ impl NotesView {
             .justify_start()
             .rounded_none()
             .bg(transparent_black())
-            .on_drag(drag, |drag, position, _, cx| {
-                cx.new(|_| {
-                    let mut drag = drag.clone();
-                    drag.position = position;
-                    drag
-                })
-            });
+            .on_drag(drag, ());
         let row = div()
             .id(SharedString::from(format!("folder-row-{id}")))
             .flex()
@@ -490,10 +484,7 @@ impl NotesView {
                 .bg(theme.tint(if active { 1. } else { 0. }))
                 .hover(move |s| s.bg(theme.tint(1.)))
                 .when(filter == NoteFilter::All, |s| {
-                    self.folder_drop_target(s, None, cx).tooltip(move |_, cx| {
-                        cx.new(|_| Hint("Drop here to remove from its folder".into(), theme))
-                            .into()
-                    })
+                    self.folder_drop_target(s, None, cx).tooltip("Drop here to remove from its folder")
                 }),
             );
         }
@@ -550,7 +541,7 @@ impl NotesView {
                             .collect();
                         this.accessibility
                             .retain_folder_items(visible.iter().map(|(folder, _)| folder.id));
-                        this.resume_poll(cx);
+                        let _ = &cx;
                         this.accessibility.publish(this, window, cx);
                         rendered
                     }),
@@ -765,8 +756,8 @@ impl NotesView {
                     } else {
                         "Add to favorites"
                     }
-                    .into();
-                    move |_, cx| cx.new(|_| Hint(label.clone(), theme)).into()
+                    .to_owned();
+                    label
                 });
             let menu = self
                 .icon_button(
@@ -917,13 +908,7 @@ impl NotesView {
                             .hover(|s| s.bg(transparent_black()))
                             .on_mouse_down(MouseButton::Right, context_menu)
                             .when(!n.trashed, |s| {
-                                s.on_drag(drag, |drag, position, _, cx| {
-                                    cx.new(|_| {
-                                        let mut drag = drag.clone();
-                                        drag.position = position;
-                                        drag
-                                    })
-                                })
+                                s.on_drag(drag, ())
                             }),
                         )
                         .child(favorite)
@@ -1053,13 +1038,7 @@ impl NotesView {
                             .hover(|s| s.bg(transparent_black()))
                             .on_mouse_down(MouseButton::Right, context_menu)
                             .when(!n.trashed, |s| {
-                                s.on_drag(drag, |drag, position, _, cx| {
-                                    cx.new(|_| {
-                                        let mut drag = drag.clone();
-                                        drag.position = position;
-                                        drag
-                                    })
-                                })
+                                s.on_drag(drag, ())
                             }),
                         )
                         .child(
@@ -1188,7 +1167,7 @@ impl NotesView {
                 }
                 this.accessibility
                     .retain_library_items(&notes[visible_start..visible_end]);
-                this.resume_poll(cx);
+                let _ = &cx;
                 this.accessibility.publish(this, window, cx);
                 rows
             }),
@@ -1579,7 +1558,7 @@ impl NotesView {
                 self.controller.settings.ui_scale,
             );
             if self.tab_target != Some(target) {
-                self.tab_scroll.scroll_to_item(index);
+                self.tab_scroll.scroll_to(index);
                 self.tab_target = Some(target);
             }
         }
@@ -1602,8 +1581,8 @@ impl NotesView {
                 .items_center()
                 // Let the button register its click before stopping the press at
                 // this wrapper. Windows' native move loop otherwise steals release.
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .occlude()
+                .occlude()
                 .child(
                     self.icon_button(
                         "tab-library",
@@ -1711,7 +1690,7 @@ impl NotesView {
                     )
                     // The outer tab consumes presses after its child controls
                     // have registered clicks and tab drags.
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .occlude()
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, w, cx| {
@@ -1720,7 +1699,7 @@ impl NotesView {
                         }),
                     )
                     // Middle-click closes a tab, as in browsers and editors.
-                    .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+                    .occlude()
                     .on_mouse_up(
                         MouseButton::Middle,
                         cx.listener(move |this, _, w, cx| {
@@ -1743,20 +1722,20 @@ impl NotesView {
                                 }
                             },
                         )
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, event: &MouseDownEvent, w, cx| {
-                                if event.click_count == 2 {
-                                    // Open after this press has focused the tab,
-                                    // so the dialog's field keeps the focus.
-                                    cx.on_next_frame(w, move |this, w, cx| {
-                                        this.modal(Modal::RenameDocument(id), w, cx)
-                                    });
-                                } else {
-                                    this.press_tab(id, f32::from(event.position.x), cx);
-                                }
-                            }),
-                        )
+                        .on_double_click(cx.listener(move |this, _, w, cx| {
+                            this.modal(Modal::RenameDocument(id), w, cx)
+                        }))
+                        .on_pointer_drag(cx.listener(move |this, event: &DragEvent, _, cx| {
+                            match event.phase {
+                                DragPhase::Down => this.press_tab(id, f32::from(event.position.x), cx),
+                                DragPhase::Move => this.drag_tab(
+                                    f32::from(event.position.x),
+                                    Some(MouseButton::Left),
+                                    cx,
+                                ),
+                                DragPhase::Up => this.drop_tab(cx),
+                            }
+                        }))
                         .h(rems(1.75))
                         .min_h_0()
                         .pl_2()
@@ -1795,32 +1774,7 @@ impl NotesView {
                 tabs.child(surface)
             };
         }
-        let drag_events = self.tab_drag.is_some().then(|| {
-            let entity = cx.entity();
-            canvas(
-                |_, _, _| {},
-                move |_, _, window, _| {
-                    let moved = entity.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                        if phase.capture() {
-                            moved.update(cx, |this, cx| {
-                                this.drag_tab(f32::from(event.position.x), event.pressed_button, cx)
-                            });
-                        }
-                    });
-                    let released = entity.clone();
-                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                        // Leave the drag state available to click handlers,
-                        // then finish after they have handled this release.
-                        if phase.bubble() {
-                            released.update(cx, |this, cx| this.drop_tab(cx));
-                        }
-                    });
-                },
-            )
-            .absolute()
-            .size_0()
-        });
+        let drag_events: Option<Div> = None;
         div()
             .h(rems(2.5))
             .flex_shrink_0()
@@ -1838,8 +1792,8 @@ impl NotesView {
                     .flex()
                     .items_center()
                     .flex_shrink_0()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .occlude()
+                    .occlude()
                     .child(
                         self.icon_button(
                             "new-tab",
@@ -1864,8 +1818,8 @@ impl NotesView {
             .child(
                 self.window_controls(window, cx)
                     .flex_shrink_0()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation()),
+                    .occlude()
+                    .occlude(),
             )
     }
     fn page_navigation(&self, cx: &mut Context<Self>) -> Div {
@@ -2015,7 +1969,7 @@ impl NotesView {
             .bg(theme.tint(if active { 1. } else { 0. }))
             .hover(move |s| s.bg(theme.tint(1.)))
             .when(self.toolbar_hints_enabled(), |button| {
-                button.tooltip(move |_, cx| cx.new(|_| Hint(hint.clone(), theme)).into())
+                button.tooltip(hint.clone())
             })
     }
     fn editing_tools(&mut self, compact: bool, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -2425,9 +2379,7 @@ impl NotesView {
                                         cx.notify();
                                     }),
                                 )
-                                .on_drag(PageDrag(page_id), |drag, _, _, cx| {
-                                    cx.new(|_| drag.clone())
-                                })
+                                .on_drag(PageDrag(page_id), ())
                                 .drag_over::<PageDrag>(move |s, _, _, _| {
                                     s.border_color(rgb(theme.accent)).bg(theme.tint(1.))
                                 })
@@ -2446,7 +2398,7 @@ impl NotesView {
                     );
                 }
                 // Virtual rows register during layout, after the root's render.
-                this.resume_poll(cx);
+                let _ = &cx;
                 this.accessibility.publish(this, window, cx);
                 rows
             }),
@@ -2476,7 +2428,7 @@ impl NotesView {
                         div()
                             .flex_1()
                             .flex()
-                            .items_baseline()
+                            .items_end()
                             .gap_2()
                             .child(
                                 div()
@@ -2640,7 +2592,7 @@ impl NotesView {
                 })
                 .text_lg()
                 .py_0()
-                .tooltip(move |_, cx| cx.new(|_| Hint("Zoom out · Ctrl+−".into(), theme)).into()),
+                .tooltip("Zoom out · Ctrl+−"),
             )
             .child(
                 self.button(
@@ -2652,15 +2604,13 @@ impl NotesView {
                 )
                 .text_sm()
                 .py_1()
-                .tooltip(move |_, cx| cx.new(|_| Hint("Fit page · Ctrl+0".into(), theme)).into()),
+                .tooltip("Fit page · Ctrl+0"),
             )
             .child(
                 self.button("zoom-in", "+", false, cx, |this, _, _| this.zoom(1.2))
                     .text_lg()
                     .py_0()
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| Hint("Zoom in · Ctrl++".into(), theme)).into()
-                    }),
+                    .tooltip("Zoom in · Ctrl++"),
             )
             .child(
                 self.icon_button(

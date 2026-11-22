@@ -3,7 +3,7 @@
 use super::*;
 use folio_app::{MathReport, MathRequest, MathStep, VectorCommand, VectorFormula};
 use std::{collections::HashMap, sync::Arc};
-pub(super) type FormulaCache = HashMap<usize, (Arc<VectorFormula>, Arc<Vec<gpui::Path<Pixels>>>)>;
+pub(super) type FormulaCache = HashMap<usize, (Arc<VectorFormula>, Arc<Vec<Path<Pixels>>>)>;
 /// Typeset lines of LaTeX, or `None` when the source cannot be typeset.
 pub(super) type Formulas = Option<Arc<Vec<Arc<VectorFormula>>>>;
 /// LaTeX typeset off the UI thread: the last finished source and the one
@@ -80,18 +80,18 @@ impl Inputs {
     pub(super) fn visible_fields(&self, cx: &App) -> [bool; 4] {
         [
             !self.latex_open
-                && (self.problem_editing || self.expression.read(cx).content.trim().is_empty()),
+                && (self.problem_editing || self.expression.read(cx).content().trim().is_empty()),
             self.settings_open && !self.latex_open,
             self.mode == Mode::Check && !self.latex_open,
             self.mode == Mode::Graph && !self.latex_open,
         ]
     }
     pub(super) fn result_dirty(&self, cx: &App) -> bool {
-        self.result_latex.read(cx).content != self.result_source
+        self.result_latex.read(cx).content() != self.result_source
     }
     pub(super) fn can_run(&self, cx: &App) -> bool {
-        !self.expression.read(cx).content.trim().is_empty()
-            && (self.mode != Mode::Check || !self.next_line.read(cx).content.trim().is_empty())
+        !self.expression.read(cx).content().trim().is_empty()
+            && (self.mode != Mode::Check || !self.next_line.read(cx).content().trim().is_empty())
     }
 }
 
@@ -168,7 +168,7 @@ impl NotesView {
             Err(error) => self.controller.error = Some(error),
         }
         if let Some(inputs) = &self.math_inputs
-            && inputs.expression.read(cx).content.is_empty()
+            && inputs.expression.read(cx).content().is_empty()
             && !self.controller.recognition_pending
         {
             inputs.expression.read(cx).focus.focus(window);
@@ -215,14 +215,14 @@ impl NotesView {
             }
             if inputs.revision != session.revision {
                 // Do not reset the cursor just because a calculation finished.
-                if inputs.expression.read(cx).content != session.request.expression {
+                if inputs.expression.read(cx).content() != session.request.expression {
                     inputs.expression.update(cx, |field, cx| {
                         field.set_content(session.request.expression.clone(), cx)
                     });
                     inputs.problem_editing = false;
                     inputs.auto_due = Some(Instant::now());
                 }
-                if inputs.next_line.read(cx).content != session.request.next_line {
+                if inputs.next_line.read(cx).content() != session.request.next_line {
                     inputs.next_line.update(cx, |field, cx| {
                         field.set_content(session.request.next_line.clone(), cx)
                     });
@@ -253,7 +253,7 @@ impl NotesView {
         let make = |content: String, multiline, cx: &mut Context<Self>| {
             cx.new(|cx| {
                 let height = (content.lines().count().clamp(1, 4) * 26) as f32;
-                let mut field = Field::new(content, multiline, cx);
+                let mut field = Field::with_cx(content, multiline, cx);
                 field.theme = theme;
                 field.height = multiline.then_some(height);
                 field
@@ -268,7 +268,7 @@ impl NotesView {
         let result_latex = make(result_source.clone(), true, cx);
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.observe(&result_latex, |this, entity, cx| {
-            let content = entity.read(cx).content.clone();
+            let content = entity.read(cx).content().clone();
             let changed = this.math_inputs.as_mut().is_some_and(|inputs| {
                 let changed = inputs.result_observed != content;
                 inputs.result_observed = content.clone();
@@ -280,7 +280,7 @@ impl NotesView {
             } else {
                 1
             };
-            let height = (field.content.lines().count().clamp(min_lines, 6) * 26) as f32;
+            let height = (field.content().lines().count().clamp(min_lines, 6) * 26) as f32;
             if field.height != Some(height) {
                 entity.update(cx, |field, cx| {
                     field.height = Some(height);
@@ -319,7 +319,7 @@ impl NotesView {
             .enumerate()
         {
             subscriptions.push(cx.observe(entity, move |this, entity, cx| {
-                let content = entity.read(cx).content.clone();
+                let content = entity.read(cx).content().clone();
                 let height = (content.lines().count().clamp(1, 4) * 26) as f32;
                 if entity.read(cx).multiline && entity.read(cx).height != Some(height) {
                     entity.update(cx, |field, cx| {
@@ -421,11 +421,11 @@ impl NotesView {
             .clone();
         request.operation = operation.into();
         if let Some(inputs) = &self.math_inputs {
-            request.expression = inputs.expression.read(cx).content.clone();
-            request.variable = inputs.variable.read(cx).content.trim().to_string();
-            request.next_line = inputs.next_line.read(cx).content.clone();
+            request.expression = inputs.expression.read(cx).content().clone();
+            request.variable = inputs.variable.read(cx).content().trim().to_string();
+            request.next_line = inputs.next_line.read(cx).content().clone();
             if operation == "graph" {
-                (request.x_min, request.x_max) = parse_range(&inputs.range.read(cx).content)?;
+                (request.x_min, request.x_max) = parse_range(&inputs.range.read(cx).content())?;
             }
         }
         Ok(request)
@@ -453,7 +453,7 @@ impl NotesView {
             Mode::Graph => "graph".into(),
             Mode::Check => "check".into(),
             Mode::Solution if inputs.operation == "auto" => {
-                automatic_operation(&inputs.expression.read(cx).content).into()
+                automatic_operation(&inputs.expression.read(cx).content()).into()
             }
             Mode::Solution => inputs.operation.clone(),
         };
@@ -745,7 +745,7 @@ impl NotesView {
         {
             return;
         }
-        let latex = inputs.result_latex.read(cx).content.clone();
+        let latex = inputs.result_latex.read(cx).content().clone();
         match self.controller.edit_math_result(latex) {
             Ok(()) => {
                 if let Some(inputs) = &mut self.math_inputs {
@@ -772,7 +772,7 @@ impl NotesView {
             inputs.feedback = None;
             inputs.scroll.set_offset(point(px(0.), px(0.)));
             inputs.result_latex.update(cx, |field, cx| {
-                field.height = Some((field.content.lines().count().clamp(3, 6) * 26) as f32);
+                field.height = Some((field.content().lines().count().clamp(3, 6) * 26) as f32);
                 cx.notify();
             });
             inputs.result_latex.read(cx).focus.focus(window);
@@ -805,7 +805,6 @@ impl NotesView {
         }
         if let Some(inputs) = &mut self.math_inputs {
             inputs.guide_anchor.scroll_to(window, cx);
-            window.on_next_frame(|window, _| window.refresh());
         }
         cx.notify();
     }
@@ -813,7 +812,7 @@ impl NotesView {
         let Some(inputs) = &mut self.math_inputs else {
             return;
         };
-        let variable = inputs.variable.read(cx).content.clone();
+        let variable = inputs.variable.read(cx).content().clone();
         let (expression, next) = match inputs.mode {
             Mode::Graph => (format!("y={variable}^2"), String::new()),
             Mode::Check => (format!("2{variable}+3=11"), format!("2{variable}=8")),
@@ -868,7 +867,7 @@ impl NotesView {
                         let mut path = PathBuilder::fill().with_style(PathStyle::Fill(
                             FillOptions::default()
                                 .with_fill_rule(rule)
-                                .with_tolerance(0.01),
+                                ,
                         ));
                         let p = |[x, y]: [f32; 2]| point(px(x), px(y));
                         for command in &outline.commands {
@@ -1150,7 +1149,6 @@ impl NotesView {
                     }
                     if inputs.guided {
                         inputs.guide_anchor.scroll_to(window, cx);
-                        window.on_next_frame(|window, _| window.refresh());
                     } else {
                         inputs.scroll.set_offset(point(px(0.), px(0.)));
                     }
@@ -1162,9 +1160,7 @@ impl NotesView {
             div()
                 .id("math-steps-heading")
                 .mt_2()
-                .anchor_scroll(Some(
-                    self.math_inputs.as_ref().unwrap().guide_anchor.clone(),
-                ))
+                .anchor_scroll(self.math_inputs.as_ref().unwrap().guide_anchor.clone())
                 .child(heading),
         );
         if report.methods.len() > 1 {
@@ -1364,7 +1360,7 @@ impl NotesView {
                                 |this, _, cx| {
                                     if let Some(inputs) = &this.math_inputs {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
-                                            inputs.result_latex.read(cx).content.clone(),
+                                            inputs.result_latex.read(cx).content().clone(),
                                         ));
                                     }
                                     if let Some(inputs) = &mut this.math_inputs {
@@ -1626,7 +1622,7 @@ impl NotesView {
             inputs.settings_open,
             inputs.source_open,
         );
-        let problem_text = expression.read(cx).content.clone();
+        let problem_text = expression.read(cx).content().clone();
         let empty = problem_text.trim().is_empty();
         let problem_editing = inputs.problem_editing || empty;
         let editing = inputs.latex_open;

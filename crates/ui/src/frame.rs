@@ -63,8 +63,8 @@ impl NotesView {
     }
 }
 
-impl Render for NotesView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl NotesView {
+    pub(crate) fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         self.sync_window_title(window);
         self.release_hidden_resources(window, cx);
         self.controller.refresh_default_ink();
@@ -82,8 +82,6 @@ impl Render for NotesView {
         self.font_appear = alpha.font;
         self.track_recognition_frame(alpha.modal, window, cx);
         let theme = Theme::new(&self.controller.settings);
-        window.set_rem_size(px(16. * self.controller.settings.ui_scale));
-        window.set_smooth_scrolling(!self.controller.settings.reduce_motion);
         // Build order matters: controls register for accessibility as they are built.
         let center = self.canvas_area(cx);
         let mut root = self.root_element(cx);
@@ -102,16 +100,7 @@ impl Render for NotesView {
         if self.library_open {
             self.canvas_bounds = None;
             body = body.child(self.library_sidebar(cx)).child(
-                self.library(window, cx)
-                    .opacity(alpha.library)
-                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                        for path in paths.paths() {
-                            let id = this.controller.import_as_note(path.clone());
-                            this.open_tabs.push(id);
-                        }
-                        this.show_editor();
-                        cx.notify();
-                    })),
+                self.library(window, cx).opacity(alpha.library),
             );
         } else {
             let (top, main) = self.editor_column(center, &alpha, window, cx);
@@ -192,8 +181,8 @@ impl Render for NotesView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .occlude()
+                    .occlude()
                     .child(
                         div()
                             .p_6()
@@ -209,44 +198,12 @@ impl Render for NotesView {
         if let Some(key) = self.menu_focus.take() {
             self.accessibility.focus_control(&key, window);
         }
-        self.recover_lost_focus(window, cx);
-        self.resume_poll(cx);
         self.accessibility.publish(self, window, cx);
         titlebar::frame(root, window)
     }
 }
 
 impl NotesView {
-    /// A control that disappears while focused (a menu item that closes its
-    /// menu, a section that is replaced) leaves keyboard focus outside the
-    /// window's key contexts, disabling every shortcut. Return focus to the
-    /// root once the focused element has been missing for a whole frame;
-    /// newly focused fields get that frame to render.
-    fn recover_lost_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !window
-            .focused(cx)
-            .is_some_and(|handle| handle != self.focus)
-        {
-            self.lost_focus = None;
-            return;
-        }
-        // Check against the frame being built now, once it has been drawn.
-        cx.on_next_frame(window, |this, window, cx| {
-            let Some(handle) = window.focused(cx) else {
-                return;
-            };
-            if handle == this.focus || this.focus.contains_focused(window, cx) {
-                this.lost_focus = None;
-            } else if this.lost_focus.as_ref() == Some(&handle) {
-                this.lost_focus = None;
-                this.focus.focus(window);
-                cx.notify();
-            } else {
-                this.lost_focus = Some(handle);
-                cx.notify();
-            }
-        });
-    }
     /// Advance panel animations. Each panel animates when its key changes,
     /// so switching between two contents of one panel also fades it, and
     /// the content it replaced leaves (see [`transitions`]).
@@ -408,7 +365,7 @@ impl NotesView {
                 if self
                     .modal
                     .as_ref()
-                    .is_some_and(|(_, field)| field.read(cx).content == submitted)
+                    .is_some_and(|(_, field)| field.read(cx).content() == submitted)
                 {
                     self.close_modal(window, cx);
                 } else {
@@ -451,7 +408,7 @@ impl NotesView {
     }
     /// Report the first frame that shows a recognition result, for OCR timing.
     fn track_recognition_frame(
-        &self,
+        &mut self,
         modal_alpha: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -466,139 +423,125 @@ impl NotesView {
         if (review_visible || math_visible)
             && let Some(request) = self.controller.recognition_frame_pending()
         {
-            let view = cx.entity().downgrade();
-            window.on_next_frame(move |_, cx| {
-                let _ = view.update(cx, |view, _| {
-                    view.controller.recognition_frame_completed(request)
-                });
-            });
+            let _ = (window, cx);
+            self.controller.recognition_frame_completed(request);
         }
     }
     /// The page, painted across the whole editor so that it continues beneath
     /// the glass bars and sidebars. Input, layout and the viewport stay
     /// relative to the visible canvas area, measured by `canvas_element`.
-    fn canvas_layer(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let entity = cx.entity();
-        canvas(
-            |_, _, _| {},
-            move |bounds, _, window, cx| {
-                entity.update(cx, |view, cx| {
-                    // The visible area is measured during prepaint, which
-                    // completes for the whole window before painting starts.
-                    let Some(area) = view.canvas_bounds else {
-                        return;
-                    };
-                    let editing = view.inline_text.as_ref().map(|e| e.id);
-                    let viewport = &mut view.controller.session_mut().viewport;
-                    let pan = viewport.pan;
-                    viewport.pan.x += f32::from(area.origin.x - bounds.origin.x);
-                    viewport.pan.y += f32::from(area.origin.y - bounds.origin.y);
-                    view.painter.hide_selection = view.cropping();
-                    view.painter
-                        .paint(&mut view.controller, bounds, editing, window, cx);
-                    view.controller.session_mut().viewport.pan = pan;
-                    view.paint_region(area, window);
-                });
-            },
-        )
-        .size_full()
+    fn canvas_layer(&mut self, _: &mut Context<Self>) -> Div {
+        view_canvas("canvas-layer", |view, bounds, window, cx| {
+            // The visible area is measured by the canvas element's layout.
+            let Some(area) = view.canvas_bounds else {
+                return;
+            };
+            let editing = view.inline_text.as_ref().map(|e| e.id);
+            let viewport = &mut view.controller.session_mut().viewport;
+            let pan = viewport.pan;
+            viewport.pan.x += f32::from(area.origin.x - bounds.origin.x);
+            viewport.pan.y += f32::from(area.origin.y - bounds.origin.y);
+            view.painter.hide_selection = view.cropping();
+            view.painter
+                .paint(&mut view.controller, bounds, editing, window, cx);
+            view.controller.session_mut().viewport.pan = pan;
+            view.paint_region(area, window);
+        })
     }
     /// The visible document canvas area: measures it and routes pointer input.
-    fn canvas_element(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let entity = cx.entity();
-        let paint_entity = entity.clone();
-        canvas(
-            move |bounds, window, cx| {
-                entity.update(cx, |view, cx| view.sync_canvas_bounds(bounds, cx));
-                window.insert_hitbox(bounds, HitboxBehavior::Normal)
-            },
-            move |_, hitbox, window, cx| {
-                paint_entity.update(cx, |view, cx| {
-                    view.diagnostics.painted();
-                    view.resume_poll(cx);
-                    // The canvas paints its own pen cursor; elsewhere the pen
-                    // shows the system cursor.
-                    if view.controller.cursor.is_some() && !view.canvas_input_blocked() {
-                        window.set_tablet_cursor_style(CursorStyle::None, &hitbox);
-                    }
-                });
-                let hitbox = hitbox.id;
-                let tablet_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &TabletEvent, phase, window, cx| {
-                    if phase.bubble()
-                        && (event.phase != TabletPhase::Down || hitbox.is_hovered(window))
-                    {
-                        tablet_entity.update(cx, |v, cx| v.tablet(event, window, cx));
-                    }
-                });
-                let down_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                    if phase.bubble()
-                        && hitbox.is_hovered(window)
-                        && matches!(
-                            event.button,
-                            MouseButton::Left | MouseButton::Middle | MouseButton::Right
-                        )
-                    {
-                        down_entity.update(cx, |v, cx| {
-                            if event.button == MouseButton::Right {
-                                v.open_canvas_menu(event.position, window, cx);
+    fn canvas_element(&mut self, _: &mut Context<Self>) -> Div {
+        let hide_cursor = self.controller.cursor.is_some() && !self.canvas_input_blocked();
+        div()
+            .id("canvas-input")
+            .size_full()
+            .el(move |e| {
+                let e = e
+                    .drag_threshold(0.)
+                    .pointer_buttons([rune::PointerButton::Middle])
+                    .on_layout(|s: &mut AppState, r: [f32; 4]| {
+                        let view = s.view.get_mut();
+                        let mut window = Window::render(view);
+                        let mut cx = Context::fresh();
+                        view.sync_canvas_bounds(Bounds::from_rect(r), &mut cx);
+                        view.queue_effects(window.effects.drain(..).collect());
+                        view.queue_effects(cx.effects);
+                    })
+                    .on_drag(|s: &mut AppState, drag: &mut rune::Drag, tx: &mut rune::Tx| {
+                        let middle = tx.button() == rune::PointerButton::Middle;
+                        dispatch(s, tx, |view, window, cx| {
+                            let Some(bounds) = view.canvas_bounds else {
+                                return;
+                            };
+                            let position = point(
+                                bounds.origin.x + px(drag.x),
+                                bounds.origin.y + px(drag.y),
+                            );
+                            view.mouse_position = position;
+                            let phase = match drag.phase {
+                                rune::Phase::Down => Phase::Down,
+                                rune::Phase::Move => Phase::Move,
+                                rune::Phase::Up if drag.cancelled() => Phase::Cancel,
+                                rune::Phase::Up => Phase::Up,
+                            };
+                            let button = if middle {
+                                MouseButton::Middle
                             } else {
-                                v.mouse(event.position, Phase::Down, event.button, window, cx);
+                                MouseButton::Left
+                            };
+                            view.mouse(position, phase, button, window, cx);
+                        });
+                    })
+                    .on_pointer_move_local(|s: &mut AppState, p: rune::PointerEvent, tx: &mut rune::Tx| {
+                        let position = point(px(p.window_x), px(p.window_y));
+                        dispatch(s, tx, |view, window, cx| {
+                            view.mouse_position = position;
+                            if view.controller.interaction.is_none() {
+                                view.mouse(position, Phase::Hover, MouseButton::Left, window, cx);
                             }
                         });
-                    }
-                });
-                let move_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                    if phase.bubble() {
-                        move_entity.update(cx, |v, cx| {
-                            let phase = if v.controller.interaction.is_some()
-                                || (v.region_selection.is_some() && event.pressed_button.is_some())
-                            {
-                                Phase::Move
-                            } else {
-                                Phase::Hover
-                            };
-                            v.mouse(
-                                event.position,
-                                phase,
-                                event.pressed_button.unwrap_or(MouseButton::Left),
-                                window,
-                                cx,
-                            )
+                    })
+                    .on_hover_change(|s: &mut AppState, inside: bool, tx: &mut rune::Tx| {
+                        if !inside {
+                            let position = s.view.get_mut().mouse_position;
+                            dispatch(s, tx, |view, window, cx| {
+                                if view.controller.interaction.is_none() {
+                                    view.mouse(position, Phase::Leave, MouseButton::Left, window, cx);
+                                }
+                            });
+                        }
+                    })
+                    .on_secondary_press(|s: &mut AppState, press: rune::PointerPress, tx: &mut rune::Tx| {
+                        let position = point(px(press.x), px(press.y));
+                        dispatch(s, tx, |view, window, cx| {
+                            view.mouse_position = position;
+                            view.open_canvas_menu(position, window, cx);
                         });
-                    }
-                });
-                let up_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                    if phase.bubble() {
-                        up_entity.update(cx, |v, cx| {
-                            v.mouse(event.position, Phase::Up, event.button, window, cx)
+                    })
+                    .on_wheel(|s: &mut AppState, w: rune::WheelEvent, tx: &mut rune::Tx| {
+                        let position = s.view.get_mut().mouse_position;
+                        let event = ScrollWheelEvent::from_rune(&w, position);
+                        dispatch(s, tx, |view, _, cx| view.scroll(&event, cx));
+                        true
+                    })
+                    .on_magnify(|s: &mut AppState, m: rune::MagnifyEvent, tx: &mut rune::Tx| {
+                        dispatch(s, tx, |view, _, _| {
+                            if view.canvas_input_blocked() || view.controller.interaction.is_some() {
+                                return;
+                            }
+                            view.controller
+                                .session_mut()
+                                .viewport
+                                .zoom_at(1. + m.delta, DocPoint::new(m.x, m.y));
+                            view.synchronize_page_view();
                         });
-                    }
-                });
-                let gesture_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &NavigationGesture, phase, _, cx| {
-                    if phase.bubble() {
-                        gesture_entity.update(cx, |v, cx| v.gesture(event, cx));
-                    }
-                });
-                let pad_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &TabletPadEvent, phase, window, cx| {
-                    if phase.bubble() {
-                        pad_entity.update(cx, |v, cx| v.pad(event, window, cx));
-                    }
-                });
-                let scroll_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
-                    if phase.bubble() && hitbox.should_handle_scroll(window) {
-                        scroll_entity.update(cx, |v, cx| v.scroll(event, cx));
-                    }
-                });
-            },
-        )
-        .size_full()
+                        true
+                    });
+                if hide_cursor {
+                    e.cursor(rune::Cursor::Hidden)
+                } else {
+                    e
+                }
+            })
     }
     /// Keep the page anchored when the canvas is laid out at a new size or
     /// position, and keep the inline text editor aligned with its text box.
@@ -673,14 +616,7 @@ impl NotesView {
             .flex_1()
             .min_h_0()
             .overflow_hidden()
-            .child(canvas)
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                let target = this.controller.requested_note();
-                for path in paths.paths() {
-                    this.controller.import_into(target, path.clone());
-                }
-                cx.notify();
-            }));
+            .child(canvas);
         if let Some(editor) = self.inline_element(cx) {
             center = center.child(editor);
         }
@@ -761,14 +697,6 @@ impl NotesView {
                     this.show_editor();
                     cx.notify();
                 }
-            }))
-            .on_action(cx.listener(|this, _: &FocusNext, w, cx| {
-                this.keyboard_in_document_menu(cx);
-                w.focus_next()
-            }))
-            .on_action(cx.listener(|this, _: &FocusPrevious, w, cx| {
-                this.keyboard_in_document_menu(cx);
-                w.focus_prev()
             }))
             .on_action(cx.listener(|this, _: &NewNote, window, cx| {
                 // Same dialog as the New document button; Enter accepts the
@@ -941,7 +869,7 @@ impl NotesView {
     }
     /// Escape closes the topmost layer only: an error, help, a dialog,
     /// settings, a menu or popover, then cancels editing state.
-    fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.controller.error.is_some() && self.controller.interaction.is_none() {
             self.controller.error = None;
         } else if self.help_open {

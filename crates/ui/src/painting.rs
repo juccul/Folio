@@ -5,7 +5,7 @@ use folio_canvas::{PageStack, SpatialIndex, Viewport};
 use folio_document::{
     Id, Object, Page, PageProperties, Paper, PathPoint, Point as DocPoint, Rect, Transform,
 };
-use gpui::{prelude::*, *};
+use super::*;
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -466,6 +466,12 @@ fn visible_page_range(
     start..end.max(start)
 }
 impl Painter {
+    /// Whether rasterization started for the visible pages is still running.
+    pub(super) fn busy(&self) -> bool {
+        self.pages
+            .values()
+            .any(|p| !p.ink_pending.is_empty() || !p.raster_pending.is_empty())
+    }
     pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<NotesView>) {
         for source in self.backgrounds.values() {
             Self::release_background(source, window, cx);
@@ -475,10 +481,10 @@ impl Painter {
     fn release_background(source: &ImageSource, window: &mut Window, cx: &mut Context<NotesView>) {
         // Sources are requested when added to the warm cache. Removing the
         // decoded asset alone does not remove its uploaded sprite-atlas image.
-        if let Some(image) = source.use_render_image(window, cx) {
+        if let Some(image) = source.render_image() {
             let _ = window.drop_image(image);
         }
-        source.remove_asset(cx);
+        source.forget();
     }
     fn clear_page(&mut self, window: &mut Window) {
         for painter in self.pages.values_mut() {
@@ -683,7 +689,7 @@ impl Painter {
                     .backgrounds
                     .entry((*asset).clone())
                     .or_insert_with(|| ImageSource::from(path.clone()));
-                full_ready = source.use_render_image(window, cx).is_some();
+                full_ready = source.render_image().is_some();
                 if !full_ready {
                     visible_decoding = true;
                 }
@@ -714,7 +720,7 @@ impl Painter {
                             .backgrounds
                             .entry(asset.to_owned())
                             .or_insert_with(|| ImageSource::from(path));
-                        let _ = source.use_render_image(window, cx);
+                        let _ = source.render_image();
                     }
                 }
             }
@@ -1299,27 +1305,15 @@ impl Painter {
                         } else {
                             "Out of date · select to retry"
                         };
-                        let style = window.text_style();
-                        let run = TextRun {
-                            len: label.len(),
-                            font: style.font(),
-                            color: rgb(0xc28c36).into(),
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        let line =
-                            window
-                                .text_system()
-                                .shape_line(label.into(), px(12.), &[run], None);
                         let origin = world
                             .compose(movement)
                             .apply(DocPoint::new(rect.min.x, rect.min.y));
-                        let _ = line.paint(
+                        super::text_render::paint_label(
+                            label,
                             point(px(origin.x), px(origin.y - 18.)),
-                            px(18.),
+                            12.,
+                            0xc28c36,
                             window,
-                            cx,
                         );
                     }
                 }
@@ -1844,7 +1838,7 @@ impl Painter {
                 let Some(source) = backgrounds.get(&asset) else {
                     continue;
                 };
-                if let Some(image) = source.use_render_image(window, cx) {
+                if let Some(image) = source.render_image() {
                     let _ = window.paint_image_transformed(
                         gpui_bounds(page),
                         Default::default(),
@@ -1966,18 +1960,18 @@ fn preview_image(
     appearance: Option<RasterAppearance>,
 ) -> Option<Arc<RenderImage>> {
     match appearance {
-        None => RenderImage::from_ephemeral_shared_bgra(width, height, data).map(Arc::new),
+        None => RenderImage::from_ephemeral_shared_bgra(width, height, data.as_slice()).map(Arc::new),
         Some(RasterAppearance::Ink(theme)) if theme.adapt_ink => {
             match theme.preview_pixels(&data) {
                 std::borrow::Cow::Borrowed(_) => {
-                    RenderImage::from_shared_bgra(width, height, data).map(Arc::new)
+                    RenderImage::from_shared_bgra(width, height, data.as_slice()).map(Arc::new)
                 }
                 std::borrow::Cow::Owned(pixels) => {
                     RenderImage::from_ephemeral_bgra(width, height, pixels).map(Arc::new)
                 }
             }
         }
-        _ => RenderImage::from_shared_bgra(width, height, data).map(Arc::new),
+        _ => RenderImage::from_shared_bgra(width, height, data.as_slice()).map(Arc::new),
     }
 }
 
@@ -2282,8 +2276,8 @@ fn paper_paths(key: &PaperKey) -> Vec<(Path<Pixels>, Rgba)> {
     paths
 }
 
-fn gpu_transform(t: Transform) -> gpui::TransformationMatrix {
-    gpui::TransformationMatrix {
+fn gpu_transform(t: Transform) -> TransformationMatrix {
+    TransformationMatrix {
         rotation_scale: [[t.a, t.c], [t.b, t.d]],
         translation: [t.tx, t.ty],
     }

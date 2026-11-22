@@ -121,10 +121,7 @@ impl NotesView {
         .min_h_0()
         .py_1()
         .px_2()
-        .tooltip(move |_, cx| {
-            cx.new(|_| super::workspace::Hint(hint.clone(), theme))
-                .into()
-        })
+        .tooltip(hint.clone())
     }
 
     pub(super) fn preset_controls(&mut self, cx: &mut Context<Self>) -> Div {

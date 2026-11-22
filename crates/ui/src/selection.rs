@@ -25,7 +25,7 @@ struct SelectionHint {
     text: SharedString,
     theme: Theme,
 }
-impl Render for SelectionHint {
+impl SelectionHint {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .px_3()
@@ -92,13 +92,7 @@ impl NotesView {
         .rounded(px(theme.radius))
         .bg(transparent_black())
         .hover(move |s| s.bg(theme.tint(1.)))
-        .tooltip(move |_, cx| {
-            cx.new(|_| SelectionHint {
-                text: label.clone(),
-                theme,
-            })
-            .into()
-        })
+        .tooltip(label.clone())
     }
 
     pub(super) fn selection_toolbar_origin(&self) -> DocPoint {
@@ -150,20 +144,18 @@ impl NotesView {
             .map(|b| (f32::from(b.size.width), f32::from(b.size.height)))
             .unwrap_or((1000., 700.));
         let origin = self.selection_toolbar_origin();
-        let entity = cx.entity().downgrade();
-        let dimensions = canvas(
-            move |bounds, window, cx| {
-                let _ = entity.update(cx, |view, cx| {
-                    if view.selection_toolbar_size != bounds.size {
-                        view.selection_toolbar_size = bounds.size;
-                        cx.on_next_frame(window, |_, _, cx| cx.notify());
+        let dimensions = div()
+            .absolute()
+            .inset_0()
+            .el(|e| {
+                e.on_layout(|s: &mut AppState, r: [f32; 4]| {
+                    let view = s.view.get_mut();
+                    let size = size(px(r[2]), px(r[3]));
+                    if view.selection_toolbar_size != size {
+                        view.selection_toolbar_size = size;
                     }
-                });
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .inset_0();
+                })
+            });
         let mut row = div()
             .occlude()
             .absolute()
@@ -213,13 +205,7 @@ impl NotesView {
                 .rounded(px(theme.radius))
                 .bg(transparent_black())
                 .hover(move |s| s.bg(theme.tint(1.)))
-                .tooltip(move |_, cx| {
-                    cx.new(|_| SelectionHint {
-                        text: format!("{label} · {shortcut}").into(),
-                        theme,
-                    })
-                    .into()
-                }),
+                .tooltip(format!("{label} · {shortcut}")),
             );
         }
         row = row

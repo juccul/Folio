@@ -311,95 +311,6 @@ impl NotesView {
         }
         true
     }
-    /// Smoke-test input through window dispatch: the hovering pen presses
-    /// its lower barrel button; then (`aim`) hovers over Eraser, which must
-    /// not choose it, and taps Pan.
-    pub fn wheel_smoke_events(&self, aim: bool) -> Result<Vec<PlatformInput>, String> {
-        let at = if aim {
-            self.tool_wheel
-                .ok_or("The pen's barrel button did not open the tool wheel")?
-                .center
-        } else {
-            self.canvas_bounds.ok_or("Canvas not laid out")?.center()
-        };
-        let tablet = |position, buttons, phase| {
-            PlatformInput::Tablet(TabletEvent {
-                position,
-                pressure: 0.,
-                tilt_x: 0.,
-                tilt_y: 0.,
-                timestamp: 2000,
-                buttons,
-                eraser: false,
-                phase,
-                modifiers: Default::default(),
-            })
-        };
-        let hover = |position, buttons| {
-            [
-                tablet(position, buttons, TabletPhase::Hover),
-                PlatformInput::MouseMove(MouseMoveEvent {
-                    position,
-                    pressed_button: None,
-                    modifiers: Default::default(),
-                }),
-            ]
-        };
-        let tools = self.wheel_tools();
-        let ring = (RING_INNER + RING_OUTER) / 2. * self.controller.settings.ui_scale;
-        let on_ring = |tool: WheelTool| {
-            tools
-                .iter()
-                .position(|&slot| slot == tool)
-                .map(|index| polar(at, ring, slot_angle(index, tools.len())))
-                .ok_or(format!("{} is not on the tool wheel", tool.label()))
-        };
-        let pan = on_ring(WheelTool::Pan)?;
-        let eraser = on_ring(WheelTool::Eraser)?;
-        let mouse = |down: bool| {
-            if down {
-                PlatformInput::MouseDown(MouseDownEvent {
-                    button: MouseButton::Left,
-                    position: pan,
-                    modifiers: Default::default(),
-                    click_count: 1,
-                    first_mouse: false,
-                })
-            } else {
-                PlatformInput::MouseUp(MouseUpEvent {
-                    button: MouseButton::Left,
-                    position: pan,
-                    modifiers: Default::default(),
-                    click_count: 1,
-                })
-            }
-        };
-        Ok(if aim {
-            let mut events = [hover(at, 1), hover(at, 0), hover(eraser, 0), hover(pan, 0)].concat();
-            events.extend([
-                tablet(pan, 0, TabletPhase::Down),
-                mouse(true),
-                tablet(pan, 0, TabletPhase::Up),
-                mouse(false),
-            ]);
-            // Leaving proximity lets the mouse drive the canvas again.
-            events.push(tablet(pan, 0, TabletPhase::Leave));
-            events
-        } else {
-            [hover(at, 0), hover(at, 1)].concat()
-        })
-    }
-    pub fn wheel_smoke_verify(&mut self, tool: Tool, cx: &mut Context<Self>) -> Result<(), String> {
-        let chosen = self.tool_wheel.is_none() && self.controller.tool == Tool::Hand;
-        self.tool_wheel = None;
-        self.controller.set_tool(tool);
-        cx.notify();
-        if chosen {
-            Ok(())
-        } else {
-            Err("Tapping Pan on the tool wheel did not choose it alone".into())
-        }
-    }
     fn wheel_slot_enabled(&self, slot: WheelTool) -> bool {
         !self.controller.read_only() || matches!(slot, WheelTool::Select | WheelTool::Pan)
     }
@@ -653,7 +564,7 @@ impl NotesView {
             .absolute()
             .inset_0()
             .occlude()
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 if let Some(wheel) = &mut this.tool_wheel
                     && matches!(
                         event.keystroke.key.as_str(),
