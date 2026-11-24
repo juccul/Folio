@@ -156,6 +156,8 @@ pub struct Settings {
     pub cursor_size: f32,
     /// Solve math in the solver panel as soon as a problem is entered or read.
     pub math_auto_solve: bool,
+    /// The tour of smart ink was shown (it opens by itself once).
+    pub tour_seen: bool,
 }
 
 impl Settings {
@@ -362,6 +364,7 @@ impl Default for Settings {
             hold_shapes: true,
             encircle_select: true,
             auto_math_ink: true,
+            tour_seen: false,
             autosave: true,
             cursor_size: 12.,
             math_auto_solve: true,

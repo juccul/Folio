@@ -57,6 +57,10 @@ pub struct Field {
     pub placeholder: Option<SharedString>,
     /// Tighter padding, for toolbars such as the find bar.
     pub compact: bool,
+    /// Draws no box of its own: what it sits in (the search bar) does.
+    pub bare: bool,
+    /// Text size in points, when not the usual 14.
+    pub text_size: Option<f32>,
     pub inline: Option<InlineStyle>,
     pub on_submit: Option<FieldCallback>,
     pub on_change: Option<FieldCallback>,
@@ -80,6 +84,8 @@ impl Field {
             theme: Theme::new(&folio_app::Settings::default()),
             placeholder: None,
             compact: false,
+            bare: false,
+            text_size: None,
             inline: None,
             on_submit: None,
             on_change: None,
@@ -129,7 +135,10 @@ impl Entity<Field> {
                 }
                 style
             }
-            None => TextStyle::new(14., 400.).lh(22.),
+            None => {
+                let size = field.text_size.unwrap_or(14.);
+                TextStyle::new(size, 400.).lh((size * 1.5).round())
+            }
         };
         let ink = match &field.inline {
             Some(inline) => rgb(inline.color).color(),
@@ -201,7 +210,7 @@ impl Entity<Field> {
             },
         );
         let compact = field.compact;
-        let inline = field.inline.is_some();
+        let inline = field.inline.is_some() || field.bare;
         drop(field);
         div()
             .w_full()

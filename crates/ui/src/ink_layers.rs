@@ -11,6 +11,9 @@ use std::{
 pub(super) const PIXEL_BUDGET: usize = 16 * 1024 * 1024;
 const BATCH_SIZE: usize = 32;
 const MIN_BATCH: usize = 8;
+/// Path points that make a shorter run worth an image: drawn as vectors, one
+/// long scribble costs a GPU segment per point every frame.
+const HEAVY_POINTS: usize = 1500;
 const MAX_BATCH_PIXELS: usize = 4 * 1024 * 1024;
 
 /// Snap `rect` onto the global `1 / density` pixel lattice so every cached
@@ -35,10 +38,18 @@ pub(super) struct InkBatch {
     pub theme: CanvasTheme,
     pub density: f32,
     pub pixels: usize,
+    /// Nonzero for one tile of ink too large for a single image: its grid
+    /// cell, which keeps the tile's id stable while the view pans.
+    pub tile: u64,
 }
 impl InkBatch {
     pub fn id(&self) -> Id {
-        self.objects[0].id()
+        let id = self.objects[0].id();
+        if self.tile == 0 {
+            return id;
+        }
+        let mix = (self.tile as u128).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
+        Id::from_u128(id.as_u128() ^ mix)
     }
     pub fn matches(&self, other: &Self) -> bool {
         self.density == other.density && self.bounds == other.bounds && self.same_ink(other)
@@ -52,6 +63,19 @@ impl InkBatch {
                 .iter()
                 .zip(&other.objects)
                 .all(|(a, b)| Arc::ptr_eq(a, b))
+    }
+    /// Whether this batch's image can stand in for `other` while `other` is
+    /// rasterized: the same strokes, drawn at any density, over an area that
+    /// covers `other`'s (bounds snapped to another density differ by up to a
+    /// pixel of either).
+    pub fn stands_in_for(&self, other: &Self) -> bool {
+        let slack = 1. / self.density.min(other.density).max(0.01);
+        let outer = self.bounds.expand(slack);
+        self.same_ink(other)
+            && outer.min.x <= other.bounds.min.x
+            && outer.min.y <= other.bounds.min.y
+            && outer.max.x >= other.bounds.max.x
+            && outer.max.y >= other.bounds.max.y
     }
     /// Whether `self` is a strict prefix of `other` with the same theme and
     /// density (the common case while appending new strokes to the tail block).
@@ -97,6 +121,71 @@ fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
     })
 }
 
+/// Splits ink too large for one image (a long scribble seen up close) into
+/// tiles of about a megapixel on a grid fixed in document space. With a clip,
+/// only tiles inside it are made, nearest its centre first, within the pixel
+/// budget; without one, every tile, or none when they exceed the budget.
+fn tiles(
+    members: &[Arc<Object>],
+    bounds: Rect,
+    clip: Option<Rect>,
+    theme: CanvasTheme,
+    density: f32,
+) -> Option<Vec<InkBatch>> {
+    let region = match clip {
+        Some(clip) => intersect_rect(bounds, clip)?,
+        None => bounds,
+    };
+    // A power-of-two cell keeps the grid (and the tiles' ids) unchanged
+    // across nearby densities, so old tiles stand in while zooming.
+    let cell = (1024. / density).log2().round().exp2();
+    if !cell.is_finite() || cell <= 0. {
+        return None;
+    }
+    let (x0, x1) = ((region.min.x / cell).floor() as i64, (region.max.x / cell).ceil() as i64);
+    let (y0, y1) = ((region.min.y / cell).floor() as i64, (region.max.y / cell).ceil() as i64);
+    if (x1 - x0).saturating_mul(y1 - y0) > 4096 {
+        return None;
+    }
+    let centre = region.center();
+    let mut cells = Vec::new();
+    for ix in x0..x1 {
+        for iy in y0..y1 {
+            let rect = Rect {
+                min: folio_document::Point::new(ix as f32 * cell, iy as f32 * cell),
+                max: folio_document::Point::new((ix + 1) as f32 * cell, (iy + 1) as f32 * cell),
+            };
+            let Some(part) = intersect_rect(rect, region) else {
+                continue;
+            };
+            let (snapped, w, h) = snap_bounds(part, density);
+            let tile = ((ix as u64) << 32 ^ (iy as u32 as u64)) | 1 << 63;
+            cells.push((snapped.center().distance(centre), snapped, (w * h) as usize, tile));
+        }
+    }
+    cells.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut total = 0;
+    let mut out = Vec::new();
+    for (_, bounds, pixels, tile) in cells {
+        if total + pixels > PIXEL_BUDGET {
+            if clip.is_none() {
+                return None;
+            }
+            break;
+        }
+        total += pixels;
+        out.push(InkBatch {
+            objects: members.to_vec(),
+            bounds,
+            theme,
+            density,
+            pixels,
+            tile,
+        });
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 #[derive(Default)]
 pub(super) struct Planner {
     bounds: HashMap<Id, (Arc<Object>, Rect)>,
@@ -125,10 +214,22 @@ impl Planner {
         used: &mut HashSet<Id>,
         batches: &mut Vec<(Range<usize>, InkBatch)>,
     ) {
-        if vis.is_empty() || run.len() < MIN_BATCH {
+        if vis.is_empty() {
             return;
         }
         let at = |rank: usize| page.order.get(rank).and_then(|id| page.objects.get(id));
+        let points = |run: &Range<usize>| -> usize {
+            run.clone()
+                .filter_map(at)
+                .map(|o| match o.as_ref() {
+                    Object::Stroke(s) => s.path.len(),
+                    _ => 0,
+                })
+                .sum()
+        };
+        if run.len() < MIN_BATCH && points(&run) < HEAVY_POINTS {
+            return;
+        }
         let mut bounds: Option<Rect> = None;
         for rank in run.clone() {
             if let Some(object) = at(rank) {
@@ -161,8 +262,9 @@ impl Planner {
             }
         }
         if fits(width, height, pixels) {
+            let heavy = points(&run) >= HEAVY_POINTS;
             let members = run.filter_map(at).cloned().collect::<Vec<_>>();
-            if members.len() >= MIN_BATCH {
+            if members.len() >= MIN_BATCH || heavy {
                 used.extend(members.iter().map(|o| o.id()));
                 batches.push((
                     vis,
@@ -172,8 +274,17 @@ impl Planner {
                         theme,
                         density,
                         pixels: pixels as usize,
+                        tile: 0,
                     },
                 ));
+            }
+            return;
+        }
+        if run.len() < MIN_BATCH * 2 {
+            let members = run.filter_map(at).cloned().collect::<Vec<_>>();
+            if let Some(tiles) = tiles(&members, bounds, clip, theme, density) {
+                used.extend(members.iter().map(|o| o.id()));
+                batches.extend(tiles.into_iter().map(|tile| (vis.clone(), tile)));
             }
             return;
         }
@@ -425,6 +536,16 @@ mod tests {
             .1;
         assert!(shorter.is_prefix_of(&longer));
         assert!(!longer.is_prefix_of(&shorter));
+        // While zooming, the image made at the old density stands in for the
+        // new one although snapping gives the batches different bounds.
+        for density in [0.5, 2., 3.5] {
+            let rezoomed = batches(&objects, &HashSet::new(), theme(), density)
+                .remove(0)
+                .1;
+            assert!(!original.matches(&rezoomed));
+            assert!(original.stands_in_for(&rezoomed), "density {density}");
+        }
+        assert!(!shorter.stands_in_for(&longer));
 
         objects[7] = Arc::new(objects[7].as_ref().clone());
         assert!(
@@ -455,6 +576,37 @@ mod tests {
         let objects = fixture(32);
         assert!(batches(&objects, &HashSet::new(), theme(), 100.).is_empty());
         assert!(batches(&objects, &HashSet::new(), theme(), f32::NAN).is_empty());
+        // One long scribble is worth an image on its own, and seen up close
+        // it is tiled within the view's clip instead of drawn as vectors.
+        let mut b = folio_ink::StrokeBuilder::new(PenStyle::default());
+        for j in 0..2000 {
+            let f = j as f32;
+            b.push(StrokePoint::new(
+                Point::new(200. + (f * 0.37).sin() * 150., 200. + (f * 0.31).cos() * 150.),
+                0.7,
+                j * 4,
+            ));
+        }
+        let scribble = vec![Arc::new(Object::Stroke(b.finish().unwrap()))];
+        let page = test_page(&scribble);
+        let mut planner = Planner::default();
+        let whole = planner.batches(&page, &scribble, &[0], &HashSet::new(), theme(), 2., None);
+        assert_eq!(whole.len(), 1);
+        assert_eq!(whole[0].1.tile, 0);
+        let clip = Rect::new(100., 100., 200., 200.);
+        let tiled = planner.batches(&page, &scribble, &[0], &HashSet::new(), theme(), 20., Some(clip));
+        assert!(tiled.len() > 1);
+        let ids = tiled.iter().map(|(_, t)| t.id()).collect::<HashSet<_>>();
+        assert_eq!(ids.len(), tiled.len());
+        assert!(!ids.contains(&scribble[0].id()));
+        let area: f32 = tiled.iter().map(|(_, t)| t.bounds.width() * t.bounds.height()).sum();
+        assert!(area >= clip.width() * clip.height() - 1.);
+        for (_, tile) in &tiled {
+            assert!(tile.pixels <= MAX_BATCH_PIXELS && raster(tile).is_some());
+        }
+        // The same view plans the same tiles, so their images survive.
+        let again = planner.batches(&page, &scribble, &[0], &HashSet::new(), theme(), 20., Some(clip));
+        assert!(again.iter().zip(&tiled).all(|((_, a), (_, b))| a.id() == b.id() && a.matches(b)));
     }
     #[test]
     fn raster_preserves_selected_colors_opacity_and_overlap_order() {
@@ -492,6 +644,7 @@ mod tests {
                 theme: theme(),
                 density: 2.,
                 pixels: 4800,
+                tile: 0,
             };
             let image = raster(&batch).unwrap();
             let width = image.size(0).width.0 as usize;

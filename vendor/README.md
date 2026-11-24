@@ -15,6 +15,13 @@ The workspace patches `winit` to `vendor/winit`, Rune's patched winit with Folio
 
 Run the extension's unit tests from `vendor/winit` with Rune's `sctk-adwaita` patch: `cargo test --lib tablet --config 'patch.crates-io.sctk-adwaita.git="https://github.com/anomalyco/rune"' --config 'patch.crates-io.sctk-adwaita.rev="dd672fc8257a1bfb55d2e8595f585fc411e709df"'`.
 
+## rune-image 0.0.1 (Rune, revision dd672fc) — MIT
+
+The workspace patches Rune's `rune-image` to `vendor/rune-image`, an unchanged copy except:
+
+- `Cargo.toml`: the dependency versions Rune's workspace supplied, written out, and no workspace lints.
+- `src/pixels.rs`: fitted placement no longer clamps a drawn image to at least one point inside a frame narrower or shorter than a point (an image in a menu that grows from or shrinks to nothing), which panicked because `f32::clamp`'s lower bound passed its upper one.
+
 ## GPUI 0.2.2 — Apache-2.0
 
 - `interactive.rs`/`window.rs`: rich `TabletEvent`, `TabletPadEvent` and `NavigationGesture` platform events, atomic sensor fields, input routing and native synthetic replay entry points.

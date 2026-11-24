@@ -20,6 +20,52 @@ pub fn tune_allocator() {
     }
 }
 
+/// On Linux, limit the Vulkan loader to the driver of the GPU the firmware
+/// drives the display with (plus lavapipe, the software fallback). Otherwise
+/// enumerating adapters loads every installed driver, such as NVIDIA's,
+/// which costs tens of megabytes and can wake a discrete GPU Folio never
+/// draws on. Any variable that already chooses a driver or GPU wins. Call it
+/// before any thread starts.
+pub fn select_display_vulkan_driver() {
+    #[cfg(target_os = "linux")]
+    {
+        const CHOSEN: &[&str] = &[
+            "VK_LOADER_DRIVERS_SELECT",
+            "VK_LOADER_DRIVERS_DISABLE",
+            "VK_DRIVER_FILES",
+            "VK_ICD_FILENAMES",
+            "DRI_PRIME",
+            "MESA_VK_DEVICE_SELECT",
+            "__NV_PRIME_RENDER_OFFLOAD",
+            "ZED_DEVICE_ID",
+        ];
+        if CHOSEN.iter().any(|name| std::env::var_os(name).is_some()) {
+            return;
+        }
+        if let Some(drivers) = display_vulkan_drivers(std::path::Path::new("/sys/class/drm")) {
+            // SAFETY: called at the start of `main`, before other threads.
+            unsafe { std::env::set_var("VK_LOADER_DRIVERS_SELECT", drivers) };
+        }
+    }
+}
+
+/// The loader's driver globs for the boot display GPU under `drm`.
+#[cfg(target_os = "linux")]
+fn display_vulkan_drivers(drm: &std::path::Path) -> Option<&'static str> {
+    let mut vendors = std::fs::read_dir(drm).ok()?.flatten().filter_map(|entry| {
+        let device = entry.path().join("device");
+        let boot = std::fs::read_to_string(device.join("boot_vga")).ok()?;
+        (boot.trim() == "1").then(|| std::fs::read_to_string(device.join("vendor")).ok())?
+    });
+    let vendor = vendors.next()?;
+    Some(match vendor.trim() {
+        "0x1002" => "*radeon*,*lvp*",
+        "0x8086" => "*intel*,*lvp*",
+        "0x10de" => "*nvidia*,*nouveau*,*lvp*",
+        _ => return None,
+    })
+}
+
 /// Ask the platform allocator to return unused free heap pages to the OS.
 pub fn release_unused_memory() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -778,6 +824,23 @@ mod tests {
             Some(std::fs::canonicalize(&library).unwrap())
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn vulkan_drivers_follow_the_boot_display_gpu() {
+        let root = directory("drm");
+        let card = |name: &str, vendor: &str, boot: &str| {
+            let device = root.join(name).join("device");
+            std::fs::create_dir_all(&device).unwrap();
+            std::fs::write(device.join("vendor"), vendor).unwrap();
+            std::fs::write(device.join("boot_vga"), boot).unwrap();
+        };
+        assert_eq!(display_vulkan_drivers(&root), None);
+        card("card0", "0x10de\n", "0\n");
+        card("card1", "0x1002\n", "1\n");
+        std::fs::create_dir_all(root.join("card1-eDP-1")).unwrap();
+        assert_eq!(display_vulkan_drivers(&root), Some("*radeon*,*lvp*"));
+        std::fs::remove_dir_all(&root).unwrap();
     }
     #[test]
     fn importing_read_only_assets_preserves_source_and_publishes_owned_copy() {

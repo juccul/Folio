@@ -4,6 +4,27 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Springs for Rune-driven motion. `POP` overshoots a touch, for small
+/// things that flip or appear; `GLIDE` carries a highlight between controls
+/// with a whisper of bounce; `SETTLE` reflows lists and grids.
+pub const POP: rune::Spring = rune::Spring::new(0.32, 0.28);
+pub const GLIDE: rune::Spring = rune::Spring::new(0.34, 0.14);
+pub const SETTLE: rune::Spring = rune::Spring::new(0.42, 0.08);
+/// A menu springing to the size of the page it turns into, and back: quick,
+/// with a little snap at the end.
+pub const MORPH: rune::Spring = rune::Spring::new(0.3, 0.16);
+/// Content replacing other content in place arrives quickly, so the gap
+/// between the two stays short.
+pub const SWAP: rune::Spring = rune::Spring::new(0.24, 0.);
+/// Subtle fade for hover highlights entering and leaving across the UI.
+pub const HOVER_ENTER: rune::Curve = rune::Curve::tween(0.1, rune::Easing::EASE_OUT);
+pub const HOVER_EXIT: rune::Curve = rune::Curve::tween(0.16, rune::Easing::EASE_OUT);
+/// Elastic leading and trailing edges for switch knobs: the leading edge runs
+/// ahead so the knob stretches smoothly into a pill mid-flight, then bounces
+/// gently back into a circle at rest.
+pub const SWITCH_LEAD: rune::Spring = rune::Spring::new(0.24, 0.24);
+pub const SWITCH_TRAIL: rune::Spring = rune::Spring::new(0.36, 0.18);
+
 const DURATION: Duration = Duration::from_millis(180);
 /// Panels settle more slowly, decelerating into place.
 const PANEL_DURATION: Duration = Duration::from_millis(240);
@@ -119,30 +140,6 @@ impl Motion {
         self.frame += 1;
         self.hovers.retain(|_, h| h.drawn == previous);
     }
-    /// Set a value immediately, without animating.
-    pub fn jump(&mut self, key: &str, value: f32) {
-        self.values.insert(
-            key.into(),
-            Tween {
-                from: value,
-                to: value,
-                started: Instant::now(),
-                duration: DURATION,
-            },
-        );
-    }
-    /// Animate a value from `from` to `to`, starting now.
-    pub fn slide(&mut self, key: &str, from: f32, to: f32, reduced: bool) {
-        self.values.insert(
-            key.into(),
-            Tween {
-                from: if reduced { to } else { from },
-                to,
-                started: Instant::now(),
-                duration: DURATION,
-            },
-        );
-    }
     pub fn panel(&mut self, key: &'static str, signature: Option<String>, reduced: bool) -> f32 {
         let now = Instant::now();
         let Some(signature) = signature else {
@@ -157,7 +154,7 @@ impl Motion {
                 // Panels fade in from transparent as they slide into place.
                 // Switching library views only dips, so the grid never blinks out.
                 Tween {
-                    from: if key == "library-motion" { 0.35 } else { 0. },
+                    from: 0.,
                     to: 1.,
                     started: now,
                     duration: PANEL_DURATION,

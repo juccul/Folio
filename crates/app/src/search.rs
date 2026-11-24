@@ -75,12 +75,9 @@ impl Controller {
                     .total_cmp(&(b.min.y / 8.).floor())
                     .then(a.min.x.total_cmp(&b.min.x))
             });
-            if let Some(r) = highlights.first() {
-                s.viewport.pan = Point::new(
-                    100. - r.min.x * s.viewport.zoom,
-                    100. - r.min.y * s.viewport.zoom,
-                );
-            }
+            // The view stays: the editor scrolls a match into view only when
+            // it is off screen (it used to jump every first match to the
+            // top-left corner).
             self.search_highlights = highlights;
             self.search_focus = 0;
             self.pending_navigation = None;

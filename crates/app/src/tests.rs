@@ -410,7 +410,10 @@ fn search_waits_for_new_text_to_be_durably_indexed() {
     );
     let page = a.page().id;
     a.search_focus = 1;
+    let view = a.session().viewport.pan;
     a.navigate_search(a.active, page);
+    // A match on the open page leaves the view where it is.
+    assert_eq!(a.session().viewport.pan, view);
     // The find bar steps through matches in reading order, from the first.
     assert_eq!(a.search_highlights.len(), 2);
     assert!(a.search_highlights[0].min.y < a.search_highlights[1].min.y);

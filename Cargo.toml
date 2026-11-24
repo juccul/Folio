@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["apps/desktop", "crates/*"]
-exclude = ["vendor/gpui", "vendor/xattr", "vendor/proc-macro-error2", "vendor/winit"]
+exclude = ["vendor/gpui", "vendor/xattr", "vendor/proc-macro-error2", "vendor/winit", "vendor/rune-image"]
 
 [workspace.package]
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 license = "GPL-3.0-or-later"
 rust-version = "1.92"
@@ -27,6 +27,11 @@ parley_engine = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a
 wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
 accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
 accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+
+# Rune's image placement, with a sub-point frame no longer panicking (see
+# vendor/README.md).
+[patch."https://github.com/anomalyco/rune"]
+rune-image = { path = "vendor/rune-image" }
 
 [profile.dev]
 debug = 0

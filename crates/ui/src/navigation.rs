@@ -72,6 +72,7 @@ impl TabDrag {
             .collect()
     }
     /// Where the dragged tab's left edge lands once it is dropped.
+    #[cfg(test)]
     pub fn landing(&self) -> Option<f32> {
         let from = self.from()?;
         let (target, _) = self.target()?;
@@ -176,11 +177,14 @@ impl NotesView {
         let Some(drag) = &mut self.tab_drag else {
             return;
         };
+        let was = (drag.moving, drag.target(), drag.pointer);
         drag.pointer = x;
         if !drag.moving && (x - drag.start).abs() > TabDrag::THRESHOLD {
             drag.moving = true;
         }
-        if drag.moving {
+        if drag.moving && was != (drag.moving, drag.target(), drag.pointer) {
+            // Neighboring tabs spring aside while the dragged tab follows the pointer.
+            cx.animate();
             cx.notify();
         }
     }
@@ -198,21 +202,12 @@ impl NotesView {
                 .all(|((id, _, _), tab)| id == tab);
         if drag.moving
             && complete
-            && let (Some((target, left)), Some(landing)) = (drag.target(), drag.landing())
+            && let Some((target, _)) = drag.target()
         {
-            let reduced = self.controller.settings.reduce_motion;
-            let mut motion = self.motion.borrow_mut();
-            for (id, _) in drag.offsets() {
-                motion.jump(&format!("tab-offset-{id}"), 0.);
-            }
-            motion.slide(
-                &format!("tab-offset-{}", drag.id),
-                left - landing,
-                0.,
-                reduced,
-            );
-            drop(motion);
             move_tab(&mut self.open_tabs, drag.id, target);
+        }
+        if drag.moving {
+            cx.animate();
         }
         cx.notify();
     }
@@ -447,13 +442,23 @@ impl NotesView {
             (menu_width, menu_height),
             (width, height),
         );
-        let mut menu = div()
+        // A dialog chosen here turns the menu into its page: wider, and as
+        // tall as the window leaves below it. The menu stays where it opened.
+        let hosted = self.modal_hosted_in(MenuHost::Document);
+        let (x, menu_width, menu_height) = if hosted {
+            let wide = (280. * scale).min((width - 16.).max(1.));
+            (x.min((width - wide - 8.).max(8.)), wide, (height - y - 8.).max(menu_height))
+        } else {
+            (x, menu_width, menu_height)
+        };
+        let menu = div()
             .id("document-context-menu")
             .occlude()
             .absolute()
             .left(px(x))
             .top(px(y))
             .w(px(menu_width))
+            .grows_from_point((f32::from(at.x), f32::from(at.y)), (x, y, menu_width, menu_height))
             .max_h(px(menu_height))
             .overflow_y_scroll()
             .p_1()
@@ -462,17 +467,31 @@ impl NotesView {
             .rounded(px(theme.corner_md()))
             .glass(theme, theme.popover)
             .shadow_md()
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+            // It springs to the size of the page it turns into and back.
+            .el(|e| e.motion(crate::motion::MORPH).animated_changes())
+            .on_mouse_down_out(cx.listener(|this, _, w, cx| {
                 // Dismissing the menu must not also activate the tab, card or
                 // canvas under the pointer.
+                if this.modal_hosted_in(MenuHost::Document) {
+                    this.cancel_modal(w, cx);
+                }
                 this.document_menu = None;
                 cx.stop_propagation();
                 cx.notify();
             }));
+        if hosted {
+            return menu.child(self.modal_panel(true, window, cx)).into_any_element();
+        }
+        let mut items = div()
+            .id("doc-menu-items")
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .page_in(false);
         let mut previous = None;
         for (key, label, kind, action) in entries {
             if separated(action, previous) {
-                menu = menu.child(
+                items = items.child(
                     div()
                         .flex_shrink_0()
                         .h(px(1.))
@@ -498,7 +517,7 @@ impl NotesView {
                 .into_any_element(),
                 None => div().size(rems(1.125)).flex_shrink_0().into_any_element(),
             };
-            menu = menu.child(
+            items = items.child(
                 self.control(
                     format!("doc-menu-{key}"),
                     label,
@@ -524,21 +543,31 @@ impl NotesView {
                     false,
                     cx,
                     move |this, w, cx| {
+                        // Actions that ask for input turn the menu into
+                        // their page.
+                        let input = match action {
+                            DocumentMenuAction::Rename => Some(Modal::RenameDocument(id)),
+                            DocumentMenuAction::Move => Some(Modal::MoveDocument(id)),
+                            DocumentMenuAction::Tags => Some(Modal::DocumentTags(id)),
+                            _ => None,
+                        };
+                        if let Some(modal) = input {
+                            this.modal_in_menu(MenuHost::Document, modal, w, cx);
+                            return;
+                        }
                         this.document_menu = None;
                         match action {
                             DocumentMenuAction::Close(which) => this.close_tabs(id, which, w, cx),
                             DocumentMenuAction::Open => this.open_note(id),
-                            DocumentMenuAction::Rename => {
-                                this.modal(Modal::RenameDocument(id), w, cx)
-                            }
                             DocumentMenuAction::Duplicate => this
                                 .controller
                                 .manage_note(id, folio_app::NoteAction::Duplicate),
                             DocumentMenuAction::Favorite => this
                                 .controller
                                 .manage_note(id, folio_app::NoteAction::Favorite),
-                            DocumentMenuAction::Move => this.modal(Modal::MoveDocument(id), w, cx),
-                            DocumentMenuAction::Tags => this.modal(Modal::DocumentTags(id), w, cx),
+                            DocumentMenuAction::Rename
+                            | DocumentMenuAction::Move
+                            | DocumentMenuAction::Tags => {}
                             DocumentMenuAction::Delete => this.modal(
                                 Modal::Confirm(super::Confirm::DeletePermanently(id)),
                                 w,
@@ -562,7 +591,7 @@ impl NotesView {
                 .py_1(),
             );
         }
-        menu.into_any_element()
+        menu.child(items).into_any_element()
     }
 }
 

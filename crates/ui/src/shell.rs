@@ -41,14 +41,16 @@ fn view_fn(s: &AppState, cx: &mut rune::Cx<AppState>) -> rune::El {
     }
     let theme = Theme::new(&view.controller.settings);
     cx.foreground(rgb(theme.ink).color());
-    // Tooltips as Folio's hints drew them: ink fill, surface text.
+    // Tooltips follow the theme as menus do: the popover's colour with its
+    // hairline edge, and text heavy enough to stay crisp at small sizes.
     cx.help_look(
         rune::HelpLook::system(theme.dark)
-            .fill(rgb(theme.ink).color())
-            .ink(rgb(theme.surface).color())
+            .fill(rgb(theme::mix(theme.popover, 0xffffff, if theme.dark { 0.05 } else { 0. })).color())
+            .ink(rgb(theme.ink).color())
+            .ring(1., theme.glass_edge().color())
             .radius(theme.radius)
-            .padding(12., 8.)
-            .font(rune::TextStyle::new(12., 400.).lh(19.))
+            .padding(10., 6.)
+            .font(rune::TextStyle::new(12.5, 500.).lh(18.))
             .shadows([
                 rune::Shadow {
                     x: 0.,
@@ -106,6 +108,8 @@ fn view_fn(s: &AppState, cx: &mut rune::Cx<AppState>) -> rune::El {
     }
     built
         .instant_changes()
+        // Subtle fade when hover tints enter and leave across the UI.
+        .hover_motion_within(motion::HOVER_ENTER, motion::HOVER_EXIT)
         .on_layout(|s: &mut AppState, r: [f32; 4]| {
             let view = s.view.get_mut();
             let size = size(px(r[2]), px(r[3]));
@@ -178,7 +182,28 @@ fn poll(s: &mut AppState, _clock: f64, tx: &mut rune::Tx) -> bool {
     }
     let view = s.view.get_mut();
     view.focused_key = tx.focused().map(str::to_owned);
-    view.poll(tx) || pen
+    // Rows a virtual list builds as it scrolls appear in place, never
+    // replaying their entrance.
+    let scrolled_rows = compat::take_virtual_dirty();
+    let relaid = std::mem::take(&mut view.canvas_relaid);
+    let changed = view.poll(tx) || pen || scrolled_rows || relaid;
+    // Frames no input caused land at once in Rune. A glide the user started
+    // (wheel, zoom button, page jump) and the save status changing still
+    // animate: the page count and zoom level roll, the status cross-fades.
+    let status = format!(
+        "{:?}{}",
+        view.controller.save_state(),
+        view.controller.activity_status()
+    );
+    if !scrolled_rows
+        && (view.canvas_ease.last.is_some()
+            || view.canvas_glide.is_some()
+            || view.last_status != status || compat::recent_input())
+    {
+        view.last_status = status;
+        tx.animated();
+    }
+    changed
 }
 
 fn no_init() -> AppState {
@@ -227,7 +252,12 @@ pub fn run(
     // Folio draws its own titlebar band (the tab strip); Rune keeps the
     // window's controls over it on Windows and macOS. Linux keeps the
     // system frame, which resizes and decorates the window.
-    let app = rune::App::new(spec).titlebar(rune::Titlebar::new(40.));
+    let app = rune::App::new(spec)
+        .titlebar(rune::Titlebar::new(40.))
+        // Glyphs with CoreText's weight on every platform: Rune's default
+        // off macOS draws small text, dark text on light fills most of all,
+        // thin and ragged.
+        .font_smoothing(rune::FontSmoothing::Windfoil);
     let handle = app.handle();
     ready(handle.clone());
     app.args(rune_args)
@@ -281,10 +311,14 @@ impl NotesView {
     /// Keys no binding took.
     pub(crate) fn key_down(
         &mut self,
-        _event: &KeyDownEvent,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> bool {
+        if self.tour_key(event.keystroke.key.as_str(), window) {
+            cx.notify();
+            return true;
+        }
         false
     }
     /// Whether the window may close now: edits are saved, or the person is

@@ -227,7 +227,7 @@ impl NotesView {
                                 "Rename",
                                 false,
                                 cx,
-                                move |this, w, cx| this.modal(Modal::RenamePreset(id), w, cx),
+                                move |this, w, cx| this.modal_in_menu(MenuHost::Popover, Modal::RenamePreset(id), w, cx),
                             )
                             .flex_1()
                             .min_h_0()

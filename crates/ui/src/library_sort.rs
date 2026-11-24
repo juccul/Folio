@@ -69,21 +69,11 @@ impl NotesView {
                 .left_0()
                 .top_full()
                 .w(rems(17.))
+                // It grows from under the Sort button.
+                .grows_from(0.35, 0.)
                 .occlude()
-                // The menu lies outside its anchor, so it closes on presses
-                // outside itself; the Sort button toggles it on its own.
-                .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    let (x, y) = (
-                        f32::from(event.position.x) as f64,
-                        f32::from(event.position.y) as f64,
-                    );
-                    if this
-                        .accessibility
-                        .control_bounds_for_key("sort")
-                        .is_some_and(|r| x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1)
-                    {
-                        return;
-                    }
+                // Modal: a press outside, the Sort button included, closes it.
+                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                     this.sort_open = false;
                     cx.notify();
                 }))
@@ -115,6 +105,8 @@ impl NotesView {
                     .borrow_mut()
                     .overlay("library-sort-menu", self.sort_appear, menu);
             anchor = anchor.child(deferred(menu));
+        } else if let Some(closed) = self.transitions.borrow().closed("library-sort-menu") {
+            anchor = anchor.child(deferred(closed));
         }
         anchor
     }

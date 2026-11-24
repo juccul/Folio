@@ -92,7 +92,8 @@ impl NotesView {
             .when_some(heading, |group, heading| {
                 group.child(
                     div()
-                        .px_1()
+                        // Lines up with the rows' text inside the card.
+                        .pl(px(17.))
                         .text_size(rems(0.8125))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(theme.secondary()))
@@ -117,18 +118,22 @@ impl NotesView {
             .border_1()
             .border_color(theme.cover_edge())
     }
-    /// An outlined − value + control. `step` receives −1 or +1.
+    /// An outlined − value + control with a rolling value readout and tactile
+    /// step buttons. `step` receives −1 or +1.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn settings_stepper(
         &self,
         (less, less_label): (&'static str, &'static str),
         (more, more_label): (&'static str, &'static str),
         value: String,
+        order: f64,
         cx: &mut Context<Self>,
         step: impl Fn(&mut Self, f32) + Clone + 'static,
     ) -> Div {
         let theme = Theme::new(&self.controller.settings);
+        let inner_radius = (theme.corner_md() - 2.).max(0.);
         let mut stepper = div()
+            .id(format!("stepper-{less}"))
             .flex()
             .items_center()
             .flex_shrink_0()
@@ -136,15 +141,18 @@ impl NotesView {
             .rounded(px(theme.corner_md()))
             .border_1()
             .border_color(theme.glass_edge())
-            .bg(theme.raised());
+            .bg(theme.raised())
+            .el(|e| e.motion(crate::motion::SETTLE).animated_changes());
         for (id, label, sign) in [(less, less_label, -1.), (more, more_label, 1.)] {
             if sign > 0. {
                 stepper = stepper.child(
                     div()
-                        .w(rems(3.5))
+                        .w(rems(3.75))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .text_sm()
-                        .text_align(TextAlign::Center)
-                        .child(value.clone()),
+                        .child(rolling_text(less, &value, order)),
                 );
             }
             let step = step.clone();
@@ -163,7 +171,9 @@ impl NotesView {
                     },
                 )
                 .size(rems(1.875))
+                .min_h_0()
                 .p_0()
+                .rounded(px(inner_radius))
                 .bg(transparent_black()),
             );
         }
@@ -214,6 +224,14 @@ impl NotesView {
                     })),
             );
         }
+        // The tour shows these gestures (and the rest of smart ink) again.
+        gestures.push(
+            self.settings_row("Tour of smart ink", "Watch what your pen can do, step by step.")
+                .child(self.settings_action("settings-tour", "Take the tour", cx, |this, w, _| {
+                    this.settings_open = false;
+                    this.open_tour(w);
+                })),
+        );
         let pad = self.pad_button_rows(cx);
         let wheel = self.tool_wheel_rows(cx);
         div()
@@ -649,9 +667,10 @@ impl NotesView {
             ),
         ] {
             let settings = &self.controller.settings;
-            let (value, changed, less, more) = if interface {
+            let (value, order, changed, less, more) = if interface {
                 (
                     format!("{:.0}%", settings.ui_scale * 100.),
+                    (settings.ui_scale * 100.).round() as f64,
                     (settings.ui_scale - default.ui_scale).abs() > 0.01,
                     ("ui-smaller", "Decrease Interface size"),
                     ("ui-larger", "Increase Interface size"),
@@ -659,6 +678,7 @@ impl NotesView {
             } else {
                 (
                     format!("{:.0} px", settings.cursor_size),
+                    settings.cursor_size as f64,
                     (settings.cursor_size - default.cursor_size).abs() > 0.01,
                     ("cursor-smaller", "Decrease Pen cursor size"),
                     ("cursor-larger", "Increase Pen cursor size"),
@@ -686,7 +706,7 @@ impl NotesView {
                 .text_xs()
             });
             rows.push(self.settings_row(label, description).children(reset).child(
-                self.settings_stepper(less, more, value, cx, move |this, sign| {
+                self.settings_stepper(less, more, value, order, cx, move |this, sign| {
                     let s = &mut this.controller.settings;
                     if interface {
                         s.ui_scale = (s.ui_scale + sign * 0.1).clamp(0.8, 1.6);
@@ -783,6 +803,7 @@ impl NotesView {
         };
         let body = div()
             .id(("settings-content", section as usize))
+            .swap_in()
             .flex_1()
             .min_h_0()
             .min_w_0()
@@ -812,16 +833,15 @@ impl NotesView {
                     )
                     .child(content),
             );
-        div()
+        transitions::Transitions::dialog_layer(div())
             .occlude()
             .absolute()
             .inset_0()
-            .scrim(theme)
             .flex()
             .items_center()
             .justify_center()
             .child(transitions::Transitions::dialog_box(
-                1. - self.dialog_rise,
+                "settings",
                 div()
                     .w(px(900.))
                     .max_w(px((f32::from(window.viewport_size().width) - 32.).max(300.)))
@@ -845,10 +865,24 @@ impl NotesView {
                             .border_b_1()
                             .border_color(theme.border)
                             .child(
+                                // The note that changes save lives beside the
+                                // title rather than in a footer bar of its own.
                                 div()
-                                    .text_lg()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Settings"),
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .text_lg()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child("Settings"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(theme.muted))
+                                            .child("Saved automatically"),
+                                    ),
                             )
                             .child(
                                 self.control(
@@ -902,18 +936,6 @@ impl NotesView {
                                     .children(scrollbar),
                             ),
                     )
-                    .child(
-                        div()
-                            .px_6()
-                            .py_3()
-                            .when(compact, |footer| footer.px_4().py_2())
-                            .border_t_1()
-                            .border_color(theme.border)
-                            .text_xs()
-                            .text_color(rgb(theme.muted))
-                            .flex_shrink_0()
-                            .child("Changes are saved automatically."),
-                    ),
             ))
     }
 }

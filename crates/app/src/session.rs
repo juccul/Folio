@@ -25,6 +25,7 @@ pub struct Session {
     /// Equations on the current page that are linked to live math.
     pub(crate) linked_math: HashSet<Id>,
     pub(crate) page_stack: RefCell<Option<Arc<PageStack>>>,
+    pub(crate) content_bounds: RefCell<Option<(Id, u64, Option<Rect>)>>,
     pub(crate) search_text: RefCell<HashMap<Id, (u64, Arc<str>)>>,
     pub(crate) memory_usage: Cell<Option<usize>>,
 }
@@ -49,6 +50,7 @@ impl Session {
             history_needs_save: false,
             library_cover: None,
             page_stack: RefCell::new(None),
+            content_bounds: RefCell::new(None),
             search_text: RefCell::new(HashMap::new()),
             memory_usage: Cell::new(None),
         };
@@ -61,6 +63,7 @@ impl Session {
     pub fn page_mut(&mut self) -> &mut Page {
         self.memory_usage.set(None);
         self.page_stack.get_mut().take();
+        self.content_bounds.get_mut().take();
         self.search_text
             .get_mut()
             .remove(&self.document.pages[self.page].id);
@@ -93,6 +96,58 @@ impl Session {
             *cached = PageStack::new(&self.document.pages, self.page).map(Arc::new);
         }
         cached.clone()
+    }
+    /// Bounding box of content on the active infinite page, falling back to
+    /// the initial page frame when empty. Cached by `(page.id, page.revision)`.
+    pub fn infinite_content_bounds(&self) -> Rect {
+        let page = self.page();
+        let cached = self.content_bounds.borrow();
+        if let Some((id, rev, bounds)) = *cached
+            && id == page.id
+            && rev == page.revision
+        {
+            return bounds.unwrap_or_else(|| {
+                Rect::new(
+                    0.,
+                    0.,
+                    page.properties.width.max(400.),
+                    page.properties.height.max(400.),
+                )
+            });
+        }
+        drop(cached);
+        let bounds = page_object_bounds(page);
+        *self.content_bounds.borrow_mut() = Some((page.id, page.revision, bounds));
+        bounds.unwrap_or_else(|| {
+            Rect::new(
+                0.,
+                0.,
+                page.properties.width.max(400.),
+                page.properties.height.max(400.),
+            )
+        })
+    }
+    /// Bounding box of objects on the active page in stack coordinates when
+    /// any object extends outside its page frame; cached by `(page.id, rev)`.
+    pub fn stack_content_bounds(&self, stack: &PageStack) -> Option<Rect> {
+        let page = self.page();
+        let cached = self.content_bounds.borrow();
+        let local = if let Some((id, rev, bounds)) = *cached
+            && id == page.id
+            && rev == page.revision
+        {
+            bounds
+        } else {
+            drop(cached);
+            let bounds = page_object_bounds(page);
+            *self.content_bounds.borrow_mut() = Some((page.id, page.revision, bounds));
+            bounds
+        }?;
+        let origin = stack.frame(self.page).min;
+        Some(Rect {
+            min: Point::new(local.min.x + origin.x, local.min.y + origin.y),
+            max: Point::new(local.max.x + origin.x, local.max.y + origin.y),
+        })
     }
     /// Incrementally update derived state after `command` was applied. Falls
     /// back to full rebuilds when the current page or page list changed.
@@ -218,4 +273,22 @@ fn linked_math_objects(page: &Page) -> HashSet<Id> {
         .filter(|object| is_linked_math(object))
         .map(|object| object.id())
         .collect()
+}
+fn page_object_bounds(page: &Page) -> Option<Rect> {
+    let mut union: Option<Rect> = None;
+    for object in page.objects.values() {
+        let b = object.bounds();
+        if !b.min.x.is_finite()
+            || !b.min.y.is_finite()
+            || !b.max.x.is_finite()
+            || !b.max.y.is_finite()
+        {
+            continue;
+        }
+        union = Some(match union {
+            Some(acc) => acc.union(b),
+            None => b,
+        });
+    }
+    union
 }

@@ -31,13 +31,18 @@ const RUNE_FLAGS: &[(&str, bool)] = &[
     ("--native", false),
     ("--keys", false),
     ("--pointer", false),
+    // Wall-clock frames, so holds, recognition and timers run as for a
+    // person (the tour's recordings, `scripts/record-tour.py`).
+    ("--realtime", false),
     ("--chrome", false),
     ("--first-pixels", false),
 ];
 
 fn main() -> anyhow::Result<()> {
     folio_platform::tune_allocator();
+    folio_platform::select_display_vulkan_driver();
     let startup = std::time::Instant::now();
+    folio_ui::set_startup(startup);
     let profile_startup = std::env::var_os("FOLIO_PROFILE_STARTUP").is_some();
     let mark = move |stage: &str| {
         if profile_startup {

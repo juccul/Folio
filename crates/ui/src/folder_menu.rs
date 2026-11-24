@@ -38,7 +38,11 @@ impl DragView for LibraryDrag {
     }
 }
 
-fn accepts_move(controller: &Controller, item: LibraryItem, destination: Option<Id>) -> bool {
+pub(super) fn accepts_move(
+    controller: &Controller,
+    item: LibraryItem,
+    destination: Option<Id>,
+) -> bool {
     if destination.is_some_and(|id| !controller.notebooks.iter().any(|n| n.id == id)) {
         return false;
     }
@@ -136,64 +140,102 @@ impl NotesView {
         let theme = Theme::new(&self.controller.settings);
         let reason = self.controller.folder_deletion_reason(id);
         let (_, trashed, _) = self.controller.folder_contents(id);
-        let size = window.viewport_size();
-        let width = 260_f32.min((f32::from(size.width) - 24.).max(1.));
-        let height = if reason.is_some() { 350. } else { 230. };
-        let x = f32::from(at.x).clamp(12., (f32::from(size.width) - width - 12.).max(12.));
-        let y = f32::from(at.y).clamp(12., (f32::from(size.height) - height - 12.).max(12.));
-        let mut menu = div()
+        // `at` is in window coordinates, but the menu's layer fills the body
+        // below the title bar and tabs.
+        let viewport = window.viewport_size();
+        let (left, top, room_w, room_h) = self
+            .accessibility
+            .control_bounds_for_key("chrome-body")
+            .map_or(
+                (0., 0., f32::from(viewport.width), f32::from(viewport.height)),
+                |r| (r.x0 as f32, r.y0 as f32, (r.x1 - r.x0) as f32, (r.y1 - r.y0) as f32),
+            );
+        let at = point(at.x - px(left), at.y - px(top));
+        let width = 260_f32.min((room_w - 24.).max(1.));
+        // The menu's height in layout points (which the interface scale
+        // does not change): its header, three actions and Delete with their
+        // separators, then the deletion note and the Trash action when it
+        // has them.
+        let height = 182.
+            + if reason.is_some() { 44. } else { 0. }
+            + if trashed > 0 { 33. } else { 0. };
+        let x = f32::from(at.x).clamp(12., (room_w - width - 12.).max(12.));
+        let y = f32::from(at.y).clamp(12., (room_h - height - 12.).max(12.));
+        // A dialog chosen here turns the menu into its page, which may take
+        // what the window leaves below the menu.
+        let hosted = self.modal_hosted_in(MenuHost::Folder);
+        let width = if hosted { width.max(280_f32.min((room_w - 24.).max(1.))) } else { width };
+        let x = x.min((room_w - width - 12.).max(12.));
+        let menu = div()
             .id("folder-context-menu")
             .occlude()
             .absolute()
             .left(px(x))
             .top(px(y))
             .w(px(width))
-            .max_h(px((f32::from(size.height) - y - 12.).max(1.)))
+            .grows_from_point((f32::from(at.x), f32::from(at.y)), (x, y, width, height))
+            .max_h(px((room_h - y - 12.).max(1.)))
             .overflow_y_scroll()
-            .p_2()
+            .p_1p5()
             .flex()
             .flex_col()
-            .gap_1()
             .rounded(px(theme.corner_md()))
             .glass(theme, theme.popover)
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+            .shadow_md()
+            // It springs to the size of the page it turns into and back.
+            .el(|e| e.motion(crate::motion::MORPH).animated_changes())
+            .on_mouse_down_out(cx.listener(|this, _, w, cx| {
+                if this.modal_hosted_in(MenuHost::Folder) {
+                    this.cancel_modal(w, cx);
+                }
                 this.folder_menu = None;
                 cx.notify();
-            }))
+            }));
+        if hosted {
+            return menu.child(self.modal_panel(true, window, cx)).into_any_element();
+        }
+        let mut items = div()
+            .id("folder-menu-items")
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .page_in(false)
             .child(
                 div()
-                    .px_3()
-                    .py_2()
+                    .px_2()
+                    .pt_1()
+                    .pb(px(2.))
                     .text_xs()
                     .truncate()
                     .text_color(rgb(theme.muted))
                     .child(self.controller.folder_path(id)),
             );
-        for (key, label, modal) in [
-            ("rename", "Rename folder…", Modal::RenameNotebook(id)),
-            ("child", "New subfolder…", Modal::Notebook(Some(id))),
-            ("move", "Move folder…", Modal::MoveNotebook(id)),
+        for (key, label, kind, modal) in [
+            ("rename", "Rename folder…", Icon::Pencil, Modal::RenameNotebook(id)),
+            ("child", "New subfolder…", Icon::Plus, Modal::Notebook(Some(id))),
+            ("move", "Move folder…", Icon::Folder, Modal::MoveNotebook(id)),
         ] {
-            menu = menu.child(
-                self.button(
-                    format!("folder-menu-{key}"),
-                    label,
-                    false,
-                    cx,
-                    move |this, w, cx| {
-                        this.folder_menu = None;
-                        this.modal(modal.clone(), w, cx);
-                    },
-                )
-                .w_full()
-                .justify_start(),
-            );
+            items = items.child(self.menu_row(
+                format!("folder-menu-{key}"),
+                label.into(),
+                div().child(label),
+                kind,
+                theme.muted,
+                None,
+                cx,
+                // The menu turns into the action's page.
+                move |this, w, cx| this.modal_in_menu(MenuHost::Folder, modal.clone(), w, cx),
+            ));
         }
-        menu = menu.child(div().h(px(1.)).mx_2().bg(theme.border)).child(
-            self.button(
+        items = items.child(document_actions::separator(theme)).child(
+            self.menu_row(
                 "delete-folder",
-                "Delete empty folder",
-                false,
+                "Delete empty folder".into(),
+                div().text_color(rgb(theme.destructive)).child("Delete empty folder"),
+                Icon::Trash,
+                theme.destructive,
+                None,
                 cx,
                 move |this, _, _| {
                     if let Err(error) = this.controller.delete_empty_notebook(id) {
@@ -202,37 +244,35 @@ impl NotesView {
                         this.folder_menu = None;
                     }
                 },
-            )
-            .w_full()
-            .justify_start(),
+            ),
         );
         if let Some(reason) = reason {
-            menu = menu.child(
+            items = items.child(
                 div()
-                    .px_3()
-                    .py_2()
+                    .px_2()
+                    .py_1()
                     .text_xs()
                     .text_color(rgb(theme.muted))
                     .child(reason),
             );
         }
         if trashed > 0 {
-            menu = menu.child(
-                self.button(
-                    "view-folder-trash",
-                    format!("View {trashed} in Trash"),
-                    false,
-                    cx,
-                    move |this, _, _| {
-                        this.controller.filter = NoteFilter::NotebookTrash(id);
-                        this.folder_menu = None;
-                    },
-                )
-                .w_full()
-                .justify_start(),
-            );
+            let label = format!("View {trashed} in Trash");
+            items = items.child(self.menu_row(
+                "view-folder-trash",
+                label.clone().into(),
+                div().child(label),
+                Icon::Trash,
+                theme.muted,
+                None,
+                cx,
+                move |this, _, _| {
+                    this.controller.filter = NoteFilter::NotebookTrash(id);
+                    this.folder_menu = None;
+                },
+            ));
         }
-        menu.into_any_element()
+        menu.child(items).into_any_element()
     }
 }
 

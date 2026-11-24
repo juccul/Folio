@@ -522,12 +522,22 @@ impl<E> Clone for Listener<E> {
     }
 }
 
+thread_local! {
+    static LAST_INPUT: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+/// Whether input arrived in the last moment: what Folio settles a frame
+/// after a click or key (a toolbar measured first, say) still animates as
+/// that input's consequence.
+pub fn recent_input() -> bool {
+    LAST_INPUT.with(|t| t.get().is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(250)))
+}
 /// Runs `f` against the view inside a Rune handler, then applies what it asked for.
 pub fn dispatch<R>(
     s: &mut crate::AppState,
     tx: &mut Tx,
     f: impl FnOnce(&mut NotesView, &mut Window, &mut Context<NotesView>) -> R,
 ) -> R {
+    LAST_INPUT.with(|t| t.set(Some(std::time::Instant::now())));
     let view = s.view.get_mut();
     let mut window = Window::handler(view, tx);
     let mut cx = Context::fresh();
@@ -572,6 +582,16 @@ pub struct Div {
     /// GPUI's `top: 100%` / `bottom: 100%`: placed beside the parent.
     full: Option<rune::Side>,
     anchor_to: Option<String>,
+    /// The fill is settled; later `bg` calls leave it (a selection-group
+    /// control whose choice is shown by its gliding highlight).
+    bg_locked: bool,
+    /// A member of a selection group (`selection_member`): whether it is
+    /// the chosen one.
+    selection: Option<bool>,
+    /// Shows no hover or press tint; its parent draws them.
+    tint_from_parent: bool,
+    /// The point a menu grows from, in units of its own size (`grows_from`).
+    grows: Option<(f32, f32)>,
 }
 thread_local! {
     static NEXT_ANCHOR: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -604,6 +624,10 @@ pub fn div() -> Div {
         scroll_x: false,
         full: None,
         anchor_to: None,
+        bg_locked: false,
+        selection: None,
+        tint_from_parent: false,
+        grows: None,
     }
 }
 
@@ -690,10 +714,36 @@ impl Div {
         if let Some(c) = self.focus_border {
             e = e.focus_ring(1., -1., c);
         }
-        if let Some(c) = self.hover_bg {
+        let mut children = self.children;
+        let (hover_bg, press_bg) = if self.tint_from_parent {
+            (None, None)
+        } else if let Some(selected) = self.selection {
+            // The hover tint lives on a layer of its own that stays mounted
+            // and fades out smoothly when the member is chosen, instead of
+            // snapping off during the press and gliding-highlight animation.
+            let mut layer = div().absolute().inset_0();
+            if let Some(c) = self.hover_bg {
+                let mut wash = div()
+                    .absolute()
+                    .inset_0()
+                    .opacity(if selected { 0. } else { 1. })
+                    .el(|e| {
+                        e.opacity_motion(crate::motion::HOVER_EXIT)
+                            .animated_changes()
+                    });
+                wash.radius = self.radius;
+                wash.hover_bg = Some(c);
+                layer = layer.child(wash);
+            }
+            children.insert(0, layer.into_any_element());
+            (None, None)
+        } else {
+            (self.hover_bg, self.press_bg)
+        };
+        if let Some(c) = hover_bg {
             e = e.hover(c);
         }
-        if let Some(c) = self.press_bg {
+        if let Some(c) = press_bg {
             e = e.press(c);
         }
         if let (Some(side), Some(anchor)) = (self.full, &self.anchor_to) {
@@ -720,7 +770,7 @@ impl Div {
         } else if self.scroll_x {
             e = e.scroll_x();
         }
-        for mut child in self.children {
+        for mut child in children {
             if child.is_empty() {
                 continue;
             }
@@ -738,6 +788,95 @@ impl Div {
     pub fn child(mut self, child: impl IntoElement) -> Self {
         self.children.push(child.into_any_element());
         self
+    }
+    /// Content that replaces other content in place (a settings section, a
+    /// menu page): it rises in a few points as it fades in, and the content
+    /// it replaces goes at once, so the two never overlap. Give the element
+    /// a key that changes with what it shows.
+    pub fn swap_in(self) -> Self {
+        self.op(|e| {
+            e.transition(
+                rune::Transition::offset(0., 6.)
+                    .combined(rune::Transition::opacity())
+                    .springs(rune::SpringPair::new(crate::motion::SWAP, rune::Spring::NONE)),
+            )
+            .animated_changes()
+        })
+    }
+    /// A menu page replacing another: deeper pages slide in from the right
+    /// (`deeper`), the page gone back to from the left, fading in while the
+    /// page it replaces goes at once.
+    pub fn page_in(self, deeper: bool) -> Self {
+        self.op(move |e| {
+            e.transition(
+                rune::Transition::offset(if deeper { 14. } else { -14. }, 0.)
+                    .combined(rune::Transition::opacity())
+                    .springs(rune::SpringPair::new(crate::motion::SWAP, rune::Spring::NONE)),
+            )
+            .animated_changes()
+        })
+    }
+    /// The point a menu grows from as it opens (see
+    /// `transitions::overlay_transition`), in units of its own size.
+    pub fn grows_from(mut self, x: f32, y: f32) -> Self {
+        let (x, y) = (x.clamp(0., 1.), y.clamp(0., 1.));
+        self.grows = Some((x, y));
+        self.op(move |e| e.origin(x, y))
+    }
+    /// The point set by [`Div::grows_from`], if any.
+    pub fn growth_point(&self) -> Option<(f32, f32)> {
+        self.grows
+    }
+    /// [`Div::grows_from`] the window point `at`, for a menu whose box is
+    /// `rect` (x, y, width, height).
+    pub fn grows_from_point(self, at: (f32, f32), rect: (f32, f32, f32, f32)) -> Self {
+        let (x, y, w, h) = rect;
+        self.grows_from((at.0 - x) / w.max(1.), (at.1 - y) / h.max(1.))
+    }
+    /// Keeps the current fill against later `bg` calls.
+    pub fn lock_bg(mut self) -> Self {
+        self.bg_locked = true;
+        self
+    }
+    /// Marks a member of a selection group whose chosen member's highlight
+    /// glides to the next choice (see [`Div::underlay`]). Only an unchosen
+    /// member shows its hover tint, on a layer beneath its children that is
+    /// dropped the moment it is chosen, so the hover never fades out beside
+    /// the arriving highlight as a second box. Members show no press tint,
+    /// which would fade there the same way; they still give under a press.
+    pub fn selection_member(mut self, selected: bool) -> Self {
+        self.selection = Some(selected);
+        self
+    }
+    /// Shows no hover or press tint of its own: a control inside a
+    /// [`Div::selection_member`] row, which draws them for the whole row.
+    pub fn tint_from_parent(mut self) -> Self {
+        self.tint_from_parent = true;
+        self
+    }
+    /// Draws `child` beneath the element's other children (a selection
+    /// highlight that glides from one control to the next).
+    pub fn underlay(mut self, child: impl IntoElement) -> Self {
+        self.children.insert(0, child.into_any_element());
+        self
+    }
+    /// Turns the element a quarter turn clockwise while `turned`, on a
+    /// spring: a disclosure arrow as its branch opens.
+    pub fn quarter_turn(self, turned: bool) -> Self {
+        self.op(move |e| {
+            e.rotate(if turned { std::f32::consts::FRAC_PI_2 } else { 0. })
+                .rotate_motion(crate::motion::POP)
+                .animated_changes()
+        })
+    }
+    /// Turns the element upside down while `flipped`, on a spring: a
+    /// dropdown chevron while its menu is open.
+    pub fn flipped(self, flipped: bool) -> Self {
+        self.op(move |e| {
+            e.rotate(if flipped { std::f32::consts::PI } else { 0. })
+                .rotate_motion(crate::motion::POP)
+                .animated_changes()
+        })
     }
     pub fn children<I: IntoElement>(mut self, children: impl IntoIterator<Item = I>) -> Self {
         self.children
@@ -1134,6 +1273,9 @@ impl Div {
 
     // ------------------------------------------------------------ visuals
     pub fn bg(mut self, b: impl Into<Background>) -> Self {
+        if self.bg_locked {
+            return self;
+        }
         match b.into() {
             Background::Color(c) => self.bg = Some(c),
             Background::Gradient(g) => return self.bg_gradient(g),
@@ -1667,6 +1809,12 @@ impl FocusHandle {
     pub fn focus(&self, window: &mut Window) {
         window.effects.push(Effect::Focus(self.0.clone()));
     }
+    /// [`Self::focus`] for a field the user is about to type in right
+    /// where they tapped (text placed on the canvas), which takes focus
+    /// even from the pen.
+    pub fn focus_for_typing(&self, window: &mut Window) {
+        window.effects.push(Effect::FocusTyping(self.0.clone()));
+    }
     pub fn is_focused(&self, window: &Window) -> bool {
         window.focused.as_deref() == Some(self.0.as_str())
     }
@@ -1677,6 +1825,7 @@ impl FocusHandle {
 /// What a handler asks of the window, applied through Rune's transaction.
 pub enum Effect {
     Focus(String),
+    FocusTyping(String),
     Blur,
     Copy(String),
     Title(String),
@@ -1723,6 +1872,9 @@ pub enum Effect {
     ),
     WakeAfter(std::time::Duration),
     Instant,
+    /// Animate this commit even where Rune would land it at once (a drag's
+    /// moves), so rows a dragged row passes spring aside.
+    Animated,
 }
 
 /// The window as handlers and views see it: its size, the pointer and focus,
@@ -1897,6 +2049,9 @@ impl<T> Context<T> {
     pub fn wake_after(&mut self, delay: std::time::Duration) {
         self.effects.push(Effect::WakeAfter(delay));
     }
+    pub fn animate(&mut self) {
+        self.effects.push(Effect::Animated);
+    }
 }
 impl<T> Default for Context<T> {
     fn default() -> Self {
@@ -1919,7 +2074,12 @@ pub struct Deferred(pub RefCell<Vec<Effect>>);
 pub fn apply(effects: Vec<Effect>, tx: &mut Tx) {
     for effect in effects {
         match effect {
-            Effect::Focus(key) => tx.focus_when_shown(key, false),
+            // A text field a pen action opened (a rename, a search) takes no
+            // focus of its own: with a pen as the last input, GNOME opens
+            // its on-screen keyboard for any focused field. Tapping the
+            // field still focuses it.
+            Effect::Focus(key) if key.starts_with("field-") && crate::tablet::pen_active() => {}
+            Effect::Focus(key) | Effect::FocusTyping(key) => tx.focus_when_shown(key, false),
             Effect::Blur => tx.blur(),
             Effect::Copy(text) => tx.copy(text),
             Effect::Title(title) => tx.set_title(title),
@@ -1981,6 +2141,7 @@ pub fn apply(effects: Vec<Effect>, tx: &mut Tx) {
             }
             Effect::WakeAfter(delay) => tx.wake_after(delay),
             Effect::Instant => tx.instant(),
+            Effect::Animated => tx.animated(),
         }
     }
 }
@@ -2204,6 +2365,115 @@ impl<T> Context<T> {
     }
 }
 /// A list of `count` uniform rows from `processor`, in a scroll viewport.
+/// Where each virtual list was scrolled and which rows it built.
+#[derive(Clone, Copy, Default)]
+struct VirtualState {
+    /// Scroll offset and viewport height, in the list's layout units.
+    offset: f32,
+    viewport: f32,
+    built: (usize, usize),
+    /// The offset the rows were last built at.
+    built_at: f32,
+}
+thread_local! {
+    static VIRTUAL: RefCell<std::collections::HashMap<String, VirtualState>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+thread_local! {
+    static SCROLL_BUILD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// Whether the rows being built are there because their list scrolled:
+/// they appear in place, without an entrance.
+pub fn building_scrolled_rows() -> bool {
+    SCROLL_BUILD.with(|b| b.get())
+}
+static VIRTUAL_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Whether a virtual list scrolled to rows it has not built, so the view
+/// must be built again.
+pub fn take_virtual_dirty() -> bool {
+    VIRTUAL_DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+/// Rows `[start, end)` a list of `count` rows `row` tall shows at `offset`
+/// in a `viewport`, with a viewport's worth of rows beyond each edge.
+fn virtual_range(count: usize, row: f32, offset: f32, viewport: f32) -> (usize, usize) {
+    if count == 0 || row <= 0. {
+        return (0, 0);
+    }
+    let viewport = if viewport > 0. { viewport } else { 1600. };
+    let first = ((offset - viewport) / row).floor().max(0.) as usize;
+    let last = ((offset + viewport * 2.) / row).ceil().max(0.) as usize;
+    (first.min(count), last.min(count).max(first.min(count)))
+}
+/// A scrolling list of `count` rows of equal height `row` (layout points)
+/// that builds only the rows near the viewport, with spacers keeping the
+/// scroll extent; scrolling past the built rows builds the view again.
+pub fn virtual_list<R: IntoElement + 'static>(
+    id: impl Into<String>,
+    count: usize,
+    row: f32,
+    processor: Processor<R>,
+) -> Div {
+    let id: String = id.into();
+    let key = id.clone();
+    let row_prefix = id.clone();
+    let watch = id.clone();
+    div()
+        .id(id)
+        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .op(move |e| {
+            e.on_scroll_offset(move |at: rune::ScrollPos| {
+                // Measure in rows: the content's height over the row count
+                // is a row's real height, whatever the zoom.
+                let content = at.max[1] + at.viewport[1];
+                let per_row = if count > 0 && content > 0. { content / count as f32 } else { row };
+                let (offset, viewport) = (at.offset[1] / per_row * row, at.viewport[1] / per_row * row);
+                let stale = VIRTUAL.with(|v| {
+                    let mut v = v.borrow_mut();
+                    let state = v.entry(watch.clone()).or_default();
+                    state.offset = offset;
+                    state.viewport = viewport;
+                    let need = virtual_range(count, row, offset, viewport * 0.34);
+                    need.0 < state.built.0 || need.1 > state.built.1
+                });
+                if stale {
+                    VIRTUAL_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+                    crate::executor::wake();
+                }
+            })
+        })
+        .child(AnyElement::Lazy(Box::new(move |bcx: &mut BuildCx| {
+            let state = VIRTUAL.with(|v| v.borrow().get(&key).copied().unwrap_or_default());
+            let (start, end) = virtual_range(count, row, state.offset, state.viewport);
+            VIRTUAL.with(|v| {
+                let mut v = v.borrow_mut();
+                let entry = v.entry(key.clone()).or_default();
+                entry.built = (start, end);
+                entry.built_at = state.offset;
+            });
+            let scrolled = (state.offset - state.built_at).abs() > 0.5;
+            SCROLL_BUILD.with(|b| b.set(scrolled));
+            let rows = (processor.0)(bcx.view, start..end, bcx.window, bcx.cx);
+            SCROLL_BUILD.with(|b| b.set(false));
+            let mut list = div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .flex_shrink_0()
+                .child(div().h(px(start as f32 * row)).flex_shrink_0());
+            for (i, r) in rows.into_iter().enumerate() {
+                list = list.child(
+                    div()
+                        .id(format!("{row_prefix}-row-{}", start + i))
+                        .flex_shrink_0()
+                        .child(r),
+                );
+            }
+            list.child(div().h(px((count - end) as f32 * row)).flex_shrink_0())
+                .into_any_element()
+        })))
+}
 pub fn uniform_list<R: IntoElement + 'static>(
     id: impl Into<String>,
     count: usize,
@@ -2278,6 +2548,63 @@ impl Div {
         self
     }
 }
+thread_local! {
+    static ROLLING: RefCell<std::collections::HashMap<String, f64>> = RefCell::new(std::collections::HashMap::new());
+}
+/// A label whose changed characters roll, up as `value` rises and down as it
+/// falls (a page count, a zoom level). Characters count from the end, so a
+/// value that gains a digit keeps its unchanged tail in place.
+pub fn rolling_text(key: &str, text: &str, value: f64) -> Div {
+    let rising = ROLLING.with(|last| {
+        let mut last = last.borrow_mut();
+        let previous = last.insert(key.to_owned(), value);
+        previous.is_none_or(|p| value >= p)
+    });
+    let chars: Vec<char> = text.chars().collect();
+    let count = chars.len();
+    let mut row = div().flex().overflow_hidden().el(|e| {
+        e.motion(crate::motion::GLIDE).animated_changes()
+    });
+    for (i, ch) in chars.into_iter().enumerate() {
+        let from_end = count - i;
+        let travel = if rising {
+            rune::Transition::push(rune::Edge::Bottom)
+        } else {
+            rune::Transition::push(rune::Edge::Top)
+        };
+        row = row.child(
+            div()
+                .id(format!("{key}-{from_end}-{ch}"))
+                .child(ch.to_string())
+                .el(move |e| {
+                    e.transition(travel.springs(rune::SpringPair::new(
+                        crate::motion::POP,
+                        crate::motion::GLIDE,
+                    )))
+                    .motion(crate::motion::GLIDE)
+                    .animated_changes()
+                }),
+        );
+    }
+    row
+}
+
+/// Three small dots that pulse in turn: work under way (recognition,
+/// solving), where a bare "…" in text would read as static.
+pub fn working_dots(color: u32) -> Div {
+    let mut dots = div().flex().items_center().gap(px(3.)).flex_shrink_0();
+    for i in 0..3 {
+        dots = dots.child(
+            div()
+                .size(px(5.))
+                .rounded_full()
+                .bg(rgb(color))
+                .el(move |e| e.looping(rune::LoopSpec::opacity(1.1, i as f64 * 0.18, 0.25, 1.))),
+        );
+    }
+    dots
+}
+
 /// Draws `child` above everything after it, as GPUI's deferred elements do.
 pub fn deferred(child: impl IntoElement) -> Div {
     div().child(child).op_public(|e| e.raise())
@@ -2791,5 +3118,23 @@ impl Div {
                 },
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod virtual_list_tests {
+    use super::virtual_range;
+
+    #[test]
+    fn virtual_lists_build_the_view_and_a_viewport_either_side() {
+        // 100 rows of 50 points in a 200-point viewport scrolled to row 40.
+        let (start, end) = virtual_range(100, 50., 2000., 200.);
+        assert!(start <= 40 && end >= 44, "the visible rows are built");
+        assert!(start >= 34 && end <= 54, "rows far off screen are not");
+        assert_eq!(virtual_range(100, 50., 0., 200.).0, 0);
+        assert_eq!(virtual_range(100, 50., 99_999., 200.), (100, 100));
+        assert_eq!(virtual_range(0, 50., 0., 200.), (0, 0));
+        // Before the first layout, a generous window stands in for the viewport.
+        assert!(virtual_range(100, 50., 0., 0.).1 >= 20);
     }
 }

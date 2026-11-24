@@ -9,6 +9,7 @@ const MAX_POINTS: usize = 576;
 const PAD_ID: usize = 0;
 const BOS_ID: usize = 1;
 const EOS_ID: usize = 2;
+const UNK_ID: usize = 3;
 
 pub struct MathModel {
     frec: FrecFile,
@@ -498,10 +499,10 @@ impl MathModel {
                 }
                 let log_z = max_v + sum_exp.max(1e-12).ln();
 
-                // Pick top BEAM_WIDTH tokens (skipping PAD/BOS)
+                // Pick top BEAM_WIDTH tokens (skipping PAD/BOS/UNK so `<unk>` is never emitted)
                 let mut top = [(0usize, f32::NEG_INFINITY); BEAM_WIDTH];
                 for (tid, &val) in logits.iter().enumerate() {
-                    if tid == PAD_ID || tid == BOS_ID {
+                    if tid == PAD_ID || tid == BOS_ID || tid == UNK_ID {
                         continue;
                     }
                     let lp = val - log_z;

@@ -468,6 +468,75 @@ fn line_path(points: &[DocPoint], width: f32, dashed: bool) -> Option<Path<Pixel
     }
     b.build().ok()
 }
+/// How long a selecting loop takes to become the selection's box, and then
+/// to fade, in seconds.
+const SELECT_MORPH: f32 = 0.26;
+const SELECT_FADE: f32 = 0.2;
+/// When a selecting loop's morph has played out.
+pub(crate) fn select_morph_done(morph: &folio_app::SelectMorph) -> bool {
+    morph.started.elapsed().as_secs_f32() >= SELECT_MORPH + SELECT_FADE
+}
+
+/// `drawn`, a closed loop in screen points, `t` of the way (0 to 1) onto the
+/// box `outline` (its corners, closed): each point goes to the place as far
+/// along the box's perimeter as it is along the loop, starting from the
+/// corner side nearest the loop's start and running the way the loop runs.
+pub(crate) fn morph_to_box(drawn: &[DocPoint], outline: &[DocPoint; 5], t: f32) -> Vec<DocPoint> {
+    if drawn.len() < 2 {
+        return drawn.to_vec();
+    }
+    let dist = |a: DocPoint, b: DocPoint| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+    // Where each point sits along the loop, from 0 to 1.
+    let mut along = Vec::with_capacity(drawn.len());
+    let mut total = 0.;
+    for (i, p) in drawn.iter().enumerate() {
+        if i > 0 {
+            total += dist(drawn[i - 1], *p);
+        }
+        along.push(total);
+    }
+    total += dist(*drawn.last().unwrap_or(&drawn[0]), drawn[0]);
+    let total = total.max(1e-3);
+    // The box's corners, in the turning direction the loop has.
+    let area = |points: &[DocPoint]| {
+        points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .map(|(a, b)| a.x * b.y - b.x * a.y)
+            .sum::<f32>()
+    };
+    let mut corners: Vec<DocPoint> = outline[..4].to_vec();
+    if (area(drawn) > 0.) != (area(&corners) > 0.) {
+        corners.reverse();
+    }
+    let sides: Vec<f32> = (0..4).map(|i| dist(corners[i], corners[(i + 1) % 4])).collect();
+    let perimeter: f32 = sides.iter().sum::<f32>().max(1e-3);
+    let point_at = |mut d: f32| {
+        d = d.rem_euclid(perimeter);
+        for i in 0..4 {
+            if d <= sides[i] || i == 3 {
+                let k = if sides[i] > 0. { (d / sides[i]).min(1.) } else { 0. };
+                let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                return DocPoint::new(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k);
+            }
+            d -= sides[i];
+        }
+        corners[0]
+    };
+    // Start where the box comes closest to the loop's first point.
+    let start = (0..200)
+        .map(|i| i as f32 / 200. * perimeter)
+        .min_by(|a, b| dist(point_at(*a), drawn[0]).total_cmp(&dist(point_at(*b), drawn[0])))
+        .unwrap_or(0.);
+    drawn
+        .iter()
+        .zip(&along)
+        .map(|(p, s)| {
+            let q = point_at(start + s / total * perimeter);
+            DocPoint::new(p.x + (q.x - p.x) * t, p.y + (q.y - p.y) * t)
+        })
+        .collect()
+}
 fn rect_points(r: Rect) -> [DocPoint; 5] {
     [
         r.min,
@@ -525,12 +594,7 @@ impl Painter {
         }
         self.clear_page(window);
     }
-    fn release_background(source: &ImageSource, window: &mut Window, _: &mut Context<NotesView>) {
-        // Sources are requested when added to the warm cache. Removing the
-        // decoded asset alone does not remove its uploaded sprite-atlas image.
-        if let Some(image) = source.render_image() {
-            let _ = window.drop_image(image);
-        }
+    fn release_background(source: &ImageSource, _: &mut Window, _: &mut Context<NotesView>) {
         source.forget();
     }
     fn clear_page(&mut self, window: &mut Window) {
@@ -567,6 +631,15 @@ impl Painter {
                 false
             }
         });
+    }
+    /// Whether every visible ink batch has its image (none still rendering).
+    pub(super) fn ink_settled(&self) -> bool {
+        self.pages.values().all(|painter| {
+            painter.ink_pending.is_empty()
+                && painter.ink_desired.keys().all(|id| {
+                    painter.ink_layers.contains_key(id) || painter.ink_failed.contains_key(id)
+                })
+        }) && self.pages.values().any(|painter| !painter.ink_layers.is_empty())
     }
     #[cfg(test)]
     pub(super) fn ink_layer_counts(&self) -> (usize, usize) {
@@ -754,7 +827,7 @@ impl Painter {
                     {
                         warm_assets.insert(asset.to_owned());
                     }
-                } else if !visible_decoding {
+                } else if visible_page || !visible_decoding {
                     let fallback = if visible_page {
                         scroll_asset.as_deref()
                     } else {
@@ -1045,12 +1118,77 @@ impl Painter {
                 if index < skip_until {
                     continue;
                 }
-                if let Some((range, batch)) = batch_iter.next_if(|(range, _)| range.start == index)
+                // Ink too large for one image comes as tiles sharing its range.
+                // They replace the vectors once every tile in view is ready.
+                if batch_iter
+                    .peek()
+                    .is_some_and(|(range, batch)| range.start == index && batch.tile != 0)
+                {
+                    let mut tiles = Vec::new();
+                    while let Some((range, batch)) = batch_iter
+                        .next_if(|(range, batch)| range.start == index && batch.tile != 0)
+                    {
+                        let layer = self.ink_layers.get(&batch.id()).or_else(|| {
+                            self.ink_stale
+                                .get(&batch.id())
+                                .filter(|layer| layer.batch.stands_in_for(batch))
+                        });
+                        tiles.push((range.end, batch, layer));
+                    }
+                    let end = tiles.iter().map(|(end, _, _)| *end).max().unwrap_or(index);
+                    let ready = tiles.iter().all(|(_, batch, layer)| {
+                        layer.is_some() || !visible.intersects(batch.bounds)
+                    });
+                    if ready {
+                        for (_, _, layer) in &tiles {
+                            if let Some(layer) = layer {
+                                let _ = window.paint_image_transformed(
+                                    gpui_bounds(layer.batch.bounds),
+                                    Default::default(),
+                                    layer.image.clone(),
+                                    0,
+                                    false,
+                                    gpu_transform(world),
+                                );
+                            }
+                        }
+                        skip_until = end;
+                        continue;
+                    }
+                    if tiles.iter().any(|(_, batch, _)| {
+                        self.ink_desired.contains_key(&batch.id())
+                            && !self.ink_failed.contains_key(&batch.id())
+                    }) {
+                        pending_batch_until = end;
+                    }
+                    // Meanwhile the whole image from before the zoom, stretched,
+                    // stands in rather than a vector per point.
+                    let whole = tiles.first().map(|(_, batch, _)| batch.objects[0].id());
+                    if let Some((_, batch, _)) = tiles.first()
+                        && let Some(layer) = whole
+                            .and_then(|id| self.ink_layers.get(&id).or(self.ink_stale.get(&id)))
+                            .filter(|layer| layer.batch.tile == 0 && layer.batch.same_ink(batch))
+                        && window
+                            .paint_image_transformed(
+                                gpui_bounds(layer.batch.bounds),
+                                Default::default(),
+                                layer.image.clone(),
+                                0,
+                                false,
+                                gpu_transform(world),
+                            )
+                            .is_ok()
+                    {
+                        skip_until = end;
+                        continue;
+                    }
+                } else if let Some((range, batch)) =
+                    batch_iter.next_if(|(range, _)| range.start == index)
                 {
                     if let Some(layer) = self.ink_layers.get(&batch.id()).or_else(|| {
-                        self.ink_stale.get(&batch.id()).filter(|layer| {
-                            layer.batch.same_ink(batch) && layer.batch.bounds == batch.bounds
-                        })
+                        self.ink_stale
+                            .get(&batch.id())
+                            .filter(|layer| layer.batch.stands_in_for(batch))
                     }) && window
                         .paint_image_transformed(
                             gpui_bounds(layer.batch.bounds),
@@ -1409,6 +1547,9 @@ impl Painter {
                             builder.style().opacity,
                         );
                         let width = builder.style().width;
+                        // The stroke as lifting the pen would commit it.
+                        let finished = builder.finished_path();
+                        let live_path = finished.as_slice();
                         if let Some(fit) = preview {
                             let centreline = fit
                                 .vertices
@@ -1419,7 +1560,7 @@ impl Painter {
                                 })
                                 .collect::<Vec<_>>();
                             paint_ink(window, &centreline, world, color, &mut self.outline_scratch);
-                        } else if paint_ink_gpu(window, builder.path(), world, color) {
+                        } else if paint_ink_gpu(window, live_path, world, color) {
                             self.active_id = None;
                             self.active_chunks.clear();
                         } else {
@@ -1427,7 +1568,7 @@ impl Painter {
                                 self.active_id = Some(builder.id());
                                 self.active_chunks.clear();
                             }
-                            let points = builder.path();
+                            let points = live_path;
 
                             if builder.style().opacity < 1. {
                                 // Translucent strokes still use one compound
@@ -1441,7 +1582,12 @@ impl Painter {
                                 }
                             } else {
                                 const CHUNK: usize = 256;
-                                let count = points.len().saturating_sub(2) / CHUNK;
+                                // The end taper moves with the pen; cached
+                                // chunks stay clear of it.
+                                let count = points
+                                    .len()
+                                    .saturating_sub(2 + folio_ink::StrokeBuilder::TAPER + 1)
+                                    / CHUNK;
                                 while self.active_chunks.len() < count {
                                     let start = self.active_chunks.len() * CHUNK;
                                     if let Some(path) = ink_path(&folio_ink::outline_chunk(
@@ -1534,6 +1680,37 @@ impl Painter {
                     window.paint_path(path, rgb(theme.selection()));
                 }
             }
+            // The loop that just selected something morphs into the
+            // selection's box, then fades.
+            if let Some(morph) = controller.select_morph.clone() {
+                let elapsed = morph.started.elapsed().as_secs_f32();
+                match (controller.selection_bounds().filter(|_| !self.hide_selection), elapsed) {
+                    (Some(rect), elapsed) if elapsed < SELECT_MORPH + SELECT_FADE => {
+                        let (outline, _) =
+                            selection_overlay(rect, viewport.zoom, world.compose(preview_move));
+                        let drawn: Vec<DocPoint> =
+                            morph.points.iter().map(|p| world.apply(*p)).collect();
+                        let t = (elapsed / SELECT_MORPH).min(1.);
+                        // A sharp start that settles hard onto the box.
+                        let eased = 1. - (1. - t).powi(5);
+                        let fade = ((elapsed - SELECT_MORPH) / SELECT_FADE).clamp(0., 1.);
+                        let mut points = morph_to_box(&drawn, &outline, eased);
+                        if let Some(first) = points.first().copied() {
+                            points.push(first);
+                        }
+                        let ink = morph.color.map_or(theme.selection(), |c| c.rgb());
+                        let color = super::theme::mix(ink, theme.selection(), eased);
+                        let from = (morph.width * viewport.zoom).max(1.);
+                        let width = from + (1.5 - from) * eased;
+                        let alpha = ((1. - fade) * 255.).round() as u32;
+                        if let Some(path) = line_path(&points, width, false) {
+                            window.paint_path(path, rgba((color << 8) | alpha));
+                        }
+                        window.request_animation_frame();
+                    }
+                    _ => {}
+                }
+            }
             if let Some(cursor) = controller.cursor {
                 let center = world.apply(cursor);
                 let r = if controller.tool == Tool::Eraser {
@@ -1606,12 +1783,19 @@ impl Painter {
                     let _ = window.drop_image(previous.image);
                 }
             }
+            // A whole image of ink now drawn as tiles stands in until the
+            // tiles are ready (and again when zooming back out).
+            let tiled: HashSet<Id> = desired
+                .values()
+                .filter(|batch| batch.tile != 0)
+                .map(|batch| batch.objects[0].id())
+                .collect();
             let mut offscreen = 0;
             stale.retain(|id, layer| {
                 let keep = match desired.get(id) {
+                    None if layer.batch.tile == 0 && tiled.contains(id) => true,
                     Some(batch) => {
-                        (batch.same_ink(&layer.batch) && batch.bounds == layer.batch.bounds)
-                            || layer.batch.is_prefix_of(batch)
+                        layer.batch.stands_in_for(batch) || layer.batch.is_prefix_of(batch)
                     }
                     None => {
                         offscreen += layer.batch.pixels;
@@ -1651,7 +1835,7 @@ impl Painter {
             let work = request.clone();
             let task = cx
                 .background_executor()
-                .spawn(async move { super::ink_layers::raster(&work) });
+                .spawn(async move { super::ink_layers::raster(&work).map(warm_pixels) });
             cx.spawn(async move |view, cx| {
                 let image = task.await;
                 let _ = view.update(cx, |view, cx| {
@@ -1759,9 +1943,9 @@ impl Painter {
                     width.saturating_mul(height),
                 )
                 .ok()
-                .map(|(_, pixmap)| graph::image(pixmap.width(), pixmap.height(), pixmap.take()));
+                .map(|(_, pixmap)| warm_pixels(graph::image(pixmap.width(), pixmap.height(), pixmap.take())));
             }
-            preview_image(width, height, data, appearance)
+            preview_image(width, height, data, appearance).map(warm_pixels)
         });
         cx.spawn(async move |view, cx| {
             let image = task.await;
@@ -2043,6 +2227,12 @@ impl Painter {
     }
 }
 
+/// Converts `image` to the pixels the GPU uploads while still on a background
+/// thread; done on first paint, a large ink layer stalled the frame.
+fn warm_pixels(image: Arc<RenderImage>) -> Arc<RenderImage> {
+    let _ = image.pixels();
+    image
+}
 fn preview_image(
     width: u32,
     height: u32,
@@ -2399,6 +2589,28 @@ fn gpu_transform(t: Transform) -> TransformationMatrix {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    fn selecting_loop_ends_on_the_selection_box_running_its_way() {
+        let outline = rect_points(Rect::new(0., 0., 100., 60.));
+        // A counter-clockwise (on screen) loop starting near the top middle.
+        let drawn: Vec<DocPoint> = (0..24)
+            .map(|i| {
+                let a = -std::f32::consts::FRAC_PI_2 - i as f32 / 24. * std::f32::consts::TAU;
+                DocPoint::new(50. + 70. * a.cos(), 30. + 45. * a.sin())
+            })
+            .collect();
+        assert_eq!(morph_to_box(&drawn, &outline, 0.), drawn);
+        let landed = morph_to_box(&drawn, &outline, 1.);
+        let on_box = |p: &DocPoint| {
+            let edge = |v: f32, lo: f32, hi: f32| (v - lo).abs() < 0.01 || (v - hi).abs() < 0.01;
+            (edge(p.x, 0., 100.) && (-0.01..=60.01).contains(&p.y))
+                || (edge(p.y, 0., 60.) && (-0.01..=100.01).contains(&p.x))
+        };
+        assert!(landed.iter().all(on_box), "every point ends on the box");
+        // It starts on the top edge near the loop's start and turns the same way.
+        assert!(landed[0].y.abs() < 0.01 && (landed[0].x - 50.).abs() < 2.);
+        assert!(landed[1].x < landed[0].x, "counter-clockwise, as drawn");
+    }
     #[::core::prelude::v1::test]
     fn visible_scene_reuses_resize_steps_without_missing_content_or_retaining_large_views() {
         let mut page = Page::new();

@@ -52,3 +52,24 @@ pub fn icon(kind: Icon, color: u32) -> Svg {
         size: 1.375 * REM,
     }
 }
+
+/// A glyph that changes with an on/off state (a favorite star): turning on,
+/// it pops in with a little overshoot; the previous glyph leaves at once.
+pub fn toggle_glyph(key: &str, on: bool, glyph: Svg) -> Div {
+    div()
+        .id(format!("{key}-{}", if on { "on" } else { "off" }))
+        .flex()
+        .child(glyph)
+        .el(move |e| {
+            let enter = if on {
+                rune::Transition::scale(0.5)
+                    .combined(rune::Transition::opacity())
+                    .allow_small_scale()
+            } else {
+                rune::Transition::opacity()
+            };
+            // The old glyph is gone at once (an instant exit spring).
+            e.transition(enter.springs(rune::SpringPair::new(crate::motion::POP, rune::Spring::NONE)))
+                .animated_changes()
+        })
+}

@@ -7,10 +7,16 @@
 pub mod detect;
 pub mod eval;
 pub mod glyphs;
+pub mod stats;
 
 use crate::Controller;
-use detect::{EqualsCandidate, detect_equals_equation, right_side_is_clear};
-use eval::evaluate_trailing_equals;
+use detect::{
+    EqualsCandidate, PageEquationCandidate, detect_equals_equation, detect_page_equations,
+    right_side_is_clear,
+};
+use eval::{
+    evaluate_trailing_equals, evaluate_trailing_equals_with_equations, needs_page_variables,
+};
 use folio_document::*;
 use glyphs::{StrokeReveal, synthesize_handwritten_answer};
 use std::{
@@ -21,11 +27,33 @@ use std::{
 };
 
 /// Record of a previously auto-solved equation on a page, used to isolate closely stacked rows
-/// while automatically freeing LHS strokes if the user erases that equation's `=`.
+/// while automatically freeing LHS strokes if the user erases that equation's `=`, and to power
+/// hover popups showing the detected LaTeX for each auto-completed answer.
 pub(crate) struct SolvedAutoMathRow {
+    pub note: Id,
     pub page: Id,
     pub eq_ids: (Id, Id),
     pub lhs_ids: Vec<Id>,
+    pub answer_ids: Vec<Id>,
+    pub detected_latex: String,
+    pub vector: Option<Arc<folio_math::VectorFormula>>,
+    pub context_latex: Option<String>,
+    pub context_vector: Option<Arc<folio_math::VectorFormula>>,
+}
+
+/// Detected LaTeX metadata shown in a hover popup over an auto-completed handwritten answer.
+#[derive(Clone)]
+pub struct AutoMathHoverInfo {
+    /// Live bounding box of the auto-completed answer strokes in document coordinates.
+    pub anchor_bounds: Rect,
+    /// Detected equation LaTeX (`lhs = answer`) that produced the answer.
+    pub detected_latex: String,
+    /// Pre-typeset vector outlines for `detected_latex`.
+    pub vector: Option<Arc<folio_math::VectorFormula>>,
+    /// Optional page context definitions (e.g. `y = 3,\; x = y^2 + 4`) that contributed to the answer.
+    pub context_latex: Option<String>,
+    /// Pre-typeset vector outlines for `context_latex`.
+    pub context_vector: Option<Arc<folio_math::VectorFormula>>,
 }
 
 /// Hold briefly at golden-yellow after the final digit finishes before fading to pen color.
@@ -105,6 +133,9 @@ pub(crate) struct AutoMathJob {
     pub page: Id,
     pub candidate: EqualsCandidate,
     pub variables: BTreeMap<String, String>,
+    /// Compact equations with ink on both sides of `=` elsewhere on the page (e.g. `x = 3`,
+    /// `2x + 4 = 10`), recognized lazily only when the triggered expression uses a variable.
+    pub page_equations: Vec<PageEquationCandidate>,
 }
 
 /// Completed background result delivered back to the controller.
@@ -114,22 +145,70 @@ pub(crate) struct AutoMathCompletion {
     pub candidate: EqualsCandidate,
     pub lhs_latex: String,
     pub answer: String,
+    pub detected_latex: String,
+    pub vector: Option<Arc<folio_math::VectorFormula>>,
+    pub context_latex: Option<String>,
+    pub context_vector: Option<Arc<folio_math::VectorFormula>>,
+}
+
+fn format_answer_latex(answer: &str) -> String {
+    if let Some((mant, exp)) = answer.split_once('e')
+        && !exp.is_empty()
+        && exp.bytes().all(|b| b.is_ascii_digit() || b == b'-' || b == b'+')
+    {
+        return format!("{mant} \\times 10^{{{exp}}}");
+    }
+    answer.to_string()
 }
 
 impl AutoMathJob {
-    /// Run pure-Rust stroke recognition + numeric evaluation on the worker thread.
+    /// Run pure-Rust stroke recognition + numeric/algebra evaluation on the worker thread.
     pub(crate) fn run(
         self,
         engine: &mut folio_recognition::Engine,
     ) -> Option<AutoMathCompletion> {
         let recognized = engine.recognize_math(&self.candidate.strokes).ok()?;
-        let (lhs_latex, answer) = evaluate_trailing_equals(&recognized, &self.variables)?;
+        let mut used_context: Vec<String> = Vec::new();
+        let (lhs_latex, answer) = if needs_page_variables(&recognized)
+            && !self.page_equations.is_empty()
+        {
+            let mut recognized_eqs = Vec::with_capacity(self.page_equations.len());
+            for eq in &self.page_equations {
+                if let Ok(latex) = engine.recognize_math(&eq.strokes) {
+                    recognized_eqs.push(latex);
+                }
+            }
+            let direct = evaluate_trailing_equals(&recognized, &self.variables);
+            let with_eqs =
+                evaluate_trailing_equals_with_equations(&recognized, &self.variables, &recognized_eqs)?;
+            // Only display page context when page equations actually contributed to the result.
+            if direct.as_ref().map(|(_, a)| a) != Some(&with_eqs.1) {
+                for eq in &recognized_eqs {
+                    if !eq.trim().is_empty() {
+                        used_context.push(eq.trim().to_string());
+                    }
+                }
+            }
+            with_eqs
+        } else {
+            evaluate_trailing_equals(&recognized, &self.variables)?
+        };
+        let detected_latex = format!("{lhs_latex} = {}", format_answer_latex(&answer));
+        let vector = crate::math_solver::typeset(&detected_latex).ok();
+        let context_latex = (!used_context.is_empty()).then(|| used_context.join(",\\; "));
+        let context_vector = context_latex
+            .as_deref()
+            .and_then(|ctx| crate::math_solver::typeset(ctx).ok());
         Some(AutoMathCompletion {
             note: self.note,
             page: self.page,
             candidate: self.candidate,
             lhs_latex,
             answer,
+            detected_latex,
+            vector,
+            context_latex,
+            context_vector,
         })
     }
 }
@@ -139,6 +218,47 @@ fn canonical_pair(a: Id, b: Id) -> (Id, Id) {
 }
 
 impl Controller {
+    /// Return the detected LaTeX metadata when the pointer hovers over an auto-completed answer
+    /// on the current page. Bounds are computed live so moving/erasing strokes stays accurate.
+    pub fn hovered_auto_math_answer(&self) -> Option<AutoMathHoverInfo> {
+        let cursor = self.cursor?;
+        let page = self.page();
+        let hidden = page.hidden_sources();
+        for row in self.auto_math_solved_rows.iter().rev() {
+            if row.note != self.active || row.page != page.id {
+                continue;
+            }
+            let mut bounds: Option<Rect> = None;
+            for &id in &row.answer_ids {
+                if hidden.contains(&id) {
+                    continue;
+                }
+                let Some(obj) = page.objects.get(&id) else {
+                    continue;
+                };
+                let b = obj.bounds();
+                bounds = Some(match bounds {
+                    Some(acc) => acc.union(b),
+                    None => b,
+                });
+            }
+            let Some(anchor_bounds) = bounds else {
+                continue;
+            };
+            let pad = (anchor_bounds.height() * 0.25).clamp(8.0, 16.0);
+            if anchor_bounds.expand(pad).contains(cursor) {
+                return Some(AutoMathHoverInfo {
+                    anchor_bounds,
+                    detected_latex: row.detected_latex.clone(),
+                    vector: row.vector.clone(),
+                    context_latex: row.context_latex.clone(),
+                    context_vector: row.context_vector.clone(),
+                });
+            }
+        }
+        None
+    }
+
     /// Collect stroke IDs belonging to intact previously solved equations on the current page.
     /// If the user erases an equation's `=`, its LHS strokes automatically become eligible again.
     fn active_consumed_lhs_ids(&self) -> HashSet<Id> {
@@ -146,7 +266,8 @@ impl Controller {
         let hidden = page.hidden_sources();
         let mut ids = HashSet::new();
         for row in &self.auto_math_solved_rows {
-            if row.page == page.id
+            if row.note == self.active
+                && row.page == page.id
                 && page.objects.contains_key(&row.eq_ids.0)
                 && page.objects.contains_key(&row.eq_ids.1)
                 && !hidden.contains(&row.eq_ids.0)
@@ -189,12 +310,18 @@ impl Controller {
             return;
         }
         let variables = self.math_variables().unwrap_or_default();
+        let page_equations = detect_page_equations(
+            self.session(),
+            candidate.eq_ids,
+            &self.auto_math_generated_ids,
+        );
         let job = AutoMathJob {
             pack,
             note: self.active,
             page: self.page().id,
             candidate,
             variables,
+            page_equations,
         };
         self.recognition_service.submit_auto_math(job);
     }
@@ -285,9 +412,11 @@ impl Controller {
             }
             let base_index = page.order.len();
             let page_id = page.id;
+            let mut answer_ids = Vec::with_capacity(synthesized.strokes.len());
             let mut changes = Vec::with_capacity(synthesized.strokes.len());
             for (offset, stroke) in synthesized.strokes.into_iter().enumerate() {
                 let id = stroke.id;
+                answer_ids.push(id);
                 self.auto_math_generated_ids.insert(id);
                 changes.push(Change::Object {
                     page: page_id,
@@ -299,9 +428,15 @@ impl Controller {
             }
             self.auto_math_solved_eqs.insert(pair);
             self.auto_math_solved_rows.push(SolvedAutoMathRow {
+                note: self.active,
                 page: page_id,
                 eq_ids: done.candidate.eq_ids,
                 lhs_ids: done.candidate.lhs_ids,
+                answer_ids,
+                detected_latex: done.detected_latex,
+                vector: done.vector,
+                context_latex: done.context_latex,
+                context_vector: done.context_vector,
             });
             // Keep tracking sets bounded in long sessions without discarding recent rows.
             if self.auto_math_solved_eqs.len() > 256 {
@@ -517,9 +652,39 @@ mod tests {
                 let _ = folio_export::png(app.page(), &app.assets, std::path::Path::new(&out), 2.0);
             }
 
-            // Single undo removes only the second auto-inserted answer while keeping '=' intact.
+            // Hovering over the auto-completed answer strokes exposes the detected LaTeX + vector.
+            let answer_center = app
+                .page()
+                .order
+                .iter()
+                .skip(row2_before)
+                .filter_map(|id| app.page().objects.get(id))
+                .map(|o| o.bounds())
+                .reduce(|a, b| a.union(b))
+                .expect("auto-solved answer bounds")
+                .center();
+            app.cursor = Some(answer_center);
+            let hover = app
+                .hovered_auto_math_answer()
+                .expect("hovering over auto-completed answer should return detected LaTeX info");
+            assert!(
+                hover.detected_latex.contains("1.7321"),
+                "expected hover LaTeX to contain evaluated answer, got: {}",
+                hover.detected_latex
+            );
+            assert!(
+                hover.vector.is_some(),
+                "expected hover LaTeX to be pre-typeset as a vector formula"
+            );
+            app.cursor = Some(Point::new(0., 0.));
+            assert!(app.hovered_auto_math_answer().is_none());
+
+            // Single undo removes only the second auto-inserted answer while keeping '=' intact,
+            // and immediately clears hover info for the undone answer.
+            app.cursor = Some(answer_center);
             app.undo();
             assert_eq!(app.page().order.len(), row2_before);
+            assert!(app.hovered_auto_math_answer().is_none());
         }
 
         let _ = std::fs::remove_dir_all(root);
@@ -657,6 +822,226 @@ mod tests {
             5,
             "stacked fraction should include numerator, bar, denominator, and both '=' bars"
         );
+
+        // Nested 3-level fraction `\frac{4}{\frac{4}{4}} =` where '=' aligns with the middle '4'.
+        let nested = vec![
+            make_stroke(&[(720., 430.), (720., 466.)], &style), // top 4
+            make_stroke(&[(700., 478.), (746., 478.)], &style), // upper bar
+            make_stroke(&[(720., 492.), (720., 528.)], &style), // middle 4 (aligned with '=')
+            make_stroke(&[(700., 540.), (746., 540.)], &style), // lower bar
+            make_stroke(&[(720., 552.), (720., 588.)], &style), // bottom 4
+            make_stroke(&[(762., 502.), (788., 508.)], &style), // opposing slant top '=' bar
+        ];
+        commit_raw(&mut app, nested);
+        let nested_eq_bot = make_stroke(&[(762., 522.), (788., 516.)], &style); // opposing slant bottom '=' bar
+        commit_raw(&mut app, vec![nested_eq_bot.clone()]);
+        let nested_cand = detect_equals_equation(app.session(), &nested_eq_bot, &empty, &empty)
+            .expect("nested fraction with opposing-slant '=' should be detected");
+        assert_eq!(
+            nested_cand.strokes.len(),
+            7,
+            "nested fraction should include all 3 levels, both bars, and both '=' bars"
+        );
+
+        // Long bowed/arched fraction bar (outer numerator terms sit lower than the bar's center peak).
+        let bowed = vec![
+            make_stroke(&[(100., 680.), (100., 716.)], &style), // left outer term (below bar peak y=706!)
+            make_stroke(&[(220., 666.), (220., 700.)], &style), // middle term above arch
+            make_stroke(&[(340., 680.), (340., 716.)], &style), // right outer term
+            make_stroke(&[(86., 728.), (220., 706.), (354., 728.)], &style), // arched fraction bar
+            make_stroke(&[(220., 734.), (220., 768.)], &style), // denominator
+            make_stroke(&[(372., 718.), (398., 718.)], &style),
+        ];
+        commit_raw(&mut app, bowed);
+        let bowed_eq_bot = make_stroke(&[(372., 732.), (398., 732.)], &style);
+        commit_raw(&mut app, vec![bowed_eq_bot.clone()]);
+        let bowed_cand = detect_equals_equation(app.session(), &bowed_eq_bot, &empty, &empty)
+            .expect("long bowed fraction should be detected");
+        assert_eq!(
+            bowed_cand.strokes.len(),
+            7,
+            "bowed fraction bar should keep outer numerator terms via local curve y"
+        );
+
+        // Multi-digit exponent `100^{10} =`: both exponent digits must attach.
+        let exp_strokes = vec![
+            make_stroke(&[(520., 680.), (520., 726.)], &style), // 1
+            make_stroke(&[(538., 682.), (538., 724.), (562., 724.), (562., 682.)], &style), // 0
+            make_stroke(&[(574., 682.), (574., 724.), (598., 724.), (598., 682.)], &style), // 0
+            make_stroke(&[(608., 650.), (608., 676.)], &style), // exponent '1'
+            make_stroke(&[(618., 650.), (618., 676.), (636., 676.), (636., 650.)], &style), // exponent '0'
+            make_stroke(&[(648., 696.), (674., 696.)], &style),
+        ];
+        commit_raw(&mut app, exp_strokes);
+        let exp_eq_bot = make_stroke(&[(648., 712.), (674., 712.)], &style);
+        commit_raw(&mut app, vec![exp_eq_bot.clone()]);
+        let exp_cand = detect_equals_equation(app.session(), &exp_eq_bot, &empty, &empty)
+            .expect("multi-digit exponent equation should be detected");
+        assert_eq!(
+            exp_cand.strokes.len(),
+            7,
+            "both digits of exponent '10' in 100^10= must be gathered"
+        );
+
+        // Verify detect_page_equations finds existing two-sided equations (Row 1 and Row 2)
+        // and algebraic glyph synthesis emits strokes for `x^2+2x+1`.
+        let page_eqs = detect_page_equations(app.session(), exp_cand.eq_ids, &empty);
+        assert!(
+            page_eqs.len() >= 2,
+            "expected two-sided equations on page to be discovered for variable lookup"
+        );
+        let alg_ans = synthesize_handwritten_answer(
+            "x^2+2x+1",
+            exp_cand.answer_x,
+            &exp_cand.style,
+            exp_cand.seed,
+            None,
+        );
+        assert!(
+            alg_ans.strokes.len() >= 7,
+            "algebraic answer x^2+2x+1 should synthesize handwritten letter & superscript strokes"
+        );
+
+        // Multi-stroke cap bars (`T` in `Tan(\frac{\pi}{4}) =` and `\pi` inside fraction numerator)
+        // plus standalone `\pi =` with pen-lift gap, compact `=` spacing, and `x = y^2 + 4` in
+        // `detect_page_equations`.
+        let tan_strokes = vec![
+            // T vertical stem + high overhanging top bar
+            make_stroke(&[(42., 954.), (38., 993.)], &style),
+            make_stroke(&[(26., 952.), (79., 954.)], &style),
+            // a
+            make_stroke(
+                &[(78., 972.), (60., 974.), (52., 988.), (64., 992.), (78., 980.), (84., 990.)],
+                &style,
+            ),
+            // n
+            make_stroke(&[(96., 972.), (96., 991.), (104., 972.), (114., 974.), (116., 991.)], &style),
+            // (
+            make_stroke(&[(154., 946.), (138., 968.), (136., 988.), (152., 994.)], &style),
+            // \pi: left leg, right leg, high top bar above fraction bar
+            make_stroke(&[(180., 955.), (179., 972.)], &style),
+            make_stroke(&[(195., 955.), (194., 970.)], &style),
+            make_stroke(&[(176., 952.), (206., 952.)], &style),
+            // fraction bar
+            make_stroke(&[(163., 983.), (200., 983.)], &style),
+            // denominator "4"
+            make_stroke(&[(170., 992.), (166., 1012.), (186., 1008.)], &style),
+            make_stroke(&[(180., 996.), (178., 1020.)], &style),
+            // )
+            make_stroke(&[(208., 964.), (218., 984.), (206., 1004.)], &style),
+            // '=' top bar (slanted down-right, shorter than bottom bar)
+            make_stroke(&[(240., 968.), (255., 973.)], &style),
+        ];
+        commit_raw(&mut app, tan_strokes);
+        let tan_eq_bot = make_stroke(&[(236., 988.), (264., 989.)], &style);
+        commit_raw(&mut app, vec![tan_eq_bot.clone()]);
+        let tan_cand = detect_equals_equation(app.session(), &tan_eq_bot, &empty, &empty)
+            .expect("Tan(pi/4)= should be detected");
+        assert_eq!(
+            tan_cand.strokes.len(),
+            14,
+            "Tan(pi/4)= must retain both T's top bar and pi's top bar above the fraction bar"
+        );
+
+        // Standalone `\pi =` where pi's top bar sits above `row_core_y0` with a small pen-lift gap,
+        // and compact widely-spaced `=` bars (`dy / avg_w ~ 2.0`).
+        let pi_strokes = vec![
+            make_stroke(&[(437., 964.), (440., 996.)], &style),
+            make_stroke(&[(452., 963.), (454., 987.)], &style),
+            make_stroke(&[(431., 954.), (472., 952.)], &style), // pi top bar above legs
+            make_stroke(&[(486., 966.), (497., 968.)], &style), // compact top '=' bar (w=11)
+        ];
+        commit_raw(&mut app, pi_strokes);
+        let pi_eq_bot = make_stroke(&[(486., 988.), (498., 990.)], &style); // dy=22 (~2.0 * avg_w)
+        commit_raw(&mut app, vec![pi_eq_bot.clone()]);
+        let pi_cand = detect_equals_equation(app.session(), &pi_eq_bot, &empty, &empty)
+            .expect("pi= with high top bar and compact '=' should be detected");
+        assert_eq!(
+            pi_cand.strokes.len(),
+            5,
+            "pi= must retain pi's horizontal top bar above both legs"
+        );
+
+        // Page equation `x = y^2 + 4` where superscript `2` sits above the row core must still
+        // include `^2` in `detect_page_equations`.
+        let eq_row_strokes = vec![
+            make_stroke(&[(680., 1160.), (710., 1192.)], &style), // x stroke 1
+            make_stroke(&[(710., 1160.), (680., 1192.)], &style), // x stroke 2
+            make_stroke(&[(736., 1169.), (754., 1169.)], &style), // = top
+            make_stroke(&[(735., 1187.), (755., 1187.)], &style), // = bot
+            make_stroke(&[(782., 1158.), (794., 1178.)], &style), // y stroke 1
+            make_stroke(&[(804., 1158.), (784., 1196.)], &style), // y stroke 2
+            make_stroke(&[(814., 1134.), (834., 1134.), (814., 1154.), (836., 1154.)], &style), // high ^2
+            make_stroke(&[(856., 1162.), (856., 1196.)], &style), // + vert
+            make_stroke(&[(844., 1179.), (870., 1179.)], &style), // + horiz
+            make_stroke(&[(886., 1162.), (884., 1182.), (906., 1182.)], &style), // 4 L
+            make_stroke(&[(900., 1162.), (898., 1196.)], &style), // 4 stem
+        ];
+        commit_raw(&mut app, eq_row_strokes);
+        let page_eqs_with_sup = detect_page_equations(app.session(), pi_cand.eq_ids, &empty);
+        assert!(
+            page_eqs_with_sup.iter().any(|eq| eq.strokes.len() == 11),
+            "detect_page_equations must retain high superscript '2' in x = y^2 + 4"
+        );
+
+        // Statistics canvas patterns:
+        // 1) `X ~ B(10, 0.3)` tilde declaration discovered by `detect_page_equations`.
+        let tilde_row = vec![
+            make_stroke(&[(100., 1360.), (124., 1394.)], &style), // X1
+            make_stroke(&[(124., 1360.), (100., 1394.)], &style), // X2
+            make_stroke(&[(142., 1378.), (150., 1373.), (158., 1382.), (166., 1377.)], &style), // ~
+            make_stroke(&[(184., 1358.), (184., 1396.)], &style), // B stem
+            make_stroke(&[(184., 1358.), (202., 1366.), (184., 1377.), (204., 1386.), (184., 1396.)], &style), // B loops
+            make_stroke(&[(216., 1358.), (210., 1377.), (216., 1396.)], &style), // (
+            make_stroke(&[(228., 1360.), (228., 1394.)], &style), // 1
+            make_stroke(&[(240., 1362.), (256., 1362.), (256., 1392.), (240., 1392.), (240., 1362.)], &style), // 0
+            make_stroke(&[(266., 1390.), (264., 1398.)], &style), // ,
+            make_stroke(&[(278., 1362.), (294., 1362.), (294., 1392.), (278., 1392.), (278., 1362.)], &style), // 0
+            make_stroke(&[(302., 1390.), (304., 1392.)], &style), // .
+            make_stroke(&[(312., 1362.), (328., 1362.), (316., 1376.), (328., 1388.), (312., 1392.)], &style), // 3
+            make_stroke(&[(336., 1358.), (342., 1377.), (336., 1396.)], &style), // )
+        ];
+        commit_raw(&mut app, tilde_row);
+        let page_eqs_with_tilde = detect_page_equations(app.session(), pi_cand.eq_ids, &empty);
+        assert!(
+            page_eqs_with_tilde.iter().any(|eq| eq.strokes.len() == 13),
+            "detect_page_equations must discover `X ~ B(10, 0.3)` tilde declarations"
+        );
+
+        // 2) `P(X = 3) =` with an inner `=` inside parentheses must gather the whole expression.
+        let prob_eq = vec![
+            make_stroke(&[(100., 1460.), (100., 1498.)], &style), // P stem
+            make_stroke(&[(100., 1460.), (118., 1468.), (100., 1478.)], &style), // P loop
+            make_stroke(&[(132., 1456.), (124., 1479.), (132., 1502.)], &style), // (
+            make_stroke(&[(144., 1464.), (164., 1494.)], &style), // X1
+            make_stroke(&[(164., 1464.), (144., 1494.)], &style), // X2
+            make_stroke(&[(178., 1474.), (198., 1474.)], &style), // inner = top
+            make_stroke(&[(178., 1486.), (198., 1486.)], &style), // inner = bot
+            make_stroke(&[(212., 1464.), (230., 1464.), (216., 1478.), (230., 1492.), (212., 1494.)], &style), // 3
+            make_stroke(&[(240., 1456.), (248., 1479.), (240., 1502.)], &style), // )
+            make_stroke(&[(266., 1472.), (290., 1472.)], &style), // outer = top
+        ];
+        commit_raw(&mut app, prob_eq);
+        let prob_eq_bot = make_stroke(&[(266., 1486.), (290., 1486.)], &style);
+        commit_raw(&mut app, vec![prob_eq_bot.clone()]);
+        let prob_cand = detect_equals_equation(app.session(), &prob_eq_bot, &empty, &empty)
+            .expect("P(X = 3) = should be detected");
+        assert_eq!(
+            prob_cand.strokes.len(),
+            11,
+            "P(X = 3) = must retain the inner '=' and all strokes inside P(...)"
+        );
+
+        // Very large handwriting: an '=' whose bars are ~110 px apart once panicked while
+        // estimating the glyph height (clamp lower bound above its 120 px upper bound).
+        let big = vec![
+            make_stroke(&[(800., 700.), (802., 860.)], &style),
+            make_stroke(&[(840., 720.), (1040., 722.)], &style),
+        ];
+        commit_raw(&mut app, big);
+        let big_eq_bot = make_stroke(&[(840., 830.), (1040., 832.)], &style);
+        commit_raw(&mut app, vec![big_eq_bot.clone()]);
+        let _ = detect_equals_equation(app.session(), &big_eq_bot, &empty, &empty);
 
         let _ = std::fs::remove_dir_all(root);
     }

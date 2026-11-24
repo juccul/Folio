@@ -12,6 +12,41 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     Some(&tag[start..end])
 }
 
+/// Joins an icon's plain `<path d="…"/>` elements (those that start with an
+/// absolute move and carry no attributes of their own) into one path, so
+/// strokes that cross (a plus, an ×) are drawn once instead of doubling into
+/// a dark blot where they overlap.
+fn merge_paths(body: &str) -> String {
+    let mut rest = body;
+    let mut out = String::new();
+    let mut joined: Vec<String> = Vec::new();
+    let mut at = None;
+    while let Some(start) = rest.find("<path d=\"") {
+        let tail = &rest[start + 9..];
+        let Some(end) = tail.find('"') else { break };
+        let d = &tail[..end];
+        let after = tail[end + 1..].trim_start();
+        let close = if after.starts_with("/>") { Some(2) } else { None };
+        out.push_str(&rest[..start]);
+        match close {
+            Some(n) if d.starts_with('M') => {
+                at.get_or_insert(out.len());
+                joined.push(d.to_owned());
+                rest = &after[n..];
+            }
+            _ => {
+                out.push_str("<path d=\"");
+                rest = tail;
+            }
+        }
+    }
+    out.push_str(rest);
+    if let Some(at) = at {
+        out.insert_str(at, &format!("<path d=\"{}\"/>", joined.join(" ")));
+    }
+    out
+}
+
 fn main() {
     #[cfg(target_os = "linux")]
     build_linux::link_libraries();
@@ -53,7 +88,12 @@ fn main() {
         group.push('>');
         let body = format!(
             "{group}{}</g>",
-            body.split_whitespace().collect::<Vec<_>>().join(" ")
+            {
+                let body = body.split_whitespace().collect::<Vec<_>>().join(" ");
+                // Only stroked outlines: joining filled shapes could change
+                // which parts are holes.
+                if attribute(&tag, "fill") == Some("none") { merge_paths(&body) } else { body }
+            }
         );
         writeln!(
             out,

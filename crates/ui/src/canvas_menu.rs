@@ -70,16 +70,16 @@ impl NotesView {
         let scale = self.controller.settings.ui_scale;
         let width = 224. * scale;
         let height = (5. * 42. + 14.) * scale;
+        let at = (f32::from(menu.at.x), f32::from(menu.at.y));
+        let left = at.0.clamp(8., (f32::from(size.width) - width - 8.).max(8.));
+        let top = at.1.clamp(8., (f32::from(size.height) - height - 8.).max(8.));
         let mut panel = div()
             .id("canvas-context-menu")
             .occlude()
             .absolute()
-            .left(px(
-                f32::from(menu.at.x).clamp(8., (f32::from(size.width) - width - 8.).max(8.))
-            ))
-            .top(px(
-                f32::from(menu.at.y).clamp(8., (f32::from(size.height) - height - 8.).max(8.))
-            ))
+            .left(px(left))
+            .top(px(top))
+            .grows_from_point(at, (left, top, width, height))
             .occlude()
             .occlude()
             .w(px(width))

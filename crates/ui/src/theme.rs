@@ -346,6 +346,12 @@ impl Theme {
         let strength = if self.dark { 0x24 } else { 0x16 };
         rgba((self.ink << 8) | (amount.clamp(0., 1.) * strength as f32).round() as u32)
     }
+    /// What a held control's press lays over its hover tint: the glass
+    /// colour, so a press reads as the highlight (or a filled button)
+    /// dimming rather than deepening.
+    pub fn press_wash(self) -> Rgba {
+        self.at_opacity(self.popover, 0.4)
+    }
     /// A raised area within a glass surface, such as a card or input.
     pub fn raised(self) -> Rgba {
         rgba(if self.dark { 0xffffff0d } else { 0xffffff8c })
@@ -409,10 +415,11 @@ pub trait Glass: Sized {
         self.glass_fill_at(theme, base, theme.glass_opacity, theme.glass_blur)
     }
     fn glass_fill_at(self, theme: Theme, base: u32, opacity: f32, blur: f32) -> Self;
-    /// A modal dialog over a scrim: denser and more strongly blurred than menus.
+    /// A modal dialog over a scrim: frosted glass at the glass opacity over
+    /// a much stronger blur than menus, so what is behind it shows only as
+    /// soft colour.
     fn glass_dialog(self, theme: Theme, base: u32) -> Self {
-        let opacity = theme.glass_opacity + (1. - theme.glass_opacity) * 0.75;
-        self.glass_fill_at(theme, base, opacity, theme.glass_blur * 1.75)
+        self.glass_fill_at(theme, base, theme.glass_opacity, theme.glass_blur * 4.)
             .glass_frame(theme)
     }
     /// A glass bar docked to a window edge: most opaque along that edge.

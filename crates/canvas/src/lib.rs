@@ -1,7 +1,7 @@
 //! Viewport geometry and spatial indexing; no GPUI dependency.
 use folio_document::*;
 use std::collections::{HashMap, HashSet};
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
     pub zoom: f32,
     pub pan: Point,
@@ -34,9 +34,12 @@ impl Viewport {
     pub fn to_screen(self, p: Point) -> Point {
         self.transform().apply(p)
     }
+    /// How far the view zooms out and in.
+    pub const MIN_ZOOM: f32 = 0.25;
+    pub const MAX_ZOOM: f32 = 8.;
     pub fn zoom_at(&mut self, factor: f32, anchor: Point) {
         let original = self.to_document(anchor);
-        self.zoom = (self.zoom * factor).clamp(0.1, 8.);
+        self.zoom = (self.zoom * factor).clamp(Self::MIN_ZOOM, Self::MAX_ZOOM);
         let screen = self.to_screen(original);
         self.pan.x += anchor.x - screen.x;
         self.pan.y += anchor.y - screen.y;
@@ -44,7 +47,7 @@ impl Viewport {
     pub fn fit(&mut self, page: &PageProperties, width: f32, height: f32) {
         self.zoom = ((width - 80.) / page.width)
             .min((height - 64.) / page.height)
-            .clamp(0.1, 2.);
+            .clamp(Self::MIN_ZOOM, 2.);
         self.pan = Point::new((width - page.width * self.zoom) / 2., 32.);
         self.rotation = 0.;
     }
@@ -65,6 +68,7 @@ impl Viewport {
 /// independent; mixed documents stack each contiguous run of finite pages.
 pub struct PageStack {
     pub pages: Vec<(usize, Rect)>,
+    pub width: f32,
     pub height: f32,
 }
 impl PageStack {
@@ -95,6 +99,7 @@ impl PageStack {
             .collect();
         Some(Self {
             pages: frames,
+            width,
             height: y - Self::GAP,
         })
     }
@@ -145,6 +150,116 @@ impl PageStack {
         let minimum = (height - self.height * viewport.zoom - 36.).min(36.);
         viewport.pan.y = (viewport.pan.y - offset).clamp(minimum, 36.) + offset;
     }
+    /// [`Self::clamp_vertical`] for a scroll from `previous` (`pan.y` at the
+    /// same zoom): beyond the ends it may only move back toward them.
+    pub fn clamp_vertical_from(
+        &self,
+        viewport: &mut Viewport,
+        active: usize,
+        height: f32,
+        previous: f32,
+    ) {
+        if viewport.rotation.abs() > 0.0001 {
+            return;
+        }
+        let offset = self.frame(active).min.y * viewport.zoom;
+        let minimum = (height - self.height * viewport.zoom - 36.).min(36.);
+        let previous = previous - offset;
+        let low = minimum.min(previous);
+        let high = 36_f32.max(previous);
+        viewport.pan.y = (viewport.pan.y - offset).clamp(low, high) + offset;
+    }
+    /// Clamp both vertical and horizontal scrolling to keep the page stack
+    /// (and any `content` extending beyond page edges, in stack coordinates)
+    /// reachable in the viewport. When `previous` is given, scrolling from a
+    /// point left beyond the limit (e.g. by zooming) only moves back toward
+    /// the limit instead of snapping.
+    pub fn clamp(
+        &self,
+        viewport: &mut Viewport,
+        active: usize,
+        width: f32,
+        height: f32,
+        content: Option<Rect>,
+        previous: Option<Point>,
+    ) {
+        let mut bounds = Rect::new(0., 0., self.width, self.height);
+        if let Some(extra) = content {
+            bounds = bounds.union(extra);
+        }
+        let origin = self.frame(active).min;
+        if viewport.rotation.abs() > 0.0001 {
+            let local = Rect {
+                min: Point::new(bounds.min.x - origin.x, bounds.min.y - origin.y),
+                max: Point::new(bounds.max.x - origin.x, bounds.max.y - origin.y),
+            };
+            clamp_infinite(local, viewport, width, height, previous);
+            return;
+        }
+        let offset_x = origin.x * viewport.zoom;
+        let offset_y = origin.y * viewport.zoom;
+        let top = 36. - bounds.min.y * viewport.zoom;
+        let minimum = (height - bounds.max.y * viewport.zoom - 36.).min(top);
+        let (mut low_y, mut high_y) = (minimum, top);
+        if let Some(prev) = previous {
+            let prev_y = prev.y - offset_y;
+            low_y = low_y.min(prev_y);
+            high_y = high_y.max(prev_y);
+        }
+        viewport.pan.y = (viewport.pan.y - offset_y).clamp(low_y, high_y) + offset_y;
+
+        if width > 0. {
+            let margin = 56_f32.min(width * 0.15);
+            let a = margin - bounds.min.x * viewport.zoom;
+            let b = width - margin - bounds.max.x * viewport.zoom;
+            let (mut low_x, mut high_x) = (a.min(b), a.max(b));
+            if let Some(prev) = previous {
+                let prev_x = prev.x - offset_x;
+                low_x = low_x.min(prev_x);
+                high_x = high_x.max(prev_x);
+            }
+            viewport.pan.x = (viewport.pan.x - offset_x).clamp(low_x, high_x) + offset_x;
+        }
+    }
+}
+
+/// Clamp panning on an infinite (or rotated) canvas around `content` so the
+/// user always has ample blank space past every edge to keep writing and
+/// expanding, while never losing the content off screen.
+pub fn clamp_infinite(
+    content: Rect,
+    viewport: &mut Viewport,
+    width: f32,
+    height: f32,
+    previous: Option<Point>,
+) {
+    if width <= 0. || height <= 0. {
+        return;
+    }
+    let keep_x = (width * 0.15).clamp(80., 160.).min(width * 0.45);
+    let keep_y = (height * 0.15).clamp(80., 160.).min(height * 0.45);
+    let t = viewport.transform();
+    let screen = Rect::from_points(
+        [
+            content.min,
+            Point::new(content.max.x, content.min.y),
+            content.max,
+            Point::new(content.min.x, content.max.y),
+        ]
+        .map(|p| t.apply(p)),
+    );
+    let mut low_x = viewport.pan.x + (keep_x - screen.max.x);
+    let mut high_x = viewport.pan.x + (width - keep_x - screen.min.x);
+    let mut low_y = viewport.pan.y + (keep_y - screen.max.y);
+    let mut high_y = viewport.pan.y + (height - keep_y - screen.min.y);
+    if let Some(prev) = previous {
+        low_x = low_x.min(prev.x);
+        high_x = high_x.max(prev.x);
+        low_y = low_y.min(prev.y);
+        high_y = high_y.max(prev.y);
+    }
+    viewport.pan.x = viewport.pan.x.clamp(low_x, high_x);
+    viewport.pan.y = viewport.pan.y.clamp(low_y, high_y);
 }
 /// Uniform-grid broad phase indexed by dense `u32` handles. Oversize objects
 /// use a separate bucket so malformed or enormous geometry cannot create an
@@ -854,6 +969,70 @@ mod page_stack_tests {
         viewport.pan.y = -99999.;
         stack.clamp_vertical(&mut viewport, 0, 700.);
         assert_eq!(viewport.pan.y, 36.);
+        // A zoom may leave the pages beyond the ends; scrolling from there
+        // moves back toward them without a jump, and never further out.
+        viewport.pan.y = 300.;
+        stack.clamp_vertical_from(&mut viewport, 0, 700., 300.);
+        assert_eq!(viewport.pan.y, 300.);
+        viewport.pan.y = 250.;
+        stack.clamp_vertical_from(&mut viewport, 0, 700., 300.);
+        assert_eq!(viewport.pan.y, 250.);
+        viewport.pan.y = 400.;
+        stack.clamp_vertical_from(&mut viewport, 0, 700., 250.);
+        assert_eq!(viewport.pan.y, 250.);
+        viewport.pan.y = 99999.;
+        stack.clamp_vertical_from(&mut viewport, 0, 700., 36.);
+        assert_eq!(viewport.pan.y, 36.);
+
+        // Horizontal clamping in page mode keeps the stack reachable, and
+        // expands when content extends outside page bounds.
+        let mut hview = Viewport {
+            zoom: 1.,
+            pan: Point::new(-99999., 36.),
+            rotation: 0.,
+        };
+        stack.clamp(&mut hview, 0, 1200., 700., None, None);
+        // Stack width (1000) fits inside 1200 - 2*56, so left edge clamps to 56.
+        let left_edge = hview.pan.x - stack.frame(0).min.x;
+        assert!((left_edge - 56.).abs() < 0.01);
+        // When wider than the viewport (zoomed in), right edge clamps to width - 56.
+        let mut zoomed = Viewport {
+            zoom: 2.,
+            pan: Point::new(-99999., 36.),
+            rotation: 0.,
+        };
+        stack.clamp(&mut zoomed, 0, 1200., 700., None, None);
+        let right_edge = zoomed.pan.x + (stack.width - stack.frame(0).min.x) * zoomed.zoom;
+        assert!((right_edge - (1200. - 56.)).abs() < 0.01);
+        let expanded = Rect::new(-400., 0., 2200., stack.height);
+        let mut hview2 = Viewport {
+            zoom: 1.,
+            pan: Point::new(-99999., 36.),
+            rotation: 0.,
+        };
+        stack.clamp(&mut hview2, 0, 1200., 700., Some(expanded), None);
+        assert!(hview2.pan.x < hview.pan.x - 500.);
+
+        // Infinite canvas clamping keeps content reachable while allowing room
+        // past every edge, and expands when content grows.
+        let mut inf = Viewport {
+            zoom: 1.,
+            pan: Point::new(-99999., -99999.),
+            rotation: 0.,
+        };
+        let small = Rect::new(0., 0., 200., 200.);
+        clamp_infinite(small, &mut inf, 1000., 800., None);
+        assert_eq!(inf.pan.x, 150. - 200.);
+        assert_eq!(inf.pan.y, 120. - 200.);
+        let larger = Rect::new(0., 0., 2000., 1800.);
+        let mut inf_big = Viewport {
+            zoom: 1.,
+            pan: Point::new(-99999., -99999.),
+            rotation: 0.,
+        };
+        clamp_infinite(larger, &mut inf_big, 1000., 800., None);
+        assert_eq!(inf_big.pan.x, 150. - 2000.);
+        assert_eq!(inf_big.pan.y, 120. - 1800.);
     }
     #[test]
     fn infinite_pages_separate_finite_runs() {

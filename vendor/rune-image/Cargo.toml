@@ -1,0 +1,33 @@
+[package]
+name = "rune-image"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "Content-addressed image decoding, linear-light mip generation, shelf pixel atlas, SVG/AVIF codecs, and OS app icon rasterization for Rune."
+
+[features]
+default = ["svg"]
+svg = ["dep:resvg"]
+avif = ["dep:avif-decode"]
+
+[dependencies]
+blake3 = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+resvg = { version = "0.45", default-features = false, optional = true }
+rune-core = { git = "https://github.com/anomalyco/rune", rev = "dd672fc8257a1bfb55d2e8595f585fc411e709df" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+avif-decode = { version = "3", optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSObject", "NSString", "objc2-core-foundation"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"

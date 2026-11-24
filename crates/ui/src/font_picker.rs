@@ -296,6 +296,8 @@ impl NotesView {
                 .borrow_mut()
                 .overlay("font-menu", self.font_appear, menu);
             anchor = anchor.child(deferred(menu).with_priority(1));
+        } else if let Some(closed) = self.transitions.borrow().closed("font-menu") {
+            anchor = anchor.child(deferred(closed).with_priority(1));
         }
         anchor
     }
@@ -342,23 +344,13 @@ impl NotesView {
             .absolute()
             .left_0()
             .top_full()
+            // It grows from under the middle of the font button.
+            .grows_from(4.75 / 17., 0.)
             .mt_1()
             .w(rems(17.))
             .occlude()
-            // The menu lies outside its anchor, so it closes on presses
-            // outside itself; the font button toggles it on its own.
-            .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                let (x, y) = (
-                    f32::from(event.position.x) as f64,
-                    f32::from(event.position.y) as f64,
-                );
-                if this
-                    .accessibility
-                    .control_bounds_for_key("font")
-                    .is_some_and(|r| x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1)
-                {
-                    return;
-                }
+            // Modal: a press outside, the font button included, closes it.
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                 this.close_font_menu(window, cx);
             }))
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.close_font_menu(window, cx)))

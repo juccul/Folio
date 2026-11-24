@@ -42,7 +42,7 @@ impl NotesView {
         // its text is committed.
         if let Some(editor) = &self.inline_text {
             if editor.id == id {
-                editor.field.read(cx).focus.focus(window);
+                editor.field.read(cx).focus.focus_for_typing(window);
                 return;
             }
             self.commit_inline_text(cx);
@@ -71,7 +71,7 @@ impl NotesView {
             .subscribe(&field, |_, _, _: &super::field::FieldBoundsChanged, cx| {
                 cx.notify()
             });
-        field.read(cx).focus.focus(window);
+        field.read(cx).focus.focus_for_typing(window);
         let return_to_text = self.controller.tool == Tool::Text;
         // Editing selects the box; rectangular selection stays chosen.
         if self.controller.tool != Tool::Rectangle {
@@ -138,7 +138,7 @@ impl NotesView {
             });
         }
         if let Some(editor) = &self.inline_text {
-            editor.field.read(cx).focus.focus(window);
+            editor.field.read(cx).focus.focus_for_typing(window);
         }
         cx.notify();
     }
@@ -642,7 +642,6 @@ impl NotesView {
         action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
-        let hover = self.motion.borrow_mut().hover_value(id);
         let color = if !enabled {
             theme.muted
         } else if active {
@@ -653,7 +652,7 @@ impl NotesView {
         let background = if active {
             rgba((theme.accent << 8) | if theme.dark { 0x38 } else { 0x24 })
         } else {
-            theme.tint(if enabled { hover } else { 0. })
+            theme.tint(0.)
         };
         self.control(
             id,

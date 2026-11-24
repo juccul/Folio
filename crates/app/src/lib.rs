@@ -51,7 +51,7 @@ mod templates;
 mod tests;
 mod text_boxes;
 mod workers;
-pub use auto_math::{AutoMathAnimation, AutoMathStrokeState};
+pub use auto_math::{AutoMathAnimation, AutoMathHoverInfo, AutoMathStrokeState};
 pub use folders::FolderDetails;
 use folio_canvas::{PageStack, SpatialIndex, Viewport};
 use folio_document::*;
@@ -176,9 +176,15 @@ pub struct Controller {
     pub cursor: Option<Point>,
     /// Size of the visible canvas in screen pixels, kept current by the UI.
     pub view_size: Point,
+    /// The note, page and viewport the last page-view synchronization left,
+    /// against which the next one limits scrolling.
+    synced_view: Option<(Id, usize, folio_canvas::Viewport)>,
     /// The lasso was selected by a gesture, Select All or a paste and reverts to
     /// `selection_return_tool` afterwards.
     temporary_selection: bool,
+    /// The loop that just selected something (an encircling pen stroke or
+    /// a lasso), which the canvas morphs into the selection's box.
+    pub select_morph: Option<SelectMorph>,
     selection_return_tool: Tool,
     /// The tool in use before a read-only document switched to the hand,
     /// restored once an editable document is shown again.
@@ -389,6 +395,7 @@ impl Controller {
             active,
             tool: initial_tool,
             temporary_selection: false,
+            select_morph: None,
             selection_return_tool: Tool::Pen,
             read_only_return_tool: None,
             style,
@@ -397,6 +404,7 @@ impl Controller {
             interaction: None,
             cursor: None,
             view_size: Point::new(800., 600.),
+            synced_view: None,
             status: "All changes saved".into(),
             error: None,
             save_error: None,
@@ -608,4 +616,15 @@ fn load_settings(store: &Store) -> Result<Settings, String> {
         .unwrap_or_default();
     settings.normalize();
     Ok(settings)
+}
+
+/// A loop that selected something, in document points, as it was drawn:
+/// its ink colour (`None` for the lasso, drawn in the selection colour) and
+/// width, and when it closed.
+#[derive(Clone, Debug)]
+pub struct SelectMorph {
+    pub points: Vec<Point>,
+    pub color: Option<Color>,
+    pub width: f32,
+    pub started: Instant,
 }

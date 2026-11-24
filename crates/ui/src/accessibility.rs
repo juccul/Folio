@@ -213,6 +213,13 @@ pub(super) fn role(key: &str) -> &'static str {
 pub(super) fn toggles(key: &str) -> bool {
     semantics(key).toggle
 }
+/// The selection group whose highlight glides from one member to the next
+/// (library filters, segmented choices, settings sections). Groups that mark
+/// their choice another way (tools, tabs, folders, pages, swatches) have none.
+pub(super) fn glide_group(key: &str) -> Option<u64> {
+    let (id, _, _) = semantics(key).group?;
+    (!matches!(id, 20 | 21 | 22 | 31 | 32 | 33)).then_some(id)
+}
 pub(super) fn selects(key: &str) -> bool {
     matches!(semantics(key).role, "tab" | "treeitem" | "option")
 }

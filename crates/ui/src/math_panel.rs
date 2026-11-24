@@ -1596,7 +1596,7 @@ impl NotesView {
             .min_h_0()
             .border_l_1()
             .border_color(theme.glass_edge())
-            .glass_fill(theme, theme.sidebar)
+            .glass_fill(self.chrome_theme(), theme.sidebar)
             .flex()
             .flex_col();
         let Some(inputs) = &self.math_inputs else {
@@ -1762,36 +1762,53 @@ impl NotesView {
                     .text_color(rgb(theme.muted))
                     .child(problem_label),
             )
+            // "Use selection" and its read options are one outlined split
+            // button, the chevron sized to its label.
             .child(
-                self.button(
-                    "math-use-selection",
-                    "Use selection",
-                    false,
-                    cx,
-                    move |this, _, cx| read_selection(this, cx),
-                )
-                .text_xs()
-                .min_h(rems(1.75))
-                .px_2()
-                .py_0(),
-            )
-            .child(
-                self.control(
-                    "math-source",
-                    "Read options",
-                    icon(Icon::Down, theme.ink).into_any_element(),
-                    source_open,
-                    cx,
-                    |this, _, cx| {
-                        if let Some(inputs) = &mut this.math_inputs {
-                            inputs.source_open = !inputs.source_open;
-                        }
-                        cx.notify();
-                    },
-                )
-                .min_h(rems(1.75))
-                .py_0()
-                .px_1(),
+                div()
+                    .flex()
+                    .items_center()
+                    .rounded(px(theme.radius))
+                    .border_1()
+                    .border_color(theme.cover_edge())
+                    .child(
+                        self.button(
+                            "math-use-selection",
+                            "Use selection",
+                            false,
+                            cx,
+                            move |this, _, cx| read_selection(this, cx),
+                        )
+                        .text_xs()
+                        .min_h(rems(1.75))
+                        .px_2()
+                        .py_0()
+                        .border_0(),
+                    )
+                    .child(div().w(px(1.)).h(rems(1.)).bg(theme.cover_edge()))
+                    .child(
+                        self.control(
+                            "math-source",
+                            "Read options",
+                            div()
+                                .flex()
+                                .child(icon(Icon::Down, theme.muted).size(rems(0.875)))
+                                .flipped(source_open)
+                                .into_any_element(),
+                            source_open,
+                            cx,
+                            |this, _, cx| {
+                                if let Some(inputs) = &mut this.math_inputs {
+                                    inputs.source_open = !inputs.source_open;
+                                }
+                                cx.notify();
+                            },
+                        )
+                        .min_h(rems(1.75))
+                        .py_0()
+                        .px_1p5()
+                        .border_0(),
+                    ),
             )
             .when(!empty, |row| {
                 row.child(
@@ -1805,7 +1822,10 @@ impl NotesView {
                     .text_xs()
                     .min_h(rems(1.75))
                     .px_2()
-                    .py_0(),
+                    .py_0()
+                    .ml_1()
+                    .border_1()
+                    .border_color(theme.cover_edge()),
                 )
             });
         let mut editor = div()
@@ -2080,16 +2100,39 @@ impl NotesView {
             body = body.child(self.math_settings(cx));
         }
         if let Some(error) = error {
+            // A plain statement of what went wrong, with any technical detail
+            // muted beneath it, rather than a raw message in alarm red.
+            let (title, detail) = friendly_math_error(&error);
             body = body.child(
                 div()
                     .rounded(px(theme.radius))
                     .p_3()
+                    .flex()
+                    .gap_3()
+                    .items_start()
                     .border_1()
-                    .border_color(rgba((theme.destructive << 8) | 0x55))
-                    .bg(rgba((theme.destructive << 8) | 0x14))
-                    .text_sm()
-                    .text_color(rgb(theme.destructive))
-                    .child(error),
+                    .border_color(theme.border)
+                    .bg(theme.raised())
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .mt(px(2.))
+                            .child(icon(Icon::Alert, theme.destructive).size(rems(1.))),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .gap_1()
+                            .min_w_0()
+                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
+                            .when_some(detail, |card, detail| {
+                                card.child(
+                                    div().text_xs().text_color(rgb(theme.muted)).child(detail),
+                                )
+                            }),
+                    ),
             );
         }
         if let Some(report) = &report {
@@ -2212,7 +2255,9 @@ impl NotesView {
         match formulas {
             Some(formulas) => {
                 for formula in formulas.iter() {
-                    let height = (formula.height / formula.width.max(1.) * 300.).clamp(28., 56.);
+                    // A line of math reads at about a line's height; only tall
+                    // formulas (fractions, matrices) reach the larger size.
+                    let height = (formula.height / formula.width.max(1.) * 300.).clamp(28., 40.);
                     card = card.child(self.native_formula(formula.clone(), height, theme.ink));
                 }
             }
@@ -2468,5 +2513,20 @@ mod tests {
         ] {
             assert_eq!(automatic_operation(problem), expected, "{problem}");
         }
+    }
+}
+
+/// What a solver error means to someone using the panel, and the technical
+/// detail (if any) to show beneath it.
+fn friendly_math_error(error: &str) -> (String, Option<String>) {
+    if error.starts_with("Offline math pack is missing") {
+        return (
+            "The math solver isn't installed".into(),
+            Some("Solving, graphing and checking need Folio's offline math pack, which this installation doesn't include.".into()),
+        );
+    }
+    match error.split_once(": ") {
+        Some((what, why)) if what.len() < 60 => (what.to_owned(), Some(why.to_owned())),
+        _ => (error.to_owned(), None),
     }
 }

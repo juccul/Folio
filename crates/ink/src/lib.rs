@@ -95,26 +95,43 @@ impl StrokeBuilder {
     pub fn raw(&self) -> &[StrokePoint] {
         &self.raw
     }
-    pub fn finish(mut self) -> Option<InkStroke> {
+    /// The point [`Self::finish`] adds so the stroke ends where the pen is,
+    /// when stabilization has left the path behind it. Live drawing shows it
+    /// too, so lifting the pen does not change the stroke's end.
+    pub fn catch_up(&self) -> Option<PathPoint> {
         let endpoint = self.raw.last()?.position();
-        // Catch the endpoint without changing sensor data. Taper fountain/pencil ends.
-        if let Some(last) = self.path.last().copied()
-            && endpoint.distance(last.position) > 0.2
-        {
-            self.path.push(PathPoint {
-                position: endpoint,
-                ..last
-            });
+        let last = *self.path.last()?;
+        (endpoint.distance(last.position) > 0.2).then_some(PathPoint {
+            position: endpoint,
+            ..last
+        })
+    }
+    /// The path as [`Self::finish`] would commit it now: caught up with the
+    /// pen and, for fountain pens and pencils, tapered at both ends. Live
+    /// drawing shows this, so lifting the pen leaves the stroke as drawn.
+    pub fn finished_path(&self) -> Vec<PathPoint> {
+        let mut path = Vec::with_capacity(self.path.len() + 1);
+        path.extend_from_slice(&self.path);
+        // Catch the endpoint without changing sensor data.
+        if let Some(end) = self.catch_up() {
+            path.push(end);
         }
-        if matches!(self.style.tool, InkTool::Fountain | InkTool::Pencil) && self.path.len() > 3 {
-            let n = self.path.len();
-            let taper = 8.min(n / 2);
+        if matches!(self.style.tool, InkTool::Fountain | InkTool::Pencil) && path.len() > 3 {
+            let n = path.len();
+            let taper = Self::TAPER.min(n / 2);
             for i in 0..taper {
                 let factor = 0.35 + 0.65 * i as f32 / taper as f32;
-                self.path[i].radius *= factor;
-                self.path[n - 1 - i].radius *= factor;
+                path[i].radius *= factor;
+                path[n - 1 - i].radius *= factor;
             }
         }
+        path
+    }
+    /// Points at each end of a fountain or pencil stroke that taper.
+    pub const TAPER: usize = 8;
+    pub fn finish(mut self) -> Option<InkStroke> {
+        self.raw.last()?;
+        self.path = self.finished_path();
         Some(InkStroke {
             id: self.id,
             raw: Arc::new(RawSamples::from_slice(&self.raw)),
@@ -654,6 +671,28 @@ mod tests {
         assert_eq!(s.raw.len(), 10);
         assert!(s.path.len() > s.raw.len());
         assert!(!outline(&s.path.to_vec()).is_empty());
+        // Live drawing shows the catch-up to the pen that finishing commits,
+        // so lifting the pen leaves the stroke as it was drawn.
+        let mut b = StrokeBuilder::new(PenStyle::default());
+        for i in 0..10 {
+            b.push(StrokePoint::new(Point::new(i as f32 * 10., 0.), 0.7, i * 8))
+        }
+        let end = b.catch_up().expect("stabilization trails the pen");
+        let mut live = b.path().to_vec();
+        live.push(end);
+        assert_eq!(b.finished_path(), live);
+        assert_eq!(b.finish().unwrap().path.to_vec(), live);
+        let mut b = StrokeBuilder::new(PenStyle {
+            tool: InkTool::Fountain,
+            ..PenStyle::default()
+        });
+        for i in 0..10 {
+            b.push(StrokePoint::new(Point::new(i as f32 * 10., 0.), 0.7, i * 8))
+        }
+        let live = b.finished_path();
+        assert!(live[0].radius < live[live.len() / 2].radius);
+        assert!(live[live.len() - 1].radius < live[live.len() / 2].radius);
+        assert_eq!(b.finish().unwrap().path.to_vec(), live);
     }
     #[test]
     fn pressure_changes_width() {

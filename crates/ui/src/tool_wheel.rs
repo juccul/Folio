@@ -323,7 +323,7 @@ impl NotesView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let Some(wheel) = self.tool_wheel else {
-            return div().into_any_element();
+            return tool_wheel_layer().into_any_element();
         };
         let theme = Theme::new(&self.controller.settings);
         let scale = self.controller.settings.ui_scale;
@@ -622,6 +622,12 @@ impl NotesView {
             )
             .into_any_element()
     }
+}
+
+/// The tool wheel's layer while it is closed: kept, under the same key, so
+/// the wheel shrinks away when it closes. It takes no input.
+pub(super) fn tool_wheel_layer() -> Div {
+    div().id("tool-wheel").absolute().inset_0()
 }
 
 #[cfg(test)]

@@ -148,26 +148,37 @@ impl NotesView {
                 properties.width.min(properties.height),
                 properties.width.max(properties.height),
             );
-            let mut sizes = div().flex().flex_wrap().gap_2();
-            for (id, title, width, height) in [
+            // Three even tiles, the size above its dimensions, so the row never
+            // wraps one size onto a line of its own.
+            let mut sizes = div().flex().gap_2();
+            for (id, title, detail, width, height) in [
                 (
                     "size-a4",
-                    "A4 · 210 × 297 mm",
+                    "A4",
+                    "210 × 297 mm",
                     210. / 25.4 * 96.,
                     297. / 25.4 * 96.,
                 ),
                 (
                     "size-a5",
-                    "A5 · 148 × 210 mm",
+                    "A5",
+                    "148 × 210 mm",
                     148. / 25.4 * 96.,
                     210. / 25.4 * 96.,
                 ),
-                ("size-letter", "Letter · 8.5 × 11 in", 816., 1056.),
+                ("size-letter", "Letter", "8.5 × 11 in", 816., 1056.),
             ] {
+                let tile = div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                    .child(div().text_xs().text_color(rgb(theme.muted)).child(detail));
                 sizes = sizes.child(
-                    self.button(
+                    self.control(
                         id,
-                        title,
+                        format!("{title} · {detail}"),
+                        tile.into_any_element(),
                         (dimensions.0 - width).abs() < 1. && (dimensions.1 - height).abs() < 1.,
                         cx,
                         move |this, _, _| {
@@ -180,6 +191,8 @@ impl NotesView {
                             }
                         },
                     )
+                    .flex_1()
+                    .py_1p5()
                     .border_color(theme.border),
                 );
             }
@@ -197,6 +210,7 @@ impl NotesView {
                                 if wide { (long, short) } else { (short, long) };
                         }
                     })
+                    .flex_1()
                     .border_color(theme.border),
                 );
             }
@@ -261,29 +275,53 @@ impl NotesView {
                 }),
             );
         }
-        colors = colors.child(self.button(
-            "paper-custom-picker",
-            "Custom…",
-            custom_color_open,
-            cx,
-            |this, _, _| {
-                if let Some(setup) = &mut this.notebook_setup {
-                    setup.custom_color_open = !setup.custom_color_open;
-                }
-            },
-        ));
-        options = options
-            .child(label("Paper color"))
-            .child(colors)
-            .child(
+        // Custom sits among the swatches as one more round choice; its
+        // hex field and picker appear only once it is opened.
+        let custom = !color_value.trim().is_empty()
+            && !matches!(
+                properties.color.map(|c| c.rgb()),
+                Some(0xffffff | 0xfff7e6 | 0xeaf2e8 | 0xeaf1fb | 0x202124 | 0x0e0e0e)
+            );
+        colors = colors.child(
+            self.control(
+                "paper-custom-picker",
+                "Custom paper color…",
                 div()
-                    .text_xs()
-                    .text_color(rgb(theme.muted))
-                    .child("Custom color · leave the hex value empty to follow the theme"),
+                    .size(px(22.))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_1()
+                    .border_color(theme.border)
+                    .when(custom, |dot| {
+                        dot.bg(rgb(properties.color.map_or(theme.canvas.paper, |c| c.rgb())))
+                    })
+                    .when(!custom, |dot| dot.child(icon(Icon::Plus, theme.muted).size(rems(0.75))))
+                    .into_any_element(),
+                custom_color_open,
+                cx,
+                |this, _, _| {
+                    if let Some(setup) = &mut this.notebook_setup {
+                        setup.custom_color_open = !setup.custom_color_open;
+                    }
+                },
             )
-            .child(color.clone());
+            .size(px(38.))
+            .p_1()
+            .border_color(if custom { rgb(theme.ring) } else { theme.border }),
+        );
+        options = options.child(label("Paper color")).child(colors);
         if custom_color_open {
-            options = options.child(self.color_selector(color, false, cx));
+            options = options
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(theme.muted))
+                        .child("Hex color · leave it empty to follow the theme"),
+                )
+                .child(color.clone())
+                .child(self.color_selector(color, false, cx));
         }
         let preview_theme = theme.canvas_for_page(&properties);
         let preview = paper_preview(&properties, preview_theme);
@@ -335,7 +373,11 @@ fn paper_preview(properties: &PageProperties, theme: super::theme::CanvasTheme) 
         (width * properties.height / properties.width).clamp(100., 214.)
     };
     let paper = properties.paper;
+    // The sheet springs to a new shape and its pattern cross-fades.
     div()
+        .id("paper-preview")
+        .el(|e| e.motion(crate::motion::SETTLE).animated_changes())
+        .relative()
         .w(px(width))
         .h(px(height))
         .overflow_hidden()
@@ -344,6 +386,12 @@ fn paper_preview(properties: &PageProperties, theme: super::theme::CanvasTheme) 
         .border_color(rgb(theme.grid))
         .bg(rgb(theme.paper))
         .child(
+            div()
+                .id(format!("paper-pattern-{paper:?}"))
+                .absolute()
+                .inset_0()
+                .el(|e| e.transition(rune::Transition::opacity()).animated_changes())
+                .child(
             canvas(
                 |_, _, _| (),
                 move |bounds, _, window, _| {
@@ -397,6 +445,7 @@ fn paper_preview(properties: &PageProperties, theme: super::theme::CanvasTheme) 
                 },
             )
             .size_full(),
+                ),
         )
 }
 

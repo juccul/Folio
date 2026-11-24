@@ -377,11 +377,15 @@ impl TransformationMatrix {
 
 // ---------------------------------------------------------------- images
 
-/// A decoded image: premultiplied RGBA for painting, and Rune pixels for
-/// elements, made on first use.
+/// A decoded image: premultiplied RGBA for software painting, or Rune pixels
+/// for the GPU. It holds one form and makes the other on demand; making
+/// the pixels releases the premultiplied copy, since Rune keeps its own, so a
+/// cached ink layer is not held three times over.
 pub struct RenderImage {
     pub id: u64,
-    pixmap: Arc<sk::Pixmap>,
+    width: u32,
+    height: u32,
+    pixmap: std::sync::Mutex<Option<Arc<sk::Pixmap>>>,
     pixels: std::sync::Mutex<Option<rune::Pixels>>,
 }
 static NEXT_IMAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -392,31 +396,64 @@ impl RenderImage {
     pub fn from_pixmap(pixmap: sk::Pixmap) -> Self {
         Self {
             id: NEXT_IMAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            pixmap: Arc::new(pixmap),
+            width: pixmap.width(),
+            height: pixmap.height(),
+            pixmap: std::sync::Mutex::new(Some(Arc::new(pixmap))),
             pixels: std::sync::Mutex::new(None),
         }
     }
-    fn from_bgra_straight(width: u32, height: u32, data: &[u8]) -> Option<Self> {
-        if (width as u64)
-            .checked_mul(height as u64)
-            .and_then(|n| n.checked_mul(4))
-            != Some(data.len() as u64)
+    /// Straight-alpha RGBA owned buffer, stored directly in Rune pixels without
+    /// a premultiply/unpremultiply roundtrip.
+    pub fn from_rgba_owned(width: u32, height: u32, rgba: Vec<u8>) -> Option<Self> {
+        if width == 0
+            || height == 0
+            || (width as u64)
+                .checked_mul(height as u64)
+                .and_then(|n| n.checked_mul(4))
+                != Some(rgba.len() as u64)
         {
             return None;
         }
-        let mut pixmap = sk::Pixmap::new(width, height)?;
-        for (dst, src) in pixmap
-            .pixels_mut()
-            .iter_mut()
-            .zip(data.as_chunks::<4>().0.iter())
-        {
-            let c = sk::ColorU8::from_rgba(src[2], src[1], src[0], src[3]);
-            *dst = c.premultiply();
-        }
-        Some(Self::from_pixmap(pixmap))
+        let pixels = rune::Pixels::new();
+        pixels.set(width, height, rgba);
+        Some(Self {
+            id: NEXT_IMAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            width,
+            height,
+            pixmap: std::sync::Mutex::new(None),
+            pixels: std::sync::Mutex::new(Some(pixels)),
+        })
     }
-    pub fn from_ephemeral_bgra(width: u32, height: u32, data: Vec<u8>) -> Option<Self> {
-        Self::from_bgra_straight(width, height, &data)
+    fn from_bgra_straight(width: u32, height: u32, data: &[u8]) -> Option<Self> {
+        if width == 0
+            || height == 0
+            || (width as u64)
+                .checked_mul(height as u64)
+                .and_then(|n| n.checked_mul(4))
+                != Some(data.len() as u64)
+        {
+            return None;
+        }
+        let mut rgba = data.to_vec();
+        for pixel in rgba.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        Self::from_rgba_owned(width, height, rgba)
+    }
+    pub fn from_ephemeral_bgra(width: u32, height: u32, mut data: Vec<u8>) -> Option<Self> {
+        if width == 0
+            || height == 0
+            || (width as u64)
+                .checked_mul(height as u64)
+                .and_then(|n| n.checked_mul(4))
+                != Some(data.len() as u64)
+        {
+            return None;
+        }
+        for pixel in data.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        Self::from_rgba_owned(width, height, data)
     }
     pub fn from_ephemeral_shared_bgra(
         width: u32,
@@ -430,27 +467,12 @@ impl RenderImage {
     }
     /// Straight-alpha RGBA, as image decoders give it.
     pub fn from_rgba(width: u32, height: u32, data: &[u8]) -> Option<Self> {
-        if (width as u64)
-            .checked_mul(height as u64)
-            .and_then(|n| n.checked_mul(4))
-            != Some(data.len() as u64)
-        {
-            return None;
-        }
-        let mut pixmap = sk::Pixmap::new(width, height)?;
-        for (dst, src) in pixmap
-            .pixels_mut()
-            .iter_mut()
-            .zip(data.as_chunks::<4>().0.iter())
-        {
-            *dst = sk::ColorU8::from_rgba(src[0], src[1], src[2], src[3]).premultiply();
-        }
-        Some(Self::from_pixmap(pixmap))
+        Self::from_rgba_owned(width, height, data.to_vec())
     }
     pub fn size(&self, _frame: usize) -> Size<DevicePixels> {
         size(
-            DevicePixels(self.pixmap.width() as i32),
-            DevicePixels(self.pixmap.height() as i32),
+            DevicePixels(self.width as i32),
+            DevicePixels(self.height as i32),
         )
     }
     /// The frame's pixels as straight-alpha BGRA, as GPUI stored images.
@@ -458,15 +480,44 @@ impl RenderImage {
         if frame > 0 {
             return f(None);
         }
-        let mut bgra = self.pixmap.data().to_vec();
-        crate::graph::unpremultiply(&mut bgra);
+        let mut bgra = if let Some(pixels) = self.pixels.lock().expect("image pixels").as_ref() {
+            pixels.rgba()
+        } else {
+            let mut rgba = self.pixmap().data().to_vec();
+            crate::graph::unpremultiply(&mut rgba);
+            rgba
+        };
         for pixel in bgra.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
         f(Some(&bgra))
     }
-    pub fn pixmap(&self) -> &sk::Pixmap {
-        &self.pixmap
+    /// The premultiplied image, remade from the pixels when they replaced it
+    /// (a rotated canvas paints with it), and kept from then on.
+    pub fn pixmap(&self) -> Arc<sk::Pixmap> {
+        // Never wait for the pixels while holding the pixmap: `pixels` takes
+        // them in the other order.
+        if let Some(pixmap) = &*self.pixmap.lock().expect("image pixmap") {
+            return pixmap.clone();
+        }
+        let rgba = self
+            .pixels
+            .lock()
+            .expect("image pixels")
+            .as_ref()
+            .map(|p| p.rgba())
+            .unwrap_or_default();
+        let mut pixmap = sk::Pixmap::new(self.width.max(1), self.height.max(1))
+            .expect("image dimensions");
+        for (dst, src) in pixmap.pixels_mut().iter_mut().zip(rgba.as_chunks::<4>().0) {
+            *dst = sk::ColorU8::from_rgba(src[0], src[1], src[2], src[3]).premultiply();
+        }
+        let pixmap = Arc::new(pixmap);
+        self.pixmap
+            .lock()
+            .expect("image pixmap")
+            .get_or_insert(pixmap)
+            .clone()
     }
     /// The image as Rune pixels (straight alpha).
     pub fn pixels(&self) -> rune::Pixels {
@@ -474,10 +525,11 @@ impl RenderImage {
             .lock()
             .expect("image pixels")
             .get_or_insert_with(|| {
-                let mut rgba = self.pixmap.data().to_vec();
+                let pixmap = self.pixmap.lock().expect("image pixmap").take();
+                let mut rgba = pixmap.map(|p| p.data().to_vec()).unwrap_or_default();
                 crate::graph::unpremultiply(&mut rgba);
                 let pixels = rune::Pixels::new();
-                pixels.set(self.pixmap.width(), self.pixmap.height(), rgba);
+                pixels.set(self.width, self.height, rgba);
                 pixels
             })
             .clone()
@@ -500,33 +552,126 @@ impl From<Arc<RenderImage>> for ImageSource {
         ImageSource::Render(i)
     }
 }
-thread_local! {
-    static FILE_IMAGES: RefCell<HashMap<std::path::PathBuf, Option<Arc<RenderImage>>>> = RefCell::new(HashMap::new());
+enum FileImageState {
+    Pending(u64),
+    Ready(u64, Option<Arc<RenderImage>>),
 }
+
+struct FileImageDecoder {
+    cache: Arc<std::sync::Mutex<HashMap<std::path::PathBuf, FileImageState>>>,
+    queue: Arc<(
+        std::sync::Mutex<std::collections::VecDeque<(std::path::PathBuf, u64)>>,
+        std::sync::Condvar,
+    )>,
+    next_gen: std::sync::atomic::AtomicU64,
+}
+
+static FILE_IMAGE_DECODER: std::sync::OnceLock<FileImageDecoder> = std::sync::OnceLock::new();
+static IMAGES_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Returns whether any background-decoded file image became ready since the
+/// last poll, clearing the flag.
+pub fn take_images_ready() -> bool {
+    IMAGES_READY.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
+fn file_image_decoder() -> &'static FileImageDecoder {
+    FILE_IMAGE_DECODER.get_or_init(|| {
+        let cache: Arc<std::sync::Mutex<HashMap<std::path::PathBuf, FileImageState>>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let queue = Arc::new((
+            std::sync::Mutex::new(std::collections::VecDeque::<(std::path::PathBuf, u64)>::new()),
+            std::sync::Condvar::new(),
+        ));
+        for worker in 0..2 {
+            let cache = cache.clone();
+            let queue = queue.clone();
+            let _ = std::thread::Builder::new()
+                .name(format!("folio-img-decode-{worker}"))
+                .spawn(move || loop {
+                    let (path, generation) = {
+                        let (lock, cvar) = &*queue;
+                        let mut q = lock.lock().expect("image decode queue");
+                        while q.is_empty() {
+                            q = cvar.wait(q).expect("image decode condvar");
+                        }
+                        q.pop_front().unwrap()
+                    };
+                    // Skip decoding if the page was evicted while queued.
+                    let still_needed = {
+                        let c = cache.lock().expect("image cache");
+                        matches!(c.get(&path), Some(FileImageState::Pending(g)) if *g == generation)
+                    };
+                    if !still_needed {
+                        continue;
+                    }
+                    let decoded = image::open(&path).ok().and_then(|img| {
+                        let rgba = img.into_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        RenderImage::from_rgba_owned(w, h, rgba.into_raw()).map(Arc::new)
+                    });
+                    let stored = {
+                        let mut c = cache.lock().expect("image cache");
+                        if matches!(c.get(&path), Some(FileImageState::Pending(g)) if *g == generation)
+                        {
+                            c.insert(path, FileImageState::Ready(generation, decoded));
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if stored {
+                        IMAGES_READY.store(true, std::sync::atomic::Ordering::Release);
+                        crate::executor::wake();
+                    }
+                });
+        }
+        FileImageDecoder {
+            cache,
+            queue,
+            next_gen: std::sync::atomic::AtomicU64::new(1),
+        }
+    })
+}
+
 impl ImageSource {
-    /// The decoded image, decoding files once (synchronously) on first use.
+    /// Returns the decoded image if ready. File-backed images (such as PDF
+    /// previews) decode asynchronously on background threads so painting never
+    /// stutters the UI thread.
     pub fn render_image(&self) -> Option<Arc<RenderImage>> {
         match self {
             ImageSource::Render(i) => Some(i.clone()),
-            ImageSource::Path(path) => FILE_IMAGES.with(|cache| {
-                let mut cache = cache.borrow_mut();
-                if cache.len() > 64 {
-                    cache.clear();
+            ImageSource::Path(path) => {
+                let decoder = file_image_decoder();
+                let mut cache = decoder.cache.lock().expect("image cache");
+                if let Some(state) = cache.get(path) {
+                    return match state {
+                        FileImageState::Pending(_) => None,
+                        FileImageState::Ready(_, img) => img.clone(),
+                    };
                 }
-                cache
-                    .entry(path.clone())
-                    .or_insert_with(|| {
-                        let decoded = image::open(path).ok()?.to_rgba8();
-                        RenderImage::from_rgba(decoded.width(), decoded.height(), decoded.as_raw())
-                            .map(Arc::new)
-                    })
-                    .clone()
-            }),
+                if cache.len() >= 64 {
+                    cache.retain(|_, state| matches!(state, FileImageState::Pending(_)));
+                }
+                let generation = decoder
+                    .next_gen
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                cache.insert(path.clone(), FileImageState::Pending(generation));
+                drop(cache);
+                let (lock, cvar) = &*decoder.queue;
+                lock.lock()
+                    .expect("image decode queue")
+                    .push_back((path.clone(), generation));
+                cvar.notify_one();
+                None
+            }
         }
     }
     pub fn forget(&self) {
-        if let ImageSource::Path(path) = self {
-            FILE_IMAGES.with(|cache| cache.borrow_mut().remove(path));
+        if let ImageSource::Path(path) = self
+            && let Some(decoder) = FILE_IMAGE_DECODER.get()
+        {
+            decoder.cache.lock().expect("image cache").remove(path);
         }
     }
 }
@@ -979,7 +1124,7 @@ impl Raster {
     pub fn render_svg(&mut self, tree: Arc<resvg::usvg::Tree>, extra: sk::Transform, cached: bool) {
         let transform = self.transform.pre_concat(extra);
         if cached && let Some((image, at)) = svg_image(&tree, transform, self.width * self.height) {
-            let (w, h) = (image.pixmap.width() as f32, image.pixmap.height() as f32);
+            let (w, h) = (image.width as f32, image.height as f32);
             self.draw_image(
                 &image,
                 Bounds::new(point(px(0.), px(0.)), size(px(w), px(h))),
@@ -1134,7 +1279,7 @@ impl Raster {
         bounds: Bounds<Pixels>,
         transform: sk::Transform,
     ) {
-        let (w, h) = (image.pixmap.width() as f32, image.pixmap.height() as f32);
+        let (w, h) = (image.width as f32, image.height as f32);
         if w <= 0. || h <= 0. {
             return;
         }
@@ -1163,7 +1308,7 @@ impl Raster {
             let quality = sk::FilterQuality::Bilinear;
             self.record(
                 Op::Image {
-                    pixmap: image.pixmap.clone(),
+                    pixmap: image.pixmap(),
                     quality,
                     transform: t,
                 },
@@ -1691,10 +1836,15 @@ fn display_list(key: &str, items: Vec<Item>) -> rune::El {
         }
         *slots = kept_slots;
     });
+    // Items are matched by their place in the list, so switching pages
+    // hands one quad (a PDF page's white paper, say) to another (a ruled
+    // line). Nothing here springs: colours too land at once, which
+    // `instant_changes` alone leaves animated.
     rune::el()
         .pin(Some(0.), Some(0.), Some(0.), Some(0.))
         .clip_rounded(0.)
         .instant_changes()
+        .motion(rune::Spring::NONE)
         .children(children)
 }
 
@@ -1875,5 +2025,36 @@ mod tests {
         // A different colour paints again.
         let changed = runs(0x993366, &[fingerprint]);
         assert!(changed[0].0 && changed[0].1 != Some(fingerprint));
+    }
+
+    #[test]
+    fn file_images_decode_asynchronously_without_blocking_the_ui_thread() {
+        let path = std::env::temp_dir().join(format!(
+            "folio-async-img-{}.png",
+            folio_document::Id::new_v4()
+        ));
+        let img = image::RgbaImage::from_pixel(4, 3, image::Rgba([0x12, 0x34, 0x56, 0xff]));
+        img.save(&path).unwrap();
+        let source = ImageSource::from(path.clone());
+        // First call schedules decoding on a background worker and returns immediately.
+        assert!(source.render_image().is_none());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let decoded = loop {
+            if let Some(ready) = source.render_image() {
+                break ready;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "async file image decode timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(decoded.size(0), size(DevicePixels(4), DevicePixels(3)));
+        decoded.with_bytes(0, |bgra| {
+            let bgra = bgra.unwrap();
+            assert_eq!(&bgra[..4], &[0x56, 0x34, 0x12, 0xff]);
+        });
+        source.forget();
+        let _ = std::fs::remove_file(path);
     }
 }

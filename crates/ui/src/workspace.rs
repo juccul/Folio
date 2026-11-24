@@ -2,6 +2,29 @@
 use super::thumbnails::ThumbnailSource;
 use super::*;
 
+/// Horizontal indentation per nested folder level and vertical rail offset.
+const FOLDER_INDENT: f32 = 22.;
+const FOLDER_RAIL_X: f32 = 14.;
+
+/// For each visible folder row `(notebook, depth)`, returns a bitmask whose
+/// bit `level` is set when ancestor level `level` has another sibling below
+/// this row (so its vertical guide rail continues through this slot).
+fn folder_tree_guides<T>(rows: &[(T, usize)]) -> Vec<u64> {
+    let mut guides = vec![0u64; rows.len()];
+    let mut open = 0u64;
+    for i in (0..rows.len()).rev() {
+        let d = rows[i].1;
+        if d < 64 {
+            open &= (1u64 << d).wrapping_sub(1);
+        }
+        guides[i] = open;
+        if d > 0 && d - 1 < 64 {
+            open |= 1u64 << (d - 1);
+        }
+    }
+    guides
+}
+
 /// How long ago a document changed, abbreviated: "Edited 3d ago".
 pub(super) fn edited_label(updated: u64) -> String {
     let minutes = folio_document::now_ms().saturating_sub(updated) / 60_000;
@@ -50,6 +73,14 @@ impl LibraryGrid {
     }
 }
 impl NotesView {
+    /// The height, in window pixels, the library's grid draws its covers
+    /// at for this window: what other views that show a document's cover
+    /// beside the shelf ask for, so the two share one rendered image.
+    pub(super) fn library_cover_height(&self, window: &Window) -> f32 {
+        let scale = self.controller.settings.ui_scale;
+        let width = f32::from(window.viewport_size().width) / scale;
+        LibraryGrid::new(width, width < 900.).cover_height() * scale
+    }
     pub(super) fn navigate_folder_control(
         &mut self,
         id: Id,
@@ -210,11 +241,17 @@ impl NotesView {
         } else {
             label
         };
+        let glyph = icon(kind, theme.ink).size(rems(1.375));
+        // The favorite star pops as it fills.
+        let glyph = if id == "favorite-note" {
+            crate::icons::toggle_glyph("star", active, glyph).into_any_element()
+        } else {
+            glyph.into_any_element()
+        };
         self.control(
             id,
             label,
-            // A favorite on-state uses the accent, as in the library.
-            icon(kind, theme.ink).size(rems(1.375)).into_any_element(),
+            glyph,
             active,
             cx,
             action,
@@ -225,11 +262,7 @@ impl NotesView {
         .flex_shrink_0()
         .p_0()
         .rounded(rems(theme.radius / 16.))
-        .bg(theme.tint(if active {
-            1.
-        } else {
-            self.motion.borrow_mut().hover_value(id)
-        }))
+        .bg(theme.tint(if active { 1. } else { 0. }))
         .when(self.toolbar_hints_enabled(), |button| button.tooltip(hint))
     }
     /// A drawing tool. The current tool is filled with the primary color so
@@ -258,27 +291,40 @@ impl NotesView {
         } else {
             (theme.ink, 1.5)
         };
-        self.control(
-            id,
-            label,
-            icon(kind, color).size(rems(size)).into_any_element(),
-            active,
-            cx,
-            action,
-        )
-        .w(rems(2.5))
-        .h(rems(2.375))
-        .min_h_0()
-        .flex_shrink_0()
-        .p_0()
-        .rounded(rems(theme.radius / 16.))
-        // The active tool: a firm neutral tint with a full-strength icon.
-        .bg(if current {
-            rgba((theme.ink << 8) | if theme.dark { 0x38 } else { 0x24 })
-        } else {
-            theme.tint(self.motion.borrow_mut().hover_value(id))
-        })
-        .when(self.toolbar_hints_enabled(), |button| button.tooltip(hint))
+        let radius = rems(theme.radius / 16.);
+        // An options chevron turns over while its menu is open.
+        let glyph = div()
+            .flex()
+            .child(icon(kind, color).size(rems(size)))
+            .when(chevron, |g| g.flipped(active));
+        self.control(id, label, glyph.into_any_element(), active, cx, action)
+            .w(rems(2.5))
+            .h(rems(2.375))
+            .min_h_0()
+            .flex_shrink_0()
+            .p_0()
+            .rounded(radius)
+            .bg(theme.tint(0.))
+            .selection_member(current)
+            // The active tool: a firm neutral tint with a full-strength icon.
+            // It is one highlight, which glides to the tool chosen next. Every
+            // tool keeps the slot it sits in, so the icons never change place.
+            .underlay(div().absolute().inset_0().when(current, |slot| {
+                slot.child(
+                    div()
+                        .id("current-tool")
+                        .absolute()
+                        .inset_0()
+                        .rounded(radius)
+                        .bg(rgba((theme.ink << 8) | if theme.dark { 0x38 } else { 0x24 }))
+                        .el(|e| {
+                            e.matched("current-tool")
+                                .motion(crate::motion::GLIDE)
+                                .animated_changes()
+                        }),
+                )
+            }))
+            .when(self.toolbar_hints_enabled(), |button| button.tooltip(hint))
     }
     fn editor_separator(&self) -> Div {
         let theme = Theme::new(&self.controller.settings);
@@ -310,11 +356,7 @@ impl NotesView {
         let theme = Theme::new(&self.controller.settings);
         self.editor_button(id, label, kind, active, cx, action)
             // The group supplies the surface; buttons only highlight.
-            .bg(theme.tint(if active {
-                1.
-            } else {
-                self.motion.borrow_mut().hover_value(id)
-            }))
+            .bg(theme.tint(if active { 1. } else { 0. }))
     }
     fn folder_row(
         &self,
@@ -325,23 +367,55 @@ impl NotesView {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
+        let arriving = self.library_arriving;
         let id = n.id;
         let path = details.path.clone();
         let branch = details.branch;
         let active = matches!(self.controller.filter, NoteFilter::Notebook(folder) | NoteFilter::NotebookTrash(folder) if folder == id);
+        let gliding = matches!(self.controller.filter, NoteFilter::Notebook(folder) if folder == id);
         let name = n.name.clone();
-        let drag = super::folder_menu::LibraryDrag {
-            item: super::folder_menu::LibraryItem::Folder(id),
-            title: name.clone(),
-            theme,
+        // A dragged folder lifts and follows the pointer like a tab, its
+        // indent showing the parent it would land in; the other rows move
+        // aside, and the folder it would nest in is highlighted.
+        let dragging = self.folder_drag.as_ref().filter(|drag| drag.moving);
+        let shift = dragging.map_or(0., |drag| drag.offset(id));
+        let lifted = dragging.is_some_and(|drag| drag.lifts(id));
+        let nesting = dragging.is_some_and(|drag| drag.nesting() == Some(id));
+        let depth = dragging.map_or(depth, |drag| {
+            let valid = drag.destination().is_some_and(|destination| {
+                super::folder_menu::accepts_move(
+                    &self.controller,
+                    super::folder_menu::LibraryItem::Folder(drag.id),
+                    destination,
+                )
+            });
+            drag.depth(id, depth, valid)
+        });
+        let flying = self.folder_rows_fly();
+        let visual_depth = depth.min(5);
+        let nested = visual_depth > 0;
+        let folder_icon = if nested && !branch {
+            icon(Icon::Folder, theme.muted).size(rems(0.95))
+        } else {
+            icon(Icon::Folder, if active { theme.ink } else { theme.muted })
         };
         let content = div()
             .flex()
             .min_w_0()
             .items_center()
-            .gap_3()
-            .child(icon(Icon::Folder, theme.muted))
-            .child(div().min_w_0().truncate().child(name));
+            .when(nested, |d| d.gap_2())
+            .when(!nested, |d| d.gap_3())
+            .child(folder_icon)
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .when(!nested || branch, |d| d.font_weight(FontWeight::MEDIUM))
+                    .when(nested && !branch && !active, |d| {
+                        d.text_color(rgb(theme.secondary()))
+                    })
+                    .child(name),
+            );
         let open = self
             .control(
                 format!("folder-{id}"),
@@ -349,25 +423,94 @@ impl NotesView {
                 content.into_any_element(),
                 active,
                 cx,
-                move |this, _, _| this.controller.filter = NoteFilter::Notebook(id),
+                move |this, _, _| {
+                    // Releasing a dragged folder drops it; it does not open it.
+                    if !this.folder_just_dropped() {
+                        this.controller.filter = NoteFilter::Notebook(id);
+                    }
+                },
             )
             .flex_1()
             .min_w_0()
             .h_full()
+            .when(nested, |d| d.px_2())
             .justify_start()
             .rounded_none()
             .bg(transparent_black())
-            .on_drag(drag, ());
+            // The row draws the hover for all of it.
+            .tint_from_parent()
+            .on_pointer_drag(cx.listener(move |this, event: &DragEvent, _, cx| {
+                let y = f32::from(event.position.y);
+                match event.phase {
+                    DragPhase::Down => this.press_folder(id, y),
+                    DragPhase::Move => this.drag_folder(y, cx),
+                    DragPhase::Up => this.drop_folder(event.cancelled, cx),
+                }
+            }));
         let row = div()
             .id(SharedString::from(format!("folder-row-{id}")))
             .flex()
             .flex_shrink_0()
             .h(rems(2.75))
             .items_center()
-            .ml(px(depth as f32 * 12.))
+            .ml(px(visual_depth as f32 * FOLDER_INDENT))
             .rounded(px(theme.radius))
-            .bg(theme.tint(if active { 1. } else { 0. }))
+            .relative()
+            // In a folder's Trash the Trash filter carries the highlight; the
+            // folder keeps a plain tint so the two never claim it at once.
+            .when(active && !gliding, move |row| row.bg(theme.tint(1.)))
+            .selection_member(active)
+            // The chosen folder shares the library filters' highlight, which
+            // glides from Documents to the folder and back.
+            .underlay(div().absolute().inset_0().when(gliding, move |slot| {
+                slot.child(
+                    div()
+                        .id("glide-45")
+                        .absolute()
+                        .inset_0()
+                        .rounded(px(theme.radius))
+                        .bg(theme.tint(1.))
+                        .el(|e| {
+                            e.matched("glide-45")
+                                .motion(crate::motion::GLIDE)
+                                .animated_changes()
+                        }),
+                )
+            }))
             .hover(move |s| s.bg(theme.tint(1.)))
+            // Revealed subfolders slide down into place; coming back from a
+            // document, the rows are simply there with the rest of the library.
+            .el(move |e| {
+                if arriving {
+                    return e;
+                }
+                e.transition(rune::Transition::offset(0., -8.).combined(rune::Transition::opacity()))
+                    .motion(crate::motion::SETTLE)
+                    .animated_changes()
+            })
+            .when(nesting, move |row| {
+                row.bg(theme.tint(1.))
+                    .border_1()
+                    .border_color(rgb(theme.sidebar_accent))
+            })
+            .when(lifted, move |row| row.glass(theme, theme.popover))
+            // Moved in layout, not just drawn aside, so a row that changes
+            // list slots on the drop flies from where it was seen.
+            .mt(px(shift))
+            .el(move |e| {
+                let mut e = e;
+                if lifted {
+                    // Raised in place, so it keeps the press it is dragged
+                    // by, and it follows the pointer at once.
+                    e = e.raise().motion(rune::Spring::NONE);
+                }
+                // Rows change list slots when a drop reorders the tree; they
+                // fly from where they were drawn to their new places.
+                if flying {
+                    e = e.matched(format!("folder-row-{id}"));
+                }
+                e
+            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, w, cx| {
@@ -382,12 +525,12 @@ impl NotesView {
                 self.control(
                     format!("toggle-folder-{id}"),
                     format!("{} {path}", if collapsed { "Expand" } else { "Collapse" }),
-                    icon(
-                        if collapsed { Icon::Forward } else { Icon::Down },
-                        theme.muted,
-                    )
-                    .size(rems(0.875))
-                    .into_any_element(),
+                    // One arrow that turns as the branch opens.
+                    div()
+                        .flex()
+                        .child(icon(Icon::Forward, theme.muted).size(rems(0.875)))
+                        .quarter_turn(!collapsed)
+                        .into_any_element(),
                     !collapsed,
                     cx,
                     move |this, _, cx| {
@@ -402,8 +545,10 @@ impl NotesView {
                     },
                 )
                 .size(px(24.))
+                .min_h(px(24.))
                 .p_0()
                 .bg(transparent_black())
+                .hover(move |s| s.bg(theme.tint(1.)))
                 .into_any_element()
             } else {
                 div().into_any_element()
@@ -412,7 +557,7 @@ impl NotesView {
                 self.control(
                     format!("manage-folder-{id}"),
                     format!("Manage folder {path}"),
-                    icon(Icon::More, theme.ink).into_any_element(),
+                    icon(Icon::More, theme.secondary()).into_any_element(),
                     false,
                     cx,
                     move |this, w, cx| {
@@ -432,6 +577,7 @@ impl NotesView {
     }
     pub(super) fn library_sidebar(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
+        let arriving = self.library_arriving;
         let mut filters = div().flex().flex_col().gap_1().px_3();
         for (id, label, kind, filter) in [
             ("all", "Documents", Icon::Library, NoteFilter::All),
@@ -476,7 +622,16 @@ impl NotesView {
             .flex()
             .flex_col()
             .gap_1()
-            .px_3();
+            .px_3()
+            // Rows below an opening or closing folder glide aside. Coming
+            // back from a document, the list is simply there.
+            .el(move |e| {
+                if arriving {
+                    e
+                } else {
+                    e.motion(crate::motion::SETTLE).animated_changes()
+                }
+            });
         let mut collapsed_depth = None;
         let collapsed: std::collections::HashSet<_> = self
             .controller
@@ -497,6 +652,7 @@ impl NotesView {
                 true
             })
             .collect();
+        let guides = folder_tree_guides(&rows);
         self.folder_rows = rows.iter().map(|(folder, _)| folder.id).collect();
         if !rows.is_empty() {
             folders = folders.child(
@@ -504,14 +660,66 @@ impl NotesView {
                     "folder-rows",
                     rows.len(),
                     cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
-                        let visible = &rows[range];
+                        let theme = Theme::new(&this.controller.settings);
+                        let dragging = this.folder_drag.as_ref().is_some_and(|drag| drag.moving);
+                        let visible = &rows[range.clone()];
+                        let visible_guides = &guides[range];
                         let details = this
                             .controller
                             .folder_details(visible.iter().map(|(folder, _)| folder.id));
+                        let rail_color = if theme.dark {
+                            rgba(0xffffff26)
+                        } else {
+                            rgba(0x00000024)
+                        };
                         let rendered: Vec<_> = visible
                             .iter()
-                            .map(|(folder, depth)| {
-                                div().h(rems(3.)).child(this.folder_row(
+                            .zip(visible_guides)
+                            .map(|((folder, depth), &guide_mask)| {
+                                let mut slot = div().relative().h(rems(3.));
+                                let visual_depth = (*depth).min(5);
+                                if visual_depth > 0 && !dragging {
+                                    for level in 0..visual_depth {
+                                        let x = level as f32 * FOLDER_INDENT + FOLDER_RAIL_X;
+                                        let continues = (guide_mask & (1u64 << level)) != 0;
+                                        if level + 1 < visual_depth {
+                                            if continues {
+                                                slot = slot.child(
+                                                    div()
+                                                        .absolute()
+                                                        .left(px(x))
+                                                        .top_0()
+                                                        .bottom_0()
+                                                        .w(px(1.))
+                                                        .bg(rail_color),
+                                                );
+                                            }
+                                        } else {
+                                            slot = slot.child(
+                                                div()
+                                                    .absolute()
+                                                    .left(px(x))
+                                                    .top_0()
+                                                    .when(continues, |line| line.bottom_0())
+                                                    .when(!continues, |line| line.h(px(23.)))
+                                                    .w(px(1.))
+                                                    .bg(rail_color),
+                                            );
+                                            let arm = (visual_depth as f32 * FOLDER_INDENT - x - 2.)
+                                                .max(4.);
+                                            slot = slot.child(
+                                                div()
+                                                    .absolute()
+                                                    .left(px(x))
+                                                    .top(px(22.))
+                                                    .w(px(arm))
+                                                    .h(px(1.))
+                                                    .bg(rail_color),
+                                            );
+                                        }
+                                    }
+                                }
+                                slot.child(this.folder_row(
                                     folder,
                                     *depth,
                                     &details[&folder.id],
@@ -550,7 +758,8 @@ impl NotesView {
             .flex()
             .flex_col()
             .gap_5()
-            .glass_fill(theme, theme.sidebar)
+            // Nothing scrolls behind the library sidebar, so it needs no blur.
+            .glass_fill_at(theme, theme.sidebar, theme.glass_opacity, 0.)
             .border_r_1()
             .border_color(theme.border)
             .pt_5()
@@ -583,8 +792,9 @@ impl NotesView {
             )
             .child(folders)
             .child(
+                // The same inset as the navigation above, so the icons line up.
                 div()
-                    .px_4()
+                    .px_3()
                     .py_4()
                     .border_t_1()
                     .border_color(theme.border)
@@ -622,6 +832,7 @@ impl NotesView {
     fn library_items(
         &mut self,
         notes: Vec<folio_document::NoteMetadata>,
+        first: usize,
         list_view: bool,
         grid: LibraryGrid,
         window: &mut Window,
@@ -633,8 +844,30 @@ impl NotesView {
             .flex()
             .when(list_view, |s| s.flex_col())
             .when(!list_view, |s| s.gap(rems(LibraryGrid::GAP / 16.)));
-        for n in notes {
+        for (offset, n) in notes.into_iter().enumerate() {
             let id = n.id;
+            // Each document is one moving thing: it glides to its new place
+            // when the shelf is sorted, filtered or reflowed (flying between
+            // rows, and between the grid and the list), and new ones arrive
+            // one after another.
+            // Rows the shelf builds as it scrolls are simply there.
+            let scrolled = building_scrolled_rows();
+            let motion = move |e: rune::El| {
+                if scrolled {
+                    return e.transition(rune::Transition::none());
+                }
+                // Cards and rows keep their own flights: a card does not morph
+                // into a row, the views cross-fade.
+                e.matched(format!("library-{}-{id}", if list_view { "row" } else { "card" }))
+                    .motion(crate::motion::SETTLE)
+                    .transition(
+                        rune::Transition::scale(0.92)
+                            .combined(rune::Transition::opacity())
+                            .springs(rune::SpringPair::new(crate::motion::POP, crate::motion::SETTLE)),
+                    )
+                    .enter_delay(((first + offset) as f32 * 0.018).min(0.22))
+                    .animated_changes()
+            };
             let drag = super::folder_menu::LibraryDrag {
                 item: super::folder_menu::LibraryItem::Document(id),
                 title: n.title.clone(),
@@ -701,19 +934,23 @@ impl NotesView {
                         n.title,
                         if n.favorite { "from" } else { "to" }
                     ),
-                    icon(
-                        if n.favorite {
-                            Icon::StarFilled
-                        } else {
-                            Icon::Star
-                        },
-                        if n.favorite {
-                            theme.ink
-                        } else {
-                            theme.secondary()
-                        },
+                    crate::icons::toggle_glyph(
+                        "star",
+                        n.favorite,
+                        icon(
+                            if n.favorite {
+                                Icon::StarFilled
+                            } else {
+                                Icon::Star
+                            },
+                            if n.favorite {
+                                theme.ink
+                            } else {
+                                theme.secondary()
+                            },
+                        )
+                        .size(rems(1.)),
                     )
-                    .size(rems(1.))
                     .into_any_element(),
                     n.favorite,
                     cx,
@@ -739,11 +976,13 @@ impl NotesView {
                     .to_owned();
                     label
                 });
+            // Quieter than the title, like the outline star beside it: every
+            // card carries these, so at full ink they crowded the shelf.
             let menu = self
-                .icon_button(
+                .control(
                     format!("manage-note-{id}"),
                     format!("Manage {}", n.title),
-                    Icon::More,
+                    icon(Icon::More, theme.secondary()).into_any_element(),
                     false,
                     cx,
                     move |this, w, cx| {
@@ -755,6 +994,7 @@ impl NotesView {
                 )
                 .size(rems(2.))
                 .min_h(rems(2.))
+                .p_0()
                 .flex_shrink_0()
                 .bg(transparent_black())
                 .hover(move |s| s.bg(theme.tint(1.)));
@@ -855,6 +1095,7 @@ impl NotesView {
                 items = items.child(
                     div()
                         .id(SharedString::from(format!("note-row-{id}")))
+                        .el(motion)
                         .w_full()
                         .h(rems(3.75))
                         .flex_shrink_0()
@@ -901,13 +1142,21 @@ impl NotesView {
                         )),
                 );
             } else {
+                // The outline and shadow hug the page itself, so the page
+                // never sits loose inside a frame of another shape.
+                let edge = if menu_owner {
+                    rgb(theme.muted).into()
+                } else {
+                    theme.cover_edge()
+                };
+                let page_corner = (theme.radius - 1.).max(0.);
                 let cover_content = if let Some((cover_div, _)) = cached_cover {
-                    cover_div
+                    super::thumbnails::outlined(cover_div.shadow_sm(), page_corner, edge)
                 } else if let Some((page, page_count)) = &preview {
                     if let Some(pdf) = &page.properties.pdf {
                         self.controller.request_pdf_background(pdf.clone());
                     }
-                    self.thumbnail(
+                    let frame = self.thumbnail(
                         ThumbnailSource::Cover {
                             note: id,
                             updated_at: n.updated_at,
@@ -919,30 +1168,30 @@ impl NotesView {
                         cover_h,
                         window,
                         cx,
-                    )
+                    );
+                    super::thumbnails::outlined(frame.shadow_sm(), page_corner, edge)
                 } else {
-                    div().text_xs().text_color(rgb(theme.muted)).child(
-                        if self.controller.library_cover_unavailable(id) {
+                    div()
+                        .size_full()
+                        .rounded(px(theme.radius))
+                        .border_1()
+                        .border_color(edge)
+                        .bg(rgb(theme.sidebar))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_xs()
+                        .text_color(rgb(theme.muted))
+                        .child(if self.controller.library_cover_unavailable(id) {
                             "Preview unavailable"
                         } else {
                             "Loading preview…"
-                        },
-                    )
+                        })
                 };
                 let cover = div()
                     .relative()
                     .w_full()
                     .h(rems(grid.cover_height() / 16.))
-                    .overflow_hidden()
-                    .rounded(px(theme.radius))
-                    .border_1()
-                    .border_color(if menu_owner {
-                        rgb(theme.muted).into()
-                    } else {
-                        theme.cover_edge()
-                    })
-                    .bg(rgb(theme.sidebar))
-                    .shadow_sm()
                     .flex()
                     .items_center()
                     .justify_center()
@@ -983,6 +1232,7 @@ impl NotesView {
                 items = items.child(
                     div()
                         .id(SharedString::from(format!("note-card-{id}")))
+                        .el(motion)
                         .w(rems(grid.card / 16.))
                         .flex_shrink_0()
                         .flex()
@@ -1080,10 +1330,13 @@ impl NotesView {
                 .map(|n| n.name.clone())
                 .unwrap_or("Folder".into()),
         };
+        // The search bar filters the shelf by title as you type.
+        let filter = self.library_filter(cx);
         let mut notes = self
             .controller
             .visible_notes()
             .into_iter()
+            .filter(|n| filter.as_ref().is_none_or(|words| super::find::title_matches(&n.title, words)))
             .cloned()
             .collect::<Vec<_>>();
         library_sort::sort_notes(
@@ -1121,9 +1374,13 @@ impl NotesView {
         );
         let columns = if list_view { 1 } else { grid.columns };
         let total = notes.len();
-        let list = uniform_list(
+        // Only rows near the view are built: a large library would otherwise
+        // build every card on every frame. The list scrolls itself.
+        let row_height = if list_view { 3.75 * REM } else { grid.row_height() };
+        let list = virtual_list(
             "library-rows",
             total.div_ceil(columns),
+            row_height,
             cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
                 let mut rows = Vec::new();
                 let visible_start = range.start * columns;
@@ -1132,7 +1389,10 @@ impl NotesView {
                     let start = row * columns;
                     let end = (start + columns).min(total);
                     rows.push(
-                        this.library_items(notes[start..end].to_vec(), list_view, grid, window, cx)
+                        this.library_items(notes[start..end].to_vec(), start, list_view, grid, window, cx)
+                            // Rows belong to one view, so switching views
+                            // replaces them whole instead of reflowing them.
+                            .id(format!("library-{}-{row}", if list_view { "list" } else { "grid" }))
                             .h(rems(if list_view {
                                 3.75
                             } else {
@@ -1149,9 +1409,18 @@ impl NotesView {
             }),
         )
         .flex_1()
-        .min_h_0();
+        .min_h_0()
+        // The shelf fades in under its cards whenever it appears, coming back
+        // from a document as when a filter replaces an empty folder.
+        .el(|e| e.animated_changes());
         if count == 0 {
+            let filtered = filter.is_some();
             let (heading, hint, kind) = match self.controller.filter {
+                _ if filtered => (
+                    "No matching documents",
+                    "No document title here contains what you typed.",
+                    Icon::Search,
+                ),
                 NoteFilter::Trash | NoteFilter::NotebookTrash(_) => (
                     "Trash is empty",
                     "Documents you move to Trash appear here.",
@@ -1167,23 +1436,20 @@ impl NotesView {
                     "Documents you open appear here.",
                     Icon::Clock,
                 ),
-                NoteFilter::Notebook(_) => (
-                    "This folder is empty",
-                    "Create a document here, or drag documents into the folder.",
-                    Icon::Folder,
-                ),
+                NoteFilter::Notebook(_) => ("Empty folder", "", Icon::Folder),
                 NoteFilter::All => (
                     "No documents yet",
                     "Create a document, or import a PDF or image.",
                     Icon::Book,
                 ),
             };
-            let creates = matches!(
-                self.controller.filter,
-                NoteFilter::All | NoteFilter::Notebook(_)
-            );
+            let creates = !filtered && self.controller.filter == NoteFilter::All;
+            // An empty folder shows only its icon, bare, and its name.
+            let plain = matches!(self.controller.filter, NoteFilter::Notebook(_)) && !filtered;
             shelf = shelf.child(
                 div()
+                    .id(format!("library-empty-{heading}"))
+                    .swap_in()
                     .flex_1()
                     .min_h_0()
                     .flex()
@@ -1193,15 +1459,17 @@ impl NotesView {
                     .gap_3()
                     .child(
                         div()
-                            .size(rems(4.))
-                            .rounded(px(theme.corner_lg()))
-                            .bg(theme.raised())
-                            .border_1()
-                            .border_color(theme.glass_edge())
+                            .size(rems(if plain { 2.5 } else { 4. }))
+                            .when(!plain, |tile| {
+                                tile.rounded(px(theme.corner_lg()))
+                                    .bg(theme.raised())
+                                    .border_1()
+                                    .border_color(theme.glass_edge())
+                            })
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(icon(kind, theme.muted).size(rems(1.75))),
+                            .child(icon(kind, theme.muted).size(rems(if plain { 2.25 } else { 1.75 }))),
                     )
                     .child(
                         div()
@@ -1209,7 +1477,9 @@ impl NotesView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(heading),
                     )
-                    .child(div().text_sm().text_color(rgb(theme.muted)).child(hint))
+                    .when(!hint.is_empty(), |empty| {
+                        empty.child(div().text_sm().text_color(rgb(theme.muted)).child(hint))
+                    })
                     .when(creates, |empty| {
                         empty.child(
                             self.button(
@@ -1311,10 +1581,11 @@ impl NotesView {
             .child(
                 div()
                     // Room for the folder breadcrumb in every view, so the
-                    // shelf does not shift when a folder opens.
-                    .min_h(rems(5.75))
-                    .pt_4()
-                    .pb_2()
+                    // shelf does not shift when a folder opens; otherwise a
+                    // compact bar.
+                    .min_h(rems(4.5))
+                    .pt_3()
+                    .pb_1()
                     .flex_wrap()
                     .px_8()
                     .flex_shrink_0()
@@ -1346,7 +1617,7 @@ impl NotesView {
                             }))
                             .child(
                                 div()
-                                    .text_size(rems(1.5625))
+                                    .text_size(rems(1.25))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .truncate()
                                     .child(title),
@@ -1354,9 +1625,14 @@ impl NotesView {
                     )
                     .child(
                         div()
+                            .id("library-actions")
                             .flex()
                             .items_center()
                             .gap_3()
+                            // Springs as the search button widens, so the
+                            // two move as one and the button's right edge
+                            // stays beside Import.
+                            .el(|e| e.motion(crate::motion::SETTLE).animated_changes())
                             .when(trash_count > 0, |row| {
                                 row.child(self.button(
                                     "empty-trash",
@@ -1374,29 +1650,28 @@ impl NotesView {
                                     },
                                 ))
                             })
-                            .child(self.icon_button(
-                                "search",
-                                "Search all documents · Ctrl+F",
-                                Icon::Search,
-                                self.find.is_some(),
-                                cx,
-                                |this, w, cx| this.open_find(w, cx),
-                            ))
+                            .child({
+                                let button = self.icon_button(
+                                    "search",
+                                    "Filter documents · Ctrl+F",
+                                    Icon::Search,
+                                    false,
+                                    cx,
+                                    |this, w, cx| this.open_find(w, cx),
+                                );
+                                self.search_slot(button, 2.375, 20., true, cx)
+                            })
+                            // Import is just its icon; hovering names it.
                             .child(
-                                self.control(
+                                self.icon_button(
                                     "library-import",
                                     "Import PDF or image",
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .child(icon(Icon::Import, theme.accent))
-                                        .child("Import…")
-                                        .into_any_element(),
+                                    Icon::Import,
                                     false,
                                     cx,
                                     |this, _, cx| this.import(cx),
-                                ),
+                                )
+                                .tooltip("Import PDF or image…"),
                             )
                             .child(
                                 self.control(
@@ -1405,10 +1680,12 @@ impl NotesView {
                                     div()
                                         .flex()
                                         .items_center()
-                                        .gap_2()
+                                        .gap_1p5()
+                                        // At 15 px the plus's strokes fall on
+                                        // pixel centres and draw crisp.
                                         .child(
                                             icon(Icon::Plus, theme.primary_foreground)
-                                                .size(px(24.)),
+                                                .size(px(15.)),
                                         )
                                         .child("New document")
                                         .into_any_element(),
@@ -1416,6 +1693,15 @@ impl NotesView {
                                     cx,
                                     |this, w, cx| this.modal(Modal::NewDocument, w, cx),
                                 )
+                                // A compact button, as tall as the icons beside it.
+                                .min_h(rems(2.))
+                                .h(rems(2.))
+                                .px_3()
+                                .py_0()
+                                // Semibold at 13 px keeps the small label
+                                // solid on its light fill.
+                                .text_size(rems(0.8125))
+                                .font_weight(FontWeight::SEMIBOLD)
                                 .bg(rgb(theme.accent))
                                 .text_color(rgb(theme.primary_foreground)),
                             ),
@@ -1547,7 +1833,28 @@ impl NotesView {
             .flex()
             .items_center()
             .h_full()
-            .gap_1();
+            .gap_1()
+            // The strip widens and narrows with its tabs.
+            .el(|e| e.motion(crate::motion::SETTLE).animated_changes());
+        // The selected tab's tint is one highlight that glides to the tab
+        // chosen next, Library included. Every tab keeps its slot.
+        let glow = move |selected: bool| {
+            div().absolute().inset_0().when(selected, move |slot| {
+                slot.child(
+                    div()
+                        .id("active-tab")
+                        .absolute()
+                        .inset_0()
+                        .rounded(rems(theme.radius / 16.))
+                        .bg(theme.tint(1.))
+                        .el(|e| {
+                            e.matched("active-tab")
+                                .motion(crate::motion::GLIDE)
+                                .animated_changes()
+                        }),
+                )
+            })
+        };
         // Home stays pinned at the start of the bar while the tabs scroll.
         let home = div()
             .flex_shrink_0()
@@ -1574,7 +1881,9 @@ impl NotesView {
                 .min_h_0()
                 .border_0()
                 .rounded(rems(theme.radius / 16.))
-                .bg(theme.tint(if self.library_open { 1. } else { 0. }))
+                .bg(theme.tint(0.))
+                .selection_member(self.library_open)
+                .underlay(glow(self.library_open))
                 .focus(move |s| s.bg(theme.tint(1.)))
                 .hover(move |s| s.bg(theme.tint(1.))),
             );
@@ -1585,30 +1894,16 @@ impl NotesView {
         let targets: std::collections::HashMap<Id, f32> = dragging
             .map(|drag| drag.offsets().into_iter().collect())
             .unwrap_or_default();
-        let reduced = self.controller.settings.reduce_motion;
-        let now = Instant::now();
         for id in self.open_tabs.clone() {
             let Some(n) = self.controller.notes.iter().find(|n| n.id == id) else {
                 continue;
             };
             let selected = !self.library_open && id == active;
             let unsaved = self.controller.has_unsaved_changes(id);
-            let offset_key = format!("tab-offset-{id}");
-            let offset = {
-                let mut motion = self.motion.borrow_mut();
-                if dragged == Some(id) {
-                    let offset = targets.get(&id).copied().unwrap_or(0.);
-                    motion.jump(&offset_key, offset);
-                    offset
-                } else {
-                    motion.value(
-                        &offset_key,
-                        targets.get(&id).copied().unwrap_or(0.),
-                        reduced,
-                        now,
-                    )
-                }
-            };
+            // Rune springs the others aside; the dragged tab follows the
+            // pointer at once.
+            let offset = targets.get(&id).copied().unwrap_or(0.);
+            let dragging_this = dragged == Some(id);
             let bounds = self.tab_bounds.clone();
             let content = div()
                 .flex()
@@ -1647,17 +1942,38 @@ impl NotesView {
                 .flex_shrink_0()
                 .flex()
                 .items_center()
-                .bg(theme.tint(if selected { 1. } else { 0. }))
+                .bg(theme.tint(0.))
+                .selection_member(selected)
+                .underlay(glow(selected))
+                // New tabs grow in from their leading edge; closed ones fade
+                // while the rest close the gap.
+                .el(move |e| {
+                    let e = e.transition(
+                        rune::Transition::scale_anchor(0.6, rune::Vec2::new(0., 0.5))
+                            .combined(rune::Transition::opacity())
+                            .allow_small_scale()
+                            // A closed tab goes at once and the others
+                            // glide into its place.
+                            .springs(rune::SpringPair::new(
+                                crate::motion::POP,
+                                rune::Spring::NONE,
+                            )),
+                    );
+                    if dragging_this {
+                        e.motion(rune::Spring::NONE)
+                    } else {
+                        e.motion(crate::motion::SETTLE).animated_changes()
+                    }
+                })
                 .child(
                     canvas(
                         move |layout, _, _| {
-                            bounds.borrow_mut().insert(
-                                id,
-                                (
-                                    f32::from(layout.origin.x) - offset,
-                                    f32::from(layout.size.width),
-                                ),
-                            );
+                            if offset == 0. {
+                                bounds.borrow_mut().insert(
+                                    id,
+                                    (f32::from(layout.origin.x), f32::from(layout.size.width)),
+                                );
+                            }
                         },
                         |_, _, _, _| {},
                     )
@@ -1722,7 +2038,7 @@ impl NotesView {
                     .bg(transparent_black())
                     .text_color(rgb(theme.ink))
                     .focus(move |s| s.bg(theme.tint(1.)))
-                    .hover(|s| s.bg(transparent_black())),
+                    .tint_from_parent(),
                 )
                 .child(
                     self.control(
@@ -1766,11 +2082,13 @@ impl NotesView {
             .child(tabs)
             .child(
                 div()
+                    .id("new-tab-slot")
                     .flex()
                     .items_center()
                     .flex_shrink_0()
                     .occlude()
                     .occlude()
+                    .el(|e| e.motion(crate::motion::SETTLE).animated_changes())
                     .child(
                         self.icon_button(
                             "new-tab",
@@ -1792,37 +2110,71 @@ impl NotesView {
             )
             .child(super::titlebar::drag_region())
             .child(self.update_notice(cx))
-            .child(
-                self.window_controls(window, cx)
-                    .flex_shrink_0()
-                    .occlude()
-                    .occlude(),
-            )
+            // The tour, filling the window, shows the controls itself.
+            .when(self.tour.is_none(), |strip| {
+                strip.child(
+                    self.window_controls(window, cx)
+                        .flex_shrink_0()
+                        .occlude()
+                        .occlude(),
+                )
+            })
+    }
+    /// The footer's save mark: a check once everything is saved, a clock
+    /// while saving or busy, and a dot for unsaved or failed saves.
+    fn save_state_icon(
+        &self,
+        theme: Theme,
+        state: folio_app::SaveState,
+        settled: bool,
+    ) -> AnyElement {
+        match state {
+            folio_app::SaveState::Saved if settled => icon(Icon::Check, theme.muted).into_any_element(),
+            folio_app::SaveState::Saved | folio_app::SaveState::Saving => {
+                icon(Icon::Clock, theme.muted).into_any_element()
+            }
+            state => div()
+                .size(px(8.))
+                .mx(px(4.))
+                .rounded_full()
+                .bg(rgb(if state == folio_app::SaveState::Failed {
+                    theme.destructive
+                } else {
+                    theme.muted
+                }))
+                .into_any_element(),
+        }
     }
     fn page_navigation(&self, cx: &mut Context<Self>) -> Div {
-        self.page_controls_group()
-            .child(self.page_control_button(
-                "toggle-pages",
-                "Page thumbnails · Ctrl+Shift+P",
-                Icon::Sidebar,
-                self.pages_open,
-                cx,
-                |this, _, _| this.pages_open = !this.pages_open,
-            ))
-            .child(self.page_control_button(
-                "search",
-                "Search · Ctrl+F",
-                Icon::Search,
-                false,
-                cx,
-                |this, w, cx| this.open_find(w, cx),
-            ))
+        self.page_controls_group().child(self.page_control_button(
+            "toggle-pages",
+            "Page thumbnails · Ctrl+Shift+P",
+            Icon::Sidebar,
+            self.pages_open,
+            cx,
+            |this, _, _| this.pages_open = !this.pages_open,
+        ))
     }
-    fn page_actions(&self, cx: &mut Context<Self>) -> Div {
+    /// The page actions, led by the search button beside the favorite star.
+    /// The search bar widens to the left; the group springs with it, so
+    /// the bar's right edge and the buttons after it stay put.
+    fn page_actions(&mut self, cx: &mut Context<Self>) -> Div {
         let favorite = self.controller.session().document.metadata.favorite;
-        let favorite_hover = Theme::new(&self.controller.settings)
-            .tint(self.motion.borrow_mut().hover_value("favorite-note"));
+        let search = self.page_control_button(
+            "search",
+            "Search · Ctrl+F",
+            Icon::Search,
+            false,
+            cx,
+            |this, w, cx| this.open_find(w, cx),
+        );
+        let here = !self.library_open;
+        // Narrower than the library's, so the writing tools keep their room.
+        let search = self.search_slot(search, 2.5, 16., here, cx);
         self.page_controls_group()
+            .id("page-actions")
+            .el(|e| e.motion(crate::motion::SETTLE).animated_changes())
+            .child(search)
             .child(
                 self.page_control_button(
                     "favorite-note",
@@ -1844,7 +2196,7 @@ impl NotesView {
                     },
                 )
                 // A document state, shown by the filled star alone.
-                .bg(favorite_hover),
+                .bg(Theme::new(&self.controller.settings).tint(0.)),
             )
             .child(self.page_control_button(
                 "header-add-page",
@@ -1852,7 +2204,7 @@ impl NotesView {
                 Icon::NewPage,
                 false,
                 cx,
-                |this, _, _| this.controller.add_page(),
+                |this, _, _| this.add_page(),
             ))
             .child(self.page_control_button(
                 "more",
@@ -1979,6 +2331,7 @@ impl NotesView {
                 .when(!current, |group| {
                     group.hover(move |s| s.bg(theme.tint(0.6)))
                 })
+                .selection_member(current)
         };
         tools = tools.child(
             group("pen-tool-group", selected_pen)
@@ -2070,7 +2423,9 @@ impl NotesView {
             .gap(rems(0.375))
             .child(icon(Icon::Image, theme.ink).size(rems(1.25)))
             .when(!compact, |row| row.child("Insert"))
-            .child(icon(Icon::Down, theme.muted).size(rems(0.875)));
+            .child(div().flex().child(icon(Icon::Down, theme.muted).size(rems(0.875))).flipped(
+                self.tool_menu.is_some_and(|(menu, _)| menu == ToolMenu::Insert),
+            ));
         tools = tools.child(
             self.editor_setting_button(
                 "insert-options",
@@ -2122,7 +2477,9 @@ impl NotesView {
                 .items_center()
                 .gap(rems(0.375))
                 .child(format!("{width:.1} px"))
-                .child(icon(Icon::Down, theme.muted).size(rems(0.875)));
+                .child(div().flex().child(icon(Icon::Down, theme.muted).size(rems(0.875))).flipped(
+                    self.tool_menu.is_some_and(|(menu, _)| menu == ToolMenu::Width),
+                ));
             options = options.child(
                 self.editor_setting_button(
                     "width-options",
@@ -2151,7 +2508,9 @@ impl NotesView {
                         .border_color(rgba((theme.ink << 8) | 0x80))
                         .bg(rgb(theme.canvas.ink(color))),
                 )
-                .child(icon(Icon::Down, theme.muted).size(rems(0.875)));
+                .child(div().flex().child(icon(Icon::Down, theme.muted).size(rems(0.875))).flipped(
+                    self.tool_menu.is_some_and(|(menu, _)| menu == ToolMenu::Color),
+                ));
             options = options.child(
                 self.editor_setting_button(
                     "custom-color",
@@ -2204,7 +2563,19 @@ impl NotesView {
             .border_b_1()
             .border_color(theme.border)
             .child(navigation)
-            .child(editing)
+            // The tools slide aside as the search button widens into its
+            // bar; changes inside them still land at once.
+            .child(
+                div()
+                    .id("editing-tools-slide")
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .el(|e| e.motion(crate::motion::SETTLE).animated_changes())
+                    .child(editing.el(|e| e.instant_changes())),
+            )
             .child(self.page_actions(cx))
     }
     pub(super) fn pages_panel(&mut self, cx: &mut Context<Self>) -> Div {
@@ -2277,18 +2648,50 @@ impl NotesView {
                     } else {
                         theme.tint(hover * 2.5)
                     };
+                    // The current page's ring is one ring that flies to the
+                    // page chosen next. Other pages draw their hover and focus
+                    // ring in the same slot, so a page's hover ring goes the
+                    // moment it is chosen rather than fading beside the
+                    // arriving one.
+                    let ring_radius = px(theme.corner_sm() + 5.);
                     let page_view = div()
+                        .relative()
                         .p(px(3.))
-                        .rounded(px(theme.corner_sm() + 5.))
+                        .rounded(ring_radius)
                         .border_2()
-                        .border_color(ring)
-                        .child(
-                            thumbnail
-                                .rounded(px(theme.corner_sm()))
-                                .border_1()
-                                .border_color(theme.cover_edge())
-                                .shadow_sm(),
-                        );
+                        .border_color(transparent_black())
+                        .child(super::thumbnails::outlined(
+                            thumbnail.rounded(px(theme.corner_sm())).shadow_sm(),
+                            theme.corner_sm(),
+                            theme.cover_edge(),
+                        ))
+                        .child(div().absolute().top(px(-2.)).left(px(-2.)).right(px(-2.)).bottom(px(-2.)).when(!active, move |slot| {
+                            slot.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded(ring_radius)
+                                    .border_2()
+                                    .border_color(ring),
+                            )
+                        }).when(active, move |slot| {
+                            slot.child(
+                                div()
+                                    .id("active-page")
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded(ring_radius)
+                                    .border_2()
+                                    .border_color(ring)
+                                    .el(|e| {
+                                        e.matched("active-page")
+                                            .motion(crate::motion::GLIDE)
+                                            .animated_changes()
+                                    }),
+                            )
+                        }));
+                    // The current page's number is a filled pill under its ring,
+                    // the clearest mark of where you are.
                     let number = div()
                         .min_w(rems(1.5))
                         .px_2()
@@ -2301,7 +2704,10 @@ impl NotesView {
                         } else {
                             FontWeight::NORMAL
                         })
-                        .when(active, |n| n.text_color(rgb(theme.ink)))
+                        .when(active, |n| {
+                            n.bg(rgb(theme.selection()))
+                                .text_color(rgb(theme.primary_foreground))
+                        })
                         .when(!active, |n| n.text_color(rgb(theme.muted)))
                         .child(format!("{}", index + 1));
                     let caption = div()
@@ -2342,7 +2748,7 @@ impl NotesView {
                                     content.into_any_element(),
                                     active,
                                     cx,
-                                    move |this, _, _| this.controller.change_page(index),
+                                    move |this, _, _| this.go_to_page(index),
                                 )
                                 .on_mouse_down(
                                     MouseButton::Right,
@@ -2387,7 +2793,7 @@ impl NotesView {
             .w(rems(11.5))
             .h_full()
             .flex_shrink_0()
-            .glass_fill(theme, theme.sidebar)
+            .glass_fill(self.chrome_theme(), theme.sidebar)
             .border_r_1()
             .border_color(theme.border)
             .flex()
@@ -2456,6 +2862,8 @@ impl NotesView {
                     .border_t_1()
                     .border_color(theme.border)
                     .child(
+                        // A quiet row under the divider, not a framed button
+                        // inside a framed bar.
                         self.control(
                             "add-page",
                             "Add page",
@@ -2463,16 +2871,16 @@ impl NotesView {
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .child(icon(Icon::NewPage, theme.ink).size(rems(1.)))
+                                .child(icon(Icon::NewPage, theme.muted).size(rems(1.)))
                                 .child("Add page")
                                 .into_any_element(),
                             false,
                             cx,
-                            |this, _, _| this.controller.add_page(),
+                            |this, _, _| this.add_page(),
                         )
                         .w_full()
                         .text_xs()
-                        .border_color(theme.border),
+                        .text_color(rgb(theme.secondary())),
                     ),
             )
     }
@@ -2488,7 +2896,7 @@ impl NotesView {
             .flex()
             .items_center()
             .gap_2()
-            .glass_fill_from_edge(theme, theme.surface, false)
+            .glass_fill_from_edge(self.chrome_theme(), theme.surface, false)
             .border_t_1()
             .border_color(theme.border)
             .child(
@@ -2500,15 +2908,17 @@ impl NotesView {
                     cx,
                     |this, _, _| {
                         let p = this.controller.session().page;
-                        this.controller.change_page(p.saturating_sub(1));
+                        this.go_to_page(p.saturating_sub(1));
                     },
                 )
                 .size(rems(1.75)),
             )
             .child(
-                self.button(
+                self.control(
                     "page-count",
                     format!("{} / {}", page + 1, total),
+                    rolling_text("page-count", &format!("{} / {}", page + 1, total), page as f64)
+                        .into_any_element(),
                     self.pages_open,
                     cx,
                     |this, _, _| this.pages_open = !this.pages_open,
@@ -2525,39 +2935,42 @@ impl NotesView {
                     cx,
                     |this, _, _| {
                         let p = this.controller.session().page;
-                        this.controller.change_page(p + 1);
+                        this.go_to_page(p + 1);
                     },
                 )
                 .size(rems(1.75)),
             )
             .child(div().flex_1())
-            .child(match self.controller.save_state() {
-                folio_app::SaveState::Saved
-                    if self.controller.busy == 0 && !self.controller.recognition_pending =>
-                {
-                    icon(Icon::Check, theme.muted).into_any_element()
-                }
-                folio_app::SaveState::Saved | folio_app::SaveState::Saving => {
-                    icon(Icon::Clock, theme.muted).into_any_element()
-                }
-                // A filled dot marks unsaved or failed saves instead of a check.
-                state => div()
-                    .size(px(8.))
-                    .mx(px(4.))
-                    .rounded_full()
-                    .bg(rgb(if state == folio_app::SaveState::Failed {
-                        theme.destructive
-                    } else {
-                        theme.muted
-                    }))
-                    .into_any_element(),
-            })
-            .child(
+            .child({
+                // The status icon and text swap with a soft blur.
+                let state = self.controller.save_state();
+                let settled = state == folio_app::SaveState::Saved
+                    && self.controller.busy == 0
+                    && !self.controller.recognition_pending;
+                let status = self.controller.activity_status();
+                let swap = |e: rune::El| {
+                    e.transition(rune::Transition::blur_replace()).animated_changes()
+                };
                 div()
-                    .text_sm()
-                    .text_color(rgb(theme.secondary()))
-                    .child(self.controller.activity_status()),
-            )
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id(format!("save-icon-{state:?}-{settled}"))
+                            .flex()
+                            .el(swap)
+                            .child(self.save_state_icon(theme, state, settled)),
+                    )
+                    .child(
+                        div()
+                            .id(format!("save-text-{status}"))
+                            .el(swap)
+                            .text_sm()
+                            .text_color(rgb(theme.secondary()))
+                            .child(status),
+                    )
+            })
             .children(
                 self.library_undo_button(cx)
                     .map(|undo| undo.text_xs().text_color(rgb(theme.muted))),
@@ -2572,12 +2985,21 @@ impl NotesView {
                 .tooltip("Zoom out · Ctrl+−"),
             )
             .child(
-                self.button(
+                self.control(
                     "fit-page",
                     format!("{:.0}%", zoom * 100.),
+                    // The zoom a glide is heading for, so each step rolls
+                    // once; a pinch changes it every frame and just shows it.
+                    if self.pinching {
+                        div().child(format!("{:.0}%", zoom * 100.)).into_any_element()
+                    } else {
+                        let target = self.canvas_ease.target.map_or(zoom, |t| t.zoom);
+                        rolling_text("zoom-level", &format!("{:.0}%", target * 100.), target as f64)
+                            .into_any_element()
+                    },
                     false,
                     cx,
-                    |this, _, _| this.fit(),
+                    |this, _, _| this.fit_eased(),
                 )
                 .text_sm()
                 .py_1()
@@ -2617,5 +3039,17 @@ mod edited_label_tests {
         assert_eq!(ago(7 * 1440), "Edited 1w ago");
         assert_eq!(ago(65 * 1440), "Edited 2m ago");
         assert_eq!(ago(400 * 1440), "Edited 1y ago");
+    }
+    #[::core::prelude::v1::test]
+    fn folder_tree_guides_mark_continuing_ancestor_levels() {
+        // Projects (0) -> Personal (1) -> Deep (2), Work (1), Reading (0)
+        let rows = [
+            ("Projects", 0),
+            ("Personal", 1),
+            ("Deep", 2),
+            ("Work", 1),
+            ("Reading", 0),
+        ];
+        assert_eq!(folder_tree_guides(&rows), vec![0, 0b01, 0b01, 0, 0]);
     }
 }

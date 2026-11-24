@@ -27,6 +27,10 @@ static WAKER: OnceLock<rune::Waker> = OnceLock::new();
 pub fn set_waker(waker: rune::Waker) {
     let _ = WAKER.set(waker);
 }
+/// Wakes the window so its next frame polls (and, if asked, rebuilds).
+pub fn wake() {
+    wake_window();
+}
 fn wake_window() {
     if let Some(waker) = WAKER.get() {
         waker();
