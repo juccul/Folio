@@ -1,179 +1,75 @@
 //! Embedded Tabler Outline icons with custom Folio and window-control glyphs.
 //! Attribution and upstream mappings: third_party/licenses/tabler-icons/NOTICE.md.
-use gpui::{prelude::*, rems, *};
-use std::borrow::Cow;
+use super::compat::*;
+include!(concat!(env!("OUT_DIR"), "/icons.rs"));
 
-/// Assets are compiled into the binary so icons also work offline and in recovery.
-pub struct IconAssets;
-
-// One registry keeps icon names, asset paths and embedded bytes in sync.
-macro_rules! define_icons {
-    ($($variant:ident => $file:literal,)*) => {
-        #[derive(Clone, Copy)]
-        pub enum Icon { $($variant,)* }
-
-        impl Icon {
-            fn path(self) -> &'static str {
-                match self {
-                    $(Self::$variant => concat!("icons/", $file),)*
-                }
-            }
-
-            #[cfg(test)]
-            const ALL: &'static [Self] = &[$(Self::$variant,)*];
-        }
-
-        impl AssetSource for IconAssets {
-            fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-                Ok(match path {
-                    $(concat!("icons/", $file) => Some(Cow::Borrowed(
-                        include_bytes!(concat!("../assets/icons/", $file)).as_slice()
-                    )),)*
-                    _ => None,
-                })
-            }
-
-            fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-                Ok([$(concat!("icons/", $file),)*]
-                    .into_iter()
-                    .filter(|asset| asset.starts_with(path))
-                    .map(SharedString::from)
-                    .collect())
-            }
-        }
-    };
+/// An icon element: GPUI's `svg()` with a path and a text colour.
+#[allow(dead_code)]
+pub struct Svg {
+    kind: Icon,
+    color: rune::Color,
+    size: f32,
 }
-
-define_icons! {
-    Library => "Library.svg",
-    Book => "Book.svg",
-    Folder => "Folder.svg",
-    Star => "Star.svg",
-    StarFilled => "StarFilled.svg",
-    Clock => "Clock.svg",
-    Trash => "Trash.svg",
-    Search => "Search.svg",
-    Settings => "Settings.svg",
-    Plus => "Plus.svg",
-    Back => "Back.svg",
-    Forward => "Forward.svg",
-    Down => "Down.svg",
-    Up => "Up.svg",
-    Close => "Close.svg",
-    Minimize => "Minimize.svg",
-    Maximize => "Maximize.svg",
-    Restore => "Restore.svg",
-    WindowMinimize => "WindowMinimize.svg",
-    WindowMaximize => "WindowMaximize.svg",
-    WindowRestore => "WindowRestore.svg",
-    WindowClose => "WindowClose.svg",
-    Copy => "Copy.svg",
-    Cut => "Cut.svg",
-    Math => "Math.svg",
-    Calculator => "Calculator.svg",
-    Crop => "Crop.svg",
-    Paste => "Paste.svg",
-    More => "More.svg",
-    Sidebar => "Sidebar.svg",
-    Pen => "Pen.svg",
-    Pencil => "Pencil.svg",
-    Marker => "Marker.svg",
-    Highlighter => "Highlighter.svg",
-    Eraser => "Eraser.svg",
-    Lasso => "Lasso.svg",
-    Rectangle => "Rectangle.svg",
-    Shapes => "Shapes.svg",
-    Text => "Text.svg",
-    Image => "Image.svg",
-    Hand => "Hand.svg",
-    Undo => "Undo.svg",
-    Redo => "Redo.svg",
-    Export => "Export.svg",
-    Import => "Import.svg",
-    Check => "Check.svg",
-    Grid => "Grid.svg",
-    List => "List.svg",
-    Sliders => "Sliders.svg",
-    Help => "Help.svg",
-    Alert => "Alert.svg",
-    Tag => "Tag.svg",
-    Page => "Page.svg",
-    NewPage => "NewPage.svg",
-    MovePage => "MovePage.svg",
-    Bookmark => "Bookmark.svg",
-    Template => "Template.svg",
-    SpaceInsert => "SpaceInsert.svg",
-    SpaceRemove => "SpaceRemove.svg",
-    Infinite => "Infinite.svg",
-    Ruler => "Ruler.svg",
-    TextScan => "TextScan.svg",
-    PaperRuled => "PaperRuled.svg",
-    PaperGrid => "PaperGrid.svg",
-    PaperDots => "PaperDots.svg",
-    Palette => "Palette.svg",
-    Accessible => "Accessible.svg",
-    Bold => "Bold.svg",
-    Italic => "Italic.svg",
-    Underline => "Underline.svg",
-    AlignLeft => "AlignLeft.svg",
-    AlignCenter => "AlignCenter.svg",
-    AlignRight => "AlignRight.svg",
-    ListNumbers => "ListNumbers.svg",
-}
-
-pub fn icon(kind: Icon, color: u32) -> Svg {
-    // GPUI caches an alpha mask at the actual device size, then applies the
-    // current theme color. SVG retains rounded strokes at fractional scales.
-    svg()
-        .path(kind.path())
-        .text_color(rgb(color))
-        .size(rems(1.375))
-        .flex_shrink_0()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Icon, IconAssets};
-    use gpui::AssetSource;
-
-    #[test]
-    fn every_embedded_icon_renders_at_small_and_scaled_sizes() {
-        let listed = IconAssets.list("icons/").unwrap();
-        assert_eq!(listed.len(), Icon::ALL.len());
-        assert!(IconAssets.load("icons/missing.svg").unwrap().is_none());
-        for &kind in Icon::ALL {
-            let path = kind.path();
-            assert!(listed.iter().any(|asset| asset.as_ref() == path));
-            let source = IconAssets.load(path).unwrap().expect("embedded icon");
-            for size in [16, 22, 28, 35, 44] {
-                let source = std::str::from_utf8(&source).unwrap();
-                let pixmap = folio_export::raster_svg(source, size as f32 / 24.)
-                    .unwrap_or_else(|error| panic!("{path} at {size}px: {error}"));
-                assert_eq!(pixmap.width(), size as u32, "{path}");
-                assert_eq!(pixmap.height(), size as u32, "{path}");
-                assert!(
-                    pixmap
-                        .pixels()
-                        .iter()
-                        .filter(|pixel| pixel.alpha() > 32)
-                        .count()
-                        > size as usize / 2,
-                    "{path} is blank at {size}px"
-                );
-                if matches!(kind, Icon::More) {
-                    // Sparse menu dots must each survive at small/fractional sizes.
-                    for third in 0..3 {
-                        let left = size * third / 3;
-                        let right = size * (third + 1) / 3;
-                        assert!(
-                            (left..right).any(|x| (0..size).any(|y| {
-                                pixmap.pixels()[(y * size + x) as usize].alpha() > 32
-                            })),
-                            "{path} lost menu dot {third} at {size}px"
-                        );
-                    }
-                }
-            }
-        }
+#[allow(dead_code)]
+impl Svg {
+    pub fn size(mut self, s: impl Into<Length>) -> Self {
+        self.size = match s.into() {
+            Length::Px(v) => v,
+            Length::Rems(v) => v * REM,
+            _ => self.size,
+        };
+        self
     }
+    pub fn text_color(mut self, c: impl IntoColor) -> Self {
+        self.color = c.into_color();
+        self
+    }
+    pub fn flex_shrink_0(self) -> Self {
+        self
+    }
+    pub fn when(self, condition: bool, f: impl FnOnce(Self) -> Self) -> Self {
+        if condition { f(self) } else { self }
+    }
+    pub fn opacity(mut self, o: f32) -> Self {
+        self.color.a *= o;
+        self
+    }
+    pub fn into_el(self) -> rune::El {
+        rune::icon(self.kind.glyph(), self.size).color(self.color)
+    }
+}
+impl IntoElement for Svg {
+    fn into_any_element(self) -> AnyElement {
+        AnyElement::El(self.into_el())
+    }
+}
+
+/// An icon at Folio's standard size (1.375 rem) in `color`.
+pub fn icon(kind: Icon, color: u32) -> Svg {
+    Svg {
+        kind,
+        color: rgb(color).color(),
+        size: 1.375 * REM,
+    }
+}
+
+/// A glyph that changes with an on/off state (a favorite star): turning on,
+/// it pops in with a little overshoot; the previous glyph leaves at once.
+pub fn toggle_glyph(key: &str, on: bool, glyph: Svg) -> Div {
+    div()
+        .id(format!("{key}-{}", if on { "on" } else { "off" }))
+        .flex()
+        .child(glyph)
+        .el(move |e| {
+            let enter = if on {
+                rune::Transition::scale(0.5)
+                    .combined(rune::Transition::opacity())
+                    .allow_small_scale()
+            } else {
+                rune::Transition::opacity()
+            };
+            // The old glyph is gone at once (an instant exit spring).
+            e.transition(enter.springs(rune::SpringPair::new(crate::motion::POP, rune::Spring::NONE)))
+                .animated_changes()
+        })
 }

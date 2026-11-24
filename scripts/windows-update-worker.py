@@ -193,8 +193,11 @@ class Windows:
                 if item.szExeFile.casefold() in ({'folio.exe'} if parent_pid is not None else {'folio.exe', 'python.exe', 'pythonw.exe', 'pdftoppm.exe'}) and item.th32ProcessID not in {os.getpid(), parent_pid}:
                     handle = self.kernel.OpenProcess(0x1000, False, item.th32ProcessID)
                     if not handle:
-                        # Cannot prove a same-named process is safe to ignore.
-                        if ctypes.get_last_error() != 87:  # ERROR_INVALID_PARAMETER: process exited
+                        error = ctypes.get_last_error()
+                        # ERROR_INVALID_PARAMETER: the process exited. A helper tool another user
+                        # or an administrator runs (ERROR_ACCESS_DENIED) cannot be using this
+                        # per-user installation; an unreadable folio.exe still stops the update.
+                        if error != 87 and not (error == 5 and item.szExeFile.casefold() != 'folio.exe'):
                             raise RuntimeError('Could not inspect another Folio process; close other Folio windows and retry')
                     else:
                         try:
@@ -303,10 +306,14 @@ def main():
         install(intent, job, windows)
     except Exception as error:
         message = f'{error}\n\nYour library was not removed. Update diagnostics: {job}'
-        (job / 'error.txt').write_text(message, encoding='utf-8')
+        # Folio watches for error.txt: write it whole, then move it into place.
         (job / 'result.json').write_text(json.dumps({'status': 'failed', 'error': str(error)}, indent=2), encoding='utf-8')
-        if (job / 'parent-exited').exists() and (Path(intent['root']) / 'bin/folio.exe').exists():
-            relaunch(Path(intent['root']), Path(intent['data']))
+        partial = job / 'error.txt.partial'
+        partial.write_text(message, encoding='utf-8')
+        os.replace(partial, job / 'error.txt')
+        root, data = resolved(intent['root']), resolved(intent['data'])
+        if (job / 'parent-exited').exists() and (root / 'bin/folio.exe').exists():
+            relaunch(root, data)
         windows.message(message)
         raise SystemExit(1)
 

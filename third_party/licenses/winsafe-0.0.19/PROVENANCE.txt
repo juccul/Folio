@@ -1,3 +1,0 @@
-Source: registry+https://github.com/rust-lang/crates.io-index#winsafe@0.0.19
-License: MIT
-Repository: https://github.com/rodrigocfd/winsafe

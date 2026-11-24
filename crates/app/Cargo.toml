@@ -19,7 +19,6 @@ folio-export = { path = "../export" }
 folio-recognition = { path = "../recognition" }
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 folio-platform = { path = "../platform" }
 image.workspace = true
 flate2 = "1"

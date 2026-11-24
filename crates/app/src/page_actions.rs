@@ -205,24 +205,72 @@ impl Controller {
             }],
         );
     }
-    /// Rebase onto the page in view without changing any page's screen position.
+    /// Clamp `viewport` to the active page's scroll limits (both page mode and
+    /// infinite canvas mode). When `previous` is provided, scrolling from a
+    /// point left beyond the limit only moves back toward it without snapping.
+    pub fn clamp_viewport(
+        &self,
+        viewport: &mut Viewport,
+        width: f32,
+        height: f32,
+        previous: Option<Point>,
+    ) {
+        Self::clamp_session_viewport(self.session(), viewport, width, height, previous);
+    }
+    pub(crate) fn clamp_session_viewport(
+        session: &Session,
+        viewport: &mut Viewport,
+        width: f32,
+        height: f32,
+        previous: Option<Point>,
+    ) {
+        if let Some(stack) = session.page_stack() {
+            let content = session.stack_content_bounds(&stack);
+            stack.clamp(viewport, session.page, width, height, content, previous);
+        } else {
+            let content = session.infinite_content_bounds();
+            folio_canvas::clamp_infinite(content, viewport, width, height, previous);
+        }
+    }
+    /// Rebase onto the page in view without changing any page's screen position,
+    /// clamping scroll/pan to keep content reachable.
     pub fn synchronize_page_view(&mut self, width: f32, height: f32) {
+        self.synchronize_page_view_inner(width, height, true);
+    }
+    /// Rebase onto the page in view after a zoom without clamping `pan`, so
+    /// the point under the zoom anchor stays fixed.
+    pub fn synchronize_page_view_zoom(&mut self, width: f32, height: f32) {
+        self.synchronize_page_view_inner(width, height, false);
+    }
+    fn synchronize_page_view_inner(&mut self, width: f32, height: f32, clamp_scroll: bool) {
         if self.interaction.is_some() || self.loading_note() {
             return;
         }
         let session = self.session();
-        let Some(stack) = session.page_stack() else {
-            return;
-        };
         let active = session.page;
         let mut viewport = session.viewport;
-        stack.clamp_vertical(&mut viewport, active, height);
-        let target = stack.nearest(viewport, active, Point::new(width / 2., height / 2.));
-        let viewport = stack.viewport(viewport, active, target);
-        if target != active {
-            self.change_page(target);
+        // A zoom keeps the point under the pointer still wherever that puts
+        // the pages. Scrolling cannot go past the ends, but from a place a
+        // zoom left beyond them it only moves back, never snapping.
+        let previous = self
+            .synced_view
+            .filter(|(note, page, _)| *note == self.active && *page == active)
+            .map(|(_, _, v)| v);
+        if clamp_scroll && !previous.is_some_and(|p| p.zoom != viewport.zoom) {
+            self.clamp_viewport(&mut viewport, width, height, previous.map(|p| p.pan));
         }
-        self.session_mut().viewport = viewport;
+        if let Some(stack) = self.session().page_stack() {
+            let target = stack.nearest(viewport, active, Point::new(width / 2., height / 2.));
+            let viewport = stack.viewport(viewport, active, target);
+            if target != active {
+                self.change_page(target);
+            }
+            self.session_mut().viewport = viewport;
+            self.synced_view = Some((self.active, target, viewport));
+        } else {
+            self.session_mut().viewport = viewport;
+            self.synced_view = Some((self.active, active, viewport));
+        }
     }
     pub(crate) fn focus_page_at(&mut self, screen: Point) {
         let session = self.session();

@@ -19,10 +19,17 @@ pub enum NoteAction {
 /// A library change that Undo can revert.
 #[derive(Clone, Debug)]
 pub struct LibraryUndo {
-    pub note: Id,
-    pub before: NoteMetadata,
+    pub before: LibraryState,
     pub label: String,
     pub at: Instant,
+}
+/// What a library undo restores.
+#[derive(Clone, Debug)]
+pub enum LibraryState {
+    /// A document's organization fields.
+    Note(Box<NoteMetadata>),
+    /// A folder's parent before it was moved.
+    FolderParent(Id, Option<Id>),
 }
 impl Controller {
     pub fn manage_note(&mut self, id: Id, action: NoteAction) {
@@ -147,22 +154,24 @@ impl Controller {
             s.search_text_for(page).to_string()
         });
         if let Some(label) = undo {
-            self.library_undo.push(LibraryUndo {
-                note: id,
-                before,
-                label: label.clone(),
-                at: Instant::now(),
-            });
-            if self.library_undo.len() > 64 {
-                self.library_undo.remove(0);
-            }
-            self.status = label;
+            self.record_library_undo(LibraryState::Note(Box::new(before)), label);
         }
         self.refresh_metadata(id);
         if id == self.active {
             self.follow_read_only();
         }
         self.persist(delta);
+    }
+    pub(crate) fn record_library_undo(&mut self, before: LibraryState, label: String) {
+        self.library_undo.push(LibraryUndo {
+            before,
+            label: label.clone(),
+            at: Instant::now(),
+        });
+        if self.library_undo.len() > 64 {
+            self.library_undo.remove(0);
+        }
+        self.status = label;
     }
     /// The most recent library change that can be undone, if it is recent
     /// enough to offer an Undo button.
@@ -175,15 +184,26 @@ impl Controller {
     pub fn can_undo_library(&self) -> bool {
         !self.library_undo.is_empty()
     }
-    /// Revert the most recent rename, tag, favorite, Trash or folder change.
+    /// Revert the most recent rename, tag, favorite, Trash, folder change
+    /// or folder move.
     pub fn undo_library(&mut self) {
         let Some(entry) = self.library_undo.pop() else {
             return;
         };
-        if !self.notes.iter().any(|n| n.id == entry.note) {
-            return;
+        match entry.before {
+            LibraryState::Note(before) => {
+                if !self.notes.iter().any(|n| n.id == before.id) {
+                    return;
+                }
+                self.manage_note(before.id, NoteAction::Revert(before));
+            }
+            LibraryState::FolderParent(id, parent) => {
+                if let Err(error) = self.reparent_notebook(id, parent) {
+                    self.error = Some(error);
+                    return;
+                }
+            }
         }
-        self.manage_note(entry.note, NoteAction::Revert(Box::new(entry.before)));
         self.status = format!("Undid: {}", entry.label);
     }
     /// Permanently delete a document from Trash. This cannot be undone.
@@ -219,7 +239,9 @@ impl Controller {
             self.saved = self.queued;
             self.save_error = None;
         }
-        self.library_undo.retain(|entry| entry.note != id);
+        self.library_undo.retain(
+            |entry| !matches!(&entry.before, LibraryState::Note(before) if before.id == id),
+        );
         self.settings.workspace.open_tabs.retain(|tab| *tab != id);
         self.settings
             .workspace

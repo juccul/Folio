@@ -1,7 +1,7 @@
 //! Focused pen choices with separate tuning and preset-management views.
 use super::*;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Section {
     #[default]
     Pen,
@@ -61,6 +61,14 @@ impl PenSetting {
             Self::Opacity => format!("{:.0}%", style.opacity * 100.),
             Self::Stabilization => format!("{:.0}%", style.stabilization * 100.),
             Self::PressureResponse => format!("{:.1}", style.pressure_gamma),
+        }
+    }
+    fn numeric(self, style: &folio_document::PenStyle) -> f64 {
+        match self {
+            Self::Width => style.width as f64,
+            Self::Opacity => (style.opacity * 100.).round() as f64,
+            Self::Stabilization => (style.stabilization * 100.).round() as f64,
+            Self::PressureResponse => style.pressure_gamma as f64,
         }
     }
     /// Step the setting up (`sign` = 1) or down (`sign` = -1) within its range.
@@ -123,7 +131,12 @@ impl NotesView {
 
     pub(super) fn pen_menu(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
-        let mut panel = div().flex().flex_col().gap_1();
+        let mut panel = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .id(format!("pen-page-{:?}", self.pen_menu_section))
+            .page_in(self.pen_menu_section != Section::Pen);
         if self.pen_menu_section != Section::Pen {
             panel = panel.child(
                 self.control(
@@ -330,8 +343,14 @@ impl NotesView {
                                     .child(
                                         div()
                                             .min_w(rems(3.))
-                                            .text_center()
-                                            .child(setting.value(&self.controller.style)),
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(rolling_text(
+                                                &format!("pen-setting-{}", setting as usize),
+                                                &setting.value(&self.controller.style),
+                                                setting.numeric(&self.controller.style),
+                                            )),
                                     )
                                     .child(
                                         self.pen_stepper(setting, true, cx).min_h_0().px_2().py_1(),
@@ -358,7 +377,7 @@ impl NotesView {
                             .into_any_element(),
                         false,
                         cx,
-                        |this, w, cx| this.modal(Modal::Color, w, cx),
+                        |this, w, cx| this.modal_in_menu(MenuHost::Popover, Modal::Color, w, cx),
                     )
                     .w_full()
                     .justify_start(),
@@ -411,7 +430,7 @@ impl NotesView {
                         "Save current pen as preset…",
                         false,
                         cx,
-                        |this, w, cx| this.modal(Modal::SavePreset, w, cx),
+                        |this, w, cx| this.modal_in_menu(MenuHost::Popover, Modal::SavePreset, w, cx),
                     )
                     .w_full()
                     .justify_start(),

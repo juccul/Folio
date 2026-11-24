@@ -405,6 +405,8 @@ impl Controller {
         };
         let eraser_radius = self.settings.eraser_radius;
         let segment_eraser = self.settings.effective_eraser_mode() == EraserMode::Segment;
+        let view_size = self.view_size;
+        let active_note = self.active;
         let Some(active) = self.interaction.as_mut() else {
             return;
         };
@@ -445,11 +447,28 @@ impl Controller {
             | Interaction::Resize { end, .. }
             | Interaction::Rotate { end, .. } => *end = p,
             Interaction::Pan { start, pan } => {
-                let new = Point::new(
+                let session = &self.sessions[&active_note];
+                let prev = session.viewport.pan;
+                let mut viewport = session.viewport;
+                viewport.pan = Point::new(
                     pan.x + event.position.x - start.x,
                     pan.y + event.position.y - start.y,
                 );
-                self.session_mut().viewport.pan = new;
+                if view_size.x > 0. && view_size.y > 0. {
+                    let wanted = viewport.pan;
+                    Self::clamp_session_viewport(
+                        session,
+                        &mut viewport,
+                        view_size.x,
+                        view_size.y,
+                        Some(prev),
+                    );
+                    if viewport.pan != wanted {
+                        *pan = viewport.pan;
+                        *start = event.position;
+                    }
+                }
+                self.sessions.get_mut(&active_note).unwrap().viewport = viewport;
             }
         }
     }
@@ -506,7 +525,17 @@ impl Controller {
                 }
             }
             Interaction::Erase { ids, fragments, .. } => self.finish_erase(&ids, &fragments),
-            Interaction::Lasso { points } => self.select_polygon(&points),
+            Interaction::Lasso { points } => {
+                self.select_polygon(&points);
+                if !self.session().selection.is_empty() {
+                    self.select_morph = Some(SelectMorph {
+                        points,
+                        color: None,
+                        width: 1.2 / self.session().viewport.zoom,
+                        started: Instant::now(),
+                    });
+                }
+            }
             Interaction::Rectangle { start, end } => {
                 self.select_rectangle(Rect::from_points([start, end]))
             }
@@ -550,6 +579,12 @@ impl Controller {
         if smart_pen && self.settings.encircle_select && held {
             let ids = self.encircled_ids(points());
             if !ids.is_empty() {
+                self.select_morph = Some(SelectMorph {
+                    points: points().clone(),
+                    color: Some(stroke.style.color),
+                    width: stroke.style.width,
+                    started: Instant::now(),
+                });
                 self.select_by_gesture(ids, stroke.id);
                 return;
             }

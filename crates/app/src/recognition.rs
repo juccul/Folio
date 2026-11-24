@@ -322,7 +322,7 @@ impl Service {
                                         |e| format!("Cannot read recognition pack: {e}"),
                                     )?)
                                     .map_err(|e| format!("Invalid recognition pack: {e}"))?;
-                                let root = task.pack.parent().unwrap();
+                                let root = task.pack.parent().unwrap_or(std::path::Path::new("."));
                                 let absolute =
                                     |p: PathBuf| if p.is_absolute() { p } else { root.join(p) };
                                 let mut child = folio_platform::command(absolute(pack.python))

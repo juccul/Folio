@@ -6,17 +6,17 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
-gpui.workspace = true
+rune.workspace = true
 folio-ui = { path = "../../crates/ui" }
 folio-app = { path = "../../crates/app" }
 anyhow.workspace = true
-futures = "0.3"
 folio-platform = { path = "../../crates/platform" }
 folio-storage = { path = "../../crates/storage" }
 folio-update = { path = "../../crates/update" }
 
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-gpui = { workspace = true, features = ["wayland", "x11"] }
+[features]
+# Rune's headless snapshots, scripts and element trees in optimized builds.
+tooling = ["rune/tooling"]
 
 [build-dependencies]
 embed-resource = "3"

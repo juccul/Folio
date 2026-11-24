@@ -26,11 +26,15 @@ impl TabDrag {
         let (_, left, width) = self.slots[from];
         let first = self.slots[0].1;
         let (_, last_left, last_width) = *self.slots.last()?;
-        let left = (left + self.pointer - self.start).clamp(first, (last_left + last_width - width).max(first));
+        let left = (left + self.pointer - self.start)
+            .clamp(first, (last_left + last_width - width).max(first));
         // A neighbor moves aside once the dragged tab's leading edge passes
         // its middle.
         let center = |(_, l, w): &(Id, f32, f32)| l + w / 2.;
-        let passed_left = self.slots[..from].iter().filter(|s| center(s) > left).count();
+        let passed_left = self.slots[..from]
+            .iter()
+            .filter(|s| center(s) > left)
+            .count();
         let passed_right = self.slots[from + 1..]
             .iter()
             .filter(|s| center(s) < left + width)
@@ -68,6 +72,7 @@ impl TabDrag {
             .collect()
     }
     /// Where the dragged tab's left edge lands once it is dropped.
+    #[cfg(test)]
     pub fn landing(&self) -> Option<f32> {
         let from = self.from()?;
         let (target, _) = self.target()?;
@@ -172,11 +177,14 @@ impl NotesView {
         let Some(drag) = &mut self.tab_drag else {
             return;
         };
+        let was = (drag.moving, drag.target(), drag.pointer);
         drag.pointer = x;
         if !drag.moving && (x - drag.start).abs() > TabDrag::THRESHOLD {
             drag.moving = true;
         }
-        if drag.moving {
+        if drag.moving && was != (drag.moving, drag.target(), drag.pointer) {
+            // Neighboring tabs spring aside while the dragged tab follows the pointer.
+            cx.animate();
             cx.notify();
         }
     }
@@ -187,19 +195,19 @@ impl NotesView {
             return;
         };
         let complete = drag.slots.len() == self.open_tabs.len()
-            && drag.slots.iter().zip(&self.open_tabs).all(|((id, _, _), tab)| id == tab);
+            && drag
+                .slots
+                .iter()
+                .zip(&self.open_tabs)
+                .all(|((id, _, _), tab)| id == tab);
         if drag.moving
             && complete
-            && let (Some((target, left)), Some(landing)) = (drag.target(), drag.landing())
+            && let Some((target, _)) = drag.target()
         {
-            let reduced = self.controller.settings.reduce_motion;
-            let mut motion = self.motion.borrow_mut();
-            for (id, _) in drag.offsets() {
-                motion.jump(&format!("tab-offset-{id}"), 0.);
-            }
-            motion.slide(&format!("tab-offset-{}", drag.id), left - landing, 0., reduced);
-            drop(motion);
             move_tab(&mut self.open_tabs, drag.id, target);
+        }
+        if drag.moving {
+            cx.animate();
         }
         cx.notify();
     }
@@ -275,13 +283,6 @@ impl NotesView {
             .into(),
         );
         cx.notify();
-    }
-    /// Keyboard focus moved while the document menu is open: show its ring.
-    pub(super) fn keyboard_in_document_menu(&mut self, cx: &mut Context<Self>) {
-        if self.document_menu.is_some() && !self.document_menu_keyboard {
-            self.document_menu_keyboard = true;
-            cx.notify();
-        }
     }
     /// Close the tabs a tab-menu action names. When the active document is
     /// among them, the clicked tab becomes active first, so closing does not
@@ -441,13 +442,23 @@ impl NotesView {
             (menu_width, menu_height),
             (width, height),
         );
-        let mut menu = div()
+        // A dialog chosen here turns the menu into its page: wider, and as
+        // tall as the window leaves below it. The menu stays where it opened.
+        let hosted = self.modal_hosted_in(MenuHost::Document);
+        let (x, menu_width, menu_height) = if hosted {
+            let wide = (280. * scale).min((width - 16.).max(1.));
+            (x.min((width - wide - 8.).max(8.)), wide, (height - y - 8.).max(menu_height))
+        } else {
+            (x, menu_width, menu_height)
+        };
+        let menu = div()
             .id("document-context-menu")
             .occlude()
             .absolute()
             .left(px(x))
             .top(px(y))
             .w(px(menu_width))
+            .grows_from_point((f32::from(at.x), f32::from(at.y)), (x, y, menu_width, menu_height))
             .max_h(px(menu_height))
             .overflow_y_scroll()
             .p_1()
@@ -456,17 +467,31 @@ impl NotesView {
             .rounded(px(theme.corner_md()))
             .glass(theme, theme.popover)
             .shadow_md()
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+            // It springs to the size of the page it turns into and back.
+            .el(|e| e.motion(crate::motion::MORPH).animated_changes())
+            .on_mouse_down_out(cx.listener(|this, _, w, cx| {
                 // Dismissing the menu must not also activate the tab, card or
                 // canvas under the pointer.
+                if this.modal_hosted_in(MenuHost::Document) {
+                    this.cancel_modal(w, cx);
+                }
                 this.document_menu = None;
                 cx.stop_propagation();
                 cx.notify();
             }));
+        if hosted {
+            return menu.child(self.modal_panel(true, window, cx)).into_any_element();
+        }
+        let mut items = div()
+            .id("doc-menu-items")
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .page_in(false);
         let mut previous = None;
         for (key, label, kind, action) in entries {
             if separated(action, previous) {
-                menu = menu.child(
+                items = items.child(
                     div()
                         .flex_shrink_0()
                         .h(px(1.))
@@ -492,7 +517,7 @@ impl NotesView {
                 .into_any_element(),
                 None => div().size(rems(1.125)).flex_shrink_0().into_any_element(),
             };
-            menu = menu.child(
+            items = items.child(
                 self.control(
                     format!("doc-menu-{key}"),
                     label,
@@ -518,21 +543,31 @@ impl NotesView {
                     false,
                     cx,
                     move |this, w, cx| {
+                        // Actions that ask for input turn the menu into
+                        // their page.
+                        let input = match action {
+                            DocumentMenuAction::Rename => Some(Modal::RenameDocument(id)),
+                            DocumentMenuAction::Move => Some(Modal::MoveDocument(id)),
+                            DocumentMenuAction::Tags => Some(Modal::DocumentTags(id)),
+                            _ => None,
+                        };
+                        if let Some(modal) = input {
+                            this.modal_in_menu(MenuHost::Document, modal, w, cx);
+                            return;
+                        }
                         this.document_menu = None;
                         match action {
                             DocumentMenuAction::Close(which) => this.close_tabs(id, which, w, cx),
                             DocumentMenuAction::Open => this.open_note(id),
-                            DocumentMenuAction::Rename => {
-                                this.modal(Modal::RenameDocument(id), w, cx)
-                            }
                             DocumentMenuAction::Duplicate => this
                                 .controller
                                 .manage_note(id, folio_app::NoteAction::Duplicate),
                             DocumentMenuAction::Favorite => this
                                 .controller
                                 .manage_note(id, folio_app::NoteAction::Favorite),
-                            DocumentMenuAction::Move => this.modal(Modal::MoveDocument(id), w, cx),
-                            DocumentMenuAction::Tags => this.modal(Modal::DocumentTags(id), w, cx),
+                            DocumentMenuAction::Rename
+                            | DocumentMenuAction::Move
+                            | DocumentMenuAction::Tags => {}
                             DocumentMenuAction::Delete => this.modal(
                                 Modal::Confirm(super::Confirm::DeletePermanently(id)),
                                 w,
@@ -556,136 +591,11 @@ impl NotesView {
                 .py_1(),
             );
         }
-        menu.into_any_element()
+        menu.child(items).into_any_element()
     }
 }
 
-impl NotesView {
-    /// Synthetic native-window checks, used only by the explicit --smoke-test harness.
-    pub fn navigation_smoke_setup(&mut self) -> (Id, Id) {
-        self.controller.create_note();
-        self.controller.rename("Smoke A".into());
-        let a = self.controller.active;
-        self.controller.create_note();
-        self.controller.rename("Smoke B".into());
-        let b = self.controller.active;
-        self.open_tabs.clear();
-        self.show_library();
-        (a, b)
-    }
-    pub fn navigation_smoke_click(
-        &self,
-        label: &str,
-        right: bool,
-    ) -> Result<Vec<PlatformInput>, String> {
-        let rect = self
-            .accessibility
-            .control_bounds(label)
-            .ok_or_else(|| format!("No rendered control: {label}"))?;
-        let position = point(
-            px(((rect.x0 + rect.x1) * 0.5) as f32),
-            px(((rect.y0 + rect.y1) * 0.5) as f32),
-        );
-        let button = if right {
-            MouseButton::Right
-        } else {
-            MouseButton::Left
-        };
-        Ok(vec![
-            PlatformInput::MouseMove(MouseMoveEvent {
-                position,
-                pressed_button: None,
-                modifiers: Default::default(),
-            }),
-            PlatformInput::MouseDown(MouseDownEvent {
-                button,
-                position,
-                modifiers: Default::default(),
-                click_count: 1,
-                first_mouse: false,
-            }),
-            PlatformInput::MouseUp(MouseUpEvent {
-                button,
-                position,
-                modifiers: Default::default(),
-                click_count: 1,
-            }),
-        ])
-    }
-    pub fn navigation_smoke_context(&self, id: Id) -> Result<(), String> {
-        if self.document_menu.is_some_and(|(note, _)| note == id) && self.library_open {
-            Ok(())
-        } else {
-            Err("Right-click did not open the target card menu".into())
-        }
-    }
-    pub fn navigation_smoke_open(&mut self, id: Id) {
-        self.open_note(id);
-    }
-    pub fn navigation_smoke_drag(&self) -> Result<Vec<PlatformInput>, String> {
-        let bounds = |label: &str| {
-            self.accessibility
-                .control_bounds(label)
-                .map(|r| {
-                    point(
-                        px(((r.x0 + r.x1) * 0.5) as f32),
-                        px(((r.y0 + r.y1) * 0.5) as f32),
-                    )
-                })
-                .ok_or_else(|| format!("No tab: {label}"))
-        };
-        let start = bounds("Open Smoke A")?;
-        let end = bounds("Open Smoke B")?;
-        let mut events = vec![
-            PlatformInput::MouseMove(MouseMoveEvent {
-                position: start,
-                pressed_button: None,
-                modifiers: Default::default(),
-            }),
-            PlatformInput::MouseDown(MouseDownEvent {
-                button: MouseButton::Left,
-                position: start,
-                modifiers: Default::default(),
-                click_count: 1,
-                first_mouse: false,
-            }),
-        ];
-        for i in 1..=12 {
-            events.push(PlatformInput::MouseMove(MouseMoveEvent {
-                position: point(start.x + (end.x - start.x) * (i as f32 / 12.), start.y),
-                pressed_button: Some(MouseButton::Left),
-                modifiers: Default::default(),
-            }));
-        }
-        events.push(PlatformInput::MouseUp(MouseUpEvent {
-            button: MouseButton::Left,
-            position: end,
-            modifiers: Default::default(),
-            click_count: 1,
-        }));
-        Ok(events)
-    }
-    pub fn navigation_smoke_verify(&mut self, a: Id, b: Id) -> Result<(), String> {
-        if self.open_tabs != vec![b, a] {
-            return Err(format!("Native tab drag failed: {:?}", self.open_tabs));
-        }
-        if self.controller.active != b {
-            return Err("Dragging tabs changed the active document".into());
-        }
-        if self.modal.is_some() || self.library_open {
-            return Err("Tab picker did not open the selected document".into());
-        }
-        if !self
-            .controller
-            .notes
-            .iter()
-            .any(|n| n.title == "Smoke A (copy)")
-        {
-            return Err("Card menu duplication failed".into());
-        }
-        self.controller.flush()
-    }
-}
+impl NotesView {}
 
 #[cfg(test)]
 mod tests {

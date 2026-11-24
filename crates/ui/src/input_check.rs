@@ -32,47 +32,24 @@ impl NotesView {
         };
         let report = serde_json::to_vec_pretty(&check.report()).expect("Serializable report");
         let suggested = format!("Folio-input-{}.json", folio_document::now_ms());
-        let path = cx.prompt_for_new_path(&self.controller.data_dir, Some(&suggested));
-        cx.spawn(async move |view, cx| match path.await {
-            Ok(Ok(Some(path))) => {
-                let allowed = view
-                    .update(cx, |view, cx| {
-                        if let Err(error) =
-                            view.controller.validate_export_destination(&path, "json")
-                        {
-                            view.controller.error = Some(error);
-                            cx.notify();
-                            false
-                        } else {
-                            true
-                        }
-                    })
-                    .unwrap_or(false);
-                if !allowed {
-                    return;
-                }
-                let result = cx
-                    .background_executor()
-                    .spawn(async move {
-                        folio_export::atomic_write(&path, &report).map_err(|e| e.to_string())
-                    })
-                    .await;
-                let _ = view.update(cx, |view, cx| {
-                    match result {
-                        Ok(()) => view.controller.status = "Input report saved".into(),
-                        Err(e) => view.controller.error = Some(e),
-                    }
-                    cx.notify();
-                });
+        let options = rune::FileDialogOptions {
+            title: "Save input check".into(),
+            directory: Some(self.controller.data_dir.clone()),
+            file_name: Some(suggested),
+            ..Default::default()
+        };
+        let report = std::rc::Rc::new(report);
+        cx.save_file(options, move |view, path, _, _| {
+            let Some(path) = path else { return };
+            if let Err(error) = view.controller.validate_export_destination(&path, "json") {
+                view.controller.error = Some(error);
+                return;
             }
-            Ok(Err(e)) => {
-                let _ = view.update(cx, |view, cx| {
-                    view.controller.error = Some(e.to_string());
-                    cx.notify();
-                });
+            if let Err(error) = folio_export::atomic_write(&path, &report) {
+                view.controller.error = Some(error.to_string());
+            } else {
+                view.controller.status = "Input check saved".into();
             }
-            _ => {}
-        })
-        .detach();
+        });
     }
 }

@@ -1,3 +1,4 @@
+use super::*;
 use super::{NotesView, Theme};
 use super::{graph, theme::CanvasTheme};
 use folio_app::{Controller, Interaction, Tool};
@@ -5,7 +6,6 @@ use folio_canvas::{PageStack, SpatialIndex, Viewport};
 use folio_document::{
     Id, Object, Page, PageProperties, Paper, PathPoint, Point as DocPoint, Rect, Transform,
 };
-use gpui::{prelude::*, *};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -382,6 +382,58 @@ fn ink_path_from_points(
     });
     any.then(|| b.build().ok()).flatten()
 }
+/// Draws ink on the GPU as round-capped segments, one polyline per run of
+/// equal widths. False when `transform` is not a similarity (the segments
+/// would not keep their shape).
+fn paint_ink_gpu(
+    window: &mut Window,
+    points: &[PathPoint],
+    transform: Transform,
+    color: Rgba,
+) -> bool {
+    let Transform { a, b, c, d, .. } = transform;
+    let scale = transform.scale();
+    let eps = 1e-3 * scale.max(1e-6);
+    let rotation = (a - d).abs() < eps && (b + c).abs() < eps;
+    let mirror = (a + d).abs() < eps && (b - c).abs() < eps;
+    if !scale.is_finite() || scale <= 0. || !(rotation || mirror) {
+        return false;
+    }
+    let Some(first) = points.first() else {
+        return true;
+    };
+    let at = |p: &PathPoint| {
+        let q = transform.apply(p.position);
+        [q.x, q.y]
+    };
+    let mut lines: Vec<(Vec<[f32; 2]>, f32)> = Vec::new();
+    if points.len() == 1 {
+        lines.push((vec![at(first), at(first)], 2. * first.radius * scale));
+    }
+    for pair in points.windows(2) {
+        let width = (pair[0].radius + pair[1].radius) * scale;
+        match lines.last_mut() {
+            Some((line, w)) if (*w - width).abs() <= 0.02 * w.max(0.5) => line.push(at(&pair[1])),
+            _ => lines.push((vec![at(&pair[0]), at(&pair[1])], width)),
+        }
+    }
+    window.paint_polylines(lines, color);
+    true
+}
+/// Ink on the GPU when possible, else as its filled outline.
+fn paint_ink(
+    window: &mut Window,
+    points: &[PathPoint],
+    transform: Transform,
+    color: Rgba,
+    scratch: &mut folio_ink::OutlineScratch,
+) {
+    if !paint_ink_gpu(window, points, transform, color)
+        && let Some(path) = ink_path_from_points(points, scratch)
+    {
+        window.paint_path(path.transformed(coefficients(transform)), color);
+    }
+}
 #[cfg(test)]
 fn shape_contours(points: &[DocPoint], width: f32) -> Vec<Vec<DocPoint>> {
     let centerline = points
@@ -415,6 +467,75 @@ fn line_path(points: &[DocPoint], width: f32, dashed: bool) -> Option<Path<Pixel
         b.line_to(point_px(*p));
     }
     b.build().ok()
+}
+/// How long a selecting loop takes to become the selection's box, and then
+/// to fade, in seconds.
+const SELECT_MORPH: f32 = 0.26;
+const SELECT_FADE: f32 = 0.2;
+/// When a selecting loop's morph has played out.
+pub(crate) fn select_morph_done(morph: &folio_app::SelectMorph) -> bool {
+    morph.started.elapsed().as_secs_f32() >= SELECT_MORPH + SELECT_FADE
+}
+
+/// `drawn`, a closed loop in screen points, `t` of the way (0 to 1) onto the
+/// box `outline` (its corners, closed): each point goes to the place as far
+/// along the box's perimeter as it is along the loop, starting from the
+/// corner side nearest the loop's start and running the way the loop runs.
+pub(crate) fn morph_to_box(drawn: &[DocPoint], outline: &[DocPoint; 5], t: f32) -> Vec<DocPoint> {
+    if drawn.len() < 2 {
+        return drawn.to_vec();
+    }
+    let dist = |a: DocPoint, b: DocPoint| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+    // Where each point sits along the loop, from 0 to 1.
+    let mut along = Vec::with_capacity(drawn.len());
+    let mut total = 0.;
+    for (i, p) in drawn.iter().enumerate() {
+        if i > 0 {
+            total += dist(drawn[i - 1], *p);
+        }
+        along.push(total);
+    }
+    total += dist(*drawn.last().unwrap_or(&drawn[0]), drawn[0]);
+    let total = total.max(1e-3);
+    // The box's corners, in the turning direction the loop has.
+    let area = |points: &[DocPoint]| {
+        points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .map(|(a, b)| a.x * b.y - b.x * a.y)
+            .sum::<f32>()
+    };
+    let mut corners: Vec<DocPoint> = outline[..4].to_vec();
+    if (area(drawn) > 0.) != (area(&corners) > 0.) {
+        corners.reverse();
+    }
+    let sides: Vec<f32> = (0..4).map(|i| dist(corners[i], corners[(i + 1) % 4])).collect();
+    let perimeter: f32 = sides.iter().sum::<f32>().max(1e-3);
+    let point_at = |mut d: f32| {
+        d = d.rem_euclid(perimeter);
+        for i in 0..4 {
+            if d <= sides[i] || i == 3 {
+                let k = if sides[i] > 0. { (d / sides[i]).min(1.) } else { 0. };
+                let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                return DocPoint::new(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k);
+            }
+            d -= sides[i];
+        }
+        corners[0]
+    };
+    // Start where the box comes closest to the loop's first point.
+    let start = (0..200)
+        .map(|i| i as f32 / 200. * perimeter)
+        .min_by(|a, b| dist(point_at(*a), drawn[0]).total_cmp(&dist(point_at(*b), drawn[0])))
+        .unwrap_or(0.);
+    drawn
+        .iter()
+        .zip(&along)
+        .map(|(p, s)| {
+            let q = point_at(start + s / total * perimeter);
+            DocPoint::new(p.x + (q.x - p.x) * t, p.y + (q.y - p.y) * t)
+        })
+        .collect()
 }
 fn rect_points(r: Rect) -> [DocPoint; 5] {
     [
@@ -466,19 +587,15 @@ fn visible_page_range(
     start..end.max(start)
 }
 impl Painter {
+    /// Whether rasterization started for the visible pages is still running.
     pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<NotesView>) {
         for source in self.backgrounds.values() {
             Self::release_background(source, window, cx);
         }
         self.clear_page(window);
     }
-    fn release_background(source: &ImageSource, window: &mut Window, cx: &mut Context<NotesView>) {
-        // Sources are requested when added to the warm cache. Removing the
-        // decoded asset alone does not remove its uploaded sprite-atlas image.
-        if let Some(image) = source.use_render_image(window, cx) {
-            let _ = window.drop_image(image);
-        }
-        source.remove_asset(cx);
+    fn release_background(source: &ImageSource, _: &mut Window, _: &mut Context<NotesView>) {
+        source.forget();
     }
     fn clear_page(&mut self, window: &mut Window) {
         for painter in self.pages.values_mut() {
@@ -515,20 +632,14 @@ impl Painter {
             }
         });
     }
-    pub(super) fn ink_layer_counts(&self) -> (usize, usize) {
-        self.pages
-            .values()
-            .fold((0, 0), |(layers, strokes), painter| {
-                (
-                    layers + painter.ink_layers.len(),
-                    strokes
-                        + painter
-                            .ink_layers
-                            .values()
-                            .map(|layer| layer.batch.objects.len())
-                            .sum::<usize>(),
-                )
-            })
+    /// Whether every visible ink batch has its image (none still rendering).
+    pub(super) fn ink_settled(&self) -> bool {
+        self.pages.values().all(|painter| {
+            painter.ink_pending.is_empty()
+                && painter.ink_desired.keys().all(|id| {
+                    painter.ink_layers.contains_key(id) || painter.ink_failed.contains_key(id)
+                })
+        }) && self.pages.values().any(|painter| !painter.ink_layers.is_empty())
     }
     fn display_color(&mut self, color: u32, theme: CanvasTheme) -> u32 {
         *self.colors.entry(color).or_insert_with(|| theme.ink(color))
@@ -669,10 +780,12 @@ impl Painter {
             if settled && visible_page {
                 controller.request_pdf_background(pdf.clone());
             }
-            let full_asset = pdf
-                .preview_asset
-                .as_ref()
-                .and_then(|asset| controller.asset_path(asset).filter(|p| p.is_file()).map(|p| (asset, p)));
+            let full_asset = pdf.preview_asset.as_ref().and_then(|asset| {
+                controller
+                    .asset_path(asset)
+                    .filter(|p| p.is_file())
+                    .map(|p| (asset, p))
+            });
             let scroll_asset = Controller::pdf_scroll_preview_asset(&pdf)
                 .filter(|asset| controller.asset_path(asset).is_some_and(|p| p.is_file()));
 
@@ -683,7 +796,7 @@ impl Painter {
                     .backgrounds
                     .entry((*asset).clone())
                     .or_insert_with(|| ImageSource::from(path.clone()));
-                full_ready = source.use_render_image(window, cx).is_some();
+                full_ready = source.render_image().is_some();
                 if !full_ready {
                     visible_decoding = true;
                 }
@@ -698,7 +811,7 @@ impl Painter {
                     {
                         warm_assets.insert(asset.to_owned());
                     }
-                } else if !visible_decoding {
+                } else if visible_page || !visible_decoding {
                     let fallback = if visible_page {
                         scroll_asset.as_deref()
                     } else {
@@ -714,7 +827,7 @@ impl Painter {
                             .backgrounds
                             .entry(asset.to_owned())
                             .or_insert_with(|| ImageSource::from(path));
-                        let _ = source.use_render_image(window, cx);
+                        let _ = source.render_image();
                     }
                 }
             }
@@ -788,8 +901,7 @@ impl Painter {
         }
         let page_id = controller.session().document.pages[page_index].id;
         self.page = Some(page_id);
-        let visible =
-            viewport.visible(f32::from(bounds.size.width), f32::from(bounds.size.height));
+        let visible = viewport.visible(f32::from(bounds.size.width), f32::from(bounds.size.height));
         let page = &controller.session().document.pages[page_index];
         if !active && self.index_revision != Some(page.revision) {
             self.index.rebuild(page);
@@ -870,7 +982,9 @@ impl Painter {
                     .get(&(controller.active, page_id, id))
                     .is_some_and(|preview| preview.bgra.is_empty())
             {
-                controller.previews.remove(&(controller.active, page_id, id));
+                controller
+                    .previews
+                    .remove(&(controller.active, page_id, id));
             }
         }
         if let Some(editing_id) = editing
@@ -988,12 +1102,77 @@ impl Painter {
                 if index < skip_until {
                     continue;
                 }
-                if let Some((range, batch)) = batch_iter.next_if(|(range, _)| range.start == index)
+                // Ink too large for one image comes as tiles sharing its range.
+                // They replace the vectors once every tile in view is ready.
+                if batch_iter
+                    .peek()
+                    .is_some_and(|(range, batch)| range.start == index && batch.tile != 0)
+                {
+                    let mut tiles = Vec::new();
+                    while let Some((range, batch)) = batch_iter
+                        .next_if(|(range, batch)| range.start == index && batch.tile != 0)
+                    {
+                        let layer = self.ink_layers.get(&batch.id()).or_else(|| {
+                            self.ink_stale
+                                .get(&batch.id())
+                                .filter(|layer| layer.batch.stands_in_for(batch))
+                        });
+                        tiles.push((range.end, batch, layer));
+                    }
+                    let end = tiles.iter().map(|(end, _, _)| *end).max().unwrap_or(index);
+                    let ready = tiles.iter().all(|(_, batch, layer)| {
+                        layer.is_some() || !visible.intersects(batch.bounds)
+                    });
+                    if ready {
+                        for (_, _, layer) in &tiles {
+                            if let Some(layer) = layer {
+                                let _ = window.paint_image_transformed(
+                                    gpui_bounds(layer.batch.bounds),
+                                    Default::default(),
+                                    layer.image.clone(),
+                                    0,
+                                    false,
+                                    gpu_transform(world),
+                                );
+                            }
+                        }
+                        skip_until = end;
+                        continue;
+                    }
+                    if tiles.iter().any(|(_, batch, _)| {
+                        self.ink_desired.contains_key(&batch.id())
+                            && !self.ink_failed.contains_key(&batch.id())
+                    }) {
+                        pending_batch_until = end;
+                    }
+                    // Meanwhile the whole image from before the zoom, stretched,
+                    // stands in rather than a vector per point.
+                    let whole = tiles.first().map(|(_, batch, _)| batch.objects[0].id());
+                    if let Some((_, batch, _)) = tiles.first()
+                        && let Some(layer) = whole
+                            .and_then(|id| self.ink_layers.get(&id).or(self.ink_stale.get(&id)))
+                            .filter(|layer| layer.batch.tile == 0 && layer.batch.same_ink(batch))
+                        && window
+                            .paint_image_transformed(
+                                gpui_bounds(layer.batch.bounds),
+                                Default::default(),
+                                layer.image.clone(),
+                                0,
+                                false,
+                                gpu_transform(world),
+                            )
+                            .is_ok()
+                    {
+                        skip_until = end;
+                        continue;
+                    }
+                } else if let Some((range, batch)) =
+                    batch_iter.next_if(|(range, _)| range.start == index)
                 {
                     if let Some(layer) = self.ink_layers.get(&batch.id()).or_else(|| {
-                        self.ink_stale.get(&batch.id()).filter(|layer| {
-                            layer.batch.same_ink(batch) && layer.batch.bounds == batch.bounds
-                        })
+                        self.ink_stale
+                            .get(&batch.id())
+                            .filter(|layer| layer.batch.stands_in_for(batch))
                     }) && window
                         .paint_image_transformed(
                             gpui_bounds(layer.batch.bounds),
@@ -1052,14 +1231,13 @@ impl Painter {
                         for part in parts {
                             let color = self.display_color(part.style.color.rgb(), canvas_theme);
                             let points = part.decode_display_path(&mut self.path_buf);
-                            if let Some(path) =
-                                ink_path_from_points(points, &mut self.outline_scratch)
-                            {
-                                window.paint_path(
-                                    path.transformed(coefficients(world.compose(part.transform))),
-                                    alpha(color, part.style.opacity),
-                                );
-                            }
+                            paint_ink(
+                                window,
+                                points,
+                                world.compose(part.transform),
+                                alpha(color, part.style.opacity),
+                                &mut self.outline_scratch,
+                            );
                         }
                     }
                     continue;
@@ -1085,20 +1263,28 @@ impl Painter {
                             if anim.progress < 0.999 {
                                 let points = s.decode_display_path(&mut self.path_buf);
                                 partial_stroke_points(points, anim.progress, &mut partial_buf);
-                                if let Some(path) =
-                                    ink_path_from_points(&partial_buf, &mut self.outline_scratch)
-                                {
-                                    window.paint_path(
-                                        path.transformed(coefficients(transform)),
-                                        alpha(tinted, s.style.opacity),
-                                    );
-                                }
+                                paint_ink(
+                                    window,
+                                    &partial_buf,
+                                    transform,
+                                    alpha(tinted, s.style.opacity),
+                                    &mut self.outline_scratch,
+                                );
                                 continue;
                             }
                             tinted
                         } else {
                             base_color
                         };
+                        // Ink without a cached image is drawn by the GPU,
+                        // straight from its centreline.
+                        if !selection.contains(&s.id) && !visible.intersects(object.bounds()) {
+                            continue;
+                        }
+                        let points = s.decode_display_path(&mut self.path_buf);
+                        if paint_ink_gpu(window, points, transform, alpha(color, s.style.opacity)) {
+                            continue;
+                        }
                         let valid = self
                             .paths
                             .get(&s.id)
@@ -1232,9 +1418,7 @@ impl Painter {
                     _ => {
                         let appearance = match object.as_ref() {
                             Object::Equation(e)
-                                if e.math_link
-                                    .as_ref()
-                                    .is_some_and(|l| l.operation == "graph") =>
+                                if e.math_link.as_ref().is_some_and(|l| l.operation == "graph") =>
                             {
                                 Some(RasterAppearance::Graph(graph_palette))
                             }
@@ -1299,27 +1483,15 @@ impl Painter {
                         } else {
                             "Out of date · select to retry"
                         };
-                        let style = window.text_style();
-                        let run = TextRun {
-                            len: label.len(),
-                            font: style.font(),
-                            color: rgb(0xc28c36).into(),
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        let line =
-                            window
-                                .text_system()
-                                .shape_line(label.into(), px(12.), &[run], None);
                         let origin = world
                             .compose(movement)
                             .apply(DocPoint::new(rect.min.x, rect.min.y));
-                        let _ = line.paint(
+                        super::text_render::paint_label(
+                            label,
                             point(px(origin.x), px(origin.y - 18.)),
-                            px(18.),
+                            12.,
+                            0xc28c36,
                             window,
-                            cx,
                         );
                     }
                 }
@@ -1358,16 +1530,29 @@ impl Painter {
                             self.display_color(builder.style().color.rgb(), canvas_theme),
                             builder.style().opacity,
                         );
+                        let width = builder.style().width;
+                        // The stroke as lifting the pen would commit it.
+                        let finished = builder.finished_path();
+                        let live_path = finished.as_slice();
                         if let Some(fit) = preview {
-                            if let Some(path) = shape_path(&fit.vertices, builder.style().width) {
-                                window.paint_path(path.transformed(coefficients(world)), color);
-                            }
+                            let centreline = fit
+                                .vertices
+                                .iter()
+                                .map(|&position| PathPoint {
+                                    position,
+                                    radius: width / 2.,
+                                })
+                                .collect::<Vec<_>>();
+                            paint_ink(window, &centreline, world, color, &mut self.outline_scratch);
+                        } else if paint_ink_gpu(window, live_path, world, color) {
+                            self.active_id = None;
+                            self.active_chunks.clear();
                         } else {
                             if self.active_id != Some(builder.id()) {
                                 self.active_id = Some(builder.id());
                                 self.active_chunks.clear();
                             }
-                            let points = builder.path();
+                            let points = live_path;
 
                             if builder.style().opacity < 1. {
                                 // Translucent strokes still use one compound
@@ -1381,7 +1566,12 @@ impl Painter {
                                 }
                             } else {
                                 const CHUNK: usize = 256;
-                                let count = points.len().saturating_sub(2) / CHUNK;
+                                // The end taper moves with the pen; cached
+                                // chunks stay clear of it.
+                                let count = points
+                                    .len()
+                                    .saturating_sub(2 + folio_ink::StrokeBuilder::TAPER + 1)
+                                    / CHUNK;
                                 while self.active_chunks.len() < count {
                                     let start = self.active_chunks.len() * CHUNK;
                                     if let Some(path) = ink_path(&folio_ink::outline_chunk(
@@ -1474,6 +1664,37 @@ impl Painter {
                     window.paint_path(path, rgb(theme.selection()));
                 }
             }
+            // The loop that just selected something morphs into the
+            // selection's box, then fades.
+            if let Some(morph) = controller.select_morph.clone() {
+                let elapsed = morph.started.elapsed().as_secs_f32();
+                match (controller.selection_bounds().filter(|_| !self.hide_selection), elapsed) {
+                    (Some(rect), elapsed) if elapsed < SELECT_MORPH + SELECT_FADE => {
+                        let (outline, _) =
+                            selection_overlay(rect, viewport.zoom, world.compose(preview_move));
+                        let drawn: Vec<DocPoint> =
+                            morph.points.iter().map(|p| world.apply(*p)).collect();
+                        let t = (elapsed / SELECT_MORPH).min(1.);
+                        // A sharp start that settles hard onto the box.
+                        let eased = 1. - (1. - t).powi(5);
+                        let fade = ((elapsed - SELECT_MORPH) / SELECT_FADE).clamp(0., 1.);
+                        let mut points = morph_to_box(&drawn, &outline, eased);
+                        if let Some(first) = points.first().copied() {
+                            points.push(first);
+                        }
+                        let ink = morph.color.map_or(theme.selection(), |c| c.rgb());
+                        let color = super::theme::mix(ink, theme.selection(), eased);
+                        let from = (morph.width * viewport.zoom).max(1.);
+                        let width = from + (1.5 - from) * eased;
+                        let alpha = ((1. - fade) * 255.).round() as u32;
+                        if let Some(path) = line_path(&points, width, false) {
+                            window.paint_path(path, rgba((color << 8) | alpha));
+                        }
+                        window.request_animation_frame();
+                    }
+                    _ => {}
+                }
+            }
             if let Some(cursor) = controller.cursor {
                 let center = world.apply(cursor);
                 let r = if controller.tool == Tool::Eraser {
@@ -1546,12 +1767,19 @@ impl Painter {
                     let _ = window.drop_image(previous.image);
                 }
             }
+            // A whole image of ink now drawn as tiles stands in until the
+            // tiles are ready (and again when zooming back out).
+            let tiled: HashSet<Id> = desired
+                .values()
+                .filter(|batch| batch.tile != 0)
+                .map(|batch| batch.objects[0].id())
+                .collect();
             let mut offscreen = 0;
             stale.retain(|id, layer| {
                 let keep = match desired.get(id) {
+                    None if layer.batch.tile == 0 && tiled.contains(id) => true,
                     Some(batch) => {
-                        (batch.same_ink(&layer.batch) && batch.bounds == layer.batch.bounds)
-                            || layer.batch.is_prefix_of(batch)
+                        layer.batch.stands_in_for(batch) || layer.batch.is_prefix_of(batch)
                     }
                     None => {
                         offscreen += layer.batch.pixels;
@@ -1591,7 +1819,7 @@ impl Painter {
             let work = request.clone();
             let task = cx
                 .background_executor()
-                .spawn(async move { super::ink_layers::raster(&work) });
+                .spawn(async move { super::ink_layers::raster(&work).map(warm_pixels) });
             cx.spawn(async move |view, cx| {
                 let image = task.await;
                 let _ = view.update(cx, |view, cx| {
@@ -1637,10 +1865,9 @@ impl Painter {
                             .ink_desired
                             .get(&id)
                             .is_some_and(|batch| request.is_prefix_of(batch))
-                        && painter
-                            .ink_stale
-                            .get(&id)
-                            .is_none_or(|existing| existing.batch.objects.len() < request.objects.len())
+                        && painter.ink_stale.get(&id).is_none_or(|existing| {
+                            existing.batch.objects.len() < request.objects.len()
+                        })
                     {
                         for object in &request.objects {
                             painter.paths.remove(&object.id());
@@ -1700,9 +1927,9 @@ impl Painter {
                     width.saturating_mul(height),
                 )
                 .ok()
-                .map(|(_, pixmap)| graph::image(pixmap.width(), pixmap.height(), pixmap.take()));
+                .map(|(_, pixmap)| warm_pixels(graph::image(pixmap.width(), pixmap.height(), pixmap.take())));
             }
-            preview_image(width, height, data, appearance)
+            preview_image(width, height, data, appearance).map(warm_pixels)
         });
         cx.spawn(async move |view, cx| {
             let image = task.await;
@@ -1770,7 +1997,7 @@ impl Painter {
         backgrounds: &mut HashMap<String, ImageSource>,
         dot_tile: &mut Option<CachedDotTile>,
         window: &mut Window,
-        cx: &mut Context<NotesView>,
+        _cx: &mut Context<NotesView>,
         controller: &Controller,
     ) {
         let theme = Theme::new(&controller.settings);
@@ -1789,30 +2016,51 @@ impl Painter {
                 });
             };
             if !properties.infinite {
-                paint_rect(
+                // The opaque paper covers the middle of the shadow and the
+                // hairline; blending those parts over the whole page cost
+                // most of a CPU frame. Only device pixels the paper fully
+                // covers are skipped.
+                let inner = Rect {
+                    min: DocPoint::new(
+                        (bounds.min.x * scale).ceil() / scale,
+                        (bounds.min.y * scale).ceil() / scale,
+                    ),
+                    max: DocPoint::new(
+                        (bounds.max.x * scale).floor() / scale,
+                        (bounds.max.y * scale).floor() / scale,
+                    ),
+                };
+                for part in rect_outside(
                     Rect::new(
                         bounds.min.x + 2.,
                         bounds.min.y + 3.,
                         bounds.width(),
                         bounds.height(),
                     ),
-                    alpha(0x000000, if theme.dark { 0.45 } else { 0.08 }),
-                );
+                    inner,
+                ) {
+                    paint_rect(part, alpha(0x000000, if theme.dark { 0.45 } else { 0.08 }));
+                }
                 // A hairline keeps the page edge visible against the
                 // workspace: light on dark paper, a faint shade on light.
-                paint_rect(
+                for part in rect_outside(
                     Rect::new(
                         bounds.min.x - 1.,
                         bounds.min.y - 1.,
                         bounds.width() + 2.,
                         bounds.height() + 2.,
                     ),
-                    if theme.dark {
-                        alpha(0xffffff, 0.2)
-                    } else {
-                        alpha(0x000000, 0.1)
-                    },
-                );
+                    inner,
+                ) {
+                    paint_rect(
+                        part,
+                        if theme.dark {
+                            alpha(0xffffff, 0.2)
+                        } else {
+                            alpha(0x000000, 0.1)
+                        },
+                    );
+                }
             }
             paint_rect(bounds, rgb(paper_color));
         } else {
@@ -1844,7 +2092,7 @@ impl Painter {
                 let Some(source) = backgrounds.get(&asset) else {
                     continue;
                 };
-                if let Some(image) = source.use_render_image(window, cx) {
+                if let Some(image) = source.render_image() {
                     let _ = window.paint_image_transformed(
                         gpui_bounds(page),
                         Default::default(),
@@ -1872,7 +2120,11 @@ impl Painter {
             let tile_mask = if properties.infinite {
                 Some(None)
             } else {
-                axis_aligned_bounds(page, world).map(|b| Some(ContentMask { bounds: gpui_bounds(b) }))
+                axis_aligned_bounds(page, world).map(|b| {
+                    Some(ContentMask {
+                        bounds: gpui_bounds(b),
+                    })
+                })
             };
             let zoom = world.scale();
             let render_zoom = if self.layer_zoom > 0. {
@@ -1959,6 +2211,12 @@ impl Painter {
     }
 }
 
+/// Converts `image` to the pixels the GPU uploads while still on a background
+/// thread; done on first paint, a large ink layer stalled the frame.
+fn warm_pixels(image: Arc<RenderImage>) -> Arc<RenderImage> {
+    let _ = image.pixels();
+    image
+}
 fn preview_image(
     width: u32,
     height: u32,
@@ -1966,18 +2224,20 @@ fn preview_image(
     appearance: Option<RasterAppearance>,
 ) -> Option<Arc<RenderImage>> {
     match appearance {
-        None => RenderImage::from_ephemeral_shared_bgra(width, height, data).map(Arc::new),
+        None => {
+            RenderImage::from_ephemeral_shared_bgra(width, height, data.as_slice()).map(Arc::new)
+        }
         Some(RasterAppearance::Ink(theme)) if theme.adapt_ink => {
             match theme.preview_pixels(&data) {
                 std::borrow::Cow::Borrowed(_) => {
-                    RenderImage::from_shared_bgra(width, height, data).map(Arc::new)
+                    RenderImage::from_shared_bgra(width, height, data.as_slice()).map(Arc::new)
                 }
                 std::borrow::Cow::Owned(pixels) => {
                     RenderImage::from_ephemeral_bgra(width, height, pixels).map(Arc::new)
                 }
             }
         }
-        _ => RenderImage::from_shared_bgra(width, height, data).map(Arc::new),
+        _ => RenderImage::from_shared_bgra(width, height, data.as_slice()).map(Arc::new),
     }
 }
 
@@ -2003,7 +2263,12 @@ fn paper_dot_centers(clip: Rect, spacing: f32) -> impl Iterator<Item = DocPoint>
 /// Choose a repeating dot-grid tile sized ~256–512 logical px so panning and
 /// scrolling reuse one small GPU texture instead of rebuilding thousands of
 /// triangle-fan path vertices and running a fullscreen 4× MSAA path pass.
-fn dot_tile_spec(spacing: f32, render_zoom: f32, scale: f32, color: u32) -> Option<(DotTileKey, f32)> {
+fn dot_tile_spec(
+    spacing: f32,
+    render_zoom: f32,
+    scale: f32,
+    color: u32,
+) -> Option<(DotTileKey, f32)> {
     if !spacing.is_finite()
         || spacing <= 0.
         || !render_zoom.is_finite()
@@ -2146,12 +2411,7 @@ fn pixel_bands(min: f32, max: f32, scale: f32) -> smallvec::SmallVec<[(f32, f32,
     bands
 }
 
-fn visit_pixel_rectangles(
-    rect: Rect,
-    color: Rgba,
-    scale: f32,
-    mut emit: impl FnMut(Rect, Rgba),
-) {
+fn visit_pixel_rectangles(rect: Rect, color: Rgba, scale: f32, mut emit: impl FnMut(Rect, Rgba)) {
     // Quads have hard rectangular edges. Split fractional device pixels into
     // weighted edge strips so thin ruling retains its coverage during resizing.
     for (x0, x1, x_alpha) in pixel_bands(rect.min.x, rect.max.x, scale) {
@@ -2167,6 +2427,27 @@ fn pixel_rectangles(rect: Rect, color: Rgba, scale: f32, rectangles: &mut Vec<(R
     visit_pixel_rectangles(rect, color, scale, |bounds, color| {
         rectangles.push((bounds, color));
     });
+}
+
+/// The parts of `rect` outside `inner`: up to four bands.
+fn rect_outside(rect: Rect, inner: Rect) -> impl Iterator<Item = Rect> {
+    let (x0, x1) = (inner.min.x.max(rect.min.x), inner.max.x.min(rect.max.x));
+    let (y0, y1) = (inner.min.y.max(rect.min.y), inner.max.y.min(rect.max.y));
+    let parts = if x0 >= x1 || y0 >= y1 {
+        [Some(rect), None, None, None]
+    } else {
+        [
+            Rect::from_points([rect.min, DocPoint::new(rect.max.x, y0)]),
+            Rect::from_points([DocPoint::new(rect.min.x, y1), rect.max]),
+            Rect::from_points([DocPoint::new(rect.min.x, y0), DocPoint::new(x0, y1)]),
+            Rect::from_points([DocPoint::new(x1, y0), DocPoint::new(rect.max.x, y1)]),
+        ]
+        .map(Some)
+    };
+    parts
+        .into_iter()
+        .flatten()
+        .filter(|r| r.width() > 0. && r.height() > 0.)
 }
 
 fn paper_clip(page: Rect, visible: Rect) -> Rect {
@@ -2282,8 +2563,8 @@ fn paper_paths(key: &PaperKey) -> Vec<(Path<Pixels>, Rgba)> {
     paths
 }
 
-fn gpu_transform(t: Transform) -> gpui::TransformationMatrix {
-    gpui::TransformationMatrix {
+fn gpu_transform(t: Transform) -> TransformationMatrix {
+    TransformationMatrix {
         rotation_scale: [[t.a, t.c], [t.b, t.d]],
         translation: [t.tx, t.ty],
     }
@@ -2292,6 +2573,28 @@ fn gpu_transform(t: Transform) -> gpui::TransformationMatrix {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    fn selecting_loop_ends_on_the_selection_box_running_its_way() {
+        let outline = rect_points(Rect::new(0., 0., 100., 60.));
+        // A counter-clockwise (on screen) loop starting near the top middle.
+        let drawn: Vec<DocPoint> = (0..24)
+            .map(|i| {
+                let a = -std::f32::consts::FRAC_PI_2 - i as f32 / 24. * std::f32::consts::TAU;
+                DocPoint::new(50. + 70. * a.cos(), 30. + 45. * a.sin())
+            })
+            .collect();
+        assert_eq!(morph_to_box(&drawn, &outline, 0.), drawn);
+        let landed = morph_to_box(&drawn, &outline, 1.);
+        let on_box = |p: &DocPoint| {
+            let edge = |v: f32, lo: f32, hi: f32| (v - lo).abs() < 0.01 || (v - hi).abs() < 0.01;
+            (edge(p.x, 0., 100.) && (-0.01..=60.01).contains(&p.y))
+                || (edge(p.y, 0., 60.) && (-0.01..=100.01).contains(&p.x))
+        };
+        assert!(landed.iter().all(on_box), "every point ends on the box");
+        // It starts on the top edge near the loop's start and turns the same way.
+        assert!(landed[0].y.abs() < 0.01 && (landed[0].x - 50.).abs() < 2.);
+        assert!(landed[1].x < landed[0].x, "counter-clockwise, as drawn");
+    }
     #[::core::prelude::v1::test]
     fn visible_scene_reuses_resize_steps_without_missing_content_or_retaining_large_views() {
         let mut page = Page::new();
@@ -2995,73 +3298,37 @@ mod tests {
     }
     #[::core::prelude::v1::test]
     fn raster_jobs_are_invalidated_by_pixels_page_and_theme() {
-        // Still previews retain the original immutable allocation until their
-        // last owner drops. Only appearance conversion needs another buffer.
+        // Previews keep their pixels; only appearance conversion changes them.
         let data = Arc::new(vec![0, 0, 0, 255, 12, 34, 56, 128]);
-        let weak = Arc::downgrade(&data);
         let image = preview_image(2, 1, data.clone(), None).unwrap();
-        image.with_bytes(0, |bytes| {
-            let bytes = bytes.unwrap();
-            assert_eq!(bytes.as_ptr(), data.as_ptr());
-            assert_eq!(bytes, data.as_slice());
-        });
+        image.with_bytes(0, |bytes| assert_eq!(bytes.unwrap(), data.as_slice()));
         assert!(image.with_bytes(1, |bytes| bytes.is_none()));
-        assert_eq!(image.size(0), size(2.into(), 1.into()));
-        assert_eq!(image.frame_count(), 1);
-        assert_eq!(image.delay(0), image::Delay::from_numer_denom_ms(0, 1));
+        assert_eq!(image.size(0), size(DevicePixels(2), DevicePixels(1)));
         let mut theme = Theme::new(&folio_app::Settings::default()).canvas;
         theme.adapt_ink = false;
         let original =
             preview_image(2, 1, data.clone(), Some(RasterAppearance::Ink(theme))).unwrap();
-        assert_eq!(original.as_bytes(0).unwrap().as_ptr(), data.as_ptr());
-        theme.adapt_ink = true;
-        theme.paper = 0xffffff;
-        {
-            let readable =
-                preview_image(2, 1, data.clone(), Some(RasterAppearance::Ink(theme))).unwrap();
-            assert_eq!(readable.as_bytes(0).unwrap().as_ptr(), data.as_ptr());
-        }
+        original.with_bytes(0, |bytes| assert_eq!(bytes.unwrap(), data.as_slice()));
         theme.paper = 0x000000;
         theme.adapt_ink = true;
         let adapted =
             preview_image(2, 1, data.clone(), Some(RasterAppearance::Ink(theme))).unwrap();
+        // Images are stored premultiplied, so translucent channels may
+        // round by one step.
         adapted.with_bytes(0, |bytes| {
-            let bytes = bytes.unwrap();
-            assert_eq!(bytes, theme.preview_pixels(&data).as_ref());
-            assert_ne!(bytes.as_ptr(), data.as_ptr());
+            let expected = theme.preview_pixels(&data);
+            assert!(
+                bytes
+                    .unwrap()
+                    .iter()
+                    .zip(expected.iter())
+                    .all(|(a, b)| a.abs_diff(*b) <= 1)
+            );
         });
         assert_eq!(data.as_slice(), &[0, 0, 0, 255, 12, 34, 56, 128]);
         assert!(preview_image(2, 2, data.clone(), None).is_none());
         assert!(preview_image(u32::MAX, u32::MAX, data.clone(), None).is_none());
         assert!(preview_image(0, 1, Arc::new(Vec::new()), None).is_none());
-        drop(data);
-        drop(original);
-        assert!(weak.upgrade().is_some());
-        drop(image);
-        assert!(weak.upgrade().is_none());
-        assert_eq!(adapted.frame_count(), 1);
-
-        // Animated image decoding still uses owned frames and their delays.
-        let frames = smallvec::smallvec![
-            image::Frame::from_parts(
-                image::RgbaImage::from_raw(1, 1, vec![1, 2, 3, 4]).unwrap(),
-                0,
-                0,
-                image::Delay::from_numer_denom_ms(20, 1),
-            ),
-            image::Frame::from_parts(
-                image::RgbaImage::from_raw(1, 1, vec![5, 6, 7, 8]).unwrap(),
-                0,
-                0,
-                image::Delay::from_numer_denom_ms(30, 1),
-            ),
-        ];
-        let animation = RenderImage::new(frames);
-        assert_eq!(animation.frame_count(), 2);
-        assert_eq!(animation.size(1), size(1.into(), 1.into()));
-        assert_eq!(animation.as_bytes(1).unwrap(), &[5, 6, 7, 8]);
-        assert_eq!(animation.delay(0), image::Delay::from_numer_denom_ms(20, 1));
-        assert_eq!(animation.delay(1), image::Delay::from_numer_denom_ms(30, 1));
 
         let request = RasterRequest {
             page: Id::new_v4(),

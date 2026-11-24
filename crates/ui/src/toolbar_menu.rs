@@ -84,207 +84,137 @@ impl NotesView {
             (f32::from(size.width), f32::from(size.height)),
             self.controller.settings.ui_scale,
         );
-        let mut panel = div()
+        // A dialog chosen here turns the dropdown into its page, wider and
+        // as tall as the window leaves below it.
+        let hosted = self.modal_hosted_in(MenuHost::Tool);
+        let (x, width) = if hosted {
+            let wide = width.max(300_f32.min(f32::from(size.width) - 16.));
+            (x.min((f32::from(size.width) - wide - 8.).max(8.)), wide)
+        } else {
+            (x, width)
+        };
+        let panel = div()
             .id("toolbar-dropdown")
             .absolute()
             .left(px(x))
             .top(px(y))
             .w(px(width))
-            .max_h(px(height))
+            .grows_from(
+                anchor.map_or((f32::from(at.x) - x) / width, |r| {
+                    ((r.x0 + r.x1) as f32 / 2. - x) / width
+                }),
+                0.,
+            )
+            .max_h(px(if hosted { f32::from(size.height) - y - 8. } else { height }))
             .overflow_y_scroll()
             .occlude()
-            .p_2()
             .rounded(px(theme.corner_md()))
             .glass(theme, theme.popover)
             .flex()
             .flex_col()
-            .gap_1()
-            .on_mouse_down_out(cx.listener(move |this, event: &MouseDownEvent, w, cx| {
-                // Let the anchor perform its own toggle; otherwise capture closes
-                // the menu before the subsequent click and immediately reopens it.
-                let own_anchor = this.accessibility.control_bounds_for_key(kind.anchor());
-                let in_anchor = own_anchor.is_some_and(|r| {
-                    let x = f32::from(event.position.x) as f64;
-                    let y = f32::from(event.position.y) as f64;
-                    x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1
-                });
-                if in_anchor {
-                    return;
+            // It springs to the size of the page it turns into and back.
+            .el(|e| e.motion(crate::motion::MORPH).animated_changes())
+            // The menu is modal: a press outside it, its own button included,
+            // only closes it, so it never reaches the page as a stroke.
+            .on_mouse_down_out(cx.listener(move |this, _: &MouseDownEvent, w, cx| {
+                if this.modal_hosted_in(MenuHost::Tool) {
+                    this.cancel_modal(w, cx);
                 }
                 this.tool_menu = None;
-                if f32::from(event.position.y) >= toolbar_bottom {
-                    // Closing a dropdown on the page must not also begin a stroke.
-                    cx.stop_propagation();
-                }
                 this.focus.focus(w);
                 cx.notify();
-            }))
-            .child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .text_xs()
-                    .text_color(rgb(theme.muted))
-                    .child(kind.title())
-                    // L returns to the last chosen selection mode.
-                    .when(kind == ToolMenu::Selection, |title| {
-                        title.child(super::keycap("L", theme))
-                    }),
-            );
+            }));
+        if hosted {
+            return panel
+                .p_1p5()
+                .child(self.modal_panel(true, window, cx))
+                .into_any_element();
+        }
+        // Read as the other menus do: a muted heading, then compact rows of
+        // an icon and a label, the current choice checked.
+        let mut panel = panel.p_1p5().gap(px(1.)).child(
+            document_actions::heading(theme, kind.title())
+                .flex()
+                .items_center()
+                .justify_between()
+                // L returns to the last chosen selection mode.
+                .when(kind == ToolMenu::Selection, |title| {
+                    title.child(super::keycap("L", theme))
+                }),
+        );
+        let check = move |on: bool| {
+            on.then(|| icon(Icon::Check, theme.ink).size(rems(1.)).into_any_element())
+        };
         match kind {
             ToolMenu::Selection => {
                 for (id, label, detail, kind, tool) in [
-                    (
-                        "lasso",
-                        "Lasso",
-                        "Circle what to select",
-                        Icon::Lasso,
-                        Tool::Lasso,
-                    ),
-                    (
-                        "select-rect",
-                        "Rectangle",
-                        "Drag a box to select",
-                        Icon::Rectangle,
-                        Tool::Rectangle,
-                    ),
+                    ("lasso", "Lasso", "Circle what to select", Icon::Lasso, Tool::Lasso),
+                    ("select-rect", "Rectangle", "Drag a box to select", Icon::Rectangle, Tool::Rectangle),
                 ] {
                     // The mode the selection button uses is checked, even
                     // while another tool is in use.
                     let chosen = self.selection_tool == tool;
-                    panel = panel.child(
-                        self.control(
-                            id,
-                            format!("{label} selection · {detail}"),
-                            div()
-                                .w_full()
-                                .flex()
-                                .items_center()
-                                .gap_3()
-                                .child(
-                                    div()
-                                        .size(rems(2.))
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded(px(theme.radius))
-                                        .border_1()
-                                        .border_color(theme.border)
-                                        .bg(theme.raised())
-                                        .child(
-                                            icon(
-                                                kind,
-                                                if chosen { theme.accent } else { theme.ink },
-                                            )
-                                            .size(rems(1.125)),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .child(div().font_weight(FontWeight::MEDIUM).child(label))
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(rgb(theme.muted))
-                                                .truncate()
-                                                .child(detail),
-                                        ),
-                                )
-                                .when(chosen, |row| {
-                                    row.child(icon(Icon::Check, theme.accent).size(rems(1.)))
-                                })
-                                .into_any_element(),
-                            chosen,
-                            cx,
-                            move |this, w, _| {
-                                this.focus.focus(w);
-                                this.selection_tool = tool;
-                                this.region_selection = None;
-                                this.controller.set_tool(tool);
-                                this.dismiss_popovers();
-                            },
-                        )
-                        .px_2()
-                        .w_full()
-                        .justify_start(),
-                    );
+                    panel = panel.child(self.menu_row(
+                        id,
+                        format!("{label} selection · {detail}").into(),
+                        div().child(label),
+                        kind,
+                        theme.muted,
+                        check(chosen),
+                        cx,
+                        move |this, w, _| {
+                            this.focus.focus(w);
+                            this.selection_tool = tool;
+                            this.region_selection = None;
+                            this.controller.set_tool(tool);
+                            this.dismiss_popovers();
+                        },
+                    ));
                 }
             }
             ToolMenu::Insert => {
                 panel = panel
-                    .child(
-                        self.control(
-                            "shape",
-                            "Shapes · S",
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(icon(Icon::Shapes, theme.muted))
-                                .child("Shapes · S")
-                                .into_any_element(),
-                            self.controller.tool == Tool::Shape,
-                            cx,
-                            |this, w, _| {
-                                this.focus.focus(w);
-                                this.select_tool(Tool::Shape);
-                            },
-                        )
-                        .w_full()
-                        .justify_start(),
-                    )
-                    .child(
-                        self.control(
-                            "toolbar-image",
-                            "Insert image or PDF…",
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(icon(Icon::Image, theme.muted))
-                                .child("Insert image or PDF…")
-                                .into_any_element(),
-                            false,
-                            cx,
-                            |this, _, cx| {
-                                this.dismiss_popovers();
-                                this.import(cx);
-                            },
-                        )
-                        .w_full()
-                        .justify_start(),
-                    )
-                    .child(
-                        self.control(
-                            "insert-equation",
-                            "Insert LaTeX equation…",
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(icon(Icon::Math, theme.muted))
-                                .child("Insert LaTeX equation…")
-                                .into_any_element(),
-                            false,
-                            cx,
-                            |this, w, cx| {
-                                this.modal(Modal::Equation, w, cx);
-                            },
-                        )
-                        .w_full()
-                        .justify_start(),
-                    );
+                    .child(self.menu_row(
+                        "shape",
+                        "Shapes · S".into(),
+                        div().child("Shapes"),
+                        Icon::Shapes,
+                        theme.muted,
+                        Some(super::keycap("S", theme).text_xs().into_any_element()),
+                        cx,
+                        |this, w, _| {
+                            this.focus.focus(w);
+                            this.select_tool(Tool::Shape);
+                        },
+                    ))
+                    .child(self.menu_row(
+                        "toolbar-image",
+                        "Insert image or PDF…".into(),
+                        div().child("Image or PDF…"),
+                        Icon::Image,
+                        theme.muted,
+                        None,
+                        cx,
+                        |this, _, cx| {
+                            this.dismiss_popovers();
+                            this.import(cx);
+                        },
+                    ))
+                    .child(self.menu_row(
+                        "insert-equation",
+                        "Insert LaTeX equation…".into(),
+                        div().child("LaTeX equation…"),
+                        Icon::Math,
+                        theme.muted,
+                        None,
+                        cx,
+                        |this, w, cx| {
+                            this.modal_in_menu(MenuHost::Tool, Modal::Equation, w, cx);
+                        },
+                    ));
             }
             ToolMenu::Color => {
-                let mut swatches = div().flex().flex_wrap().gap_1().px_1();
+                let mut swatches = div().flex().flex_wrap().gap_1().px_1().pb_1();
                 let mut colors: Vec<Color> = INK_SWATCHES.map(Color::from_rgb).to_vec();
                 for recent in &self.controller.settings.recent_colors {
                     if !colors.contains(recent) {
@@ -321,31 +251,58 @@ impl NotesView {
                         .p_1(),
                     );
                 }
-                panel = panel.child(swatches).child(
-                    self.button(
+                panel = panel
+                    .child(swatches)
+                    .child(document_actions::separator(theme))
+                    .child(self.menu_row(
                         "ink-custom-color",
-                        "Custom color…",
-                        false,
+                        "Custom color…".into(),
+                        div().child("Custom color…"),
+                        Icon::Palette,
+                        theme.muted,
+                        None,
                         cx,
                         |this, w, cx| {
-                            this.tool_menu = None;
-                            this.modal(Modal::Color, w, cx);
+                            this.modal_in_menu(MenuHost::Tool, Modal::Color, w, cx);
                         },
-                    )
-                    .w_full()
-                    .justify_start(),
-                );
+                    ));
             }
             ToolMenu::Width => {
-                for (i, width) in width_presets(self.controller.style.tool)
-                    .into_iter()
-                    .enumerate()
-                {
+                let current = self.controller.style.width;
+                let presets = width_presets(self.controller.style.tool);
+                let thickest = presets.iter().copied().fold(1_f32, f32::max);
+                for (i, width) in presets.into_iter().enumerate() {
+                    let chosen = (current - width).abs() < 0.1;
+                    let label = format!("{width:.1} px");
+                    // Each width shows as a stroke of its own weight, in
+                    // the icon column.
+                    let sample = div()
+                        .w(rems(1.125))
+                        .h(rems(1.125))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .w_full()
+                                .h(px((width / thickest * 7.).clamp(1., 7.)))
+                                .rounded_full()
+                                .bg(rgb(theme.muted)),
+                        );
                     panel = panel.child(
-                        self.button(
+                        self.control(
                             format!("width-{i}"),
-                            format!("{width:.1} px"),
-                            (self.controller.style.width - width).abs() < 0.1,
+                            label.clone(),
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap(px(10.))
+                                .child(sample)
+                                .child(div().flex_1().min_w_0().child(label))
+                                .children(check(chosen))
+                                .into_any_element(),
+                            false,
                             cx,
                             move |this, _, _| {
                                 let mut style = this.controller.style.clone();
@@ -354,29 +311,26 @@ impl NotesView {
                             },
                         )
                         .w_full()
-                        .justify_start(),
+                        .justify_start()
+                        .min_h(rems(2.))
+                        .px_2()
+                        .py_1(),
                     );
                 }
-                panel = panel.child(
+                panel = panel.child(document_actions::separator(theme)).child(
                     div()
                         .flex()
                         .items_center()
                         .justify_between()
                         .gap_2()
-                        .px_2()
-                        .child(
-                            self.pen_stepper(pen_menu::PenSetting::Width, false, cx)
-                                .px_2(),
-                        )
+                        .px_1()
+                        .child(self.pen_stepper(pen_menu::PenSetting::Width, false, cx).px_2())
                         .child(
                             div()
                                 .text_sm()
                                 .child(pen_menu::PenSetting::Width.value(&self.controller.style)),
                         )
-                        .child(
-                            self.pen_stepper(pen_menu::PenSetting::Width, true, cx)
-                                .px_2(),
-                        ),
+                        .child(self.pen_stepper(pen_menu::PenSetting::Width, true, cx).px_2()),
                 );
             }
         }

@@ -71,6 +71,10 @@ jobs:
             (Split-Path $path) >> $env:GITHUB_PATH
           }
       - name: Build release and package
+        # Whole-program (fat) LTO of the Rune build exceeds the runner's memory.
+        env:
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
         run: |
           ./scripts/build-windows.ps1
           python scripts/package-windows.py --installer --output artifacts/dist
@@ -109,7 +113,5 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - name: Verify renderer resize and upload lifetimes
-        run: python scripts/test_renderer_resize.py
       - name: Test Rust workspace
         run: cargo test --locked --workspace -- --test-threads=2

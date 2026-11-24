@@ -1,5 +1,4 @@
 //! Update notice lives in the shared title bar, beside the window controls.
-use super::workspace::Hint;
 use super::*;
 use folio_update::State;
 
@@ -36,8 +35,8 @@ impl NotesView {
             .flex_shrink_0()
             // Keep every update state (including disabled progress notices) out of
             // the title bar's native move/menu handlers without swallowing clicks.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .occlude()
+            .occlude()
             .child(
                 self.control(
                     "app-update",
@@ -54,7 +53,7 @@ impl NotesView {
                 .flex_shrink_0()
                 .bg(theme.tint(1.))
                 .text_color(rgb(theme.accent))
-                .tooltip(move |_, cx| cx.new(|_| Hint(detail.clone().into(), theme)).into()),
+                .tooltip(detail.clone()),
             )
     }
     pub(super) fn update_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -153,18 +152,26 @@ impl NotesView {
         );
         let status = if supported {
             self.settings_row("Status", &description)
-                .child(self.settings_action("update-check", "Check now", cx, |this, _, cx| {
-                    this.updater.check();
-                    cx.notify();
-                }))
+                .child(
+                    self.settings_action("update-check", "Check now", cx, |this, _, cx| {
+                        this.updater.check();
+                        cx.notify();
+                    }),
+                )
                 .when(
                     self.updater.state.can_download() || self.updater.state.can_restart(),
                     |row| {
                         row.child(
-                            self.button("update-settings-action", action, true, cx, |this, window, cx| {
-                                this.settings_open = false;
-                                this.update_action(window, cx);
-                            })
+                            self.button(
+                                "update-settings-action",
+                                action,
+                                true,
+                                cx,
+                                |this, window, cx| {
+                                    this.settings_open = false;
+                                    this.update_action(window, cx);
+                                },
+                            )
                             .flex_shrink_0()
                             .px_3()
                             .py_1(),
@@ -209,33 +216,5 @@ impl NotesView {
             },
             _ => State::Current,
         };
-    }
-    pub fn update_smoke_verify(&self, phase: u8) -> Result<(), String> {
-        self.titlebar_smoke_verify_geometry()?;
-        let label = match phase {
-            0 => "Update · 0.1.1",
-            1 => "Downloading 42%",
-            2 => "Restart to update",
-            _ => return Ok(()),
-        };
-        let notice = self
-            .accessibility
-            .control_bounds(label)
-            .ok_or_else(|| format!("Update notice is missing: {label}"))?;
-        let close = self
-            .accessibility
-            .control_bounds("Close window")
-            .ok_or("Close window control is missing")?;
-        if notice.x1 > close.x0 || (notice.y0 - close.y0).abs() > 4.0 {
-            return Err("Update notice is not beside the window controls".into());
-        }
-        for control in ["Minimize window", "Maximize window"] {
-            if let Some(bounds) = self.accessibility.control_bounds(control)
-                && notice.x1 > bounds.x0
-            {
-                return Err("Update notice overlaps the window controls".into());
-            }
-        }
-        Ok(())
     }
 }

@@ -1,130 +1,51 @@
-//! AT-SPI/UI Automation bridge. Accessibility actions are queued to the UI thread.
+//! Accessible semantics and keyboard navigation for Folio's controls. Rune
+//! exposes elements to the platform accessibility API itself; this module
+//! keeps each control's role, its callback for keyboard navigation and its
+//! laid-out bounds, which menus anchor to.
 use super::*;
-#[cfg(not(windows))]
-use accesskit::DeactivationHandler;
-use accesskit::{
-    Action, ActionRequest, ActivationHandler, Node, NodeId, Role, TreeId, TreeInfo, TreeUpdate,
-};
-use futures::channel::mpsc;
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    hash::{Hash, Hasher},
-    rc::Rc,
-    sync::{Arc, Mutex},
-};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 pub type Callback = Rc<dyn Fn(&mut NotesView, &mut Window, &mut Context<NotesView>)>;
-struct Activation(Arc<Mutex<Option<TreeUpdate>>>);
-impl ActivationHandler for Activation {
-    fn request_initial_tree(&mut self) -> Option<TreeUpdate> {
-        self.0.lock().ok()?.clone()
-    }
+
+/// Window bounds as `x0, y0, x1, y1`, as AccessKit's rectangles were.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rect {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
 }
-struct Actions(mpsc::UnboundedSender<ActionRequest>);
-impl accesskit::ActionHandler for Actions {
-    fn do_action(&mut self, request: ActionRequest) {
-        let _ = self.0.unbounded_send(request);
+impl Rect {
+    pub fn from_layout(r: [f32; 4]) -> Self {
+        Self {
+            x0: r[0] as f64,
+            y0: r[1] as f64,
+            x1: (r[0] + r[2]) as f64,
+            y1: (r[1] + r[3]) as f64,
+        }
     }
-}
-#[cfg(not(windows))]
-struct Deactivation;
-#[cfg(not(windows))]
-impl DeactivationHandler for Deactivation {
-    fn deactivate_accessibility(&mut self) {}
 }
 
-struct NativeAdapter {
-    #[cfg(not(windows))]
-    inner: accesskit_unix::Adapter,
-    #[cfg(windows)]
-    inner: Rc<RefCell<accesskit_windows::Adapter>>,
-}
-impl NativeAdapter {
-    fn new(snapshot: Arc<Mutex<Option<TreeUpdate>>>, actions: Actions, _window: &Window) -> Self {
-        #[cfg(not(windows))]
-        let inner = accesskit_unix::Adapter::new(Activation(snapshot), actions, Deactivation);
-        #[cfg(windows)]
-        let inner = {
-            let inner = Rc::new(RefCell::new(accesskit_windows::Adapter::new(
-                accesskit_windows::HWND(_window.win32_handle() as *mut _),
-                _window.is_window_active(),
-                actions,
-            )));
-            let adapter = inner.clone();
-            let mut activation = Activation(snapshot);
-            _window.on_accessibility_object(move |wparam, lparam| {
-                let response = adapter.borrow_mut().handle_wm_getobject(
-                    accesskit_windows::WPARAM(wparam),
-                    accesskit_windows::LPARAM(lparam),
-                    &mut activation,
-                );
-                response.map(|response| {
-                    let result: accesskit_windows::LRESULT = response.into();
-                    result.0
-                })
-            });
-            inner
-        };
-        Self { inner }
-    }
-    fn update_if_active(&mut self, update: impl FnOnce() -> TreeUpdate) {
-        #[cfg(not(windows))]
-        self.inner.update_if_active(update);
-        #[cfg(windows)]
-        {
-            let events = self.inner.borrow_mut().update_if_active(update);
-            if let Some(events) = events {
-                events.raise();
-            }
-        }
-    }
-    fn update_window(&mut self, window: &Window) {
-        #[cfg(not(windows))]
-        {
-            let bounds = window.bounds();
-            let rect = accesskit::Rect {
-                x0: f32::from(bounds.left()) as f64,
-                y0: f32::from(bounds.top()) as f64,
-                x1: f32::from(bounds.right()) as f64,
-                y1: f32::from(bounds.bottom()) as f64,
-            };
-            self.inner.set_root_window_bounds(rect, rect);
-            self.inner
-                .update_window_focus_state(window.is_window_active());
-        }
-        #[cfg(windows)]
-        {
-            let events = self
-                .inner
-                .borrow_mut()
-                .update_window_focus_state(window.is_window_active());
-            if let Some(events) = events {
-                events.raise();
-            }
-        }
-    }
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Semantics {
-    role: Role,
-    group: Option<(u64, &'static str, Role)>,
+    role: &'static str,
+    group: Option<(u64, &'static str, &'static str)>,
     toggle: bool,
 }
 fn semantics(key: &str) -> Semantics {
     let radio = |id, label| Semantics {
-        role: Role::RadioButton,
-        group: Some((id, label, Role::RadioGroup)),
+        role: "radio",
+        group: Some((id, label, "radiogroup")),
         toggle: true,
     };
     let button = Semantics {
-        role: Role::Button,
+        role: "button",
         group: None,
         toggle: false,
     };
     if key.starts_with("settings-section-") {
         return Semantics {
-            role: Role::Tab,
-            group: Some((49, "Settings sections", Role::TabList)),
+            role: "tab",
+            group: Some((49, "Settings sections", "tablist")),
             toggle: false,
         };
     }
@@ -134,8 +55,8 @@ fn semantics(key: &str) -> Semantics {
             .is_some_and(|id| Id::parse_str(id).is_ok())
     {
         return Semantics {
-            role: Role::Tab,
-            group: Some((20, "Open documents", Role::TabList)),
+            role: "tab",
+            group: Some((20, "Open documents", "tablist")),
             toggle: false,
         };
     }
@@ -144,8 +65,8 @@ fn semantics(key: &str) -> Semantics {
         .is_some_and(|id| Id::parse_str(id).is_ok())
     {
         return Semantics {
-            role: Role::TreeItem,
-            group: Some((21, "Folders", Role::Tree)),
+            role: "treeitem",
+            group: Some((21, "Folders", "tree")),
             toggle: false,
         };
     }
@@ -154,8 +75,8 @@ fn semantics(key: &str) -> Semantics {
         .is_some_and(|id| Id::parse_str(id).is_ok())
     {
         return Semantics {
-            role: Role::ListBoxOption,
-            group: Some((22, "Pages", Role::ListBox)),
+            role: "option",
+            group: Some((22, "Pages", "listbox")),
             toggle: false,
         };
     }
@@ -264,7 +185,7 @@ fn semantics(key: &str) -> Semantics {
             | "reduce-motion"
     ) {
         return Semantics {
-            role: Role::Switch,
+            role: "switch",
             toggle: true,
             ..button
         };
@@ -286,138 +207,51 @@ fn semantics(key: &str) -> Semantics {
     }
     button
 }
-fn semantic_node(key: &str, label: &str, active: bool, enabled: bool) -> Node {
-    let semantics = semantics(key);
-    let mut node = Node::new(semantics.role);
-    node.set_label(label);
-    if semantics.toggle {
-        node.set_toggled(if active {
-            accesskit::Toggled::True
-        } else {
-            accesskit::Toggled::False
-        });
-    }
-    if matches!(
-        semantics.role,
-        Role::Tab | Role::TreeItem | Role::ListBoxOption
-    ) {
-        node.set_selected(active);
-    }
-    if key.starts_with("toggle-folder-")
-        || matches!(
-            key,
-            "select-options" | "insert-options" | "width-options" | "custom-color"
-        )
-    {
-        node.set_expanded(active);
-    }
-    if !enabled {
-        node.set_disabled();
-    } else {
-        node.add_action(Action::Click);
-        node.add_action(Action::Focus);
-    }
-    node
+pub(super) fn role(key: &str) -> &'static str {
+    semantics(key).role
+}
+pub(super) fn toggles(key: &str) -> bool {
+    semantics(key).toggle
+}
+/// The selection group whose highlight glides from one member to the next
+/// (library filters, segmented choices, settings sections). Groups that mark
+/// their choice another way (tools, tabs, folders, pages, swatches) have none.
+pub(super) fn glide_group(key: &str) -> Option<u64> {
+    let (id, _, _) = semantics(key).group?;
+    (!matches!(id, 20 | 21 | 22 | 31 | 32 | 33)).then_some(id)
+}
+pub(super) fn selects(key: &str) -> bool {
+    matches!(semantics(key).role, "tab" | "treeitem" | "option")
 }
 struct Control {
-    id: NodeId,
     key: String,
-    active: bool,
-    label: String,
     callback: Callback,
     enabled: bool,
     focus: FocusHandle,
 }
+#[derive(Default)]
 pub struct Accessibility {
-    adapter: RefCell<NativeAdapter>,
-    snapshot: Arc<Mutex<Option<TreeUpdate>>>,
     controls: RefCell<Vec<Control>>,
-    focus_handles: RefCell<HashMap<NodeId, FocusHandle>>,
-    bounds: RefCell<HashMap<NodeId, accesskit::Rect>>,
-}
-fn replace_snapshot(current: &mut Option<TreeUpdate>, update: &TreeUpdate) -> bool {
-    if current.as_ref() == Some(update) {
-        return false;
-    }
-    *current = Some(update.clone());
-    true
+    bounds: RefCell<HashMap<String, Rect>>,
 }
 impl Accessibility {
-    fn control_id(key: &str) -> NodeId {
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        key.hash(&mut hash);
-        NodeId(hash.finish() | 256)
-    }
     /// Whether the control `key` has keyboard focus.
     pub(super) fn is_focused(&self, key: &str, window: &Window) -> bool {
-        self.focus_handles
-            .borrow()
-            .get(&Self::control_id(key))
-            .is_some_and(|focus| focus.is_focused(window))
+        window.focused.as_deref() == Some(key)
     }
     pub(super) fn focus_virtual_control(
         &self,
         key: &str,
         window: &mut Window,
-        cx: &mut Context<NotesView>,
+        _: &mut Context<NotesView>,
     ) {
-        self.focus_handles
-            .borrow_mut()
-            .entry(Self::control_id(key))
-            .or_insert_with(|| cx.focus_handle())
-            .focus(window);
-    }
-    pub fn new(window: &Window) -> (Self, mpsc::UnboundedReceiver<ActionRequest>) {
-        let snapshot = Arc::new(Mutex::new(None));
-        let (tx, requests) = mpsc::unbounded();
-        let adapter = NativeAdapter::new(snapshot.clone(), Actions(tx), window);
-        (
-            Self {
-                adapter: RefCell::new(adapter),
-                snapshot,
-                controls: RefCell::new(vec![]),
-                focus_handles: RefCell::new(HashMap::new()),
-                bounds: RefCell::new(HashMap::new()),
-            },
-            requests,
-        )
+        FocusHandle::new(key).focus(window);
     }
     pub fn begin(&self) {
         self.controls.borrow_mut().clear();
     }
-    pub fn action(&self, id: NodeId) -> Option<(Callback, FocusHandle)> {
-        self.controls
-            .borrow()
-            .iter()
-            .find(|c| c.id == id && c.enabled)
-            .map(|c| (c.callback.clone(), c.focus.clone()))
-    }
-    // Registration keeps the native control identity, semantics, callback, and GPUI context together.
-    #[allow(clippy::too_many_arguments)]
-    pub fn control(
-        &self,
-        key: &str,
-        label: &str,
-        callback: Callback,
-        enabled: bool,
-        active: bool,
-        visible: bool,
-        cx: &mut Context<NotesView>,
-    ) -> (NodeId, FocusHandle) {
-        let id = Self::control_id(key);
-        let focus = self
-            .focus_handles
-            .borrow_mut()
-            .entry(id)
-            .or_insert_with(|| cx.focus_handle())
-            .clone()
-            // GPUI reads the Tab order from the tracked handle itself, not
-            // from the element's tab_stop style.
-            .tab_stop(enabled && visible);
-        if !visible {
-            return (id, focus);
-        }
-        let label = match key {
+    pub fn label_for(key: &str, label: &str) -> String {
+        match key {
             "undo" => "Undo",
             "redo" => "Redo",
             "add-notebook" => "New folder",
@@ -434,25 +268,37 @@ impl Accessibility {
             "cursor-smaller" => "Decrease cursor size",
             "cursor-larger" => "Increase cursor size",
             _ => label,
-        };
+        }
+        .to_owned()
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn control(
+        &self,
+        key: &str,
+        _label: &str,
+        callback: Callback,
+        enabled: bool,
+        _active: bool,
+        visible: bool,
+        _: &mut Context<NotesView>,
+    ) -> (String, FocusHandle) {
+        let focus = FocusHandle::new(key);
+        if !visible {
+            return (key.to_owned(), focus);
+        }
         let control = Control {
-            id,
             key: key.into(),
-            active,
-            label: label.into(),
             callback,
             enabled,
             focus: focus.clone(),
         };
-        // A virtual list can measure and lay out the same row more than once.
-        // AccessKit requires each child ID to occur exactly once in the tree.
         let mut controls = self.controls.borrow_mut();
-        if let Some(existing) = controls.iter_mut().find(|c| c.id == id) {
+        if let Some(existing) = controls.iter_mut().find(|c| c.key == key) {
             *existing = control;
         } else {
             controls.push(control);
         }
-        (id, focus)
+        (key.to_owned(), focus)
     }
     pub fn focus_control(&self, key: &str, window: &mut Window) {
         if let Some(control) = self
@@ -496,519 +342,15 @@ impl Accessibility {
         };
         Some(members[next].focus.clone())
     }
-    /// Uniform-list measurement registers a probe row before the visible rows.
-    /// Keep only the rendered documents so stale, offscreen bounds cannot remain
-    /// clickable in the native accessibility tree after scrolling.
-    pub fn retain_library_items(&self, notes: &[folio_document::NoteMetadata]) {
-        let visible: std::collections::HashSet<_> = notes.iter().map(|n| n.id).collect();
-        self.controls.borrow_mut().retain(|control| {
-            let id = control
-                .key
-                .strip_prefix("note-")
-                .or_else(|| control.key.strip_prefix("favorite-card-"))
-                .or_else(|| control.key.strip_prefix("manage-note-"))
-                .and_then(|id| Id::parse_str(id).ok());
-            id.is_none_or(|id| visible.contains(&id))
-        });
+    pub(super) fn control_bounds_for_key(&self, key: &str) -> Option<Rect> {
+        self.bounds.borrow().get(key).copied()
     }
-    pub fn retain_folder_items(&self, ids: impl IntoIterator<Item = Id>) {
-        let visible: std::collections::HashSet<_> = ids.into_iter().collect();
-        self.controls.borrow_mut().retain(|control| {
-            let id = control
-                .key
-                .strip_prefix("folder-")
-                .or_else(|| control.key.strip_prefix("toggle-folder-"))
-                .or_else(|| control.key.strip_prefix("manage-folder-"))
-                .and_then(|id| Id::parse_str(id).ok());
-            id.is_none_or(|id| visible.contains(&id))
-        });
+    pub fn set_bounds(&self, key: &str, rect: [f32; 4]) {
+        self.bounds
+            .borrow_mut()
+            .insert(key.to_owned(), Rect::from_layout(rect));
     }
-    pub(super) fn control_bounds_for_key(&self, key: &str) -> Option<accesskit::Rect> {
-        let id = self.controls.borrow().iter().find(|c| c.key == key)?.id;
-        self.bounds.borrow().get(&id).copied()
-    }
-    pub fn control_bounds(&self, label: &str) -> Option<accesskit::Rect> {
-        let id = self.controls.borrow().iter().find(|c| c.label == label)?.id;
-        self.bounds.borrow().get(&id).copied()
-    }
-    pub fn set_bounds(&self, id: NodeId, bounds: Bounds<Pixels>) {
-        let rect = accesskit::Rect {
-            x0: f32::from(bounds.left()) as f64,
-            y0: f32::from(bounds.top()) as f64,
-            x1: f32::from(bounds.right()) as f64,
-            y1: f32::from(bounds.bottom()) as f64,
-        };
-        if self.bounds.borrow().get(&id) == Some(&rect) {
-            return;
-        }
-        self.bounds.borrow_mut().insert(id, rect);
-        if let Ok(mut snapshot) = self.snapshot.lock()
-            && let Some(snapshot) = snapshot.as_mut()
-            && let Some((_, node)) = snapshot.nodes.iter_mut().find(|(n, _)| *n == id)
-        {
-            node.set_bounds(rect);
-            let update = TreeUpdate {
-                nodes: vec![(id, node.clone())],
-                tree: None,
-                tree_id: TreeId::ROOT,
-                focus: snapshot.focus,
-            };
-            self.adapter.borrow_mut().update_if_active(|| update);
-        }
-    }
-    pub fn publish(&self, view: &NotesView, window: &Window, cx: &App) {
-        let mut root = Node::new(Role::Window);
-        #[cfg(windows)]
-        root.set_transform(accesskit::Affine::scale(window.scale_factor() as f64));
-        root.set_label(if view.library_open {
-            "Library — Folio".into()
-        } else {
-            format!(
-                "{} — Folio",
-                view.controller.session().document.metadata.title
-            )
-        });
-        let mut document = Node::new(Role::Document);
-        document.set_label(format!("Page {}", view.controller.session().page + 1));
-        document.set_value(view.controller.session().page_text().to_string());
-        if let Some(bounds) = view.canvas_bounds {
-            document.set_bounds(accesskit::Rect {
-                x0: f32::from(bounds.left()) as f64,
-                y0: f32::from(bounds.top()) as f64,
-                x1: f32::from(bounds.right()) as f64,
-                y1: f32::from(bounds.bottom()) as f64,
-            });
-        }
-        let mut nodes = vec![];
-        let mut children = vec![];
-        if !view.library_open && !view.blocking_overlay() {
-            nodes.push((NodeId(2), document));
-            children.push(NodeId(2));
-        }
-        let mut focus = NodeId(1);
-        let controls = self.controls.borrow();
-        let folders = view
-            .controller
-            .folder_details(controls.iter().filter_map(|control| {
-                control
-                    .key
-                    .strip_prefix("folder-")
-                    .and_then(|id| Id::parse_str(id).ok())
-            }));
-        for control in controls.iter() {
-            let mut node = semantic_node(
-                &control.key,
-                &control.label,
-                control.active,
-                control.enabled,
-            );
-            if control.key == "delete-folder"
-                && let Some((id, _)) = view.folder_menu
-                && let Some(reason) = view.controller.folder_deletion_reason(id)
-            {
-                node.set_description(reason);
-            }
-            if let Some(id) = control
-                .key
-                .strip_prefix("folder-")
-                .and_then(|id| Id::parse_str(id).ok())
-            {
-                let details = folders.get(&id);
-                node.set_level(details.map_or(0, |folder| folder.level));
-                if details.is_some_and(|folder| folder.branch) {
-                    node.set_expanded(!view.controller.settings.collapsed_folders.contains(&id));
-                }
-            }
-            if let Some(bounds) = self.bounds.borrow().get(&control.id) {
-                node.set_bounds(*bounds);
-            }
-            if control.focus.is_focused(window) {
-                focus = control.id;
-            }
-            nodes.push((control.id, node));
-            children.push(control.id);
-        }
-        if self.focus_handles.borrow().len() > 2048 {
-            let ids = controls
-                .iter()
-                .map(|c| c.id)
-                .collect::<std::collections::HashSet<_>>();
-            self.focus_handles
-                .borrow_mut()
-                .retain(|id, _| ids.contains(id));
-            self.bounds.borrow_mut().retain(|id, _| ids.contains(id));
-        }
-        if let Some(editor) = &view.inline_text
-            && !view.blocking_overlay()
-        {
-            let field = editor.field.read(cx);
-            let mut node = Node::new(Role::MultilineTextInput);
-            node.set_label("Text box");
-            node.set_value(field.content.clone());
-            node.add_action(Action::Focus);
-            node.add_action(Action::SetValue);
-            if let Some(bounds) = field.bounds {
-                node.set_bounds(accesskit::Rect {
-                    x0: f32::from(bounds.left()) as f64,
-                    y0: f32::from(bounds.top()) as f64,
-                    x1: f32::from(bounds.right()) as f64,
-                    y1: f32::from(bounds.bottom()) as f64,
-                });
-            }
-            if field.focus.is_focused(window) {
-                focus = NodeId(13);
-            }
-            nodes.push((NodeId(13), node));
-            children.push(NodeId(13));
-        }
-        if let Some((modal, field)) = &view.modal
-            && view.controller.error.is_none()
-            && (!view.settings_open
-                || matches!(modal, Modal::CanvasColor | Modal::ThemeColor { .. }))
-            && !view.help_open
-            && !matches!(modal, Modal::MovePage | Modal::Templates)
-            && view.modal_field_visible()
-        {
-            let field = field.read(cx);
-            let mut node = Node::new(if field.secret {
-                Role::PasswordInput
-            } else if field.multiline {
-                Role::MultilineTextInput
-            } else {
-                Role::TextInput
-            });
-            node.set_label(
-                if matches!(modal, Modal::MoveNotebook(_) | Modal::MoveDocument(_)) {
-                    "Filter destination folders"
-                } else {
-                    modal.title()
-                },
-            );
-            if view.modal_error.is_some() {
-                node.set_invalid(accesskit::Invalid::True);
-                node.set_error_message(NodeId(10));
-            }
-            if let Some(bounds) = field.bounds {
-                node.set_bounds(accesskit::Rect {
-                    x0: f32::from(bounds.left()) as f64,
-                    y0: f32::from(bounds.top()) as f64,
-                    x1: f32::from(bounds.right()) as f64,
-                    y1: f32::from(bounds.bottom()) as f64,
-                });
-            }
-            if !field.secret {
-                node.set_value(field.content.clone());
-            }
-            node.add_action(Action::Focus);
-            node.add_action(Action::SetValue);
-            if field.focus.is_focused(window) {
-                focus = NodeId(3);
-            }
-            nodes.push((NodeId(3), node));
-            children.push(NodeId(3));
-            if let Some(setup) = &view.notebook_setup
-                && setup.custom_color_open
-            {
-                let field = setup.color.read(cx);
-                let mut color = Node::new(Role::TextInput);
-                color.set_label("Custom paper color");
-                color.set_value(field.content.clone());
-                color.add_action(Action::Focus);
-                color.add_action(Action::SetValue);
-                if let Some(bounds) = field.bounds {
-                    color.set_bounds(accesskit::Rect {
-                        x0: f32::from(bounds.left()) as f64,
-                        y0: f32::from(bounds.top()) as f64,
-                        x1: f32::from(bounds.right()) as f64,
-                        y1: f32::from(bounds.bottom()) as f64,
-                    });
-                }
-                if field.focus.is_focused(window) {
-                    focus = NodeId(12);
-                }
-                nodes.push((NodeId(12), color));
-                children.push(NodeId(12));
-            }
-            if let Some(error) = &view.modal_error {
-                let mut status = Node::new(Role::Alert);
-                status.set_live(accesskit::Live::Assertive);
-                status.set_label(error.clone());
-                nodes.push((NodeId(10), status));
-                children.push(NodeId(10));
-            }
-        }
-        if let Some(inputs) = &view.math_inputs
-            && view.modal.is_none()
-            && !view.blocking_overlay()
-        {
-            for ((id, label, entity), visible) in [
-                (5, "Math expression", &inputs.expression),
-                (6, "Target variable", &inputs.variable),
-                (7, "Next mathematical line", &inputs.next_line),
-                (8, "Graph x range", &inputs.range),
-                (11, "Result LaTeX source", &inputs.result_latex),
-            ]
-            .into_iter()
-            .zip(
-                inputs
-                    .visible_fields(cx)
-                    .into_iter()
-                    .chain([inputs.latex_open]),
-            ) {
-                if !visible {
-                    continue;
-                }
-                let field = entity.read(cx);
-                let mut node = Node::new(if field.multiline {
-                    Role::MultilineTextInput
-                } else {
-                    Role::TextInput
-                });
-                node.set_label(label);
-                node.set_value(field.content.clone());
-                if let Some(bounds) = field.bounds {
-                    node.set_bounds(accesskit::Rect {
-                        x0: f32::from(bounds.left()) as f64,
-                        y0: f32::from(bounds.top()) as f64,
-                        x1: f32::from(bounds.right()) as f64,
-                        y1: f32::from(bounds.bottom()) as f64,
-                    });
-                }
-                node.add_action(Action::Focus);
-                node.add_action(Action::SetValue);
-                if field.focus.is_focused(window) {
-                    focus = NodeId(id);
-                }
-                nodes.push((NodeId(id), node));
-                children.push(NodeId(id));
-            }
-        }
-        if let Some(session) = &view.controller.math_session
-            && !view.blocking_overlay()
-            && view.modal.is_none()
-        {
-            let mut result = Node::new(Role::Status);
-            let label = if view.controller.recognition_pending {
-                view.controller.recognition_status.clone()
-            } else if session.pending {
-                if view.math_inputs.as_ref().is_some_and(|i| i.latex_open) {
-                    "Updating the answer…".into()
-                } else {
-                    "Solving math…".into()
-                }
-            } else if let Some(error) = &session.error {
-                format!("Math solver: {error}")
-            } else if let Some(report) = &session.report {
-                let guided = view.math_inputs.as_ref().is_some_and(|i| i.guided);
-                let steps = if guided {
-                    report
-                        .steps
-                        .get(session.revealed.saturating_sub(1))
-                        .map(|s| {
-                            format!(
-                                "Step {} of {}: {}. {}",
-                                session.revealed,
-                                report.steps.len(),
-                                s.explanation,
-                                s.after
-                            )
-                        })
-                        .unwrap_or_default()
-                } else {
-                    report
-                        .steps
-                        .iter()
-                        .take(session.revealed)
-                        .map(|s| format!("{}: {}", s.explanation, s.after))
-                        .collect::<Vec<_>>()
-                        .join(". ")
-                };
-                format!(
-                    "{}: {}. {}. {}. {}",
-                    report.title,
-                    report.answer,
-                    report.message,
-                    report.restrictions.join(", "),
-                    steps
-                )
-            } else {
-                "Math solver: enter a problem and choose Solve problem".into()
-            };
-            result.set_label(label);
-            nodes.push((NodeId(9), result));
-            children.push(NodeId(9));
-        }
-        let mut status = Node::new(Role::Status);
-        if view.controller.error.is_none() {
-            status.set_live(accesskit::Live::Polite);
-        }
-        status.set_label(if let Some(error) = &view.controller.save_error {
-            format!("Changes are not saved. {error}. Retry saving is available.")
-        } else if let Some(error) = view
-            .controller
-            .page_preview_error()
-            .filter(|_| !view.library_open)
-        {
-            format!("Preview unavailable: {error}. Retry preview is available.")
-        } else if view.controller.recognition_pending {
-            view.controller.recognition_status.clone()
-        } else {
-            view.controller.activity_status()
-        });
-        nodes.push((NodeId(4), status));
-        children.push(NodeId(4));
-        let mut groups: std::collections::BTreeMap<u64, (&str, Role, Vec<NodeId>)> =
-            std::collections::BTreeMap::new();
-        for control in controls.iter() {
-            if let Some((id, label, role)) = semantics(&control.key).group {
-                groups
-                    .entry(id)
-                    .or_insert((label, role, Vec::new()))
-                    .2
-                    .push(control.id);
-                children.retain(|child| *child != control.id);
-            }
-        }
-        for (id, (label, role, members)) in groups {
-            let mut group = Node::new(role);
-            group.set_label(label);
-            group.set_children(members);
-            nodes.push((NodeId(id), group));
-            children.push(NodeId(id));
-        }
-        if let Some(error) = &view.controller.error {
-            let mut alert = Node::new(Role::Alert);
-            alert.set_label(error.clone());
-            alert.set_live(accesskit::Live::Assertive);
-            nodes.push((NodeId(15), alert));
-            children.push(NodeId(15));
-        }
-        let dialog_label = if view.controller.error.is_some() {
-            Some("Folio needs your attention")
-        } else if let Some((modal, _)) = &view.modal {
-            Some(modal.title())
-        } else if view.settings_open {
-            Some("Settings")
-        } else if view.help_open {
-            Some("Keyboard shortcuts and help")
-        } else {
-            None
-        };
-        if let Some(label) = dialog_label {
-            let mut dialog = Node::new(if view.controller.error.is_some() {
-                Role::AlertDialog
-            } else {
-                Role::Dialog
-            });
-            dialog.set_label(label);
-            if view.controller.error.is_some() {
-                dialog.set_described_by(vec![NodeId(15)]);
-            }
-            let window_controls: std::collections::HashSet<_> = controls
-                .iter()
-                .filter(|c| c.key.starts_with("window-"))
-                .map(|c| c.id)
-                .collect();
-            let members: Vec<_> = children
-                .iter()
-                .copied()
-                .filter(|id| !window_controls.contains(id) && *id != NodeId(4))
-                .collect();
-            children.retain(|id| !members.contains(id));
-            dialog.set_children(members);
-            nodes.push((NodeId(14), dialog));
-            children.push(NodeId(14));
-        }
-        root.set_children(children);
-        nodes.push((NodeId(1), root));
-        let mut tree = TreeInfo::new(NodeId(1));
-        tree.toolkit_name = Some("Folio GPUI".into());
-        tree.toolkit_version = Some(env!("CARGO_PKG_VERSION").into());
-        let update = TreeUpdate {
-            nodes,
-            tree: Some(tree),
-            tree_id: TreeId::ROOT,
-            focus,
-        };
-        let changed = self
-            .snapshot
-            .lock()
-            .map_or(true, |mut current| replace_snapshot(&mut current, &update));
-        let mut adapter = self.adapter.borrow_mut();
-        adapter.update_window(window);
-        // Hover/motion redraws usually leave semantic nodes unchanged. Avoid
-        // cloning/dispatching the complete native tree again in that case.
-        if changed {
-            adapter.update_if_active(|| update);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[::core::prelude::v1::test]
-    fn unchanged_accessibility_trees_skip_dispatch_but_focus_and_content_changes_do_not() {
-        let mut node = Node::new(Role::TextInput);
-        node.set_value("initial");
-        let update = TreeUpdate {
-            nodes: vec![(NodeId(1), node)],
-            tree: Some(TreeInfo::new(NodeId(1))),
-            tree_id: TreeId::ROOT,
-            focus: NodeId(1),
-        };
-        let mut current = None;
-        assert!(replace_snapshot(&mut current, &update));
-        assert!(!replace_snapshot(&mut current, &update));
-        let mut focused = update.clone();
-        focused.focus = NodeId(2);
-        assert!(replace_snapshot(&mut current, &focused));
-        assert!(!replace_snapshot(&mut current, &focused));
-        let mut changed = focused.clone();
-        changed.nodes[0].1.set_value("edited");
-        assert!(replace_snapshot(&mut current, &changed));
-        changed.nodes[0].1.set_bounds(accesskit::Rect {
-            x0: 1.,
-            y0: 2.,
-            x1: 100.,
-            y1: 30.,
-        });
-        assert!(replace_snapshot(&mut current, &changed));
-    }
-    #[::core::prelude::v1::test]
-    fn semantic_controls_expose_selection_toggle_and_disabled_states() {
-        let tab = semantic_node(&format!("tab-{}", Id::new_v4()), "Document", true, true);
-        assert_eq!(tab.role(), Role::Tab);
-        assert_eq!(tab.is_selected(), Some(true));
-        assert_eq!(semantics("select-tool").role, Role::RadioButton);
-        assert_ne!(semantics("select-tool").group, semantics("lasso").group);
-        assert_eq!(semantics("lasso").group, semantics("select-rect").group);
-        assert_eq!(semantics("width-options").role, Role::Button);
-        assert_eq!(
-            semantic_node("width-options", "Stroke width", true, true).is_expanded(),
-            Some(true)
-        );
-        assert_eq!(semantics("folder-menu-rename").role, Role::Button);
-        assert_eq!(
-            semantics(&format!("folder-{}", Id::new_v4())).role,
-            Role::TreeItem
-        );
-        let radio = semantic_node("eraser", "Eraser", false, true);
-        assert_eq!(radio.role(), Role::RadioButton);
-        assert_eq!(radio.toggled(), Some(accesskit::Toggled::False));
-        let toggle = semantic_node("adapt-ink", "Readable ink", true, true);
-        assert_eq!(toggle.role(), Role::Switch);
-        assert_eq!(toggle.toggled(), Some(accesskit::Toggled::True));
-        let disabled = semantic_node("delete-page", "Delete page", false, false);
-        assert!(disabled.is_disabled());
-        assert!(!disabled.supports_action(Action::Click));
-        assert_eq!(
-            semantics("folder-destination-root").group.unwrap().1,
-            "Destination folder"
-        );
-        assert_eq!(
-            semantic_node("toggle-folder-test", "Expand", false, true).is_expanded(),
-            Some(false)
-        );
-    }
+    pub fn retain_library_items(&self, _: &[folio_document::NoteMetadata]) {}
+    pub fn retain_folder_items(&self, _: impl IntoIterator<Item = Id>) {}
+    pub fn publish(&self, _: &NotesView, _: &Window, _: &Context<NotesView>) {}
 }

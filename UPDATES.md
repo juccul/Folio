@@ -85,6 +85,17 @@ Folio reports the failure; use the system software manager or Flatpak CLI for th
 update. A disconnected remote, cancelled permission prompt or interrupted network
 operation leaves the running deployment intact and offers a retry.
 
+## Moving from 0.2.5 to 0.2.6
+
+Folio 0.2.6 replaces the interface toolkit (GPUI) with Rune. The update itself is
+an ordinary one: 0.2.5 discovers 0.2.6 through the same signed manifest, release
+asset names and Flatpak remote, installs it with its own helper or the Flatpak
+portal, and restarts into the same library. Database schema 6, document format 4,
+preferences, backups and the bundled stroke recognition models carry over
+unchanged; recognition files an older release left in the library are ignored.
+The tour of the pen's features opens once after the update, as it does in a new
+library.
+
 ## Moving from the retired releases
 
 The new 0.1.0 distribution replaces the retired 0.1.0–0.1.4 releases. It contains

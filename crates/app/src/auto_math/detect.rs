@@ -801,7 +801,7 @@ pub fn detect_equals_equation(
     let glyph_height = if !heights.is_empty() {
         // Use upper-median (~60th percentile) so tall digits aren't shrunk by small symbols like `+`.
         let p60 = heights[(heights.len() * 6) / 10];
-        p60.clamp((eq_h * 1.35).max(16.0), 120.0)
+        p60.clamp((eq_h * 1.35).clamp(16.0, 120.0), 120.0)
     } else {
         char_h.clamp(16.0, 100.0)
     };

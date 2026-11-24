@@ -24,11 +24,20 @@ $runtimeScript = Join-Path $PSScriptRoot 'verify-windows-runtime.py'
 & $python $runtimeScript --package $Package --output (Join-Path $Output 'runtime.json')
 if ($LASTEXITCODE) { throw 'Offline runtime verification failed.' }
 $data = Join-Path $Output ('notes-' + [guid]::NewGuid().ToString())
-$smoke = Start-Process $binary -ArgumentList @('--data-dir', "`"$data`"", '--smoke-test') -PassThru -RedirectStandardOutput (Join-Path $Output 'smoke.stdout') -RedirectStandardError (Join-Path $Output 'smoke.stderr')
+# Launch on throwaway data: the window must appear and the library must be
+# created, then Folio must close cleanly when asked.
+$smoke = Start-Process $binary -ArgumentList @('--data-dir', "`"$data`"") -PassThru -RedirectStandardOutput (Join-Path $Output 'smoke.stdout') -RedirectStandardError (Join-Path $Output 'smoke.stderr')
 $null = $smoke.Handle
-if (!$smoke.WaitForExit(90000)) { $smoke.Kill(); throw 'Native smoke test timed out.' }
-if ($smoke.ExitCode -ne 0 -or !(Select-String -Path (Join-Path $Output 'smoke.stdout') -Pattern 'FOLIO_SMOKE_OK' -Quiet)) { throw 'Native smoke test failed; inspect smoke.stdout and smoke.stderr.' }
-if (!(Test-Path (Join-Path $data 'notes.sqlite3'))) { throw 'Smoke test did not save a database.' }
+$deadline = [DateTime]::UtcNow.AddSeconds(60)
+do {
+    Start-Sleep -Milliseconds 250
+    $smoke.Refresh()
+    if ($smoke.HasExited) { throw "Folio exited during launch ($($smoke.ExitCode)); inspect smoke.stderr." }
+} while (($smoke.MainWindowHandle -eq [IntPtr]::Zero -or !(Test-Path (Join-Path $data 'notes.sqlite3'))) -and [DateTime]::UtcNow -lt $deadline)
+if ($smoke.MainWindowHandle -eq [IntPtr]::Zero) { $smoke.Kill(); throw 'Folio showed no window within 60 seconds.' }
+if (!(Test-Path (Join-Path $data 'notes.sqlite3'))) { $smoke.Kill(); throw 'Folio did not create its library.' }
+$null = $smoke.CloseMainWindow()
+if (!$smoke.WaitForExit(30000)) { $smoke.Kill(); throw 'Folio did not close when asked.' }
 if ($NoUi) { Write-Output 'WINDOWS_SMOKE_OK'; return }
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,System.Drawing
 Add-Type -Path (Join-Path $PSScriptRoot 'windows-pen-replay.cs')

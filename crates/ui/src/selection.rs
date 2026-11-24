@@ -21,86 +21,7 @@ pub(super) fn toolbar_origin(selection: Rect, canvas: (f32, f32), toolbar: (f32,
     )
 }
 
-struct SelectionHint {
-    text: SharedString,
-    theme: Theme,
-}
-impl Render for SelectionHint {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_3()
-            .py_2()
-            .rounded(px(self.theme.corner_sm()))
-            .glass(self.theme, self.theme.popover)
-            .text_xs()
-            .text_color(rgb(self.theme.ink))
-            .child(self.text.clone())
-    }
-}
 impl NotesView {
-    fn selection_button(
-        &self,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-        active: bool,
-        cx: &mut Context<Self>,
-        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-    ) -> Stateful<Div> {
-        let id = id.into();
-        let label = label.into();
-        let theme = Theme::new(&self.controller.settings);
-        let kind = match id.as_ref() {
-            "solve-selection" => Icon::Calculator,
-            "recognize-math" => Icon::Math,
-            "index-handwriting" => Icon::Search,
-            "recognize-text" => Icon::TextScan,
-            "review-recognition" => Icon::Text,
-            "cancel-recognition" => Icon::Close,
-            "edit-equation" => Icon::Pencil,
-            "crop-image" => Icon::Crop,
-            "crop-image-coordinates" => Icon::Sliders,
-            _ => Icon::Undo,
-        };
-        // Conversions are not recognizable from a glyph alone.
-        let short = match id.as_ref() {
-            "solve-selection" => Some("Solve"),
-            "index-handwriting" => Some("Make searchable"),
-            "recognize-text" => Some("Convert to text"),
-            "recognize-math" => Some("Convert to math"),
-            _ => None,
-        };
-        let content = div()
-            .flex()
-            .items_center()
-            .gap_1p5()
-            .child(icon(kind, theme.ink).size(rems(1.125)))
-            .when_some(short, |content, short| {
-                content.child(div().text_xs().font_weight(FontWeight::MEDIUM).child(short))
-            });
-        self.control(
-            id,
-            label.clone(),
-            content.into_any_element(),
-            active,
-            cx,
-            action,
-        )
-        .px_2()
-        .py_1()
-        .min_h(rems(2.25))
-        .min_w(rems(2.25))
-        .rounded(px(theme.radius))
-        .bg(transparent_black())
-        .hover(move |s| s.bg(theme.tint(1.)))
-        .tooltip(move |_, cx| {
-            cx.new(|_| SelectionHint {
-                text: label.clone(),
-                theme,
-            })
-            .into()
-        })
-    }
-
     pub(super) fn selection_toolbar_origin(&self) -> DocPoint {
         let canvas_size = self
             .canvas_bounds
@@ -127,7 +48,11 @@ impl NotesView {
             ),
         )
     }
-    pub(super) fn selection_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    pub(super) fn selection_toolbar(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let theme = Theme::new(&self.controller.settings);
         let objects: Vec<_> = self
             .controller
@@ -150,35 +75,56 @@ impl NotesView {
             .map(|b| (f32::from(b.size.width), f32::from(b.size.height)))
             .unwrap_or((1000., 700.));
         let origin = self.selection_toolbar_origin();
-        let entity = cx.entity().downgrade();
-        let dimensions = canvas(
-            move |bounds, window, cx| {
-                let _ = entity.update(cx, |view, cx| {
-                    if view.selection_toolbar_size != bounds.size {
-                        view.selection_toolbar_size = bounds.size;
-                        cx.on_next_frame(window, |_, _, cx| cx.notify());
-                    }
-                });
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .inset_0();
-        let mut row = div()
-            .occlude()
-            .absolute()
-            .left(px(origin.x))
-            .top(px(origin.y))
+        let dimensions = div().absolute().inset_0().el(|e| {
+            e.on_layout(|s: &mut AppState, r: [f32; 4]| {
+                let view = s.view.get_mut();
+                let size = size(px(r[2]), px(r[3]));
+                if view.selection_toolbar_size != size {
+                    view.selection_toolbar_size = size;
+                }
+            })
+        });
+        // A small menu: cut, copy and delete side by side on top, then the
+        // other actions as rows. A recognized result's review takes its
+        // place, as a menu turns into the page of the action chosen in it.
+        let hosted = self.modal_hosted_in(MenuHost::Selection);
+        // The box springs to the size of what it shows (the review page
+        // and back); where it sits follows the selection at once.
+        // As wide as its rows need; the review page takes a set width.
+        let menu = div()
+            .when(hosted, |menu| menu.w(px(340_f32.min((canvas_size.0 - 24.).max(40.)))))
             .max_w(px((canvas_size.0 - 24.).max(40.)))
-            .flex_wrap()
+            .max_h(px((canvas_size.1 - 24.).max(28.)))
+            .overflow_y_scroll()
             .flex()
-            .items_center()
-            .gap_1()
-            .p_1()
+            .flex_col()
+            .gap(px(1.))
+            .p_1p5()
             .rounded(px(theme.corner_md()))
             .glass(theme, theme.popover)
-            .shadow_md();
-        let mut editing = div().flex().items_center().gap_1();
+            .shadow_md()
+            .el(|e| e.motion(crate::motion::MORPH).animated_changes());
+        let place = move |menu: Div, dimensions: Div, cx: &mut Context<Self>| {
+            div()
+                .id("selection-actions")
+                .occlude()
+                .absolute()
+                .left(px(origin.x))
+                .top(px(origin.y))
+                .when(hosted, |root| {
+                    root.on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, w, cx| {
+                        this.cancel_modal(w, cx)
+                    }))
+                })
+                .child(menu)
+                .child(dimensions)
+        };
+        if hosted {
+            let page = self.modal_panel(true, window, cx);
+            return place(menu.child(page), dimensions, cx);
+        }
+        // Cut, copy and delete share the top row evenly.
+        let mut editing = div().w_full().flex().items_center().gap_0p5();
         for (id, label, kind, shortcut, action) in [
             ("selection-cut", "Cut", Icon::Cut, "Ctrl+X", 1),
             ("selection-copy", "Copy", Icon::Copy, "Ctrl+C", 2),
@@ -188,16 +134,9 @@ impl NotesView {
                 self.control(
                     id,
                     label,
-                    icon(
-                        kind,
-                        if action == 3 {
-                            theme.destructive
-                        } else {
-                            theme.ink
-                        },
-                    )
-                    .size(rems(1.125))
-                    .into_any_element(),
+                    icon(kind, if action == 3 { theme.destructive } else { theme.ink })
+                        .size(rems(1.125))
+                        .into_any_element(),
                     false,
                     cx,
                     move |this, _, cx| match action {
@@ -206,25 +145,18 @@ impl NotesView {
                         _ => this.controller.delete_selection(),
                     },
                 )
-                .px_2()
-                .py_1()
-                .min_h(rems(2.25))
-                .min_w(rems(2.25))
+                .flex_1()
+                .h(rems(2.))
+                .min_h_0()
+                .min_w(rems(2.))
+                .p_0()
                 .rounded(px(theme.radius))
                 .bg(transparent_black())
                 .hover(move |s| s.bg(theme.tint(1.)))
-                .tooltip(move |_, cx| {
-                    cx.new(|_| SelectionHint {
-                        text: format!("{label} · {shortcut}").into(),
-                        theme,
-                    })
-                    .into()
-                }),
+                .tooltip(format!("{label} · {shortcut}")),
             );
         }
-        row = row
-            .child(editing)
-            .child(div().w(px(1.)).h(rems(1.5)).mx_2().bg(theme.cover_edge()));
+        let mut rows: Vec<AnyElement> = Vec::new();
         for id in self.controller.session().selection.clone() {
             if let Some(folio_document::Object::Equation(e)) =
                 self.controller.page().objects.get(&id).map(|o| o.as_ref())
@@ -233,84 +165,68 @@ impl NotesView {
                     .as_ref()
                     .and_then(|link| link.last_error.clone())
             {
-                row = row
-                    .child(
-                        div()
-                            .text_xs()
-                            .max_w(px(240.))
-                            .child(format!("Out of date: {error}")),
-                    )
-                    .child(self.selection_button(
-                        format!("retry-linked-math-{id}"),
-                        "Retry calculation",
-                        false,
-                        cx,
-                        move |this, _, _| {
-                            if let Err(error) = this.controller.retry_linked_math(id) {
-                                this.controller.status = error;
-                            }
-                        },
-                    ));
+                rows.push(
+                    document_actions::hint(theme, format!("Out of date: {error}"))
+                        .px_2()
+                        .py_1()
+                        .flex_shrink()
+                        .into_any_element(),
+                );
+                rows.push(self.selection_row(
+                    format!("retry-linked-math-{id}"),
+                    "Retry calculation",
+                    Icon::Undo,
+                    cx,
+                    move |this, _, _| {
+                        if let Err(error) = this.controller.retry_linked_math(id) {
+                            this.controller.status = error;
+                        }
+                    },
+                ));
             }
         }
         if can_solve {
-            row = row.child(self.selection_button(
-                "solve-selection",
-                "Solve",
-                false,
-                cx,
-                |this, window, cx| this.start_math(window, cx),
-            ));
+            rows.push(self.selection_row("solve-selection", "Solve", Icon::Calculator, cx, |this, window, cx| {
+                this.start_math(window, cx)
+            }));
         }
         if self.controller.recognition_pending {
-            row = row
-                .child(div().text_xs().px_2().max_w(px(280.)).truncate().child(
-                    if self.controller.recognition_replacing {
-                        "Rendering equation…".to_string()
-                    } else {
-                        self.controller.recognition_status.clone()
-                    },
-                ))
-                .child(self.selection_button(
-                    "cancel-recognition",
-                    "Cancel recognition",
-                    false,
-                    cx,
-                    |this, _, _| this.controller.cancel_recognition(),
-                ));
+            rows.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .min_h(rems(2.))
+                    .px_2()
+                    .child(working_dots(theme.muted))
+                    .child(div().flex_1().min_w_0().text_xs().truncate().child(
+                        if self.controller.recognition_replacing {
+                            "Rendering equation…".to_string()
+                        } else {
+                            self.controller.recognition_status.clone()
+                        },
+                    ))
+                    .into_any_element(),
+            );
+            rows.push(self.selection_row("cancel-recognition", "Cancel recognition", Icon::Close, cx, |this, _, _| {
+                this.controller.cancel_recognition()
+            }));
         } else if self.controller.can_recognize_selection() {
-            row = row.child(self.selection_button(
-                "index-handwriting",
-                "Index handwriting…",
-                false,
-                cx,
-                |this, _, _| {
-                    if let Err(e) = this.controller.index_selected_handwriting() {
-                        this.controller.error = Some(e);
-                    }
-                },
-            ));
-            for (id, label, kind) in [
-                ("recognize-text", "Recognize text", RecognitionKind::Text),
-                ("recognize-math", "Recognize math", RecognitionKind::Math),
+            for (id, label, kind, glyph) in [
+                ("recognize-text", "Convert to text", RecognitionKind::Text, Icon::TextScan),
+                ("recognize-math", "Convert to math", RecognitionKind::Math, Icon::Math),
             ] {
-                row = row.child(
-                    self.selection_button(id, label, false, cx, move |this, _, _| {
-                        if let Err(error) = this.controller.recognize_selection(kind) {
-                            this.controller.error = Some(error);
-                        }
-                    }),
-                );
+                rows.push(self.selection_row(id, label, glyph, cx, move |this, _, _| {
+                    if let Err(error) = this.controller.recognize_selection(kind) {
+                        this.controller.error = Some(error);
+                    }
+                }));
             }
         }
         if self.controller.recognition_review.is_some() {
-            row = row.child(self.selection_button(
-                "review-recognition",
-                "Review text",
-                false,
-                cx,
-                |this, window, cx| this.modal(Modal::Recognition, window, cx),
-            ));
+            rows.push(self.selection_row("review-recognition", "Review text", Icon::Text, cx, |this, window, cx| {
+                this.modal_in_menu(MenuHost::Selection, Modal::Recognition, window, cx)
+            }));
         }
         if objects.len() == 1
             && let Some(id) = self
@@ -326,41 +242,40 @@ impl NotesView {
                 })
                 .copied()
         {
-            row = row.child(self.selection_button(
-                "edit-equation",
-                "Edit equation",
-                false,
-                cx,
-                move |this, window, cx| this.modal(Modal::EditEquation(id), window, cx),
-            ));
+            rows.push(self.selection_row("edit-equation", "Edit equation", Icon::Pencil, cx, move |this, window, cx| {
+                this.modal(Modal::EditEquation(id), window, cx)
+            }));
         }
         if objects.len() == 1 && matches!(objects[0].as_ref(), folio_document::Object::Image(_)) {
-            row = row
-                .child(
-                    self.selection_button("crop-image", "Crop…", false, cx, |this, w, cx| {
-                        this.start_image_crop(w, cx)
-                    }),
-                )
-                .child(self.selection_button(
-                    "crop-image-coordinates",
-                    "Crop with numbers…",
-                    false,
-                    cx,
-                    |this, w, cx| this.modal(Modal::Crop, w, cx),
-                ))
-                .child(self.selection_button(
-                    "uncrop-image",
-                    "Reset crop",
-                    false,
-                    cx,
-                    |this, _, _| this.controller.crop_selection(None),
-                ));
+            rows.push(self.selection_row("crop-image", "Crop…", Icon::Crop, cx, |this, w, cx| {
+                this.start_image_crop(w, cx)
+            }));
+            rows.push(self.selection_row("crop-image-coordinates", "Crop with numbers…", Icon::Sliders, cx, |this, w, cx| {
+                this.modal(Modal::Crop, w, cx)
+            }));
+            rows.push(self.selection_row("uncrop-image", "Reset crop", Icon::Undo, cx, |this, _, _| {
+                this.controller.crop_selection(None)
+            }));
         }
-        row.child(dimensions)
-            .id("selection-actions")
-            .flex_wrap()
-            .max_h(px((canvas_size.1 - 24.).max(28.)))
-            .overflow_y_scroll()
+        let has_rows = !rows.is_empty();
+        let menu = menu
+            .child(editing)
+            .when(has_rows, |menu| menu.child(document_actions::separator(theme)))
+            .children(rows);
+        place(menu, dimensions, cx)
+    }
+    /// One action of the selection menu: an icon and its name.
+    fn selection_row(
+        &self,
+        id: impl Into<SharedString>,
+        label: &'static str,
+        kind: Icon,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> AnyElement {
+        let theme = Theme::new(&self.controller.settings);
+        self.menu_row(id, label.into(), div().child(label), kind, theme.muted, None, cx, action)
+            .into_any_element()
     }
 }
 

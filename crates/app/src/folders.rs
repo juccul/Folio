@@ -291,22 +291,47 @@ impl Controller {
         self.validate_folder_name(&folder.name, parent, Some(id))?;
         Ok(())
     }
+    /// Move a folder under `parent` (or to the top level); library Undo
+    /// moves it back.
     pub fn move_notebook(&mut self, id: Id, parent: Option<Id>) -> Result<(), String> {
+        let before = self.reparent_notebook(id, parent)?;
+        if before != parent {
+            let name = self.folder_path(id);
+            let label = match parent {
+                Some(parent) => format!("Moved “{name}” to {}", self.folder_path(parent)),
+                None => format!("Moved “{name}” to the top level"),
+            };
+            let before = library_actions::LibraryState::FolderParent(id, before);
+            self.record_library_undo(before, label);
+        }
+        Ok(())
+    }
+    /// Set a folder's parent after the cycle and name checks, returning the
+    /// parent it had.
+    pub(crate) fn reparent_notebook(
+        &mut self,
+        id: Id,
+        parent: Option<Id>,
+    ) -> Result<Option<Id>, String> {
         self.validate_folder_move(id, parent)?;
         let n = self
             .notebooks
             .iter_mut()
             .find(|n| n.id == id)
             .ok_or("Folder no longer exists")?;
-        n.parent = parent;
+        let before = std::mem::replace(&mut n.parent, parent);
         self.persistence.notebook(n.clone());
-        Ok(())
+        Ok(before)
     }
     pub fn delete_empty_notebook(&mut self, id: Id) -> Result<(), String> {
         if let Some(reason) = self.folder_deletion_reason(id) {
             return Err(reason);
         }
         self.notebooks.retain(|n| n.id != id);
+        self.library_undo.retain(|entry| match entry.before {
+            library_actions::LibraryState::FolderParent(folder, _) => folder != id,
+            _ => true,
+        });
         self.persistence.delete_notebook(id);
         if matches!(self.filter, NoteFilter::Notebook(folder) | NoteFilter::NotebookTrash(folder) if folder == id)
         {
@@ -480,6 +505,13 @@ mod tests {
         assert_eq!(a.folder_path(first), "B / Same / Same");
         a.move_notebook(first, None).unwrap();
         assert_eq!(a.folder_path(first), "Same");
+        // Library Undo moves a folder back, one move at a time.
+        assert_eq!(a.library_undo_offer(), Some("Moved “Same” to the top level"));
+        a.undo_library();
+        assert_eq!(a.folder_path(first), "B / Same / Same");
+        a.undo_library();
+        assert_eq!(a.folder_path(first), "A / Same");
+        assert!(!a.can_undo_library());
     }
     #[test]
     fn folder_names_share_validation_and_are_unique_within_their_parent() {

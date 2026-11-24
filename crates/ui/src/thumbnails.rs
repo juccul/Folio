@@ -50,17 +50,22 @@ struct Thumbnail {
     touched: u64,
 }
 impl Thumbnails {
-    pub(super) fn clear(&mut self, window: &mut Window) {
-        if self.entries.is_empty() && self.pending.is_empty() && self.covers.is_empty() {
+    /// Drop every thumbnail but the library's covers, so going back to the
+    /// library shows its shelf at once instead of re-rendering each cover.
+    pub(super) fn keep_covers(&mut self, window: &mut Window) {
+        let covers: std::collections::HashSet<Id> =
+            self.covers.values().map(|cover| cover.page_id).collect();
+        if self.entries.len() == covers.len() && self.pending.is_empty() {
             return;
         }
-        for (_, entry) in self.entries.drain() {
-            if let Some(image) = entry.image {
+        self.entries.retain(|id, entry| {
+            let keep = covers.contains(id);
+            if !keep && let Some(image) = entry.image.take() {
                 let _ = window.drop_image(image);
             }
-        }
-        self.covers.clear();
-        self.pending.clear();
+            keep
+        });
+        self.pending.retain(|id, _| covers.contains(id));
     }
     fn touch(&mut self, id: Id, key: &ThumbnailKey) -> (u64, bool) {
         self.clock += 1;
@@ -174,15 +179,13 @@ fn thumbnail_edge(properties: &folio_document::PageProperties, max_height: f32, 
     }
 }
 
-fn thumbnail_frame(
-    width: f32,
-    max_height: f32,
-    aspect: f32,
-    corner: f32,
-    paper: u32,
-) -> Div {
+fn thumbnail_frame(width: f32, max_height: f32, aspect: f32, corner: f32, paper: u32) -> Div {
     let height = (width / aspect.max(0.01)).min(max_height);
     div()
+        // A thumbnail's image and its final size arrive at once; animated,
+        // the frame resizing from the page's nominal shape to the raster's
+        // zoomed the page in.
+        .el(|e| e.instant_changes())
         .rounded(px(corner))
         .w(px((height * aspect).min(width)))
         .h(px(height))
@@ -192,6 +195,21 @@ fn thumbnail_frame(
         .flex()
         .items_center()
         .justify_center()
+}
+
+/// Outline a thumbnail `frame` with corner `corner`. The outline is drawn
+/// above the page image, which would otherwise cover a border of the frame's
+/// own along the edges it touches.
+pub(super) fn outlined(frame: Div, corner: f32, color: impl Into<Hsla>) -> Div {
+    let color = color.into();
+    frame.child(
+        div()
+            .absolute()
+            .inset_0()
+            .rounded(px(corner))
+            .border_1()
+            .border_color(color),
+    )
 }
 
 fn attach_thumbnail_image(
@@ -227,6 +245,20 @@ impl NotesView {
         max_height: f32,
         window: &Window,
     ) -> Option<(Div, usize)> {
+        self.cached_cover_at(note, width, max_height, false, window)
+    }
+    /// [`Self::cached_cover_thumbnail`], taking a cover rendered at any
+    /// size when `any_size` (the document picker's preview, which must not
+    /// render its own size over the library's covers: each would replace
+    /// the other's every frame).
+    pub(super) fn cached_cover_at(
+        &mut self,
+        note: &folio_document::NoteMetadata,
+        width: f32,
+        max_height: f32,
+        any_size: bool,
+        window: &Window,
+    ) -> Option<(Div, usize)> {
         if self.controller.sessions.contains_key(&note.id) {
             return None;
         }
@@ -247,7 +279,7 @@ impl NotesView {
         if cover.key.theme != palette
             || cover.key.dark != theme.dark
             || cover.key.pdf_ready != pdf_ready
-            || cover.key.edge != edge
+            || (cover.key.edge != edge && !any_size)
         {
             return None;
         }
@@ -482,12 +514,12 @@ mod tests {
         let replacement = graph::image(1, 1, vec![0; 4]);
         let replacement_weak = Arc::downgrade(&replacement);
         atlas.insert(replacement.id);
-        assert!(cache.finish(
-            page.id,
-            generation,
-            Ok((replacement, 1.)),
-            |image| assert!(atlas.remove(&image.id), "Image retired more than once"),
-        ));
+        assert!(
+            cache.finish(page.id, generation, Ok((replacement, 1.)), |image| assert!(
+                atlas.remove(&image.id),
+                "Image retired more than once"
+            ),)
+        );
         assert!(old_image.upgrade().is_none());
         assert!(replacement_weak.upgrade().is_some());
         assert_eq!(atlas.len(), 1);

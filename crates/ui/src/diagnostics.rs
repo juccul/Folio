@@ -224,6 +224,8 @@ impl InputCheck {
         self.buttons |= event.buttons;
         self.eraser += u64::from(event.eraser);
     }
+    // Tablet pads and pen barrel buttons reach GPUI through Folio's platform patches; Rune reports pointers only.
+    #[allow(dead_code)]
     pub fn pad(&mut self, event: &TabletPadEvent) {
         if !self.running {
             return;
@@ -291,7 +293,6 @@ mod tests {
             buttons: 2,
             eraser: true,
             phase,
-            modifiers: Modifiers::default(),
         }
     }
     #[test]

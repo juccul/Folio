@@ -74,15 +74,53 @@ impl NotesView {
         action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
-        let id = id.into();
-        let label = label.into();
-        let window_control = id.as_ref().starts_with("window-");
-        let id_is_doc_menu = id.as_ref().starts_with("doc-menu-");
-        let enabled = self.control_enabled(id.as_ref(), cx);
+        let id: String = id.into();
+        let label: String = label.into();
+        let window_control = id.starts_with("window-");
+        let id_is_doc_menu = id.starts_with("doc-menu-");
+        let enabled = self.control_enabled(&id, cx);
         let hover_id = id.clone();
-        let hover = self.motion.borrow_mut().hover_value(id.as_ref());
-        // Controls sit on glass: clear at rest, tinted when hovered or active.
-        let background = theme.tint(if active { 1. } else { hover });
+        // Controls sit on glass: clear at rest, tinted when hovered (Rune
+        // fades the hover tint in and out) or active.
+        let glide = accessibility::glide_group(&id);
+        let background = theme.tint(if active && glide.is_none() { 1. } else { 0. });
+        // Pressed controls give a little, as physical keys do; wide rows
+        // (menu items) less than compact buttons, small steppers a touch more.
+        let press_scale = if window_control {
+            1.
+        } else if matches!(
+            id.as_str(),
+            "radius-less"
+                | "radius-more"
+                | "glass-opacity-less"
+                | "glass-opacity-more"
+                | "glass-blur-less"
+                | "glass-blur-more"
+                | "ui-smaller"
+                | "ui-larger"
+                | "cursor-smaller"
+                | "cursor-larger"
+        ) || id.starts_with("minus-")
+            || id.starts_with("plus-")
+        {
+            0.86
+        } else if accessibility::role(&id) == "switch" {
+            0.92
+        } else if [
+            "doc-menu-",
+            "menu-",
+            "note-",
+            "folder-",
+            "settings-section-",
+            "page-",
+        ]
+        .iter()
+        .any(|prefix| id.starts_with(prefix))
+        {
+            0.98
+        } else {
+            0.95
+        };
         let destructive = [
             "Delete",
             "Move to trash",
@@ -90,14 +128,16 @@ impl NotesView {
             "Close without saving",
         ]
         .iter()
-        .any(|prefix| label.as_ref().starts_with(prefix));
+        .any(|prefix| label.starts_with(prefix));
         // Controls behind a context menu cannot be used, but keep their
         // appearance; only real dialogs dim what they cover.
-        let dimmed = !enabled
-            && !(self.menu_only_overlay() && self.control_enabled_behind(id.as_ref(), false, cx));
+        let behind_menu = !enabled
+            && self.menu_only_overlay()
+            && self.control_enabled_behind(id.as_str(), false, cx);
+        let dimmed = !enabled && !behind_menu;
         let action: accessibility::Callback = std::rc::Rc::new(action);
-        let (node, focus) = self.accessibility.control(
-            id.as_ref(),
+        let (_node, focus) = self.accessibility.control(
+            id.as_str(),
             &label,
             action.clone(),
             enabled,
@@ -105,16 +145,11 @@ impl NotesView {
             !self.blocking_overlay() || self.building_overlay || window_control,
             cx,
         );
-        let bridge = self.accessibility.clone();
-        let decoration = canvas(
-            move |bounds, _, _| {
-                bridge.set_bounds(node, bounds);
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .inset_0();
         let control_key = id.clone();
+        let pressed_key = id.clone();
+        let id_for_bounds = id.clone();
+        let role_key = id.clone();
+        let accessible_label = accessibility::Accessibility::label_for(&id, &label);
         div()
             .id(id)
             .relative()
@@ -143,7 +178,7 @@ impl NotesView {
                             || matches!(event.keystroke.key.as_str(), "up" | "down");
                         if along
                             && let Some(focus) = this.accessibility.menu_neighbor(
-                                control_key.as_ref(),
+                                control_key.as_str(),
                                 prefix,
                                 forward,
                             )
@@ -156,7 +191,7 @@ impl NotesView {
                     }
                     if matches!(event.keystroke.key.as_str(), "left" | "right")
                         && let Some(id) = control_key
-                            .as_ref()
+                            .as_str()
                             .strip_prefix("folder-")
                             .and_then(|id| Id::parse_str(id).ok())
                     {
@@ -178,7 +213,7 @@ impl NotesView {
                         }
                     }
                     if let Some(id) = control_key
-                        .as_ref()
+                        .as_str()
                         .strip_prefix("folder-")
                         .and_then(|id| Id::parse_str(id).ok())
                         && this.navigate_folder_control(id, forward, window, cx)
@@ -189,7 +224,7 @@ impl NotesView {
                     }
                     if let Some((callback, focus)) = this
                         .accessibility
-                        .group_neighbor(control_key.as_ref(), forward)
+                        .group_neighbor(control_key.as_str(), forward)
                     {
                         focus.focus(window);
                         callback(this, window, cx);
@@ -220,46 +255,79 @@ impl NotesView {
                 theme.ink
             }))
             .bg(background)
+            .when(glide.is_some(), |s| s.lock_bg().selection_member(active))
+            // A control that opened a menu keeps its hover tint, so the tint
+            // fades out as the pointer leaves rather than vanishing with
+            // the click.
+            .when((enabled || behind_menu) && (!active || glide.is_some()), move |s| {
+                s.hover(move |s| s.bg(theme.tint(1.)))
+            })
+            .when(enabled, move |s| s.el(move |e| e.press_scale(press_scale)))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if enabled {
-                    if *hovered
-                        && matches!(
-                            hover_id.as_ref(),
-                            "recognize-text"
-                                | "recognize-math"
-                                | "index-handwriting"
-                                | "math-use-selection"
-                                | "math-read-selection"
-                                | "math-read-text"
-                                | "math-read-next"
-                        )
-                    {
-                        this.controller.prepare_recognition();
-                    }
+                // Page thumbnails and the tool wheel draw their own hover
+                // state (a ring, a painted segment), so they still follow it.
+                if enabled && (hover_id.starts_with("page-") || hover_id.starts_with("wheel-")) {
                     this.motion.borrow_mut().hover(
-                        hover_id.as_ref(),
+                        hover_id.as_str(),
                         *hovered,
                         this.controller.settings.reduce_motion,
                     );
                     cx.notify();
                 }
-            }))
-            .active(move |s| {
-                if enabled {
-                    s.bg(theme.tint(1.))
-                        .border_color(theme.border)
-                        .opacity(0.8)
-                } else {
-                    s
+                if enabled
+                    && *hovered
+                    && matches!(
+                        hover_id.as_str(),
+                        "recognize-text"
+                            | "recognize-math"
+                            | "index-handwriting"
+                            | "math-use-selection"
+                            | "math-read-selection"
+                            | "math-read-text"
+                            | "math-read-next"
+                    )
+                {
+                    this.controller.prepare_recognition();
                 }
-            })
+            }))
+            // Held, a control's highlight dims below its hover tint; let go,
+            // it fades back up while the control springs back to size.
+            .active(move |s| if enabled { s.bg(theme.press_wash()) } else { s })
             .opacity(if dimmed { 0.4 } else { 1. })
             .when(enabled, |s| s.cursor_pointer())
+            // In a selection group the chosen member's tint is one highlight
+            // that glides to the next choice. Each member keeps the slot so
+            // its content never changes place.
+            .when_some(glide, move |s, group| {
+                s.child(div().absolute().inset_0().when(active, move |slot| {
+                    let id = format!("glide-{group}");
+                    slot.child(
+                        div()
+                            .id(id.clone())
+                            .absolute()
+                            .inset_0()
+                            .rounded(px(theme.radius))
+                            .bg(theme.tint(1.))
+                            .el(move |e| {
+                                e.matched(id)
+                                    .motion(crate::motion::GLIDE)
+                                    .animated_changes()
+                            }),
+                    )
+                }))
+            })
             .child(content)
-            .child(decoration)
+            .track_bounds(id_for_bounds)
+            .role(accessibility::role(&role_key))
+            .label(accessible_label)
+            .when(
+                accessibility::toggles(&role_key) || accessibility::selects(&role_key),
+                |s| s.checked(active),
+            )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if enabled {
                     this.pointer_activation = !event.is_keyboard();
+                    this.last_pressed = Some((pressed_key.clone(), std::time::Instant::now()));
                     action(this, window, cx);
                     this.pointer_activation = false;
                     cx.notify();
@@ -293,12 +361,16 @@ impl NotesView {
             && self.control_ready(id, cx)
     }
     /// The only overlay is a context menu, which should not dim the window.
+    /// Dialogs shown as popovers (`modal_is_menu`) and Help count as menus.
     fn menu_only_overlay(&self) -> bool {
-        (self.document_menu.is_some() || self.folder_menu.is_some() || self.canvas_menu.is_some())
+        (self.document_menu.is_some()
+            || self.folder_menu.is_some()
+            || self.canvas_menu.is_some()
+            || self.help_open
+            || self.modal_is_menu())
             && !self.update_preparing
-            && self.modal.is_none()
+            && (self.modal.is_none() || self.modal_is_menu())
             && !self.settings_open
-            && !self.help_open
             && self.controller.error.is_none()
     }
     /// Conditions specific to individual controls.
@@ -371,6 +443,10 @@ impl NotesView {
             "undo-library" => self.controller.can_undo_library(),
             "radius-less" => self.controller.settings.appearance.radius() > 0.,
             "radius-more" => self.controller.settings.appearance.radius() < 20.,
+            "glass-opacity-less" => self.controller.settings.appearance.glass_opacity() > 0.31,
+            "glass-opacity-more" => self.controller.settings.appearance.glass_opacity() < 0.99,
+            "glass-blur-less" => self.controller.settings.appearance.glass_blur() > 0.,
+            "glass-blur-more" => self.controller.settings.appearance.glass_blur() < 40.,
             "math-apply-latex" => {
                 self.math_inputs
                     .as_ref()

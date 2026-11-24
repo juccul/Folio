@@ -42,15 +42,14 @@ impl NotesView {
                         if let Some(dark) = value {
                             this.controller.set_theme(dark);
                         } else {
-                            this.controller.apply_system_theme(matches!(
-                                window.appearance(),
-                                WindowAppearance::Dark | WindowAppearance::VibrantDark
-                            ));
+                            this.controller.apply_system_theme(window.dark);
                         }
                         this.controller.store_settings();
                     },
                 )
-                .px_3()
+                // Equal segments, so the choice moves between even slots.
+                .w(rems(4.5))
+                .px_2()
                 .py_1()
                 .min_h(rems(1.875))
                 .bg(theme.tint(if selected { 1. } else { 0. })),
@@ -67,6 +66,7 @@ impl NotesView {
                     ("radius-less", "Decrease corner radius"),
                     ("radius-more", "Increase corner radius"),
                     format!("{} px", theme.radius as u32),
+                    theme.radius as f64,
                     cx,
                     |this, sign| {
                         let appearance = &mut this.controller.settings.appearance;
@@ -81,6 +81,7 @@ impl NotesView {
                 ("glass-opacity-less", "Decrease glass opacity"),
                 ("glass-opacity-more", "Increase glass opacity"),
                 format!("{}%", (theme.glass_opacity * 100.).round() as u32),
+                (theme.glass_opacity * 100.).round() as f64,
                 cx,
                 |this, sign| {
                     let appearance = &mut this.controller.settings.appearance;
@@ -101,6 +102,7 @@ impl NotesView {
                 } else {
                     format!("{} px", theme.glass_blur as u32)
                 },
+                theme.glass_blur as f64,
                 cx,
                 |this, sign| {
                     let appearance = &mut this.controller.settings.appearance;
@@ -242,17 +244,15 @@ impl NotesView {
             .child(self.settings_group(Some("Theme"), theme_rows))
             .child(self.settings_group(Some("Paper and ink"), paper_rows))
             .child(self.settings_group(Some("Interface styling"), styling))
-            .child(
-                div().flex().child(self.settings_action(
-                    "reset-appearance",
-                    "Reset appearance",
-                    cx,
-                    |this, _, _| {
-                        this.controller.settings.appearance = Appearance::default();
-                        this.controller.store_settings();
-                    },
-                )),
-            )
+            .child(div().flex().child(self.settings_action(
+                "reset-appearance",
+                "Reset appearance",
+                cx,
+                |this, _, _| {
+                    this.controller.settings.appearance = Appearance::default();
+                    this.controller.store_settings();
+                },
+            )))
     }
     pub(super) fn appearance_switch(
         &self,
@@ -263,16 +263,10 @@ impl NotesView {
         action: impl Fn(&mut Self) + 'static,
     ) -> Stateful<Div> {
         let theme = Theme::new(&self.controller.settings);
-        let progress = self.motion.borrow_mut().value(
-            id,
-            if on { 1. } else { 0. },
-            self.controller.settings.reduce_motion,
-            Instant::now(),
-        );
         self.control(
             id,
             format!("{label}: {}", if on { "On" } else { "Off" }),
-            switch_track(theme, progress).into_any_element(),
+            switch_track(theme, id, on).into_any_element(),
             on,
             cx,
             move |this, _, _| {
@@ -284,45 +278,52 @@ impl NotesView {
         .min_h(rems(2.25))
         .p_0()
         .bg(transparent_black())
+        // No box around a switch: its track lights up instead.
+        .hover(|s| s.bg(transparent_black()))
+        .active(|s| s.bg(transparent_black()))
         .flex_shrink_0()
     }
 }
-/// The track and knob of an on/off switch, `progress` from off (0) to on (1).
-pub(super) fn switch_track(theme: Theme, progress: f32) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            let height = f32::from(bounds.size.height);
-            let inset = height * 0.15;
-            let diameter = height - inset * 2.;
-            window.paint_quad(
-                fill(
-                    bounds,
-                    rgb(super::theme::mix(theme.selected, theme.accent, progress)),
-                )
-                .corner_radii(px(height * 0.5)),
-            );
-            let knob = Bounds::new(
-                point(
-                    bounds.origin.x + px(inset + (f32::from(bounds.size.width) - height) * progress),
-                    bounds.origin.y + px(inset),
-                ),
-                size(px(diameter), px(diameter)),
-            );
-            window.paint_quad(
-                fill(
-                    knob,
-                    rgb(super::theme::mix(
-                        theme.muted,
-                        theme.primary_foreground,
-                        progress,
-                    )),
-                )
-                .corner_radii(px(diameter * 0.5)),
-            );
-        },
-    )
-    .w(rems(2.25))
-    .h(rems(1.25))
-    .flex_shrink_0()
+/// The track and knob of an on/off switch. The knob stretches elastically as it
+/// springs across while the track's colour and border cross-fade.
+pub(super) fn switch_track(theme: Theme, key: &str, on: bool) -> impl IntoElement {
+    let track_color = if on {
+        theme.accent
+    } else {
+        super::theme::mix(theme.surface, theme.ink, if theme.dark { 0.28 } else { 0.2 })
+    };
+    let border_color = if on {
+        super::theme::mix(theme.accent, 0xffffff, 0.16)
+    } else {
+        super::theme::mix(theme.surface, theme.ink, if theme.dark { 0.36 } else { 0.26 })
+    };
+    div()
+        .id(format!("{key}-track"))
+        .w(rems(2.25))
+        .h(rems(1.25))
+        .p(px(2.))
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(border_color))
+        // Off, the track is a clear mid tone, never a near-invisible wash.
+        .bg(rgb(track_color))
+        .hover(move |s| s.bg(theme.tint(1.)))
+        .el(|e| e.motion(crate::motion::GLIDE).animated_changes())
+        .child(
+            div()
+                .id(format!("{key}-knob"))
+                .size(rems(0.875))
+                .ml(rems(if on { 1. } else { 0. }))
+                .rounded_full()
+                .bg(rgb(if on { theme.primary_foreground } else { 0xffffff }))
+                .shadow_sm()
+                .el(|e| {
+                    e.motion(crate::motion::POP)
+                        .lead(crate::motion::SWITCH_LEAD, crate::motion::SWITCH_TRAIL)
+                        .animated_changes()
+                }),
+        )
 }

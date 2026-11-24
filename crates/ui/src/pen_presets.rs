@@ -121,10 +121,7 @@ impl NotesView {
         .min_h_0()
         .py_1()
         .px_2()
-        .tooltip(move |_, cx| {
-            cx.new(|_| super::workspace::Hint(hint.clone(), theme))
-                .into()
-        })
+        .tooltip(hint.clone())
     }
 
     pub(super) fn preset_controls(&mut self, cx: &mut Context<Self>) -> Div {
@@ -230,7 +227,7 @@ impl NotesView {
                                 "Rename",
                                 false,
                                 cx,
-                                move |this, w, cx| this.modal(Modal::RenamePreset(id), w, cx),
+                                move |this, w, cx| this.modal_in_menu(MenuHost::Popover, Modal::RenamePreset(id), w, cx),
                             )
                             .flex_1()
                             .min_h_0()

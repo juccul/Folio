@@ -121,7 +121,8 @@ fn paint_picker_texture(
         if let Some(previous) = texture.take() {
             let _ = window.drop_image(previous.image);
         }
-        let Some(image) = RenderImage::from_ephemeral_bgra(key.width, key.height, picker_pixels(key))
+        let Some(image) =
+            RenderImage::from_ephemeral_bgra(key.width, key.height, picker_pixels(key))
         else {
             return;
         };
@@ -247,7 +248,7 @@ impl NotesView {
         cx: &mut Context<Self>,
     ) -> Div {
         let theme = Theme::new(&self.controller.settings);
-        let color = ThemeColor::parse(&field.read(cx).content)
+        let color = ThemeColor::parse(&field.read(cx).content())
             .unwrap_or(ThemeColor::opaque(theme.canvas.paper));
         let hsv = self.picker_hsv(&field, color);
         let textures = self.color_picker.as_ref().unwrap().textures.clone();
@@ -255,108 +256,61 @@ impl NotesView {
         for channel in 0..if opacity { 3 } else { 2 } {
             let bounds = Rc::new(Cell::new(Bounds::default()));
             let measured = bounds.clone();
-            let entity = cx.entity();
-            let drag_field = field.clone();
             let textures = textures.clone();
             let track = canvas(
                 move |b, _, _| measured.set(b),
-                move |b, _, window, _| {
-                    match channel {
-                        0 => {
-                            paint_picker_texture(
-                                b,
-                                Some(hsv.hue),
-                                &mut textures.borrow_mut()[0],
-                                window,
+                move |b, _, window, _| match channel {
+                    0 => {
+                        paint_picker_texture(
+                            b,
+                            Some(hsv.hue),
+                            &mut textures.borrow_mut()[0],
+                            window,
+                        );
+                        let center = b.origin
+                            + point(
+                                b.size.width * hsv.saturation,
+                                b.size.height * (1. - hsv.value),
                             );
-                            let center = b.origin
-                                + point(
-                                    b.size.width * hsv.saturation,
-                                    b.size.height * (1. - hsv.value),
-                                );
-                            marker(
-                                Bounds::new(center - point(px(7.), px(7.)), size(px(14.), px(14.))),
-                                window,
-                            );
-                        }
-                        1 => {
-                            paint_picker_texture(b, None, &mut textures.borrow_mut()[1], window);
-                            marker(
-                                Bounds::new(
-                                    point(
-                                        b.origin.x + (b.size.width - px(8.)) * hsv.hue,
-                                        b.origin.y + px(1.),
-                                    ),
-                                    size(px(8.), b.size.height - px(2.)),
-                                ),
-                                window,
-                            );
-                        }
-                        _ => {
-                            checkerboard(b, window);
-                            window.paint_quad(fill(
-                                b,
-                                linear_gradient(
-                                    90.,
-                                    linear_color_stop(rgba(color.0 & !255), 0.),
-                                    linear_color_stop(rgba(color.0 | 255), 1.),
-                                ),
-                            ));
-                            marker(
-                                Bounds::new(
-                                    point(
-                                        b.origin.x + (b.size.width - px(8.)) * color.alpha(),
-                                        b.origin.y + px(1.),
-                                    ),
-                                    size(px(8.), b.size.height - px(2.)),
-                                ),
-                                window,
-                            );
-                        }
+                        marker(
+                            Bounds::new(center - point(px(7.), px(7.)), size(px(14.), px(14.))),
+                            window,
+                        );
                     }
-                    let move_entity = entity.clone();
-                    let move_field = drag_field.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                        if phase.capture() {
-                            move_entity.update(cx, |this, cx| {
-                                if this.color_drag == Some((move_field.entity_id(), channel)) {
-                                    if event.pressed_button == Some(MouseButton::Left) {
-                                        this.pick_color(
-                                            &move_field,
-                                            channel,
-                                            event.position,
-                                            b,
-                                            opacity,
-                                            cx,
-                                        );
-                                    } else {
-                                        this.color_drag = None;
-                                    }
-                                    cx.stop_propagation();
-                                }
-                            });
-                        }
-                    });
-                    let up_entity = entity.clone();
-                    let up_field = drag_field.clone();
-                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                        if phase.capture() && event.button == MouseButton::Left {
-                            up_entity.update(cx, |this, cx| {
-                                if this.color_drag == Some((up_field.entity_id(), channel)) {
-                                    this.pick_color(
-                                        &up_field,
-                                        channel,
-                                        event.position,
-                                        b,
-                                        opacity,
-                                        cx,
-                                    );
-                                    this.color_drag = None;
-                                    cx.stop_propagation();
-                                }
-                            });
-                        }
-                    });
+                    1 => {
+                        paint_picker_texture(b, None, &mut textures.borrow_mut()[1], window);
+                        marker(
+                            Bounds::new(
+                                point(
+                                    b.origin.x + (b.size.width - px(8.)) * hsv.hue,
+                                    b.origin.y + px(1.),
+                                ),
+                                size(px(8.), b.size.height - px(2.)),
+                            ),
+                            window,
+                        );
+                    }
+                    _ => {
+                        checkerboard(b, window);
+                        window.paint_quad(fill(
+                            b,
+                            linear_gradient(
+                                90.,
+                                linear_color_stop(rgba(color.0 & !255), 0.),
+                                linear_color_stop(rgba(color.0 | 255), 1.),
+                            ),
+                        ));
+                        marker(
+                            Bounds::new(
+                                point(
+                                    b.origin.x + (b.size.width - px(8.)) * color.alpha(),
+                                    b.origin.y + px(1.),
+                                ),
+                                size(px(8.), b.size.height - px(2.)),
+                            ),
+                            window,
+                        );
+                    }
                 },
             )
             .w_full()
@@ -396,29 +350,30 @@ impl NotesView {
                 .rounded(px(theme.corner_sm()))
                 // Color tracks must retain their exact pixels while pressed.
                 .active(|style| style.opacity(1.))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                .on_pointer_drag(cx.listener(move |this, event: &DragEvent, window, cx| {
+                    if event.phase == DragPhase::Down {
                         this.accessibility.focus_control(id, window);
                         this.color_drag = Some((down_field.entity_id(), channel));
-                        this.pick_color(
-                            &down_field,
-                            channel,
-                            event.position,
-                            bounds.get(),
-                            opacity,
-                            cx,
-                        );
-                        cx.stop_propagation();
-                    }),
-                )
+                    }
+                    this.pick_color(
+                        &down_field,
+                        channel,
+                        event.position,
+                        bounds.get(),
+                        opacity,
+                        cx,
+                    );
+                    if event.phase == DragPhase::Up {
+                        this.color_drag = None;
+                    }
+                }))
                 .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                     if event.keystroke.key == "enter" {
                         this.submit_modal(window, cx);
                         cx.stop_propagation();
                         return;
                     }
-                    let current = ThemeColor::parse(&key_field.read(cx).content).unwrap_or(color);
+                    let current = ThemeColor::parse(&key_field.read(cx).content()).unwrap_or(color);
                     let mut hsv = this.picker_hsv(&key_field, current);
                     let mut alpha = if opacity { current.alpha() } else { 1. };
                     let step = if event.keystroke.modifiers.shift {
@@ -488,14 +443,18 @@ impl NotesView {
                         .size(px(24.))
                         .rounded(px(theme.corner_sm()))
                         .bg(rgb(value))
-                        .when(selected, |swatch| swatch.border_2().border_color(rgb(theme.ring)))
-                        .when(!selected, |swatch| swatch.border_1().border_color(theme.border))
+                        .when(selected, |swatch| {
+                            swatch.border_2().border_color(rgb(theme.ring))
+                        })
+                        .when(!selected, |swatch| {
+                            swatch.border_1().border_color(theme.border)
+                        })
                         .into_any_element(),
                     selected,
                     cx,
                     move |_, _, cx| {
                         let alpha = if opacity {
-                            ThemeColor::parse(&draft.read(cx).content).map_or(255, |c| c.0 & 255)
+                            ThemeColor::parse(&draft.read(cx).content()).map_or(255, |c| c.0 & 255)
                         } else {
                             255
                         };
@@ -542,7 +501,7 @@ impl NotesView {
             (f32::from(position.x - bounds.origin.x) / f32::from(bounds.size.width)).clamp(0., 1.);
         let y =
             (f32::from(position.y - bounds.origin.y) / f32::from(bounds.size.height)).clamp(0., 1.);
-        let color = ThemeColor::parse(&field.read(cx).content).unwrap_or(ThemeColor::opaque(
+        let color = ThemeColor::parse(&field.read(cx).content()).unwrap_or(ThemeColor::opaque(
             Theme::new(&self.controller.settings).canvas.paper,
         ));
         let mut hsv = self.picker_hsv(field, color);

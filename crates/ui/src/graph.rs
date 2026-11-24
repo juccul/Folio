@@ -1,10 +1,8 @@
 //! Display-only colors for solver-generated SVGs, including graphs saved by
 //! earlier versions. Recolor before rasterizing so antialiasing stays correct.
-use gpui::RenderImage;
-use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Palette {
+pub(crate) struct Palette {
     pub paper: u32,
     pub grid: u32,
     pub axes: u32,
@@ -49,19 +47,31 @@ impl Palette {
     }
 }
 
-pub(super) fn image(width: u32, height: u32, mut pixels: Vec<u8>) -> Arc<RenderImage> {
-    // resvg emits premultiplied RGBA; GPUI expects straight BGRA.
+/// Premultiplied RGBA (resvg's output) as an image.
+pub(super) fn image(
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+) -> std::sync::Arc<super::RenderImage> {
+    let size = resvg::tiny_skia::IntSize::from_wh(width.max(1), height.max(1)).expect("image size");
+    let pixmap = resvg::tiny_skia::Pixmap::from_vec(pixels, size)
+        .unwrap_or_else(|| resvg::tiny_skia::Pixmap::new(1, 1).expect("1×1 pixmap"));
+    std::sync::Arc::new(super::RenderImage::from_pixmap(pixmap))
+}
+
+pub(super) fn unpremultiply(pixels: &mut [u8]) {
     for pixel in pixels.as_chunks_mut::<4>().0 {
         let a = pixel[3] as u32;
+        if a == 255 || a == 0 {
+            continue;
+        }
         for channel in pixel.iter_mut().take(3) {
             *channel = (*channel as u32 * 255 + a / 2)
                 .checked_div(a)
                 .unwrap_or(0)
                 .min(255) as u8;
         }
-        pixel.swap(0, 2);
     }
-    Arc::new(RenderImage::from_ephemeral_bgra(width, height, pixels).unwrap())
 }
 
 #[cfg(test)]

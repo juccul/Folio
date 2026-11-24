@@ -1,13 +1,13 @@
 # Folio
 
-Offline handwriting and mixed-media notes for Linux and Windows, built in Rust with GPUI. Your notes stay on your device; no account is required.
+Offline handwriting and mixed-media notes for Linux and Windows, built in Rust with the [Rune](https://github.com/anomalyco/rune) UI toolkit. Your notes stay on your device; no account is required.
 
 ## Features
 
 - Pressure-sensitive pen input, editable vector ink, shapes and selection tools.
 - Paged notebooks or infinite canvases, with text, images and PDF annotation.
 - Folders, favorites, templates and search, including reviewed handwriting.
-- Offline math solving and optional handwriting recognition.
+- Offline handwriting and math recognition from your strokes, offline math solving and inline auto math.
 - Persistent undo, library backups, and PDF, SVG, PNG or editable notebook export.
 - Light, dark and automatic system themes.
 
@@ -26,11 +26,11 @@ flatpak run io.github.folio.Notes
 
 Updates appear beside the window controls. Click **Update**, then **Restart to update** when ready. See [installation, updates and recovery](UPDATES.md) for existing installations and troubleshooting.
 
-Note taking and math solving work offline. Optional handwriting recognition downloads its model on first use, then runs locally; see [recognition setup](DEVELOPMENT.md#recognition-setup-and-privacy).
+Everything works offline. The stroke recognition models ship with Folio and run locally on the CPU; nothing is downloaded or sent anywhere. A short tour of the pen's features opens on first launch and stays available in Help.
 
 ## Build
 
-Linux builds require Rust 1.92+, a C compiler, native desktop libraries and Vulkan support. The [build container](packaging/Containerfile) lists dependencies; see [Windows build instructions](WINDOWS.md) for Windows.
+Linux builds require Rust 1.92+, a C compiler, native desktop libraries (`libxkbcommon`, `libwayland-client`) and Vulkan support. The [build container](packaging/Containerfile) lists dependencies; see [Windows build instructions](WINDOWS.md) for Windows.
 
 ```sh
 cargo build --locked --release -p folio

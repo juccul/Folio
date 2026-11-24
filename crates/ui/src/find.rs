@@ -1,7 +1,7 @@
 //! The find bar: a browser-style search across every document.
 //!
-//! Ctrl+F opens a small bar over the top-right of the canvas without
-//! covering the page. Results update as you type. Matches in the open
+//! Ctrl+F (or the search button) widens the search button into a bar in
+//! place, without covering the page. Results update as you type. Matches in the open
 //! document come first, from the current page on, and the first one is shown
 //! at once. Enter and Shift+Enter (also F3 and Ctrl+G) step through each
 //! match, then on to other pages and documents, wrapping at the end. Every
@@ -28,6 +28,11 @@ pub(super) struct Find {
     current: Option<usize>,
     /// Center the current match once its document has loaded.
     reveal: bool,
+    /// When the bar opened: the match details drop in once it has widened.
+    opened: Instant,
+    /// Opened in the library, where it filters the shelf by title instead
+    /// of searching inside documents. Switching views closes it.
+    library: bool,
     _subscriptions: [Subscription; 2],
 }
 
@@ -35,14 +40,30 @@ impl NotesView {
     /// Ctrl+F: open the find bar, or select its text when already open.
     pub(super) fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.find.is_none() {
+            let library = self.library_open;
             let field = cx.new(|cx| {
-                let mut field = Field::new(self.controller.search_query.clone(), false, cx);
-                field.placeholder = Some("Find in all documents".into());
+                // The library's filter starts empty each time; the editor's
+                // find keeps its last query, as browsers do.
+                let query = if library { String::new() } else { self.controller.search_query.clone() };
+                let mut field = Field::with_cx(query, false, cx);
+                field.placeholder = Some(if library { "Filter documents" } else { "Find in all documents" }.into());
                 field.compact = true;
+                field.on_escape = Some(std::rc::Rc::new(|this: &mut NotesView, window, cx| {
+                    this.close_find(window, cx)
+                }));
                 field
             });
             let subscription = cx.observe(&field, |this, field, cx| {
-                let text = field.read(cx).content.trim().to_owned();
+                // The library's filter applies as you type, and the shelf
+                // animates it: documents that no longer match leave, the
+                // rest glide to their new places. (Typing commits would
+                // otherwise land at once.)
+                if this.find.as_ref().is_some_and(|find| find.library) {
+                    cx.animate();
+                    cx.notify();
+                    return;
+                }
+                let text = field.read(cx).content().trim().to_owned();
                 if let Some(find) = &mut this.find
                     && text != find.searched
                 {
@@ -56,7 +77,9 @@ impl NotesView {
             });
             // The field's own Enter binding runs before key listeners.
             let submitted = cx.subscribe(&field, |this, _, _: &Submitted, cx| {
-                this.step_find(true, cx)
+                if !this.find.as_ref().is_some_and(|find| find.library) {
+                    this.step_find(true, cx)
+                }
             });
             // Reopening keeps the last query and its results, as browsers do.
             let searched = self.controller.search_query.clone();
@@ -68,6 +91,8 @@ impl NotesView {
                 order: Vec::new(),
                 current: None,
                 reveal: false,
+                opened: Instant::now(),
+                library,
                 _subscriptions: [subscription, submitted],
             });
         }
@@ -105,7 +130,7 @@ impl NotesView {
             return;
         }
         find.typed = None;
-        let text = find.field.read(cx).content.trim().to_owned();
+        let text = find.field.read(cx).content().trim().to_owned();
         if text == find.searched {
             return;
         }
@@ -120,6 +145,11 @@ impl NotesView {
 
     /// Order fresh results and show the first match in the open document.
     fn sync_find(&mut self) {
+        // The library's filter and the editor's find belong to their views.
+        if self.find.as_ref().is_some_and(|find| find.library != self.library_open) {
+            self.find = None;
+            self.controller.search_highlights.clear();
+        }
         let generation = self.controller.search_generation();
         let ready = self.controller.search_state == folio_app::SearchState::Complete;
         let Some(find) = &mut self.find else {
@@ -199,6 +229,9 @@ impl NotesView {
         let Some(find) = &self.find else {
             return;
         };
+        if find.library {
+            return;
+        }
         let count = find.order.len();
         if count == 0 {
             return;
@@ -263,26 +296,31 @@ impl NotesView {
         }
     }
 
-    /// The find bar, floating over the top-right corner of the content.
-    pub(super) fn find_bar(
-        &mut self,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Option<impl IntoElement + use<>> {
-        self.sync_find();
-        // Dialogs take over; the bar returns when they close.
-        if self.modal.is_some()
-            || self.settings_open
-            || self.help_open
-            || self.controller.error.is_some()
-        {
-            return None;
-        }
+    /// What the find bar shows for its query: the match counter, whether
+    /// nothing matched or the search failed, how many matches there are,
+    /// and the current match's place (or where Enter goes next).
+    fn find_status(&self, cx: &App) -> Option<FindStatus> {
         let find = self.find.as_ref()?;
         let theme = Theme::new(&self.controller.settings);
-        let field = find.field.clone();
-        field.update(cx, |field, _| field.theme = theme);
-        let text = field.read(cx).content.trim().to_owned();
+        let text = find.field.read(cx).content().trim().to_owned();
+        if find.library {
+            // The library's filter shows its count under the shelf's title;
+            // the bar only turns red when nothing is left.
+            let count = self.library_filter(cx).map(|words| {
+                self.controller
+                    .visible_notes()
+                    .into_iter()
+                    .filter(|n| title_matches(&n.title, &words))
+                    .count()
+            });
+            return Some(FindStatus {
+                none: count == Some(0),
+                counter: String::new(),
+                text,
+                count: 0,
+                context: None,
+            });
+        }
         let results = &self.controller.search_results;
         let pending = find.typed.is_some()
             || text != find.searched
@@ -304,7 +342,6 @@ impl NotesView {
         } else {
             format!("0/{count}")
         };
-        // The current match's place, or where Enter goes next.
         let context = match find.current.and_then(|p| find.order.get(p)) {
             Some(&index) if !pending => {
                 let result = &results[index];
@@ -343,20 +380,64 @@ impl NotesView {
             )),
             _ => None,
         };
-        // Below the toolbar, at the right edge of the page area.
-        let search = self.accessibility.control_bounds_for_key("search");
-        // Directly under the search button, over the empty middle of the
-        // sort row; under the toolbar in the editor.
-        let top = px(search.map(|r| r.y1 as f32 + 10.).unwrap_or(96.));
-        // In the library, right-aligned under the search button, over the
-        // empty middle of the sort row rather than the view switch.
-        let right = if self.library_open {
-            search.map_or(px(16.), |r| window.viewport_size().width - px(r.x1 as f32))
-        } else {
-            self.canvas_bounds.map_or(px(16.), |b| {
-                window.viewport_size().width - b.origin.x - b.size.width + px(16.)
-            })
+        Some(FindStatus { text, none: none || failed, count, counter, context })
+    }
+
+    /// The search button, which a click widens in place into the search
+    /// bar: the field, the match count, match navigation and Close. Closed,
+    /// it narrows back into the button. `button` is the closed button and
+    /// `closed` its width and `open` the bar's, in rems; `here` says whether the bar belongs in this
+    /// slot (the library's, or the editor's).
+    pub(super) fn search_slot(
+        &mut self,
+        button: Stateful<Div>,
+        closed: f32,
+        open: f32,
+        here: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        self.sync_find();
+        let theme = Theme::new(&self.controller.settings);
+        let status = if here { self.find_status(cx) } else { None };
+        let field = self.find.as_ref().map(|find| find.field.clone());
+        let slot = div()
+            .id("search-slot")
+            .track_bounds("search-slot")
+            .flex_shrink_0()
+            .h(rems(2.375))
+            .flex()
+            .items_center()
+            .rounded(px(theme.radius))
+            .overflow_hidden()
+            // Each edge springs on its own, so the edge beside the other
+            // controls stays put while the far one travels.
+            .el(|e| {
+                e.motion(crate::motion::SETTLE)
+                    .lead(crate::motion::SETTLE, crate::motion::SETTLE)
+                    .animated_changes()
+            });
+        let ring = rgb(theme.ring).color();
+        let (Some(status), Some(field)) = (status, field) else {
+            // The button gives way to the bar at once, and fades back in
+            // as the bar narrows into it.
+            let button = button.el(|e| {
+                e.transition(rune::Transition::opacity().springs(rune::SpringPair::new(
+                    crate::motion::SWAP,
+                    rune::Spring::NONE,
+                )))
+            });
+            // Its box stays, clear, so closing fades it as it narrows.
+            return slot
+                .w(rems(closed))
+                .bg(transparent_black())
+                .border_1()
+                .border_color(transparent_black())
+                .child(button);
         };
+        field.update(cx, |field, _| {
+            field.theme = theme;
+            field.bare = true;
+        });
         let nav = |this: &mut Self,
                    id: &'static str,
                    label: &'static str,
@@ -399,20 +480,26 @@ impl NotesView {
         let bar = div()
             .id("find-bar")
             .key_context("FolioFind")
-            .occlude()
-            .absolute()
-            .top(top)
-            .right(right)
-            .w(rems(25.))
-            .max_w(relative(0.9))
-            .p_1p5()
+            // As wide as the open slot from the start, so the slot's growth
+            // reveals it rather than reflowing it.
+            .w_full()
+            .h_full()
+            .flex_shrink_0()
             .flex()
-            .flex_col()
-            .gap_1()
-            .rounded(px(theme.corner_md()))
-            .glass(theme, theme.popover)
+            .items_center()
+            .gap_0p5()
+            .pl_2()
+            .pr(rems(0.125))
+            // The controls fade in as the slot widens and go at once as it
+            // narrows back into the button.
+            .el(|e| {
+                e.transition(rune::Transition::opacity().springs(rune::SpringPair::new(
+                    crate::motion::SWAP,
+                    rune::Spring::NONE,
+                )))
+            })
             // Browser keys, handled before the field sees them.
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let key = &event.keystroke;
                 let shift = key.modifiers.shift;
                 let control = key.modifiers.control;
@@ -428,74 +515,131 @@ impl NotesView {
                 cx.stop_propagation();
             }))
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.close_find(window, cx)))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(icon(Icon::Search, theme.muted).size(rems(1.)).flex_shrink_0())
+            .child(div().flex_1().min_w_0().child(field))
             .child(
                 div()
+                    .when(!status.text.is_empty(), |counter| counter.min_w(rems(2.5)))
                     .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .relative()
-                            .child(field)
-                            // A field without matches turns red, as in browsers.
-                            .when(none || failed, |wrap| {
-                                wrap.child(
-                                    div()
-                                        .absolute()
-                                        .inset_0()
-                                        .rounded(px(theme.radius))
-                                        .border_1()
-                                        .border_color(rgb(theme.destructive)),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .when(!text.is_empty(), |counter| counter.min_w(rems(2.75)))
-                            .flex()
-                            .justify_end()
-                            .text_xs()
-                            .text_color(rgb(if none || failed {
-                                theme.destructive
-                            } else {
-                                theme.muted
-                            }))
-                            .child(counter),
-                    )
-                    // Match navigation appears once there is a match.
-                    .when(count > 0, |row| {
-                        row.child(previous)
-                            .child(next)
-                            .child(div().w(px(1.)).h(rems(1.25)).mx_0p5().bg(theme.border))
-                    })
-                    .child(close),
-            )
-            .children(context.map(|(place, detail)| {
-                div()
-                    .px_2()
-                    .pb_0p5()
-                    .flex()
-                    .flex_col()
-                    .text_size(rems(0.8125))
-                    .child(
-                        div()
-                            .truncate()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(theme.ink))
-                            .child(place),
-                    )
-                    .children(detail.map(|detail| {
-                        div()
-                            .truncate()
-                            .text_color(rgb(theme.secondary()))
-                            .child(detail)
+                    .justify_end()
+                    .text_xs()
+                    .text_color(rgb(if status.none {
+                        theme.destructive
+                    } else {
+                        theme.muted
                     }))
-            }));
-        Some(bar)
+                    .child(status.counter),
+            )
+            // Match navigation appears once there is a match.
+            .when(status.count > 0, |row| row.child(previous).child(next))
+            .child(close);
+        // The slot draws the bar's box, so the box widens exactly as the
+        // slot does while the controls in it are revealed.
+        slot.w(rems(open))
+            .bg(theme.raised())
+            .border_1()
+            // A field without matches turns red, as in browsers.
+            .border_color(if status.none { rgb(theme.destructive) } else { theme.input })
+            .el(move |e| e.focus_within_ring(1., -1., ring))
+            .child(bar)
     }
+
+    /// Where the current match is, dropped under the search bar.
+    pub(super) fn find_bar(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        self.sync_find();
+        // Dialogs take over; it returns when they close.
+        if self.modal.is_some()
+            || self.settings_open
+            || self.help_open
+            || self.controller.error.is_some()
+        {
+            return None;
+        }
+        let theme = Theme::new(&self.controller.settings);
+        let (place, detail) = self.find_status(cx)?.context?;
+        let slot = self.accessibility.control_bounds_for_key("search-slot")?;
+        // It drops in once the bar has mostly widened.
+        let wait = Duration::from_millis(170).saturating_sub(self.find.as_ref()?.opened.elapsed());
+        if !wait.is_zero() {
+            cx.wake_after(wait);
+            return None;
+        }
+        // Both search bars widen to the left, so it hangs from their right.
+        let right = f32::from(window.viewport_size().width) - slot.x1 as f32;
+        Some(
+            div()
+                .id("find-context")
+                .el(|e| {
+                    e.transition(
+                        rune::Transition::offset(0., -4.)
+                            .combined(rune::Transition::opacity())
+                            .springs(rune::SpringPair::new(crate::motion::POP, crate::motion::SETTLE)),
+                    )
+                })
+                .occlude()
+                .absolute()
+                .top(px(slot.y1 as f32 + 6.))
+                .right(px(right))
+                .w(px((slot.x1 - slot.x0) as f32))
+                .px_3()
+                .py_2()
+                .flex()
+                .flex_col()
+                .text_size(rems(0.8125))
+                .rounded(px(theme.corner_md()))
+                .glass(theme, theme.popover)
+                .child(
+                    div()
+                        .truncate()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(rgb(theme.ink))
+                        .child(place),
+                )
+                .children(detail.map(|detail| {
+                    div()
+                        .truncate()
+                        .text_color(rgb(theme.secondary()))
+                        .child(detail)
+                })),
+        )
+    }
+}
+
+impl NotesView {
+    /// The words the library's search filters the shelf by, when it is open
+    /// and has any.
+    pub(super) fn library_filter(&self, cx: &App) -> Option<Vec<String>> {
+        let find = self.find.as_ref().filter(|find| find.library && self.library_open)?;
+        let words: Vec<String> = find
+            .field
+            .read(cx)
+            .content()
+            .to_lowercase()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        (!words.is_empty()).then_some(words)
+    }
+}
+
+/// Whether `title` holds every one of `words` (lowercase).
+pub(super) fn title_matches(title: &str, words: &[String]) -> bool {
+    let title = title.to_lowercase();
+    words.iter().all(|word| title.contains(word.as_str()))
+}
+
+/// What the find bar shows (see `NotesView::find_status`).
+struct FindStatus {
+    text: String,
+    /// Nothing matched, or the search failed.
+    none: bool,
+    count: usize,
+    counter: String,
+    context: Option<(String, Option<StyledText>)>,
 }
 
 /// A result's snippet on one line, with its matches emphasized.

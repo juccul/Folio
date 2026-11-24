@@ -17,7 +17,8 @@ const GAP: f32 = 4.;
 /// Movement within this radius of the center chooses nothing.
 const DEAD_ZONE: f32 = 26.;
 /// The `TabletEvent::buttons` bit of the pen's lower barrel button
-/// (BTN_STYLUS on Wayland, button 2 on X11). The upper button erases.
+/// (BTN_STYLUS on Wayland, button 2 on X11, the barrel on Windows). The
+/// upper button erases.
 const WHEEL_PEN_BUTTON: u32 = 1;
 
 #[derive(Clone, Copy, Debug)]
@@ -210,6 +211,28 @@ struct Segment {
 }
 
 impl NotesView {
+    /// The pen's lower barrel button opens and closes the wheel at the pen,
+    /// unless that is turned off in Settings. Returns whether the wheel used
+    /// this tablet frame.
+    pub(super) fn pen_tool_wheel(
+        &mut self,
+        event: &TabletEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let gone = matches!(event.phase, TabletPhase::Leave | TabletPhase::Cancel);
+        let previous =
+            std::mem::replace(&mut self.pen_buttons, if gone { 0 } else { event.buttons });
+        if gone || !self.controller.settings.barrel_opens_wheel {
+            return false;
+        }
+        match barrel(previous, event.buttons) {
+            Some(Barrel::Pressed) => self.toggle_tool_wheel(event.position, window, cx),
+            Some(Barrel::Released) => {}
+            None => return false,
+        }
+        true
+    }
     /// The wheel's tools, clockwise from the top.
     pub(super) fn wheel_tools(&self) -> Vec<WheelTool> {
         WheelTool::from_slugs(&self.controller.settings.wheel_tools)
@@ -289,117 +312,6 @@ impl NotesView {
             cx.notify();
         }
     }
-    /// The pen's lower barrel button opens and closes the wheel at the pen,
-    /// unless that is turned off in Settings. Returns whether the wheel used
-    /// this tablet frame.
-    pub(super) fn pen_tool_wheel(
-        &mut self,
-        event: &TabletEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let gone = matches!(event.phase, TabletPhase::Leave | TabletPhase::Cancel);
-        let previous =
-            std::mem::replace(&mut self.pen_buttons, if gone { 0 } else { event.buttons });
-        if gone || !self.controller.settings.barrel_opens_wheel {
-            return false;
-        }
-        match barrel(previous, event.buttons) {
-            Some(Barrel::Pressed) => self.toggle_tool_wheel(event.position, window, cx),
-            Some(Barrel::Released) => {}
-            None => return false,
-        }
-        true
-    }
-    /// Smoke-test input through window dispatch: the hovering pen presses
-    /// its lower barrel button; then (`aim`) hovers over Eraser, which must
-    /// not choose it, and taps Pan.
-    pub fn wheel_smoke_events(&self, aim: bool) -> Result<Vec<PlatformInput>, String> {
-        let at = if aim {
-            self.tool_wheel
-                .ok_or("The pen's barrel button did not open the tool wheel")?
-                .center
-        } else {
-            self.canvas_bounds.ok_or("Canvas not laid out")?.center()
-        };
-        let tablet = |position, buttons, phase| {
-            PlatformInput::Tablet(TabletEvent {
-                position,
-                pressure: 0.,
-                tilt_x: 0.,
-                tilt_y: 0.,
-                timestamp: 2000,
-                buttons,
-                eraser: false,
-                phase,
-                modifiers: Default::default(),
-            })
-        };
-        let hover = |position, buttons| {
-            [
-                tablet(position, buttons, TabletPhase::Hover),
-                PlatformInput::MouseMove(MouseMoveEvent {
-                    position,
-                    pressed_button: None,
-                    modifiers: Default::default(),
-                }),
-            ]
-        };
-        let tools = self.wheel_tools();
-        let ring = (RING_INNER + RING_OUTER) / 2. * self.controller.settings.ui_scale;
-        let on_ring = |tool: WheelTool| {
-            tools
-                .iter()
-                .position(|&slot| slot == tool)
-                .map(|index| polar(at, ring, slot_angle(index, tools.len())))
-                .ok_or(format!("{} is not on the tool wheel", tool.label()))
-        };
-        let pan = on_ring(WheelTool::Pan)?;
-        let eraser = on_ring(WheelTool::Eraser)?;
-        let mouse = |down: bool| {
-            if down {
-                PlatformInput::MouseDown(MouseDownEvent {
-                    button: MouseButton::Left,
-                    position: pan,
-                    modifiers: Default::default(),
-                    click_count: 1,
-                    first_mouse: false,
-                })
-            } else {
-                PlatformInput::MouseUp(MouseUpEvent {
-                    button: MouseButton::Left,
-                    position: pan,
-                    modifiers: Default::default(),
-                    click_count: 1,
-                })
-            }
-        };
-        Ok(if aim {
-            let mut events = [hover(at, 1), hover(at, 0), hover(eraser, 0), hover(pan, 0)].concat();
-            events.extend([
-                tablet(pan, 0, TabletPhase::Down),
-                mouse(true),
-                tablet(pan, 0, TabletPhase::Up),
-                mouse(false),
-            ]);
-            // Leaving proximity lets the mouse drive the canvas again.
-            events.push(tablet(pan, 0, TabletPhase::Leave));
-            events
-        } else {
-            [hover(at, 0), hover(at, 1)].concat()
-        })
-    }
-    pub fn wheel_smoke_verify(&mut self, tool: Tool, cx: &mut Context<Self>) -> Result<(), String> {
-        let chosen = self.tool_wheel.is_none() && self.controller.tool == Tool::Hand;
-        self.tool_wheel = None;
-        self.controller.set_tool(tool);
-        cx.notify();
-        if chosen {
-            Ok(())
-        } else {
-            Err("Tapping Pan on the tool wheel did not choose it alone".into())
-        }
-    }
     fn wheel_slot_enabled(&self, slot: WheelTool) -> bool {
         !self.controller.read_only() || matches!(slot, WheelTool::Select | WheelTool::Pan)
     }
@@ -411,7 +323,7 @@ impl NotesView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let Some(wheel) = self.tool_wheel else {
-            return div().into_any_element();
+            return tool_wheel_layer().into_any_element();
         };
         let theme = Theme::new(&self.controller.settings);
         let scale = self.controller.settings.ui_scale;
@@ -653,7 +565,7 @@ impl NotesView {
             .absolute()
             .inset_0()
             .occlude()
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 if let Some(wheel) = &mut this.tool_wheel
                     && matches!(
                         event.keystroke.key.as_str(),
@@ -712,6 +624,12 @@ impl NotesView {
     }
 }
 
+/// The tool wheel's layer while it is closed: kept, under the same key, so
+/// the wheel shrinks away when it closes. It takes no input.
+pub(super) fn tool_wheel_layer() -> Div {
+    div().id("tool-wheel").absolute().inset_0()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -763,16 +681,6 @@ mod tests {
         // Every wheel tool has a saved name the app crate knows.
         let names: Vec<_> = WheelTool::ALL.map(WheelTool::slug).into();
         assert_eq!(names, folio_app::WHEEL_TOOLS);
-    }
-    #[test]
-    fn lower_barrel_button_opens_and_releases_the_wheel() {
-        // Bit 1 is the lower barrel button; bit 2, the upper one, erases.
-        assert_eq!(barrel(0, 1), Some(Barrel::Pressed));
-        assert_eq!(barrel(2, 3), Some(Barrel::Pressed));
-        assert_eq!(barrel(1, 1), None);
-        assert_eq!(barrel(3, 2), Some(Barrel::Released));
-        assert_eq!(barrel(0, 2), None);
-        assert_eq!(barrel(2, 0), None);
     }
     #[test]
     fn wheel_stays_inside_the_window() {

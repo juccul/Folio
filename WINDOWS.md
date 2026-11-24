@@ -1,17 +1,17 @@
 # Folio on Windows
 
-The Windows port targets Windows 11 x64 with native GPUI/DirectX rendering and Windows Ink input. Physical tablet compatibility and latency must be tested on the devices you use; a VirtualBox session only validates virtual display/input behavior.
+The Windows port targets Windows 11 x64. Its interface and canvas draw through Rune's GPU renderer on Direct3D 12, and pens use Windows Ink input. Physical tablet compatibility and latency must be tested on the devices you use; a VirtualBox session only validates virtual display/input behavior.
 
 ## Build
 
-Install Rust 1.92 or newer and Visual Studio Build Tools with **Desktop development with C++** and a Windows SDK. The SDK must include `fxc.exe` for release shaders. From a local checkout in PowerShell:
+Install Rust 1.92 or newer and Visual Studio Build Tools with **Desktop development with C++** and a Windows SDK. From a local checkout in PowerShell:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -DebugBuild
 powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
 ```
 
-The script loads the x64 MSVC environment and finds the SDK shader compiler. `GPUI_FXC_PATH` can override its location. `-Check` checks all workspace targets; `-Test` runs the workspace tests. Before running PDF/math integration tests, prepare the runtime tools below and put the package's `pdf/bin` on PATH and its `math-solver/pack.json` in `FOLIO_MATH_CONFIG`.
+The script loads the x64 MSVC environment. `-Check` checks all workspace targets; `-Test` runs the workspace tests. Before running PDF/math integration tests, prepare the runtime tools below and put the package's `pdf/bin` on PATH and its `math-solver/pack.json` in `FOLIO_MATH_CONFIG`.
 
 ## Portable package
 
@@ -33,9 +33,9 @@ Handwriting and math recognition models (`recognition/math_v2.frec`, `recognitio
 
 ## Validation
 
-The OCR latency changes have native MSVC debug-build validation on Windows 11 in VirtualBox: all 351 workspace tests, real text/math requests through automatic CPU fallback, unchanged-result caching, resident-model reuse, and replacement/undo/redo/reopening. Native UI Automation checks cover editable review, multiline clipboard copy/paste, text and rendered-equation replacement, in-flight cancellation, and completed visible-frame traces. Hovering a recognition control starts the installed model; a request arriving during loading reuses that process, and closing Folio stops it. These checks use isolated disposable notes. They do not establish Windows Vulkan GPU performance or physical pen/display latency.
+Release 0.2.6 is validated natively on Windows by the `Linux and Windows` workflow (GitHub `windows-2025`, MSVC): `cargo check` of every workspace target, the whole workspace test suite (storage, documents, recognition, math, export, updater and the Rune UI), the updater-recovery and packaging tests, the offline runtime check (`verify-windows-runtime.py`: embedded Python, math worker and PDF tools) and the release build with installer and portable packages. Folio's Windows-specific paths beyond those tests (Windows Ink history and HIMETRIC mapping, the single-instance pipe, the update helper) were reviewed in code for this release. An interactive session on the disposable VirtualBox VM was not run for 0.2.6; the checks below remain the way to exercise launch, pen replay and UI Automation on a desktop. They do not establish physical pen/display latency.
 
-Use `tools/verify-windows.ps1 -Package PATH` from the extracted package (or `scripts/verify-windows.ps1 -Package PATH` from the checkout) on an interactive Windows desktop to exercise package launch, native synthetic pen replay, durable saving, accessibility actions, PDF rendering, and offline math. It uses throwaway data, never your default notes. Real pen, eraser, barrel-button, palm, mixed-DPI, and reconnect behavior still need hardware validation. Legacy WinTab-only devices, vendor-specific tablet pad controls, and native touchscreen pinch/pan gestures are outside the initial Windows Ink implementation. Trackpad wheel scrolling uses the existing GPUI path.
+Use `tools/verify-windows.ps1 -Package PATH` from the extracted package (or `scripts/verify-windows.ps1 -Package PATH` from the checkout) on an interactive Windows desktop to exercise package launch (window and library creation, then a clean close), native synthetic pen replay, durable saving, accessibility actions, PDF rendering, and offline math. It uses throwaway data, never your default notes. Real pen, eraser, barrel-button, palm, mixed-DPI, and reconnect behavior still need hardware validation. Legacy WinTab-only devices, vendor-specific tablet pad controls, and native touchscreen pinch/pan gestures are outside the initial Windows Ink implementation. Trackpad scrolling and pinch arrive as Rune wheel and magnify events.
 
 For titlebar regressions, run `powershell -ExecutionPolicy Bypass -File scripts/verify-titlebar-windows.ps1 -Package PATH -ConfirmDisposableVm` on an idle VirtualBox Windows desktop. It checks Home, Update and Maximize/Restore with real mouse input across windowed/maximized states, button centers/edges and quick/normal presses, plus blank-titlebar dragging and double-click maximize/restore. The `--smoke-titlebar` fixture requires a fresh explicit data directory and simulates update progress without opening the installed updater cache or downloading/installing anything. Evidence goes under `artifacts/validation/` by default; keep the desktop free of other input during the run.
 

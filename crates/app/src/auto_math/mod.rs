@@ -1032,6 +1032,17 @@ mod tests {
             "P(X = 3) = must retain the inner '=' and all strokes inside P(...)"
         );
 
+        // Very large handwriting: an '=' whose bars are ~110 px apart once panicked while
+        // estimating the glyph height (clamp lower bound above its 120 px upper bound).
+        let big = vec![
+            make_stroke(&[(800., 700.), (802., 860.)], &style),
+            make_stroke(&[(840., 720.), (1040., 722.)], &style),
+        ];
+        commit_raw(&mut app, big);
+        let big_eq_bot = make_stroke(&[(840., 830.), (1040., 832.)], &style);
+        commit_raw(&mut app, vec![big_eq_bot.clone()]);
+        let _ = detect_equals_equation(app.session(), &big_eq_bot, &empty, &empty);
+
         let _ = std::fs::remove_dir_all(root);
     }
 }

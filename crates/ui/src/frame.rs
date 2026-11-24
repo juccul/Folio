@@ -3,15 +3,9 @@ use super::*;
 
 /// Fade-in opacity of each animated panel for this frame.
 struct PanelOpacity {
-    library: f32,
-    settings: f32,
-    /// The scrim behind dialogs, which stays while one dialog replaces
-    /// another.
-    modal_scrim: f32,
     modal: f32,
     menu: f32,
     canvas_menu: f32,
-    help: f32,
     popover: f32,
     tool_menu: f32,
     tool_wheel: f32,
@@ -63,14 +57,33 @@ impl NotesView {
     }
 }
 
-impl Render for NotesView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl NotesView {
+    pub(crate) fn render(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         self.sync_window_title(window);
+        static FIRST_FRAME: std::sync::Once = std::sync::Once::new();
+        FIRST_FRAME.call_once(|| super::startup_mark("first_frame"));
+        if self.startup_pending > 0 && !self.library_open && !self.controller.loading_note() {
+            if self.startup_pending == 2 {
+                super::startup_mark("note_loaded");
+                self.startup_pending = 1;
+            } else if self.painter.ink_settled() {
+                super::startup_mark("ink_ready");
+                self.startup_pending = 0;
+            }
+        }
         self.release_hidden_resources(window, cx);
         self.controller.refresh_default_ink();
         self.apply_equation_result(window, cx);
         self.cancel_region_after_navigation();
         self.advance_canvas_ease(window);
+        self.advance_canvas_glide();
+        if self.controller.select_morph.as_ref().is_some_and(painting::select_morph_done) {
+            self.controller.select_morph = None;
+        }
         self.building_overlay = false;
         self.accessibility.begin();
         self.motion.borrow_mut().begin_frame();
@@ -82,10 +95,9 @@ impl Render for NotesView {
         self.font_appear = alpha.font;
         self.track_recognition_frame(alpha.modal, window, cx);
         let theme = Theme::new(&self.controller.settings);
-        window.set_rem_size(px(16. * self.controller.settings.ui_scale));
-        window.set_smooth_scrolling(!self.controller.settings.reduce_motion);
         // Build order matters: controls register for accessibility as they are built.
-        let center = self.canvas_area(cx);
+        // The library shows no canvas: its area is built only for documents.
+        let center = (!self.library_open).then(|| self.canvas_area(window, cx));
         let mut root = self.root_element(cx);
         if !self.library_open {
             // Painted first, beneath the translucent bars and sidebars.
@@ -97,41 +109,80 @@ impl Render for NotesView {
                     .child(self.canvas_layer(cx)),
             );
         }
-        let mut body = div().relative().flex().flex_1().min_h_0().min_w_0();
+        // Keyed, so the editor adding its canvas beneath them does not
+        // rebuild (and re-animate) the bars and panels.
+        let mut body = div()
+            .id("chrome-body")
+            // Where the folder menu's layer starts in the window.
+            .track_bounds("chrome-body")
+            .relative()
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .min_w_0();
         let mut editor_top = None;
         if self.library_open {
             self.canvas_bounds = None;
-            body = body.child(self.library_sidebar(cx)).child(
-                self.library(window, cx)
-                    .opacity(alpha.library)
-                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                        for path in paths.paths() {
-                            let id = this.controller.import_as_note(path.clone());
-                            this.open_tabs.push(id);
-                        }
-                        this.show_editor();
-                        cx.notify();
-                    })),
-            );
+            // Read again by the sidebar's rows, which build later this frame.
+            let arriving = self.transitions.borrow().switched();
+            self.library_arriving = arriving;
+            let shelf = self.library(window, cx);
+            // Coming back from a document, the sidebar and header are simply
+            // there and the documents arrive one after another (they animate
+            // themselves), as when the shelf changes filter.
+            body = body
+                .child(self.library_sidebar(cx))
+                .child(shelf.id("library-view").el(move |e| {
+                    // Opening a document replaces the shelf at once: a
+                    // fading shelf would linger over the arriving canvas.
+                    let e = e.transition(rune::Transition::opacity().springs(
+                        rune::SpringPair::new(rune::Spring::NONE, rune::Spring::NONE),
+                    ));
+                    if arriving {
+                        e
+                    } else {
+                        e.animated_changes()
+                    }
+                }));
         } else {
+            let center = center.expect("built when a document is open");
             let (top, main) = self.editor_column(center, &alpha, window, cx);
             editor_top = Some(top);
-            body = body.child(main);
+            body = body.child(main.id("editor-view").el(|e| {
+                e.transition(rune::Transition::opacity().springs(rune::SpringPair::new(
+                    crate::motion::SETTLE,
+                    rune::Spring::NONE,
+                )))
+                .animated_changes()
+            }));
         }
         let canvas_overlay = self.canvas_menu_overlay(&alpha, window, cx);
         let document_menu = self.document_menu_overlay(&alpha, window, cx);
         body = self.add_overlays(body, &alpha, window, cx);
         self.building_overlay = false;
         // One glass bar for the title bar, editor toolbar and notices, so the
-        // blurred backdrop is continuous across its rows.
+        // blurred backdrop is continuous across its rows. Nothing passes
+        // behind it in the library, where a blur (whose GPU buffers cost tens
+        // of megabytes) would change nothing.
+        let bar_theme = if self.library_open {
+            Theme {
+                glass_blur: 0.,
+                ..theme
+            }
+        } else {
+            self.chrome_theme()
+        };
         let mut top = div()
+            .id("chrome-top")
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .glass_fill_from_edge(theme, theme.chrome, true)
+            .glass_fill_from_edge(bar_theme, theme.chrome, true)
             .child(self.document_tabs(window, cx));
         self.store_workspace();
-        if self.controller.recognition_pending {
+        // The selection toolbar shows recognition's progress when it is on
+        // screen; the bar only stands in when it is not.
+        if self.controller.recognition_pending && !self.selection_toolbar_shown() {
             top = top.child(self.recognition_notice(cx));
         }
         if let Some(error) = self.controller.save_error.clone() {
@@ -146,40 +197,61 @@ impl Render for NotesView {
             .child(top.children(editor_top))
             .child(body)
             .children(find)
-            .children(document_menu)
-            .children(canvas_overlay);
-        if !self.library_open
-            && !self.blocking_overlay()
-            && (self.more_open || self.pen_settings || self.export_open)
-        {
-            let popover = self.popover(window, cx);
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(self.transitions.borrow_mut().overlay(
-                        "popover",
-                        alpha.popover,
-                        popover,
-                    )),
-            );
-        }
-        if self.tool_wheel.is_some() && !self.library_open && !self.blocking_overlay() {
-            root = root.child(self.tool_wheel_overlay(alpha.tool_wheel, window, cx));
-        }
-        if self.tool_menu.is_some() && !self.library_open && !self.blocking_overlay() {
-            let menu = self.tool_menu_panel(window, cx);
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(self.transitions.borrow_mut().overlay(
-                        "tool-menu",
-                        alpha.tool_menu,
-                        menu,
-                    )),
-            );
-        }
+            .child(overlay_layer("document-menu", document_menu))
+            .child(canvas_overlay);
+        let hosted = self.modal_hosted_in(MenuHost::Popover);
+        let popover = (!self.library_open
+            && (!self.blocking_overlay() || hosted)
+            && (self.more_open || self.pen_settings || self.export_open))
+            .then(|| {
+                if hosted {
+                    self.building_overlay = !self.help_open && self.controller.error.is_none();
+                    if self.building_overlay {
+                        self.accessibility.begin();
+                    }
+                }
+                let popover = self.popover(window, cx);
+                self.transitions
+                    .borrow_mut()
+                    .overlay("popover", alpha.popover, popover)
+            });
+        let popover = popover.or_else(|| self.transitions.borrow().closed("popover"));
+        root = root.child(overlay_layer("popover", popover));
+        root = root.child(
+            if self.tool_wheel.is_some() && !self.library_open && !self.blocking_overlay() {
+                self.tool_wheel_overlay(alpha.tool_wheel, window, cx)
+                    .into_any_element()
+            } else {
+                super::tool_wheel::tool_wheel_layer().into_any_element()
+            },
+        );
+        let hosted = self.modal_hosted_in(MenuHost::Tool);
+        let tool_menu = (self.tool_menu.is_some()
+            && !self.library_open
+            && (!self.blocking_overlay() || hosted))
+            .then(|| {
+                if hosted {
+                    self.building_overlay = !self.help_open && self.controller.error.is_none();
+                    if self.building_overlay {
+                        self.accessibility.begin();
+                    }
+                }
+                let menu = self.tool_menu_panel(window, cx);
+                self.transitions
+                    .borrow_mut()
+                    .overlay("tool-menu", alpha.tool_menu, menu)
+            });
+        let tool_menu = tool_menu.or_else(|| self.transitions.borrow().closed("tool-menu"));
+        root = root.child(overlay_layer("tool-menu", tool_menu));
+        // The tour fills the whole window, title bar and all (an error
+        // shows over the body instead, until it is dismissed).
+        let tour = (self.tour.is_some() && self.controller.error.is_none()).then(|| {
+            self.building_overlay = true;
+            self.accessibility.begin();
+            self.tour_panel(window, cx).into_any_element()
+        });
+        self.building_overlay = false;
+        root = root.child(overlay_layer("tour", tour));
         // Overlays that just closed fade out above everything else.
         root = root.children(self.transitions.borrow().exits());
         if self.update_preparing {
@@ -192,8 +264,8 @@ impl Render for NotesView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .occlude()
+                    .occlude()
                     .child(
                         div()
                             .p_6()
@@ -209,44 +281,12 @@ impl Render for NotesView {
         if let Some(key) = self.menu_focus.take() {
             self.accessibility.focus_control(&key, window);
         }
-        self.recover_lost_focus(window, cx);
-        self.resume_poll(cx);
         self.accessibility.publish(self, window, cx);
         titlebar::frame(root, window)
     }
 }
 
 impl NotesView {
-    /// A control that disappears while focused (a menu item that closes its
-    /// menu, a section that is replaced) leaves keyboard focus outside the
-    /// window's key contexts, disabling every shortcut. Return focus to the
-    /// root once the focused element has been missing for a whole frame;
-    /// newly focused fields get that frame to render.
-    fn recover_lost_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !window
-            .focused(cx)
-            .is_some_and(|handle| handle != self.focus)
-        {
-            self.lost_focus = None;
-            return;
-        }
-        // Check against the frame being built now, once it has been drawn.
-        cx.on_next_frame(window, |this, window, cx| {
-            let Some(handle) = window.focused(cx) else {
-                return;
-            };
-            if handle == this.focus || this.focus.contains_focused(window, cx) {
-                this.lost_focus = None;
-            } else if this.lost_focus.as_ref() == Some(&handle) {
-                this.lost_focus = None;
-                this.focus.focus(window);
-                cx.notify();
-            } else {
-                this.lost_focus = Some(handle);
-                cx.notify();
-            }
-        });
-    }
     /// Advance panel animations. Each panel animates when its key changes,
     /// so switching between two contents of one panel also fades it, and
     /// the content it replaced leaves (see [`transitions`]).
@@ -271,27 +311,14 @@ impl NotesView {
                     animate,
                 );
             }
-            motion.panel(key, signature, reduced)
+            // Rune animates every panel now; its progress here is 1 (shown)
+            // or absent, so the view no longer redraws to tween it.
+            let _ = reduced;
+            motion.panel(key, signature, true)
         };
         let open = |shown: bool| shown.then(|| "open".to_string());
         let editor = !self.library_open;
         PanelOpacity {
-            library: panel(
-                "library-motion",
-                None,
-                self.library_open.then(|| {
-                    format!(
-                        "{:?}-{}-{}",
-                        self.controller.filter, self.list_view, self.sort_by_name
-                    )
-                }),
-            ),
-            settings: panel(
-                "settings-motion",
-                Some(Style::Dialog),
-                open(self.settings_open),
-            ),
-            modal_scrim: panel("modal-scrim-motion", None, open(self.modal.is_some())),
             modal: panel(
                 "modal-motion",
                 Some(Style::Dialog),
@@ -321,7 +348,6 @@ impl NotesView {
                     .as_ref()
                     .map(|menu| format!("{:?}", menu.position)),
             ),
-            help: panel("help-motion", Some(Style::Dialog), open(self.help_open)),
             popover: panel(
                 "popover-motion",
                 Some(Style::Menu),
@@ -384,10 +410,13 @@ impl NotesView {
             // The library does not paint the editor. Release its GPU images,
             // decoded PDFs and page geometry until the canvas is shown again.
             self.painter.clear(window, cx);
-        } else {
+            paint::forget_canvas_runs();
+        } else if !matches!(self.modal, Some((Modal::OpenDocument, _))) {
+            // The document picker previews covers as the library does; they
+            // go once it closes.
             self.controller.clear_library_previews();
             if !self.pages_open {
-                self.thumbnails.clear(window);
+                self.thumbnails.keep_covers(window);
             }
         }
     }
@@ -408,7 +437,7 @@ impl NotesView {
                 if self
                     .modal
                     .as_ref()
-                    .is_some_and(|(_, field)| field.read(cx).content == submitted)
+                    .is_some_and(|(_, field)| field.read(cx).content() == submitted)
                 {
                     self.close_modal(window, cx);
                 } else {
@@ -441,7 +470,13 @@ impl NotesView {
                     r.note == self.controller.active && r.page == self.controller.page().id
                 })
         {
-            self.modal(Modal::Recognition, window, cx);
+            // Shown in the selection's menu when it is on screen, which
+            // turns into the review instead of a second popover opening.
+            if !self.library_open && self.selection_toolbar_shown() {
+                self.modal_in_menu(MenuHost::Selection, Modal::Recognition, window, cx);
+            } else {
+                self.modal(Modal::Recognition, window, cx);
+            }
         }
         if self.modal.is_none()
             && let Some((note, path)) = self.controller.pending_pdf_password.take()
@@ -451,7 +486,7 @@ impl NotesView {
     }
     /// Report the first frame that shows a recognition result, for OCR timing.
     fn track_recognition_frame(
-        &self,
+        &mut self,
         modal_alpha: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -466,139 +501,200 @@ impl NotesView {
         if (review_visible || math_visible)
             && let Some(request) = self.controller.recognition_frame_pending()
         {
-            let view = cx.entity().downgrade();
-            window.on_next_frame(move |_, cx| {
-                let _ = view.update(cx, |view, _| {
-                    view.controller.recognition_frame_completed(request)
-                });
-            });
+            let _ = (window, cx);
+            self.controller.recognition_frame_completed(request);
         }
     }
     /// The page, painted across the whole editor so that it continues beneath
     /// the glass bars and sidebars. Input, layout and the viewport stay
     /// relative to the visible canvas area, measured by `canvas_element`.
-    fn canvas_layer(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let entity = cx.entity();
-        canvas(
-            |_, _, _| {},
-            move |bounds, _, window, cx| {
-                entity.update(cx, |view, cx| {
-                    // The visible area is measured during prepaint, which
-                    // completes for the whole window before painting starts.
-                    let Some(area) = view.canvas_bounds else {
-                        return;
-                    };
-                    let editing = view.inline_text.as_ref().map(|e| e.id);
-                    let viewport = &mut view.controller.session_mut().viewport;
-                    let pan = viewport.pan;
-                    viewport.pan.x += f32::from(area.origin.x - bounds.origin.x);
-                    viewport.pan.y += f32::from(area.origin.y - bounds.origin.y);
-                    view.painter.hide_selection = view.cropping();
-                    view.painter
-                        .paint(&mut view.controller, bounds, editing, window, cx);
-                    view.controller.session_mut().viewport.pan = pan;
-                    view.paint_region(area, window);
-                });
-            },
-        )
-        .size_full()
+    fn canvas_layer(&mut self, _: &mut Context<Self>) -> Div {
+        view_canvas("canvas-layer", |view, bounds, window, cx| {
+            // The visible area is measured by the canvas element's layout.
+            let Some(area) = view.canvas_bounds else {
+                return;
+            };
+            let editing = view.inline_text.as_ref().map(|e| e.id);
+            let viewport = &mut view.controller.session_mut().viewport;
+            let pan = viewport.pan;
+            viewport.pan.x += f32::from(area.origin.x - bounds.origin.x);
+            viewport.pan.y += f32::from(area.origin.y - bounds.origin.y);
+            view.painter.hide_selection = view.cropping();
+            view.diagnostics.painted();
+            view.painter
+                .paint(&mut view.controller, bounds, editing, window, cx);
+            view.controller.session_mut().viewport.pan = pan;
+            view.paint_region(area, window);
+        })
     }
     /// The visible document canvas area: measures it and routes pointer input.
-    fn canvas_element(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let entity = cx.entity();
-        let paint_entity = entity.clone();
-        canvas(
-            move |bounds, window, cx| {
-                entity.update(cx, |view, cx| view.sync_canvas_bounds(bounds, cx));
-                window.insert_hitbox(bounds, HitboxBehavior::Normal)
-            },
-            move |_, hitbox, window, cx| {
-                paint_entity.update(cx, |view, cx| {
-                    view.diagnostics.painted();
-                    view.resume_poll(cx);
-                    // The canvas paints its own pen cursor; elsewhere the pen
-                    // shows the system cursor.
-                    if view.controller.cursor.is_some() && !view.canvas_input_blocked() {
-                        window.set_tablet_cursor_style(CursorStyle::None, &hitbox);
+    fn canvas_element(&mut self, _: &mut Context<Self>) -> Div {
+        let hide_cursor = self.controller.cursor.is_some() && !self.canvas_input_blocked();
+        div().id("canvas-input").size_full().el(move |e| {
+            let e = e
+                .drag_threshold(0.)
+                .pointer_buttons([rune::PointerButton::Middle])
+                .on_layout_tx(|s: &mut AppState, r: [f32; 4], tx: &mut rune::Tx| {
+                    let view = s.view.get_mut();
+                    let mut window = Window::render(view);
+                    let mut cx = Context::fresh();
+                    // The canvas paints only once it knows its size: a new
+                    // size (the first layout of an opened page, a resize)
+                    // builds the view again at once, rather than waiting for
+                    // input (a plain wake during layout is dropped).
+                    let before = view.canvas_bounds;
+                    view.sync_canvas_bounds(Bounds::from_rect(r), &mut cx);
+                    if view.canvas_bounds != before {
+                        view.canvas_relaid = true;
+                        tx.wake_after(Duration::from_millis(1));
                     }
-                });
-                let hitbox = hitbox.id;
-                let tablet_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &TabletEvent, phase, window, cx| {
-                    if phase.bubble()
-                        && (event.phase != TabletPhase::Down || hitbox.is_hovered(window))
-                    {
-                        tablet_entity.update(cx, |v, cx| v.tablet(event, window, cx));
-                    }
-                });
-                let down_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                    if phase.bubble()
-                        && hitbox.is_hovered(window)
-                        && matches!(
-                            event.button,
-                            MouseButton::Left | MouseButton::Middle | MouseButton::Right
-                        )
-                    {
-                        down_entity.update(cx, |v, cx| {
-                            if event.button == MouseButton::Right {
-                                v.open_canvas_menu(event.position, window, cx);
+                    view.queue_effects(window.effects.drain(..).collect());
+                    view.queue_effects(cx.effects);
+                })
+                .on_drag(
+                    |s: &mut AppState, drag: &mut rune::Drag, tx: &mut rune::Tx| {
+                        let middle = tx.button() == rune::PointerButton::Middle;
+                        dispatch(s, tx, |view, window, cx| {
+                            let Some(bounds) = view.canvas_bounds else {
+                                return;
+                            };
+                            let position =
+                                point(bounds.origin.x + px(drag.x), bounds.origin.y + px(drag.y));
+                            view.mouse_position = position;
+                            let phase = match drag.phase {
+                                rune::Phase::Down => Phase::Down,
+                                rune::Phase::Move => Phase::Move,
+                                rune::Phase::Up if drag.cancelled() => Phase::Cancel,
+                                rune::Phase::Up => Phase::Up,
+                            };
+                            let button = if middle {
+                                MouseButton::Middle
                             } else {
-                                v.mouse(event.position, Phase::Down, event.button, window, cx);
+                                MouseButton::Left
+                            };
+                            view.mouse(position, phase, button, window, cx);
+                        });
+                    },
+                )
+                .on_pointer_move_local(
+                    |s: &mut AppState, p: rune::PointerEvent, tx: &mut rune::Tx| {
+                        let position = point(px(p.window_x), px(p.window_y));
+                        dispatch(s, tx, |view, window, cx| {
+                            view.mouse_position = position;
+                            if view.controller.interaction.is_none() {
+                                view.mouse(position, Phase::Hover, MouseButton::Left, window, cx);
+                            }
+                        });
+                    },
+                )
+                .on_hover_change(|s: &mut AppState, inside: bool, tx: &mut rune::Tx| {
+                    if !inside {
+                        let position = s.view.get_mut().mouse_position;
+                        dispatch(s, tx, |view, window, cx| {
+                            if view.controller.interaction.is_none() {
+                                view.mouse(position, Phase::Leave, MouseButton::Left, window, cx);
                             }
                         });
                     }
-                });
-                let move_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                    if phase.bubble() {
-                        move_entity.update(cx, |v, cx| {
-                            let phase = if v.controller.interaction.is_some()
-                                || (v.region_selection.is_some() && event.pressed_button.is_some())
-                            {
-                                Phase::Move
-                            } else {
-                                Phase::Hover
-                            };
-                            v.mouse(
-                                event.position,
-                                phase,
-                                event.pressed_button.unwrap_or(MouseButton::Left),
-                                window,
-                                cx,
-                            )
+                })
+                .on_secondary_press(
+                    |s: &mut AppState, press: rune::PointerPress, tx: &mut rune::Tx| {
+                        let position = point(px(press.x), px(press.y));
+                        dispatch(s, tx, |view, window, cx| {
+                            view.mouse_position = position;
+                            view.open_canvas_menu(position, window, cx);
                         });
-                    }
-                });
-                let up_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                    if phase.bubble() {
-                        up_entity.update(cx, |v, cx| {
-                            v.mouse(event.position, Phase::Up, event.button, window, cx)
+                    },
+                )
+                .on_wheel(|s: &mut AppState, w: rune::WheelEvent, tx: &mut rune::Tx| {
+                    let position = s.view.get_mut().mouse_position;
+                    let event = ScrollWheelEvent::from_rune(&w, position);
+                    dispatch(s, tx, |view, _, cx| view.scroll(&event, cx));
+                    true
+                })
+                .on_magnify(
+                    |s: &mut AppState, m: rune::MagnifyEvent, tx: &mut rune::Tx| {
+                        dispatch(s, tx, |view, _, cx| {
+                            match m.phase {
+                                rune::GesturePhase::Began => view.pinching = true,
+                                rune::GesturePhase::Ended => view.pinching = false,
+                                rune::GesturePhase::Moved => {}
+                            }
+                            if !view.canvas_gesture_allowed() {
+                                return;
+                            }
+                            // Off macOS Ctrl + wheel arrives as a magnify of `-dy / 200`,
+                            // which a fast wheel takes below -1; an exponent keeps the zoom
+                            // positive, as GPUI's Ctrl + wheel zoom did.
+                            let delta = m.delta.clamp(-2., 2.);
+                            let anchor = DocPoint::new(m.x, m.y);
+                            // That Ctrl + wheel has no phases, unlike a touchpad pinch.
+                            // It zooms opposite to Rune's mapping and eases into place
+                            // as a plain wheel scroll does.
+                            let wheel = !view.pinching && m.phase == rune::GesturePhase::Moved;
+                            let delta = if wheel { -delta } else { delta };
+                            if wheel && !view.controller.settings.reduce_motion {
+                                view.ease_zoom(delta, anchor);
+                                cx.notify();
+                                return;
+                            }
+                            view.canvas_ease = CanvasEase::default();
+                            let factor = delta.exp();
+                            view.controller
+                                .session_mut()
+                                .viewport
+                                .zoom_at(factor, anchor);
+                            view.synchronize_page_view_zoom();
+                            cx.notify();
                         });
-                    }
-                });
-                let gesture_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &NavigationGesture, phase, _, cx| {
-                    if phase.bubble() {
-                        gesture_entity.update(cx, |v, cx| v.gesture(event, cx));
-                    }
-                });
-                let pad_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &TabletPadEvent, phase, window, cx| {
-                    if phase.bubble() {
-                        pad_entity.update(cx, |v, cx| v.pad(event, window, cx));
-                    }
-                });
-                let scroll_entity = paint_entity.clone();
-                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
-                    if phase.bubble() && hitbox.should_handle_scroll(window) {
-                        scroll_entity.update(cx, |v, cx| v.scroll(event, cx));
-                    }
-                });
-            },
-        )
-        .size_full()
+                        true
+                    },
+                )
+                .on_rotate(
+                    |s: &mut AppState, r: rune::RotateEvent, tx: &mut rune::Tx| {
+                        dispatch(s, tx, |view, _, cx| {
+                            if !view.canvas_gesture_allowed() || !r.degrees.is_finite() {
+                                return;
+                            }
+                            view.canvas_ease = CanvasEase::default();
+                            // Turn about the fingers: the document point under them stays.
+                            let anchor = DocPoint::new(r.x, r.y);
+                            let viewport = &mut view.controller.session_mut().viewport;
+                            let original = viewport.to_document(anchor);
+                            viewport.rotation -= r.degrees.to_radians();
+                            let after = viewport.to_screen(original);
+                            viewport.pan.x += anchor.x - after.x;
+                            viewport.pan.y += anchor.y - after.y;
+                            view.synchronize_page_view_zoom();
+                            cx.notify();
+                        });
+                        true
+                    },
+                );
+            if hide_cursor {
+                e.cursor(rune::Cursor::Hidden)
+            } else {
+                e
+            }
+        })
+    }
+    /// Moves the page along its sideways glide, easing in and out
+    /// (smootherstep) so it sets off from rest; a gesture or
+    /// leaving the document lands it at once.
+    fn advance_canvas_glide(&mut self) {
+        let Some(mut glide) = self.canvas_glide else {
+            return;
+        };
+        let k = (glide.start.elapsed().as_secs_f32() / super::CanvasGlide::SECONDS).min(1.);
+        let k = if self.controller.interaction.is_some() || self.library_open {
+            1.
+        } else {
+            k
+        };
+        let want = glide.total * k * k * k * (k * (6. * k - 15.) + 10.);
+        self.controller.session_mut().viewport.pan.x += want - glide.applied;
+        glide.applied = want;
+        self.canvas_glide = (k < 1.).then_some(glide);
     }
     /// Keep the page anchored when the canvas is laid out at a new size or
     /// position, and keep the inline text editor aligned with its text box.
@@ -616,8 +712,25 @@ impl NotesView {
             && previous.size.width != bounds.size.width
             && self.controller.interaction.is_none()
         {
-            self.controller.session_mut().viewport.pan.x +=
-                f32::from(bounds.size.width - previous.size.width) / 2.;
+            let shift = f32::from(bounds.size.width - previous.size.width) / 2.;
+            // A sidebar opening or closing changes the width in one step:
+            // the page glides to its new centre alongside it rather than
+            // jumping there. A sidebar on the left also moves the canvas's
+            // left edge; the page first stays where it was on screen, then
+            // glides the whole way. Resizing the window steps finely and
+            // follows at once.
+            if shift.abs() >= 24. && !self.controller.settings.reduce_motion {
+                let moved = f32::from(bounds.origin.x - previous.origin.x);
+                self.controller.session_mut().viewport.pan.x -= moved;
+                let left = self.canvas_glide.map_or(0., |glide| glide.total - glide.applied);
+                self.canvas_glide = Some(super::CanvasGlide {
+                    total: left + shift + moved,
+                    applied: 0.,
+                    start: std::time::Instant::now(),
+                });
+            } else {
+                self.controller.session_mut().viewport.pan.x += shift;
+            }
         }
         let canvas_document = (self.controller.active, self.controller.page().id);
         if let Some(previous) = self.canvas_bounds
@@ -665,7 +778,7 @@ impl NotesView {
     }
     /// The canvas with the overlays that sit on it: inline text editing, the
     /// loading notice and the selection toolbar.
-    fn canvas_area(&mut self, cx: &mut Context<Self>) -> Div {
+    fn canvas_area(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let theme = Theme::new(&self.controller.settings);
         let canvas = self.canvas_element(cx);
         let mut center = div()
@@ -673,14 +786,7 @@ impl NotesView {
             .flex_1()
             .min_h_0()
             .overflow_hidden()
-            .child(canvas)
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                let target = this.controller.requested_note();
-                for path in paths.paths() {
-                    this.controller.import_into(target, path.clone());
-                }
-                cx.notify();
-            }));
+            .child(canvas);
         if let Some(editor) = self.inline_element(cx) {
             center = center.child(editor);
         }
@@ -707,7 +813,23 @@ impl NotesView {
             );
         }
         if !self.library_open && self.selection_toolbar_shown() {
-            let toolbar = self.selection_toolbar(cx);
+            let hosted = self.modal_hosted_in(MenuHost::Selection);
+            if hosted {
+                self.building_overlay = !self.help_open && self.controller.error.is_none();
+                if self.building_overlay {
+                    self.accessibility.begin();
+                }
+            }
+            // Turning into a page and back, the menu's new size moves it:
+            // it springs there with its box, so the edge by the selection
+            // stays put. Otherwise it follows the selection at once.
+            if hosted != self.selection_hosted_was {
+                self.selection_hosted_was = hosted;
+                self.selection_glide_until = Some(Instant::now() + Duration::from_millis(500));
+            }
+            self.transitions.borrow_mut().selection_glides =
+                self.selection_glide_until.is_some_and(|until| Instant::now() < until);
+            let toolbar = self.selection_toolbar(window, cx);
             center = center.child(self.transitions.borrow_mut().overlay(
                 "selection-toolbar",
                 self.selection_appear,
@@ -838,7 +960,7 @@ impl NotesView {
         card
     }
     /// Whether the selected objects show their action toolbar.
-    fn selection_toolbar_shown(&self) -> bool {
+    pub(super) fn selection_toolbar_shown(&self) -> bool {
         !self.controller.read_only()
             && !self.controller.session().selection.is_empty()
             && self.inline_text.is_none()
@@ -883,21 +1005,13 @@ impl NotesView {
                     cx.notify();
                 }
             }))
-            .on_action(cx.listener(|this, _: &FocusNext, w, cx| {
-                this.keyboard_in_document_menu(cx);
-                w.focus_next()
-            }))
-            .on_action(cx.listener(|this, _: &FocusPrevious, w, cx| {
-                this.keyboard_in_document_menu(cx);
-                w.focus_prev()
-            }))
             .on_action(cx.listener(|this, _: &NewNote, window, cx| {
                 // Same dialog as the New document button; Enter accepts the
                 // defaults.
                 this.modal(Modal::NewDocument, window, cx);
             }))
             .on_action(cx.listener(|this, _: &NewPage, _, cx| {
-                this.controller.add_page();
+                this.add_page();
                 this.show_editor();
                 cx.notify();
             }))
@@ -990,17 +1104,17 @@ impl NotesView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &FitPage, _, cx| {
-                this.fit();
+                this.fit_eased();
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &PreviousPage, _, cx| {
                 let p = this.controller.session().page;
-                this.controller.change_page(p.saturating_sub(1));
+                this.go_to_page(p.saturating_sub(1));
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &NextPage, _, cx| {
                 let p = this.controller.session().page;
-                this.controller.change_page(p + 1);
+                this.go_to_page(p + 1);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Settings, w, cx| {
@@ -1062,9 +1176,11 @@ impl NotesView {
     }
     /// Escape closes the topmost layer only: an error, help, a dialog,
     /// settings, a menu or popover, then cancels editing state.
-    fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.controller.error.is_some() && self.controller.interaction.is_none() {
             self.controller.error = None;
+        } else if self.tour.is_some() {
+            self.close_tour(window);
         } else if self.help_open {
             self.help_open = false;
         } else if self.modal.is_some() {
@@ -1339,50 +1455,50 @@ impl NotesView {
         )
     }
     /// The canvas context menu, drawn over everything with a click-away backdrop.
+    /// The canvas context menu's layer: always there, so the menu's exit
+    /// plays; while the menu is open it blocks the page and a press outside
+    /// the menu closes it.
     fn canvas_menu_overlay(
         &mut self,
         alpha: &PanelOpacity,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<Div> {
-        if self.canvas_menu.is_some() {
+    ) -> Div {
+        let open = self.canvas_menu.is_some();
+        let mut layer = div().id("layer-canvas-menu").absolute().inset_0();
+        if open {
             self.building_overlay = true;
             self.accessibility.begin();
-            Some(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .occlude()
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(|this, _, window, cx| {
-                            this.canvas_menu = None;
-                            this.focus.focus(window);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.canvas_menu = None;
-                            this.focus.focus(window);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }),
-                    )
-                    .child({
-                        let menu = self.canvas_menu_panel(window, cx);
-                        self.transitions.borrow_mut().overlay(
-                            "canvas-menu",
-                            alpha.canvas_menu,
-                            menu,
-                        )
+            let menu = self.canvas_menu_panel(window, cx);
+            layer = layer
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|this, _, window, cx| {
+                        this.canvas_menu = None;
+                        this.focus.focus(window);
+                        cx.stop_propagation();
+                        cx.notify();
                     }),
-            )
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.canvas_menu = None;
+                        this.focus.focus(window);
+                        cx.stop_propagation();
+                        cx.notify();
+                    }),
+                )
+                .child(self.transitions.borrow_mut().overlay(
+                    "canvas-menu",
+                    alpha.canvas_menu,
+                    menu,
+                ));
         } else {
-            None
+            layer = layer.children(self.transitions.borrow().closed("canvas-menu"));
         }
+        layer
     }
     /// The document menu, laid over the whole window because it opens at a
     /// pointer or anchor position in window coordinates.
@@ -1391,9 +1507,11 @@ impl NotesView {
         alpha: &PanelOpacity,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<Div> {
-        self.document_menu?;
-        self.building_overlay = self.modal.is_none()
+    ) -> Option<AnyElement> {
+        if self.document_menu.is_none() {
+            return self.transitions.borrow().closed("document-menu");
+        }
+        self.building_overlay = (self.modal.is_none() || self.modal_hosted_in(MenuHost::Document))
             && !self.settings_open
             && !self.help_open
             && self.controller.error.is_none();
@@ -1402,15 +1520,19 @@ impl NotesView {
         }
         let menu = self.document_menu_panel(window, cx);
         Some(
-            div()
-                .absolute()
-                .inset_0()
-                .child(
-                    self.transitions
-                        .borrow_mut()
-                        .overlay("document-menu", alpha.menu, menu),
-                ),
+            self.transitions
+                .borrow_mut()
+                .overlay("document-menu", alpha.menu, menu),
         )
+    }
+    /// The layer of the menu-like popover `key`: it grows in while
+    /// `popover` is there and shrinks back into its opener once it is not.
+    fn popover_layer(&self, key: &'static str, popover: Option<AnyElement>) -> Div {
+        let shown = match popover {
+            Some(p) => Some(self.transitions.borrow_mut().overlay(key, 1., p)),
+            None => self.transitions.borrow().closed(key),
+        };
+        overlay_layer(key, shown)
     }
     /// Menus, panels and dialogs layered over the body. Each layer that is
     /// built while no later layer covers it starts a new accessibility group,
@@ -1424,7 +1546,7 @@ impl NotesView {
     ) -> Div {
         let theme = Theme::new(&self.controller.settings);
         if self.folder_menu.is_some() {
-            self.building_overlay = self.modal.is_none()
+            self.building_overlay = (self.modal.is_none() || self.modal_hosted_in(MenuHost::Folder))
                 && !self.settings_open
                 && !self.help_open
                 && self.controller.error.is_none();
@@ -1432,66 +1554,48 @@ impl NotesView {
                 self.accessibility.begin();
             }
             let menu = self.folder_menu_panel(window, cx);
-            body = body.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(
-                        self.transitions
-                            .borrow_mut()
-                            .overlay("folder-menu", alpha.menu, menu),
-                    ),
-            );
+            body = body.child(overlay_layer(
+                "folder-menu",
+                Some(self.transitions.borrow_mut().overlay("folder-menu", alpha.menu, menu)),
+            ));
+        } else {
+            let closed = self.transitions.borrow().closed("folder-menu");
+            body = body.child(overlay_layer("folder-menu", closed));
         }
-        if self.settings_open {
+        // Dialogs sit in layers that stay mounted, so their scrims fade
+        // their blur in and out (see `Transitions::dialog_overlay`).
+        let settings = self.settings_open.then(|| {
             self.building_overlay =
                 self.modal.is_none() && !self.help_open && self.controller.error.is_none();
             if self.building_overlay {
                 self.accessibility.begin();
             }
-            self.dialog_rise = 1. - alpha.settings;
-            let panel = div()
-                .absolute()
-                .inset_0()
-                .child(self.settings_panel(window, cx));
-            body = body.child(self.transitions.borrow_mut().overlay(
-                "settings",
-                alpha.settings,
-                panel,
-            ));
-        }
-        if self.modal.is_some() {
+            self.settings_panel(window, cx).into_any_element()
+        });
+        body = body.child(transitions::Transitions::dialog_overlay("settings", theme, settings));
+        // Most dialogs and Help are popovers that grow out of what opened
+        // them and shrink back into it, as menus do; confirmations stay
+        // dialogs over a scrim.
+        let modal_menu = self.modal_is_menu();
+        // A dialog shown inside the menu it was chosen from is drawn there.
+        let modal = (self.modal.is_some() && !self.modal_hosted()).then(|| {
             self.building_overlay = !self.help_open && self.controller.error.is_none();
             if self.building_overlay {
                 self.accessibility.begin();
             }
-            self.dialog_rise = 1. - alpha.modal;
-            let panel = div()
-                .absolute()
-                .inset_0()
-                .child(self.modal_panel(window, cx));
-            body = body.child(self.transitions.borrow_mut().overlay(
-                "modal",
-                alpha.modal_scrim,
-                panel,
-            ));
-        }
-        if self.help_open {
+            self.modal_panel(false, window, cx).into_any_element()
+        });
+        let (dialog, popover) = if modal_menu { (None, modal) } else { (modal, None) };
+        body = body.child(transitions::Transitions::dialog_overlay("modal", theme, dialog));
+        body = body.child(self.popover_layer("modal-menu", popover));
+        let help = self.help_open.then(|| {
             self.building_overlay = self.controller.error.is_none();
             if self.building_overlay {
                 self.accessibility.begin();
             }
-            self.dialog_rise = 1. - alpha.help;
-            let panel = div()
-                .absolute()
-                .inset_0()
-                .child(self.help_panel(window, cx));
-            body = body.child(
-                self.transitions
-                    .borrow_mut()
-                    .overlay("help", alpha.help, panel),
-            );
-        }
+            self.help_panel(window, cx).into_any_element()
+        });
+        body = body.child(self.popover_layer("help-menu", help));
         if let Some(error) = self.controller.error.clone()
             && self.controller.interaction.is_none()
         {
@@ -1542,12 +1646,36 @@ impl NotesView {
     }
 }
 /// A full-width bar for notices above the canvas.
+/// The layer an overlay draws in. It stays while the overlay is closed, so
+/// the overlay's own exit plays when it closes rather than vanishing with
+/// its container. Empty, it takes no input.
+fn overlay_layer(key: &str, overlay: Option<AnyElement>) -> Div {
+    div()
+        .id(format!("layer-{key}"))
+        .absolute()
+        .inset_0()
+        .children(overlay)
+}
 fn notice_bar() -> Div {
     div().px_4().py_2().flex().items_center().gap_3()
 }
 /// A notice bar with a message; actions can be added as further children.
 fn notice_row(message: impl Into<SharedString>) -> Div {
-    notice_bar().child(div().flex_1().text_sm().child(message.into()))
+    let message: SharedString = message.into();
+    // Each notice slides down into the bar and folds away when it ends.
+    notice_bar()
+        .id(format!("notice-{message}"))
+        .el(|e| {
+            e.transition(
+                rune::Transition::offset(0., -10.)
+                    .combined(rune::Transition::opacity())
+                    .hold_layout()
+                    .springs(rune::SpringPair::new(crate::motion::SETTLE, crate::motion::SETTLE)),
+            )
+            .motion(crate::motion::SETTLE)
+            .animated_changes()
+        })
+        .child(div().flex_1().text_sm().child(message))
 }
 
 #[cfg(test)]
@@ -1558,7 +1686,10 @@ mod window_title_tests {
     fn window_title_tracks_library_and_active_note() {
         assert_eq!(window_title_for(true, "Lecture 1"), "Folio");
         assert_eq!(window_title_for(false, "Lecture 1"), "Lecture 1 — Folio");
-        assert_eq!(window_title_for(false, "  Lecture 1  "), "Lecture 1 — Folio");
+        assert_eq!(
+            window_title_for(false, "  Lecture 1  "),
+            "Lecture 1 — Folio"
+        );
         assert_eq!(window_title_for(false, "   "), "Folio");
         assert_eq!(window_title_for(false, ""), "Folio");
     }

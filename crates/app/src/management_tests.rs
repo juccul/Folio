@@ -38,6 +38,11 @@ fn home_pdf_is_a_new_named_document_with_exact_pages_and_durable_order() {
     a.add_text("Existing note".into(), Point::new(50., 50.));
     let old = a.session().document.clone();
     let path = pdf(&a);
+    // A blank file name falls back to a default document name.
+    let blank = a.data_dir.join("   .pdf");
+    std::fs::copy(&path, &blank).unwrap();
+    let unnamed = a.import_as_note(blank);
+    assert_eq!(a.sessions[&unnamed].document.metadata.title, "Imported document");
     let imported = a.import_as_note(path);
     assert_ne!(previous, imported);
     a.switch_note(previous);
@@ -504,13 +509,14 @@ fn continuous_scroll_rebases_and_writing_targets_the_clicked_page() {
 }
 
 #[test]
-fn page_navigation_jumps_to_top_and_infinite_canvas_stays_unbounded() {
+fn page_navigation_jumps_to_top_and_canvas_scroll_limits_expand_with_content() {
     let mut a = app();
     a.add_page();
     a.session_mut().viewport.pan.y = -500.;
     a.change_page(0);
     assert_eq!(a.session().viewport.pan.y, 36.);
     a.session_mut().viewport.pan.y = -99999.;
+    a.session_mut().viewport.pan.x = -99999.;
     a.synchronize_page_view(800., 700.);
     assert_eq!(a.session().page, 1);
     let stack = PageStack::new(&a.session().document.pages, 1).unwrap();
@@ -518,10 +524,32 @@ fn page_navigation_jumps_to_top_and_infinite_canvas_stays_unbounded() {
         .viewport(a.session().viewport, 1, 1)
         .to_screen(Point::new(0., a.page().properties.height));
     assert!((bottom.y - 664.).abs() < 0.01);
+    // Horizontal scrolling in page mode is also clamped so pages cannot be lost.
+    assert!(a.session().viewport.pan.x > -1000.);
+
+    // Infinite canvas mode clamps scrolling around content and expands as
+    // new content is placed further out.
     a.page_size(794., 1123., true);
-    a.session_mut().viewport.pan.y = -99999.;
+    a.session_mut().viewport.pan = Point::new(-99999., -99999.);
     a.synchronize_page_view(800., 700.);
-    assert_eq!(a.session().viewport.pan.y, -99999.);
+    let before_min = a.session().viewport.pan;
+    assert!(before_min.x > -2000. && before_min.y > -2000.);
+
+    a.add_text("far away".into(), Point::new(4000., 3500.));
+    a.session_mut().viewport.pan = Point::new(-99999., -99999.);
+    a.synchronize_page_view(800., 700.);
+    let after_min = a.session().viewport.pan;
+    assert!(after_min.x < before_min.x - 2500.);
+    assert!(after_min.y < before_min.y - 2000.);
+
+    // Zooming does not clamp/shift the anchor even on the very first zoom.
+    let mut b = app();
+    let anchor = Point::new(400., 350.);
+    let before_doc = b.session().viewport.to_document(anchor);
+    b.session_mut().viewport.zoom_at(0.5, anchor);
+    b.synchronize_page_view_zoom(800., 700.);
+    let after_doc = b.session().viewport.to_document(anchor);
+    assert!(before_doc.distance(after_doc) < 0.001);
 }
 
 #[test]

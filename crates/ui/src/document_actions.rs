@@ -1,7 +1,7 @@
 //! The editor's "Document actions" popover and its sections.
 use super::*;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum MoreSection {
     #[default]
     Document,
@@ -134,36 +134,43 @@ impl NotesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Actions that ask for input turn the popover into their page.
+        let input = match action {
+            DocumentAction::Rename => Some(Modal::Rename),
+            DocumentAction::EditTags => Some(Modal::Tags),
+            DocumentAction::MoveToFolder => Some(Modal::MoveDocument(self.controller.active)),
+            DocumentAction::NewDocumentOptions => Some(Modal::NewDocument),
+            DocumentAction::BookmarkPage => Some(Modal::PageBookmark),
+            DocumentAction::MovePage => Some(Modal::MovePage),
+            DocumentAction::SaveTemplate => Some(Modal::SaveTemplate),
+            DocumentAction::AddFromTemplate => Some(Modal::Templates),
+            DocumentAction::PageSize => Some(Modal::PageSize),
+            DocumentAction::InsertEquation => Some(Modal::Equation),
+            _ => None,
+        };
+        if let Some(modal) = input {
+            self.modal_in_menu(MenuHost::Popover, modal, window, cx);
+            return;
+        }
         // Toggles stay open so their new state is visible.
         if action != DocumentAction::ToggleInfinite {
             self.more_open = false;
         }
         match action {
-            DocumentAction::Rename => self.modal(Modal::Rename, window, cx),
             DocumentAction::Duplicate => self.controller.duplicate_note(),
-            DocumentAction::EditTags => self.modal(Modal::Tags, window, cx),
-            DocumentAction::MoveToFolder => {
-                self.modal(Modal::MoveDocument(self.controller.active), window, cx)
-            }
             DocumentAction::Export => {
                 self.dismiss_popovers();
                 self.export_open = true;
             }
-            DocumentAction::NewDocumentOptions => self.modal(Modal::NewDocument, window, cx),
             DocumentAction::ToggleTrash => self
                 .controller
                 .manage_note(self.controller.active, folio_app::NoteAction::Trash),
             DocumentAction::DuplicatePage => self.controller.duplicate_page(),
-            DocumentAction::BookmarkPage => self.modal(Modal::PageBookmark, window, cx),
-            DocumentAction::MovePage => self.modal(Modal::MovePage, window, cx),
             DocumentAction::UseAsCover => self.controller.use_page_as_cover(),
-            DocumentAction::SaveTemplate => self.modal(Modal::SaveTemplate, window, cx),
-            DocumentAction::AddFromTemplate => self.modal(Modal::Templates, window, cx),
             DocumentAction::ToggleInfinite => {
                 let p = self.controller.page().properties.clone();
                 self.controller.page_size(p.width, p.height, !p.infinite)
             }
-            DocumentAction::PageSize => self.modal(Modal::PageSize, window, cx),
             DocumentAction::InsertSpace | DocumentAction::RemoveSpace => {
                 let at = self
                     .controller
@@ -179,13 +186,23 @@ impl NotesView {
             }
             DocumentAction::DeletePage => self.controller.delete_page(),
             DocumentAction::MathSolver => self.start_math(window, cx),
-            DocumentAction::InsertEquation => self.modal(Modal::Equation, window, cx),
             DocumentAction::IndexHandwriting => {
                 if let Err(e) = self.controller.index_page_handwriting() {
                     self.controller.error = Some(e);
                 }
             }
             DocumentAction::ClearHandwritingIndex => self.controller.clear_handwriting_index(),
+            // Opened as pages above.
+            DocumentAction::Rename
+            | DocumentAction::EditTags
+            | DocumentAction::MoveToFolder
+            | DocumentAction::NewDocumentOptions
+            | DocumentAction::BookmarkPage
+            | DocumentAction::MovePage
+            | DocumentAction::SaveTemplate
+            | DocumentAction::AddFromTemplate
+            | DocumentAction::PageSize
+            | DocumentAction::InsertEquation => {}
         }
     }
     /// Contents of the Document actions popover for the current section.
@@ -254,18 +271,16 @@ impl NotesView {
                 _ => "Math and handwriting".into(),
             };
             menu = menu
-                .child(
-                    self.menu_row(
-                        "more-back",
-                        "‹ Document actions".into(),
-                        div().font_weight(FontWeight::SEMIBOLD).child(title),
-                        Icon::Back,
-                        theme.muted,
-                        None,
-                        cx,
-                        |this, _, _| this.more_section = MoreSection::Document,
-                    ),
-                )
+                .child(self.menu_row(
+                    "more-back",
+                    "‹ Document actions".into(),
+                    div().font_weight(FontWeight::SEMIBOLD).child(title),
+                    Icon::Back,
+                    theme.muted,
+                    None,
+                    cx,
+                    |this, _, _| this.more_section = MoreSection::Document,
+                ))
                 .child(separator(theme));
         }
         let trashed = self.controller.session().document.metadata.trashed;
@@ -298,24 +313,18 @@ impl NotesView {
                         matches!(action, A::DeletePage) || (action == A::ToggleTrash && !trashed);
                     let label: SharedString = match action {
                         A::Export => "Export document ›".into(),
-                        A::ToggleInfinite => format!(
-                            "{text}: {}",
-                            if properties.infinite { "On" } else { "Off" }
-                        )
-                        .into(),
+                        A::ToggleInfinite => {
+                            format!("{text}: {}", if properties.infinite { "On" } else { "Off" })
+                                .into()
+                        }
                         _ => text.into(),
                     };
                     let trailing = match action {
                         A::Export => Some(chevron(theme)),
-                        A::ToggleInfinite => {
-                            let progress = self.motion.borrow_mut().value(
-                                action.id(),
-                                if properties.infinite { 1. } else { 0. },
-                                self.controller.settings.reduce_motion,
-                                Instant::now(),
-                            );
-                            Some(appearance::switch_track(theme, progress).into_any_element())
-                        }
+                        A::ToggleInfinite => Some(
+                            appearance::switch_track(theme, action.id(), properties.infinite)
+                                .into_any_element(),
+                        ),
                         A::PageSize if !properties.infinite => Some(
                             hint(
                                 theme,
@@ -343,7 +352,9 @@ impl NotesView {
                 }
             });
         }
-        panel.p_1p5().child(menu)
+        panel
+            .p_1p5()
+            .child(menu.id(format!("more-page-{section:?}")).page_in(section != MoreSection::Document))
     }
     /// A compact popover row: icon, text and an optional trailing element.
     #[allow(clippy::too_many_arguments)]
