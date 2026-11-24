@@ -242,7 +242,7 @@ impl Theme {
         }
     }
     #[cfg(test)]
-    pub fn graph(self, pdf: bool) -> super::graph::Palette {
+    pub(crate) fn graph(self, pdf: bool) -> super::graph::Palette {
         self.graph_for_canvas(self.page_canvas(pdf))
     }
     fn graph_for_canvas(self, page: CanvasTheme) -> super::graph::Palette {

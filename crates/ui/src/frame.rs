@@ -96,7 +96,8 @@ impl NotesView {
         self.track_recognition_frame(alpha.modal, window, cx);
         let theme = Theme::new(&self.controller.settings);
         // Build order matters: controls register for accessibility as they are built.
-        let center = self.canvas_area(window, cx);
+        // The library shows no canvas: its area is built only for documents.
+        let center = (!self.library_open).then(|| self.canvas_area(window, cx));
         let mut root = self.root_element(cx);
         if !self.library_open {
             // Painted first, beneath the translucent bars and sidebars.
@@ -144,6 +145,7 @@ impl NotesView {
                     }
                 }));
         } else {
+            let center = center.expect("built when a document is open");
             let (top, main) = self.editor_column(center, &alpha, window, cx);
             editor_top = Some(top);
             body = body.child(main.id("editor-view").el(|e| {
@@ -408,6 +410,7 @@ impl NotesView {
             // The library does not paint the editor. Release its GPU images,
             // decoded PDFs and page geometry until the canvas is shown again.
             self.painter.clear(window, cx);
+            paint::forget_canvas_runs();
         } else if !matches!(self.modal, Some((Modal::OpenDocument, _))) {
             // The document picker previews covers as the library does; they
             // go once it closes.

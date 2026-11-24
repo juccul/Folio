@@ -801,9 +801,10 @@ impl NotesView {
                     .el(move |e| e.live_offset(&live))
             })
         };
+        // Each section mounts its own scrolling body (keyed by section), so a
+        // new section rises in and starts at its top; `track_scroll` keys the
+        // scroll viewport itself, which would otherwise replace the section key.
         let body = div()
-            .id(("settings-content", section as usize))
-            .swap_in()
             .flex_1()
             .min_h_0()
             .min_w_0()
@@ -915,7 +916,16 @@ impl NotesView {
                                     .flex_1()
                                     .min_h_0()
                                     .min_w_0()
-                                    .child(body)
+                                    .child(
+                                        div()
+                                            .id(("settings-content", section as usize))
+                                            .swap_in()
+                                            .flex()
+                                            .flex_1()
+                                            .min_h_0()
+                                            .min_w_0()
+                                            .child(body),
+                                    )
                                     // A soft fade marks content below the fold.
                                     .child(
                                         div()

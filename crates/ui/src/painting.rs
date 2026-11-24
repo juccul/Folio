@@ -641,22 +641,6 @@ impl Painter {
                 })
         }) && self.pages.values().any(|painter| !painter.ink_layers.is_empty())
     }
-    #[cfg(test)]
-    pub(super) fn ink_layer_counts(&self) -> (usize, usize) {
-        self.pages
-            .values()
-            .fold((0, 0), |(layers, strokes), painter| {
-                (
-                    layers + painter.ink_layers.len(),
-                    strokes
-                        + painter
-                            .ink_layers
-                            .values()
-                            .map(|layer| layer.batch.objects.len())
-                            .sum::<usize>(),
-                )
-            })
-    }
     fn display_color(&mut self, color: u32, theme: CanvasTheme) -> u32 {
         *self.colors.entry(color).or_insert_with(|| theme.ink(color))
     }

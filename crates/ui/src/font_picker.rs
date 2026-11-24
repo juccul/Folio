@@ -188,7 +188,7 @@ impl NotesView {
         let current = self.selected_font().unwrap_or_default();
         self.font_rows(cx)
             .iter()
-            .position(|row| matches!(row, Row::Font(name) if name.as_ref() == current))
+            .position(|row| matches!(row, Row::Font(name) if AsRef::<str>::as_ref(name) == current.as_str()))
             .unwrap_or(0)
     }
     fn set_font_cursor(&mut self, cursor: usize) {

@@ -18,7 +18,6 @@ folio-update = { path = "../update" }
 folio-platform = { path = "../platform" }
 image.workspace = true
 resvg.workspace = true
-unicode-segmentation = "1.12"
 smallvec = "1"
 futures = "0.3"
 # Rune's winit, patched in the workspace with Folio's tablet extension.

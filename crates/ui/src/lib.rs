@@ -759,11 +759,8 @@ impl NotesView {
             changed || update_changed || motion_changed || easing || finished || images_ready;
         // Waiting futures need a poll only at their timer's deadline; finished
         // background work wakes the window itself.
-        let fast = notify
-            || self.controller.needs_fast_poll()
-            || self.motion.borrow().needs_frame()
-            || self.updater.state.busy()
-            || self.updater.state == folio_update::State::Checking;
+        // The updater wakes the window itself whenever its state moves on.
+        let fast = notify || self.controller.needs_fast_poll() || self.motion.borrow().needs_frame();
         let timer = polled
             .deadline
             .map(|at| at.saturating_duration_since(Instant::now()));

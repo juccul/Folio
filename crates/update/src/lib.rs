@@ -221,7 +221,14 @@ impl Updater {
             if self.state == State::Current {
                 self.state = State::Checking;
             }
-            let _ = command.send(Command::Check);
+            if command.send(Command::Check).is_err() {
+                // The update service stopped; say so rather than check forever.
+                self.command = None;
+                self.check_error = Some("The update service stopped. Restart Folio to check again.".into());
+                if self.state == State::Checking {
+                    self.state = State::Current;
+                }
+            }
         }
     }
     pub fn download(&mut self) {
@@ -231,10 +238,17 @@ impl Updater {
             let version = self.state.version().unwrap().to_owned();
             // Change state before sending so double clicks cannot enqueue two operations.
             self.state = State::Downloading {
-                version,
+                version: version.clone(),
                 percent: 0,
             };
-            let _ = command.send(Command::Download);
+            if command.send(Command::Download).is_err() {
+                self.command = None;
+                self.state = State::Failed {
+                    version,
+                    error: "The update service stopped. Restart Folio to try again.".into(),
+                    ready: false,
+                };
+            }
         }
     }
     pub fn restart(&mut self, data: PathBuf) -> bool {

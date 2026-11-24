@@ -1545,6 +1545,12 @@ thread_local! {
 }
 /// Starts a frame's canvases: call sites number their canvases afresh, and
 /// paint at `scale` device pixels per point.
+/// Lets go of every canvas's retained runs (their pixels and their copies)
+/// once no canvas is shown, as in the library; the next canvas paints afresh.
+pub fn forget_canvas_runs() {
+    CANVAS_RUNS.with(|runs| runs.borrow_mut().clear());
+    CANVAS_RECTS.with(|rects| rects.borrow_mut().clear());
+}
 pub fn begin_frame(scale: f32) {
     CANVAS_SITES.with(|s| s.borrow_mut().clear());
     SVG_CACHE.with(|cache| {

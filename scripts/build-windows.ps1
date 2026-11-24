@@ -31,12 +31,6 @@ $environment -split "`r?`n" | ForEach-Object {
     if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') }
 }
 $loader.Dispose()
-if (!$env:GPUI_FXC_PATH) {
-    $sdk = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-    $fxc = Get-ChildItem $sdk -Filter fxc.exe -Recurse | Where-Object { $_.Directory.Name -eq 'x64' } | Sort-Object FullName -Descending | Select-Object -First 1
-    if (!$fxc) { throw 'Windows SDK fxc.exe was not found.' }
-    $env:GPUI_FXC_PATH = $fxc.FullName
-}
 function Invoke-Cargo {
     # PowerShell 5.1 turns redirected native stderr into ErrorRecord objects.
     # Cargo's progress belongs in the log; its exit status determines failure.

@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["apps/desktop", "crates/*"]
-exclude = ["vendor/gpui", "vendor/xattr", "vendor/proc-macro-error2", "vendor/winit", "vendor/rune-image"]
+exclude = ["vendor/winit", "vendor/rune-image"]
 
 [workspace.package]
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 license = "GPL-3.0-or-later"
 rust-version = "1.92"

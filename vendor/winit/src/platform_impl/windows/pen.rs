@@ -103,11 +103,14 @@ pub(crate) fn handle(
         let mut history = vec![unsafe { mem::zeroed::<POINTER_PEN_INFO>() }; count as usize];
         if unsafe { (api.pen_history)(pointer_id, &mut count, history.as_mut_ptr()) } != 0 {
             history.truncate(count as usize);
-            history.reverse();
-            samples = history;
+            if !history.is_empty() {
+                history.reverse();
+                samples = history;
+            }
         }
     }
-    for sample in samples {
+    let last = samples.len() - 1;
+    for (index, sample) in samples.into_iter().enumerate() {
         let info = &sample.pointerInfo;
         if info.pointerFlags & POINTER_FLAG_CANCELED != 0 {
             finish(window, pointer_id, TabletPhase::Cancel, send);
@@ -127,7 +130,10 @@ pub(crate) fn handle(
             continue;
         }
         let in_contact = info.pointerFlags & POINTER_FLAG_INCONTACT != 0;
-        let phase = if message == WM_POINTERUP || info.pointerFlags & POINTER_FLAG_UP != 0 {
+        // A lift's message carries the samples before it too: only the newest one (or one
+        // flagged as the lift) ends the stroke, so a fast lift keeps its stroke's tail.
+        let lifted = (index == last && message == WM_POINTERUP) || info.pointerFlags & POINTER_FLAG_UP != 0;
+        let phase = if lifted {
             if !was_down {
                 continue;
             }
@@ -236,8 +242,8 @@ fn client_position(api: &Api, window: HWND, info: &POINTER_INFO) -> Option<Physi
         let rx = (display.right - display.left) as f64 / (device.right - device.left) as f64;
         let ry = (display.bottom - display.top) as f64 / (device.bottom - device.top) as f64;
         (
-            display.left as f64 + info.ptHimetricLocation.x as f64 * rx,
-            display.top as f64 + info.ptHimetricLocation.y as f64 * ry,
+            display.left as f64 + (info.ptHimetricLocation.x - device.left) as f64 * rx,
+            display.top as f64 + (info.ptHimetricLocation.y - device.top) as f64 * ry,
         )
     } else {
         (info.ptPixelLocation.x as f64, info.ptPixelLocation.y as f64)

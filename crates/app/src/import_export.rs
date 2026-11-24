@@ -56,9 +56,12 @@ impl Controller {
     }
     /// Home imports have their own document; editor imports retain their captured target.
     pub fn import_as_note(&mut self, path: PathBuf) -> Id {
+        // A blank or unreadable file name still gets a document name.
         let title = path
             .file_stem()
             .and_then(|s| s.to_str())
+            .map(str::trim)
+            .filter(|stem| !stem.is_empty())
             .unwrap_or("Imported document")
             .to_owned();
         let properties = PageProperties {

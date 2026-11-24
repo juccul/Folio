@@ -1826,10 +1826,11 @@ impl NotesView {
         }
         let mut tabs = div()
             .id("document-tabs")
+            // The axis first: a tracked viewport without one scrolls vertically.
+            .overflow_x_scroll()
             .track_scroll(&self.tab_scroll)
             .flex_initial()
             .min_w_0()
-            .overflow_x_scroll()
             .flex()
             .items_center()
             .h_full()

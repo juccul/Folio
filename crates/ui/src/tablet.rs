@@ -124,7 +124,7 @@ mod tests {
 
     fn report(phase: native::TabletPhase, pressure: f32) -> native::TabletToolEvent {
         native::TabletToolEvent {
-            window_id: unsafe { winit::window::WindowId::dummy() },
+            window_id: winit::window::WindowId::dummy(),
             phase,
             position: winit::dpi::PhysicalPosition::new(300., 150.),
             pressure,

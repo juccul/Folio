@@ -38,6 +38,11 @@ fn home_pdf_is_a_new_named_document_with_exact_pages_and_durable_order() {
     a.add_text("Existing note".into(), Point::new(50., 50.));
     let old = a.session().document.clone();
     let path = pdf(&a);
+    // A blank file name falls back to a default document name.
+    let blank = a.data_dir.join("   .pdf");
+    std::fs::copy(&path, &blank).unwrap();
+    let unnamed = a.import_as_note(blank);
+    assert_eq!(a.sessions[&unnamed].document.metadata.title, "Imported document");
     let imported = a.import_as_note(path);
     assert_ne!(previous, imported);
     a.switch_note(previous);

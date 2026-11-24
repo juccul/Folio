@@ -389,6 +389,24 @@ impl TextProps {
 
 pub type SharedString = String;
 
+/// A font family name that lives as long as the program: Rune's text styles
+/// hold `&'static str`. Each distinct name is stored once, however often a
+/// view asks for it (every build names the UI font), and only the families
+/// installed on the system ever come through here.
+fn intern_family(family: String) -> &'static str {
+    thread_local! {
+        static FAMILIES: RefCell<std::collections::HashSet<&'static str>> = RefCell::default();
+    }
+    FAMILIES.with_borrow_mut(|families| match families.get(family.as_str()) {
+        Some(known) => known,
+        None => {
+            let leaked: &'static str = Box::leak(family.into_boxed_str());
+            families.insert(leaked);
+            leaked
+        }
+    })
+}
+
 /// What building elements needs: the view, for lists that build their rows
 /// from it, and where effects queued while building go.
 pub struct BuildCx<'a> {
@@ -1536,8 +1554,7 @@ impl Div {
         self
     }
     pub fn font_family(mut self, family: impl Into<String>) -> Self {
-        let family = family.into();
-        self.text.family = Some(Box::leak(family.into_boxed_str()));
+        self.text.family = Some(intern_family(family.into()));
         self
     }
     pub fn font_mono(mut self) -> Self {
