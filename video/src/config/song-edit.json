@@ -1,0 +1,274 @@
+{
+  "bpm": 165,
+  "fps": 30,
+  "note": "Scenes sit on the song's bar grid (165 BPM: 1 bar = 1.4545 s). Edit bar 0 = song bar 48 (70.1 s); the song's 2-bar gap (bars 62-63) holds the '=' moment, its first drop (bar 64, 93.4 s) is edit bar 16, and the song drops out at edit bar 39, where the end card stops the music.",
+  "dropBar": 16,
+  "scenes": [
+    {
+      "id": "write",
+      "type": "macro",
+      "bar": 0,
+      "bars": 2,
+      "clip": "editor",
+      "trim": 112,
+      "focus": [
+        0.33,
+        0.3
+      ],
+      "s0": 2.7,
+      "s1": 2.2
+    },
+    {
+      "id": "snap",
+      "type": "macro",
+      "bar": 2,
+      "bars": 2,
+      "clip": "snap",
+      "trim": 14,
+      "focus": [
+        0.42,
+        0.42
+      ],
+      "s0": 2.3,
+      "s1": 1.9
+    },
+    {
+      "id": "understands",
+      "type": "type",
+      "bar": 4,
+      "bars": 2,
+      "lines": [
+        "It understands",
+        "your handwriting."
+      ]
+    },
+    {
+      "id": "title",
+      "type": "title",
+      "bar": 6,
+      "bars": 2
+    },
+    {
+      "id": "reveal",
+      "type": "device",
+      "bar": 8,
+      "bars": 4,
+      "clip": "editor",
+      "trim": 15,
+      "title": "Notes for your pen.",
+      "sub": "Offline. On Linux and Windows."
+    },
+    {
+      "id": "select",
+      "type": "split",
+      "bar": 12,
+      "bars": 2,
+      "clip": "encircle",
+      "trim": 6,
+      "word": "Select.",
+      "sub": "Circle ink to pick it up.",
+      "side": "right"
+    },
+    {
+      "id": "equals",
+      "type": "macro",
+      "bar": 14,
+      "bars": 2,
+      "clip": "math",
+      "trim": 0,
+      "clipDelay": 21,
+      "focus": [
+        0.5,
+        0.47
+      ],
+      "s0": 2.0,
+      "s1": 2.5
+    },
+    {
+      "id": "drop",
+      "type": "pullback",
+      "bar": 16,
+      "bars": 2,
+      "clip": "math",
+      "trim": 66,
+      "focus": [
+        0.5,
+        0.47
+      ],
+      "lines": [
+        "Your handwriting",
+        "just did the math."
+      ]
+    },
+    {
+      "id": "erase",
+      "type": "split",
+      "bar": 18,
+      "bars": 2,
+      "clip": "scratch",
+      "trim": 6,
+      "word": "Erase.",
+      "sub": "Just scribble it out.",
+      "side": "left"
+    },
+    {
+      "id": "convert",
+      "type": "split",
+      "bar": 20,
+      "bars": 4,
+      "clip": "convert",
+      "trim": 15,
+      "word": "Convert.",
+      "sub": "Handwriting becomes text.",
+      "side": "right"
+    },
+    {
+      "id": "search",
+      "type": "split",
+      "bar": 24,
+      "bars": 3,
+      "clip": "search",
+      "trim": 6,
+      "word": "Search.",
+      "sub": "Find any word you wrote.",
+      "side": "left"
+    },
+    {
+      "id": "library",
+      "type": "device",
+      "bar": 27,
+      "bars": 4,
+      "clip": "library",
+      "trim": 12,
+      "title": "Every notebook. One shelf.",
+      "sub": "Ctrl+T jumps to any document."
+    },
+    {
+      "id": "burst",
+      "type": "burst",
+      "bar": 31,
+      "bars": 1,
+      "words": [
+        "Write.",
+        "Convert.",
+        "Find.",
+        "Solve."
+      ]
+    },
+    {
+      "id": "solve",
+      "type": "device",
+      "bar": 32,
+      "bars": 4,
+      "clip": "solveDark",
+      "trim": 40,
+      "title": "Solved. Step by step.",
+      "sub": "Offline solver. Shown in dark theme."
+    },
+    {
+      "id": "stats",
+      "type": "stats",
+      "bar": 36,
+      "bars": 3
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "bar": 39,
+      "bars": 3
+    }
+  ],
+  "sections": [
+    {
+      "name": "intro",
+      "from": 0,
+      "to": 8
+    },
+    {
+      "name": "build",
+      "from": 8,
+      "to": 16
+    },
+    {
+      "name": "drop",
+      "from": 16,
+      "to": 32
+    },
+    {
+      "name": "half",
+      "from": 32,
+      "to": 39
+    },
+    {
+      "name": "end",
+      "from": 39,
+      "to": 42
+    }
+  ],
+  "teaser": {
+    "songBar": 14,
+    "endBar": 8,
+    "scenes": [
+      {
+        "id": "equals",
+        "type": "macro",
+        "bar": 0,
+        "bars": 2,
+        "clip": "math",
+        "trim": 0,
+        "clipDelay": 21,
+        "focus": [
+          0.5,
+          0.47
+        ],
+        "s0": 2.0,
+        "s1": 2.5
+      },
+      {
+        "id": "drop",
+        "type": "pullback",
+        "bar": 2,
+        "bars": 2,
+        "clip": "math",
+        "trim": 66,
+        "focus": [
+          0.5,
+          0.47
+        ],
+        "lines": [
+          "Your handwriting",
+          "just did the math."
+        ]
+      },
+      {
+        "id": "convert",
+        "type": "split",
+        "bar": 4,
+        "bars": 3,
+        "clip": "convert",
+        "trim": 25,
+        "word": "Convert.",
+        "sub": "Handwriting becomes text.",
+        "side": "right"
+      },
+      {
+        "id": "burst",
+        "type": "burst",
+        "bar": 7,
+        "bars": 1,
+        "words": [
+          "Write.",
+          "Convert.",
+          "Find.",
+          "Solve."
+        ]
+      },
+      {
+        "id": "end",
+        "type": "end",
+        "bar": 8,
+        "bars": 2
+      }
+    ]
+  }
+}

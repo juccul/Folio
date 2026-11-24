@@ -1,0 +1,41 @@
+{
+  "fps": 30,
+  "bpm": 120,
+  "cuts": {
+    "flagship": [
+      {"id": "macro", "type": "macro", "len": 120, "clip": "math", "trim": 12},
+      {"id": "line", "type": "type", "len": 60, "lines": ["Your handwriting", "just did the math."], "warm": 1},
+      {"id": "title", "type": "title", "len": 90},
+      {"id": "hero", "type": "device", "len": 180, "clip": "editor", "trim": 15, "title": "Notes for your pen.", "sub": "Offline. On Linux and Windows."},
+      {"id": "shapes", "type": "split", "len": 120, "clip": "snap", "trim": 12, "word": "Shapes.", "sub": "Hold a stroke. It snaps into place.", "side": "left"},
+      {"id": "select", "type": "split", "len": 120, "clip": "encircle", "trim": 6, "word": "Select.", "sub": "Circle ink to pick it up.", "side": "right"},
+      {"id": "erase", "type": "split", "len": 90, "clip": "scratch", "trim": 6, "word": "Erase.", "sub": "Just scribble it out.", "side": "left"},
+      {"id": "convert", "type": "split", "len": 150, "clip": "convert", "trim": 15, "word": "Convert.", "sub": "Handwriting becomes text.", "side": "right"},
+      {"id": "stuck", "type": "type", "len": 45, "lines": ["Stuck on a problem?"]},
+      {"id": "solve", "type": "device", "len": 180, "clip": "solveDark", "trim": 40, "title": "Solved. Step by step.", "sub": "Offline solver. Shown in dark theme.", "warm": 1},
+      {"id": "search", "type": "split", "len": 120, "clip": "search", "trim": 6, "word": "Search.", "sub": "Find any word you wrote.", "side": "left"},
+      {"id": "library", "type": "device", "len": 165, "clip": "library", "trim": 12, "title": "Every notebook. One shelf.", "sub": "Ctrl+T jumps to any document."},
+      {"id": "stats", "type": "stats", "len": 150},
+      {"id": "end", "type": "end", "len": 180}
+    ],
+    "teaser": [
+      {"id": "macro", "type": "macro", "len": 120, "clip": "math", "trim": 12},
+      {"id": "line", "type": "type", "len": 60, "lines": ["Your handwriting", "just did the math."], "warm": 1},
+      {"id": "title", "type": "title", "len": 75},
+      {"id": "convert", "type": "split", "len": 120, "clip": "convert", "trim": 15, "word": "Convert.", "sub": "Handwriting becomes text.", "side": "right"},
+      {"id": "end", "type": "end", "len": 75}
+    ]
+  },
+  "stats": [
+    {"big": "No account.", "sub": "Nothing to sign up for."},
+    {"big": "No cloud.", "sub": "Notes stay on your device."},
+    {"big": "Your CPU.", "sub": "Recognition and solving run locally."}
+  ],
+  "end": {
+    "name": "Folio",
+    "line": "A notebook that understands your handwriting.",
+    "cta": "Free for Linux and Windows.",
+    "url": "github.com/juccul/Folio"
+  },
+  "label": "Real app footage · 1.0× speed"
+}

@@ -168,6 +168,27 @@ The user then ran the foreground helper on handle 12. Its log confirms policy 0x
 
 Twenty simulated safety tests cover pending/reserved handles, device identity, rollback, interruption, link loss/reconnect, policy drift, other-bit preservation and duration expiry; native ABI was independently checked with a C harness against upstream headers. The first experiment's pending-handle I/O error was a diagnostic bug and was fixed before the successful trial. Read-only utilities remain available for raw tablet events, BlueZ disconnect signals and private HCI traces. HCI traces contain pairing-key material and remain local/private. No Bluetooth reset, pairing/driver change or persistent compatibility service has been applied. See [incident report](artifacts/incident/REPORT.md) for exact evidence and limits.
 
+## Launch video
+
+`video/` is a Remotion (React) project that renders Folio's launch trailer from footage of the real app. Every app shot plays at 1.0× speed and is labelled on screen.
+- **Footage:** `public/clips/tour/` holds the onboarding tour clips (from `crates/ui/assets/tour/`). `public/clips/own/` holds full-window captures recorded by `capture/scenes.py`, which needs the perf tooling build.
+- **Configuration:** `src/config/` holds the copy, timing and clip metadata.
+- **Compositions:**
+  - `Song*`: the current cut. It is laid out on the bar grid of Adam F's "Circles Revisited" (165 BPM) in `src/config/song-edit.json`.
+  - `Trailer*`: an earlier cut with synthesized music.
+  - `Launch*`: an earlier cut on the paper stage.
+- **Song file:** the song is licensed music and is not committed. Copy it to `video/public/audio/song.mp3`. `capture/analyze-song.py` measures its bar grid and drop and writes `src/config/song.json`; `--bpm 165 --drop 93.386 --write` reproduces the current alignment. In it, edit bar 0 is song bar 48 (70.1 s), and the song's first drop (bar 64) lands on edit bar 16, where the handwritten answer appears.
+- **Generated audio:** `capture/make-audio.py`, `make-trailer-audio.py` and `make-guide-165.py` regenerate the synthesized audio that the earlier cuts and the guide track use.
+
+```sh
+cd video && npm ci
+npm run studio                      # preview and edit
+npm run render                      # Song cuts → ../artifacts/launch-out/folio-song-*.mp4
+bash capture/render.sh Trailer16x9  # any other composition
+```
+
+Rendering masters each cut to −14 LUFS and −1 dBTP, with a −16 LUFS LinkedIn version of each 16:9 cut. Mastering needs ffmpeg, plus Python with numpy, scipy and librosa for the audio scripts. Check renders with `.claude/skills/software-launch-video/scripts/verify_render.py`. Publishing the song cut needs a sync licence and a master-use licence for the track.
+
 ## Architecture
 
 The workspace separates `apps/desktop` and `app`, `ui`, `input`, `ink`, `canvas`, `document`, `storage`, `gestures`, `shapes`, `math`, `pdf`, `search`, `export`, and `platform` crates. Rust 1.92+ is required by the subset-font PDF backend. Ink, geometry and structured documents have no GPUI dependency. The UI forwards operations to a controller; document mutation and LaTeX rendering are outside the presentation layer. Explicit optional recognition lives in `app::recognition`, with a resident native Q8 backend and support for existing Python packs; no automatic text detector is present.

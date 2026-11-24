@@ -1,0 +1,14 @@
+{
+  "src": "audio/song.mp3",
+  "bpm": 165.0,
+  "barPhase": 0.295,
+  "drop": 93.386,
+  "dropCandidates": [
+    323.2,
+    93.39,
+    324.66,
+    326.11
+  ],
+  "startAt": 70.113,
+  "videoDropBar": 16
+}

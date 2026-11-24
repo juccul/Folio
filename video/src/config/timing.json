@@ -1,0 +1,15 @@
+{
+  "fps": 30,
+  "bpm": 120,
+  "overlap": 6,
+  "flagship": {
+    "slots": {"hook": 135, "context": 165, "snap": 120, "select": 135, "erase": 90, "convert": 165, "solve": 165, "search": 120, "library": 165},
+    "bento": 120,
+    "end": 120
+  },
+  "teaser": {
+    "slots": {"hook": 120, "convert": 135, "solve": 120},
+    "bento": 0,
+    "end": 75
+  }
+}
