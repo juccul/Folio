@@ -27,6 +27,8 @@ def main():
             continue  # A tracked document deleted in the working tree.
         if name in PROJECT_GUIDES or path.parts[0] in {"third_party", "vendor"}:
             continue
+        if path.parts[:2] == (".claude", "skills") and path.name == "SKILL.md":
+            continue
         unexpected.append(name)
     if unexpected:
         print("Unexpected Markdown files:\n" + "\n".join(sorted(unexpected)))

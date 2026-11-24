@@ -34,3 +34,4 @@ venv/
 !/RELEASE_NOTES.md
 !/third_party/**/*.[mM][dD]
 !/vendor/**/*.[mM][dD]
+!/.claude/skills/*/SKILL.md
