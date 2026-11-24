@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tarfile
@@ -27,6 +28,73 @@ def add(archive, path, name):
         info.uname = info.gname = 'root'
         return info
     archive.add(path, arcname=name, filter=filter_file)
+
+RUNE_GIT = 'https://github.com/anomalyco/rune'
+
+
+def rune_checkout():
+    """Cargo's checkout of the pinned Rune revision and its crates by name."""
+    metadata = json.loads(subprocess.check_output(
+        ['cargo', 'metadata', '--locked', '--format-version', '1'], cwd=ROOT, text=True))
+    crates = {package['name']: Path(package['manifest_path']).parent
+              for package in metadata['packages']
+              if (package.get('source') or '').startswith(f'git+{RUNE_GIT}')}
+    if not crates:
+        raise SystemExit('Rune is not a git dependency of this workspace')
+    root = Path(os.path.commonpath(list(crates.values())))
+    while not (root / 'Cargo.toml').is_file() or 'workspace' not in tomllib.loads((root / 'Cargo.toml').read_text()):
+        root = root.parent
+    return root, crates
+
+
+def stage_source(tree, poppler_source):
+    """The workspace as a self-contained source tree: Rune's git dependencies
+    point at a bundled copy of the pinned Rune revision (with Folio's patched
+    rune-image in place of its own), so the archive builds without network."""
+    import shutil
+    ignore = shutil.ignore_patterns('.git', 'target', '__pycache__', '*.pyc', '.cargo-ok')
+    tree.mkdir(parents=True)
+    for item in ['Cargo.toml', 'Cargo.lock', 'apps', 'crates', 'vendor', 'scripts', 'packaging',
+                 'recognition', 'third_party', '.github', '.gitignore', '.cargo', 'LICENSE',
+                 'AGENTS.md', *PROJECT_DOCUMENTS]:
+        source = ROOT / item
+        if source.is_dir():
+            shutil.copytree(source, tree / item, ignore=ignore)
+        elif source.is_file():
+            shutil.copy2(source, tree / item)
+    root, crates = rune_checkout()
+    rune = tree / 'third_party/rune'
+    shutil.copytree(root, rune, ignore=ignore)
+    # Folio patches rune-image (so Cargo reports the patch, not Rune's copy).
+    original = next(path.parent for path in root.glob('crates/*/Cargo.toml')
+                    if tomllib.loads(path.read_text()).get('package', {}).get('name') == 'rune-image')
+    patched = rune / original.relative_to(root)
+    shutil.rmtree(patched)
+    shutil.copytree(ROOT / 'vendor/rune-image', patched, ignore=ignore)
+    pin = re.compile(r'git = "' + re.escape(RUNE_GIT) + r'", rev = "[0-9a-f]+"')
+    for manifest, base in [(tree / 'Cargo.toml', tree), (tree / 'vendor/rune-image/Cargo.toml', tree / 'vendor/rune-image'),
+                           (patched / 'Cargo.toml', patched)]:
+        text = manifest.read_text()
+        def local(match):
+            name = text[:match.start()].rsplit('\n', 1)[-1].split('=', 1)[0].strip()
+            return f'path = "{os.path.relpath(rune / crates[name].relative_to(root), base)}"'
+        text = pin.sub(local, text)
+        # Patches of the git source do not apply to path dependencies; the
+        # patched crate already sits inside the bundled copy.
+        text = re.sub(r'\[patch\."' + re.escape(RUNE_GIT) + r'"\]\n(?:[^\[\n][^\n]*\n)*', '', text)
+        if manifest == tree / 'Cargo.toml':
+            # Rune's crates belong to Rune's own workspace.
+            text = text.replace('exclude = [', 'exclude = ["third_party/rune", ', 1)
+        manifest.write_text(text)
+    if poppler_source:
+        retained = ROOT / 'third_party/flatpak' / poppler_source.name
+        if retained.is_file():
+            if hashlib.sha256(retained.read_bytes()).digest() != hashlib.sha256(poppler_source.read_bytes()).digest():
+                raise SystemExit('Retained Poppler source differs from the packaged build source')
+        else:
+            (tree / 'third_party/flatpak').mkdir(parents=True, exist_ok=True)
+            shutil.copy2(poppler_source, tree / 'third_party/flatpak' / poppler_source.name)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -54,26 +122,19 @@ def main():
         for item in [*PROJECT_DOCUMENTS, 'LICENSE', 'recognition', 'third_party', 'packaging']:
             add(archive, ROOT / item, f'{binary_name}/{item}')
     with tempfile.TemporaryDirectory(prefix='folio-corresponding-source-') as temp:
-        vendor = Path(temp) / 'source'
-        result = subprocess.run(['cargo', 'vendor', '--locked', '--versioned-dirs', str(vendor)], cwd=ROOT, capture_output=True, text=True, check=True)
-        config = result.stdout.replace(str(vendor), 'third_party/source')
-        config_path = Path(temp) / 'config.toml'
-        config_path.write_text((ROOT / '.cargo/config.toml').read_text() + '\n' + config)
+        tree = Path(temp) / source_name
+        stage_source(tree, args.poppler_source)
+        # Registry crates, vendored so the archive builds offline. Rune's
+        # repository is bundled whole (it carries its own copy of a crate that
+        # also comes from the registry, which `cargo vendor` cannot merge).
+        result = subprocess.run(['cargo', 'vendor', '--versioned-dirs', 'third_party/source'],
+                                cwd=tree, capture_output=True, text=True)
+        if result.returncode:
+            raise SystemExit(f'cargo vendor failed:\n{result.stderr}')
+        config = tree / '.cargo/config.toml'
+        config.write_text(config.read_text() + '\n' + result.stdout)
         with tarfile.open(source_archive, 'w:gz', compresslevel=6) as archive:
-            for item in ['Cargo.toml', 'Cargo.lock', 'apps', 'crates', 'vendor', 'scripts', 'packaging', 'recognition', 'third_party', '.github', '.gitignore', 'LICENSE']:
-                add(archive, ROOT / item, f'{source_name}/{item}')
-            for item in ['AGENTS.md', *PROJECT_DOCUMENTS]:
-                add(archive, ROOT / item, f'{source_name}/{item}')
-            if args.poppler_source:
-                retained = ROOT / 'third_party/flatpak' / args.poppler_source.name
-                if retained.is_file():
-                    if hashlib.sha256(retained.read_bytes()).digest() != hashlib.sha256(args.poppler_source.read_bytes()).digest():
-                        raise SystemExit('Retained Poppler source differs from the packaged build source')
-                else:
-                    add(archive, args.poppler_source,
-                        f'{source_name}/third_party/flatpak/{args.poppler_source.name}')
-            add(archive, config_path, f'{source_name}/.cargo/config.toml')
-            add(archive, vendor, f'{source_name}/third_party/source')
+            add(archive, tree, source_name)
     archives=[binary_archive,source_archive]
     checksums = {}
     for path in archives:
