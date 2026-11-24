@@ -64,6 +64,8 @@ impl NotesView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         self.sync_window_title(window);
+        static FIRST_FRAME: std::sync::Once = std::sync::Once::new();
+        FIRST_FRAME.call_once(|| super::startup_mark("first_frame"));
         if self.startup_pending > 0 && !self.library_open && !self.controller.loading_note() {
             if self.startup_pending == 2 {
                 super::startup_mark("note_loaded");

@@ -71,7 +71,7 @@ pub use recognition::{RecognitionKind, RecognitionReview, RecognitionTiming};
 pub use session::Session;
 pub use settings::{
     EraserMode, MAX_PAD_BUTTONS, MIN_WHEEL_TOOLS, PAD_ACTIONS, PageTemplate, PenPreset, Settings,
-    WHEEL_TOOLS, WorkspacePreferences, pad_action_label,
+    TOUR_VERSION, WHEEL_TOOLS, WorkspacePreferences, pad_action_label,
 };
 use std::{
     cell::{Cell, RefCell},

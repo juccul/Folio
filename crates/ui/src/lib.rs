@@ -590,7 +590,7 @@ impl NotesView {
     fn new_with_titlebar_fixture(controller: Controller, titlebar_smoke: bool) -> Self {
         // The tour opens by itself until it has been seen once (not in the
         // title bar fixture).
-        let first_tour = !controller.settings.tour_seen && !titlebar_smoke;
+        let first_tour = controller.settings.tour_due() && !titlebar_smoke;
         let mut workspace = controller.settings.workspace.clone();
         workspace
             .open_tabs

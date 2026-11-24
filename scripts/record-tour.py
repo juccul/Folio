@@ -589,7 +589,7 @@ def base_library(theme):
     (base / "session.lock").unlink(missing_ok=True)
     db = sqlite3.connect(base / "notes.sqlite3")
     prefs = json.loads(db.execute("select data from settings where key='preferences'").fetchone()[0])
-    prefs.update(dark=theme == "dark", follow_system_theme=False, tour_seen=True)
+    prefs.update(dark=theme == "dark", follow_system_theme=False, tour_version=1)
     db.execute("update settings set data=? where key='preferences'", (json.dumps(prefs),))
     db.commit()
     return base

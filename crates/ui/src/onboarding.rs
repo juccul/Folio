@@ -525,8 +525,8 @@ impl NotesView {
     /// Closes the tour for good: it shows by itself only once.
     pub(super) fn close_tour(&mut self, window: &mut Window) {
         self.tour = None;
-        if !self.controller.settings.tour_seen {
-            self.controller.settings.tour_seen = true;
+        if self.controller.settings.tour_due() {
+            self.controller.settings.tour_version = folio_app::TOUR_VERSION;
             self.controller.store_settings();
         }
         self.focus.focus(window);

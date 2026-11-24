@@ -156,11 +156,22 @@ pub struct Settings {
     pub cursor_size: f32,
     /// Solve math in the solver panel as soon as a problem is entered or read.
     pub math_auto_solve: bool,
-    /// The tour of smart ink was shown (it opens by itself once).
-    pub tour_seen: bool,
+    /// The newest tour of smart ink this library has completed. A tour
+    /// newer than this opens by itself once, for fresh libraries and for
+    /// libraries carried over from releases without it alike.
+    pub tour_version: u32,
 }
 
+/// The tour of smart ink in this release; raising it shows a new tour once
+/// to everyone.
+pub const TOUR_VERSION: u32 = 1;
+
 impl Settings {
+    /// Whether the current tour should open by itself.
+    pub fn tour_due(&self) -> bool {
+        self.tour_version < TOUR_VERSION
+    }
+
     /// Resolve system appearance without replacing an explicit user override.
     pub fn apply_system_theme(&mut self, dark: bool) -> bool {
         if !self.follow_system_theme || self.dark == dark {
@@ -364,7 +375,7 @@ impl Default for Settings {
             hold_shapes: true,
             encircle_select: true,
             auto_math_ink: true,
-            tour_seen: false,
+            tour_version: 0,
             autosave: true,
             cursor_size: 12.,
             math_auto_solve: true,
@@ -616,6 +627,13 @@ mod tests {
         .unwrap();
         assert!(settings.dark);
         assert!(settings.hold_shapes);
+        // Preferences from releases before the tour show it once; finishing
+        // it is remembered across saving and loading.
+        assert!(settings.tour_due());
+        let mut finished = settings.clone();
+        finished.tour_version = TOUR_VERSION;
+        let reloaded: Settings = serde_json::from_value(serde_json::to_value(&finished).unwrap()).unwrap();
+        assert!(!reloaded.tour_due());
         let saved = serde_json::to_value(settings).unwrap();
         for field in [
             "auto_recognition",
