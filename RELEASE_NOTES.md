@@ -1,3 +1,9 @@
+# Folio 0.2.7
+
+Linux hotfix. Folio's window reports its application id (`io.github.folio.Notes`) to the desktop again, so Wayland and X11 desktops show Folio's icon in the dock, task switcher and window list instead of a generic one, and window rules match it. 0.2.6 lost this when the interface moved to Rune.
+
+Linux x86_64 Flatpak (through the signed remote and as a bundle), desktop archive, checksums and complete corresponding source. Windows is unchanged and stays on 0.2.6.
+
 # Folio 0.2.6
 
 Folio's interface moves from GPUI to the [Rune](https://github.com/anomalyco/rune) UI toolkit. Your libraries, notes, preferences and recognition models carry over unchanged, and 0.2.5 updates to 0.2.6 in place.

@@ -228,6 +228,10 @@ fn on_close(s: &mut AppState, tx: &mut rune::Tx) {
     }
 }
 
+/// The id the window reports to the desktop (Wayland `app_id`, X11 `WM_CLASS`), so
+/// compositors match it to the `.desktop` entry and its icon.
+pub(crate) const APP_ID: &str = "io.github.folio.Notes";
+
 /// Opens Folio's window and runs until it closes. `ready` receives the app
 /// handle before the event loop starts, for activation from later launches.
 pub fn run(
@@ -237,6 +241,7 @@ pub fn run(
     ready: impl FnOnce(rune::AppHandle<AppState>),
 ) {
     titlebar::request_client_frame();
+    rune::set_app_id(APP_ID);
     let mut view = view;
     if open_editor {
         view.show_editor();

@@ -12,6 +12,9 @@
   <launchable type="desktop-id">io.github.folio.Notes.desktop</launchable>
   <supports><control>pointing</control><control>keyboard</control></supports>
   <releases>
+    <release version="0.2.7" date="2026-11-27">
+      <description><p>On Linux, Folio's window shows its own icon again in the dock, task switcher and window list instead of a generic one.</p></description>
+    </release>
     <release version="0.2.6" date="2026-11-24">
       <description><p>A new interface toolkit: Folio now draws its interface and canvas on the GPU with Rune, starts faster, uses about half the memory and idles without redrawing. A full-window tour shows what your pen can do, menus and dialogs morph in place, the library search filters documents as you type, and Windows pen strokes keep their tails on fast lifts. Libraries, notes and recognition models carry over unchanged.</p></description>
     </release>

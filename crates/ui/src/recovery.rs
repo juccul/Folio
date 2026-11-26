@@ -118,6 +118,7 @@ fn no_init() -> RecoveryView {
 
 /// Opens the recovery window for a library that failed to open.
 pub fn run_recovery(root: PathBuf, error: String) {
+    rune::set_app_id(crate::shell::APP_ID);
     let spec = rune::AppSpec::<RecoveryView> {
         poll: Some(poll),
         ..rune::AppSpec::new("Folio — Recovery", (900., 600.), no_init, view)
